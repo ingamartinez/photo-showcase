@@ -131,7 +131,7 @@ jobs:
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
             set -eu
             cd '$RELEASE_DIR'
-            sudo -n -u photoshowcase /usr/local/bin/bun scripts/migrate-prod.ts
+            sudo -n -u photoshowcase /opt/bun/bin/bun scripts/migrate-prod.ts
           "
 
       - name: Flip symlink + restart photoshowcase

@@ -16,7 +16,7 @@ EnvironmentFile=-/srv/photoshowcase/app/current/release.env
 Environment=NODE_ENV=production
 Environment=PORT=3300
 Environment=HOSTNAME=127.0.0.1
-ExecStart=/usr/local/bin/bun server.js
+ExecStart=/opt/bun/bin/bun server.js
 Restart=always
 RestartSec=3
 TimeoutStopSec=10

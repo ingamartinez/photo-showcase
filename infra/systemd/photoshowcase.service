@@ -1,0 +1,45 @@
+[Unit]
+Description=Photo Showcase — photography portfolio + client galleries (Next.js)
+After=network.target postgresql.service
+Requires=postgresql.service
+
+[Service]
+Type=simple
+User=photoshowcase
+Group=photoshowcase
+WorkingDirectory=/srv/photoshowcase/app/current
+EnvironmentFile=/srv/photoshowcase/env/photoshowcase.env
+# Per-release env (GIT_SHA etc.) lives inside the release dir so it moves with
+# the symlink on deploy / rollback. Optional — systemd starts fine before the
+# first CD deploy.
+EnvironmentFile=-/srv/photoshowcase/app/current/release.env
+Environment=NODE_ENV=production
+Environment=PORT=3300
+Environment=HOSTNAME=127.0.0.1
+ExecStart=/usr/local/bin/bun server.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+KillSignal=SIGTERM
+# Cap memory on the shared 2 GB droplet so a spike in this app can't starve
+# findash. Inline sharp image processing (Phase 2+) is the main pressure source.
+MemoryMax=768M
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=photoshowcase
+
+# Hardening
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/srv/photoshowcase/logs
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+RestrictRealtime=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target

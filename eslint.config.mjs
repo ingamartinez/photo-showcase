@@ -17,13 +17,14 @@ const eslintConfig = defineConfig([
       ],
     },
   },
-  globalIgnores([
-    ".next/**",
-    "out/**",
-    "build/**",
-    "next-env.d.ts",
-    ".claude/**",
-  ]),
+  // CLI scripts (migrations, backfills) legitimately write to stdout/stderr.
+  {
+    files: ["scripts/**"],
+    rules: {
+      "no-console": "off",
+    },
+  },
+  globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts", ".claude/**"]),
 ]);
 
 export default eslintConfig;

@@ -1,0 +1,43 @@
+# Photo Showcase origin — fronted by Cloudflare (Full strict).
+#
+# Cloudflare terminates TLS for the user, then re-encrypts to this origin using
+# the CF-issued origin cert served below. DO NOT enable Caddy's automatic
+# Let's Encrypt — the hostname is not publicly resolvable to this origin (CF
+# proxies it), so the ACME challenge would fail.
+#
+# This block coexists with the findash block on the same droplet's Caddy; each
+# site is matched by hostname and proxied to its own port (findash:3000,
+# photoshowcase:3300).
+#
+# Expected on-disk:
+#   /etc/caddy/alejoframes-origin.pem   (0644 root:root)  — CF origin cert
+#   /etc/caddy/alejoframes-origin.key   (0600 root:caddy) — matching private key
+# The cert must cover the apex `alejoframes.com` (a wildcard *.alejoframes.com
+# does NOT cover the bare apex — issue one that includes it, or a separate cert).
+
+# www → apex redirect (canonical host is the bare apex).
+www.alejoframes.com {
+	tls /etc/caddy/alejoframes-origin.pem /etc/caddy/alejoframes-origin.key
+	redir https://alejoframes.com{uri} permanent
+}
+
+alejoframes.com {
+	tls /etc/caddy/alejoframes-origin.pem /etc/caddy/alejoframes-origin.key
+
+	encode zstd gzip
+
+	# Forward the real client IP that Cloudflare sets in CF-Connecting-IP.
+	reverse_proxy 127.0.0.1:3300 {
+		header_up Host {host}
+		header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+		header_up X-Forwarded-Proto https
+	}
+
+	log {
+		output file /var/log/caddy/photoshowcase-access.log {
+			roll_size 50mb
+			roll_keep 7
+		}
+		format json
+	}
+}

@@ -20,10 +20,22 @@ Run as a sudo-capable user on the droplet. `$USER_NAME` = `photoshowcase`.
 
 ```bash
 sudo useradd --system --create-home --shell /usr/sbin/nologin photoshowcase
-sudo install -d -o photoshowcase -g photoshowcase -m 0755 \
-  /srv/photoshowcase/app/releases \
-  /srv/photoshowcase/env \
-  /srv/photoshowcase/logs
+sudo mkdir -p /srv/photoshowcase/app/releases /srv/photoshowcase/env /srv/photoshowcase/logs
+# chown the WHOLE tree: `install -d` only sets ownership on the last path
+# component, leaving /srv/photoshowcase and /srv/photoshowcase/app root-owned —
+# then the CD `ln -s current` fails with EACCES.
+sudo chown -R photoshowcase:photoshowcase /srv/photoshowcase
+```
+
+### 1b. Shared bun runtime
+
+The systemd unit and the CD migration step run `/opt/bun/bin/bun`. The distro's
+`/usr/local/bin/bun` is a symlink into `/home/findash/.bun`, which the
+`photoshowcase` user cannot traverse — so install a neutral, root-owned copy:
+
+```bash
+sudo install -D -m 0755 /home/findash/.bun/bin/bun /opt/bun/bin/bun
+sudo -u photoshowcase /opt/bun/bin/bun --version   # verify photoshowcase can exec it
 ```
 
 ### 2. Postgres DB + role (peer auth)
@@ -56,12 +68,13 @@ sudo systemctl enable photoshowcase.service   # starts after first CD deploy
 
 ### 5. Caddy site block
 
-Caddy already fronts findash on this droplet. Add this site to the same Caddy:
+Caddy already fronts findash on this droplet as a single `/etc/caddy/Caddyfile`
+(no `import`). Append this site's block to it. **Do this only after steps 6–7
+(the apex origin cert must be on disk)** — otherwise `caddy validate` fails on
+the missing `tls` files and the reload is rejected.
 
 ```bash
-# If /etc/caddy/Caddyfile uses `import sites/*`, drop the block in as a file:
-sudo cp infra/caddy/Caddyfile /etc/caddy/sites/photoshowcase.caddy
-# Otherwise append its contents to /etc/caddy/Caddyfile.
+cat infra/caddy/Caddyfile | sudo tee -a /etc/caddy/Caddyfile >/dev/null
 sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```

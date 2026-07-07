@@ -29,7 +29,6 @@ jobs:
     env:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
-      APP_HEALTH_URL: ${{ secrets.APP_HEALTH_URL }}
       APP_ROOT: /srv/photoshowcase
 
     steps:
@@ -153,8 +152,12 @@ jobs:
       - name: Health probe
         run: |
           set -eu
+          # Probe the app on the droplet's loopback (127.0.0.1:3300) over SSH so
+          # the gate works before the public edge (Cloudflare DNS + Caddy + apex
+          # origin cert) is live. Switch to the public URL once that is up.
           for i in $(seq 1 15); do
-            body=$(curl -fsS --max-time 5 "$APP_HEALTH_URL" 2>/dev/null || true)
+            body=$(ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
+              'curl -fsS --max-time 5 http://127.0.0.1:3300/api/health' 2>/dev/null || true)
             if echo "$body" | grep -q '"ok":true'; then
               echo "health OK on attempt $i"
               echo "$body"

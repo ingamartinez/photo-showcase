@@ -88,12 +88,15 @@ sudo systemctl reload caddy
 
 The deploy workflow needs these repo secrets:
 
-| Secret           | Value                                                   |
-| ---------------- | ------------------------------------------------------- |
-| `DEPLOY_HOST`    | droplet IP or hostname                                  |
-| `DEPLOY_USER`    | sudo-capable deploy user (same one findash uses)        |
-| `DEPLOY_SSH_KEY` | private key authorized for `DEPLOY_USER` on the droplet |
-| `APP_HEALTH_URL` | `https://alejoframes.com/api/health`                    |
+| Secret           | Value                                                       |
+| ---------------- | ----------------------------------------------------------- |
+| `DEPLOY_HOST`    | droplet IP (`147.182.138.79`)                               |
+| `DEPLOY_USER`    | `deploy` (low-priv CD user, narrow sudo)                    |
+| `DEPLOY_SSH_KEY` | private key authorized for `deploy` (dedicated, not root's) |
+
+The deploy workflow health-probes `http://127.0.0.1:3300/api/health` on the
+droplet over SSH, so it does not need a public URL and works before Cloudflare
+DNS + the apex origin cert are in place.
 
 ## First deploy
 

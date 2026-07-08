@@ -1,14 +1,21 @@
-/* eslint-disable no-console -- CLI script: console is the intended output. */
-// Idempotent portfolio seed. Reads src/content/portfolio.ts and mirrors it into
-// the portfolio_collections / portfolio_items tables.
+// Portfolio seed runner — used in dev (`bun db:seed`) and in production from
+// the CD workflow as:
+//   sudo -n -u photoshowcase bun scripts/seed-prod.ts
 //
-// Run with `bun db:seed`. Safe to re-run: it replaces all portfolio rows with
-// the current manifest state (a full resync, not an append). Only portfolio
-// tables are touched — nothing else in the DB.
+// Expects:
+//   - cwd at the project (dev) or release dir (prod)
+//   - Postgres reachable (dev: platform socket; prod: peer auth over
+//     /var/run/postgresql, PGDATABASE=photoshowcase)
+//
+// Relative imports (not the "@/" alias) so it resolves in the standalone
+// release, which has no tsconfig path mapping — same pattern as migrate-prod.ts.
+//
+// Idempotent full resync: replaces all portfolio rows with the current manifest
+// state. Only the portfolio tables are touched.
 
-import { collections } from "@/content/portfolio";
-import { db } from "./index";
-import { portfolioCollections, portfolioItems } from "./schema";
+import { collections } from "../src/content/portfolio";
+import { db } from "../src/lib/db";
+import { portfolioCollections, portfolioItems } from "../src/lib/db/schema";
 
 function imageKey(slug: string, file: string): string {
   return `/portfolio/${slug}/${file}`;
@@ -50,12 +57,16 @@ async function seed(): Promise<void> {
 
   const collectionCount = collections.length;
   const itemCount = collections.reduce((sum, c) => sum + c.items.length, 0);
-  console.log(`Seeded ${collectionCount} collections, ${itemCount} items.`);
+  console.log(`[seed] ${collectionCount} collections, ${itemCount} items`);
 }
 
 seed()
-  .then(() => process.exit(0))
-  .catch((error) => {
-    console.error("Seed failed:", error);
+  .then(async () => {
+    await db.$client.end();
+    process.exit(0);
+  })
+  .catch(async (error) => {
+    console.error("[seed] failed:", error);
+    await db.$client.end();
     process.exit(1);
   });

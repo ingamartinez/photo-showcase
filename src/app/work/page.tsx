@@ -3,6 +3,10 @@ import { PageHeader } from "@/components/page-header";
 import { CollectionGrid } from "@/components/collection-grid";
 import { getCollections } from "@/lib/portfolio";
 
+// Rendered per-request on the droplet against its local Postgres (the build
+// runs in CI without the prod DB). See work/[slug]/page.tsx.
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "Trabajo",
   description:

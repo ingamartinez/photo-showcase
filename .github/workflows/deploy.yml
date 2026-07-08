@@ -80,10 +80,12 @@ jobs:
           cp -r node_modules/drizzle-orm "$STAGE/node_modules/drizzle-orm"
           cp -r node_modules/postgres "$STAGE/node_modules/postgres"
           if [ -d drizzle ]; then cp -r drizzle "$STAGE/drizzle"; fi
-          mkdir -p "$STAGE/scripts" "$STAGE/src/lib/db"
+          mkdir -p "$STAGE/scripts" "$STAGE/src/lib/db" "$STAGE/src/content"
           cp scripts/migrate-prod.ts "$STAGE/scripts/migrate-prod.ts"
+          cp scripts/seed-prod.ts "$STAGE/scripts/seed-prod.ts"
           cp src/lib/db/index.ts "$STAGE/src/lib/db/index.ts"
           cp src/lib/db/schema.ts "$STAGE/src/lib/db/schema.ts"
+          cp src/content/portfolio.ts "$STAGE/src/content/portfolio.ts"
           echo "$GIT_SHA" > "$STAGE/GIT_SHA"
           tar -czf release.tar.gz -C "$STAGE" .
           ls -lh release.tar.gz
@@ -132,6 +134,19 @@ jobs:
             set -eu
             cd '$RELEASE_DIR'
             sudo -n -u photoshowcase /opt/bun/bin/bun scripts/migrate-prod.ts
+          "
+
+      - name: Seed portfolio content
+        env:
+          GIT_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -eu
+          RELEASE_DIR="$APP_ROOT/app/releases/$GIT_SHA"
+          # Idempotent full resync of portfolio tables from the committed manifest.
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
+            set -eu
+            cd '$RELEASE_DIR'
+            sudo -n -u photoshowcase /opt/bun/bin/bun scripts/seed-prod.ts
           "
 
       - name: Flip symlink + restart photoshowcase

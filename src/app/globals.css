@@ -1,85 +1,224 @@
 @import "tailwindcss";
 @import "tw-animate-css";
 
-@custom-variant dark (&:is(.dark *));
+/*
+  Alejo Frames — dark gallery.
+  A deliberately single-theme, cinema-black world: cool-biased near-black ground,
+  a single tungsten-brass accent used sparingly, high-contrast serif display.
+  See design/system/home.html for the reference mock.
+*/
 
 @theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --color-card: var(--card);
-  --color-card-foreground: var(--card-foreground);
-  --color-popover: var(--popover);
-  --color-popover-foreground: var(--popover-foreground);
-  --color-primary: var(--primary);
-  --color-primary-foreground: var(--primary-foreground);
-  --color-secondary: var(--secondary);
-  --color-secondary-foreground: var(--secondary-foreground);
-  --color-muted: var(--muted);
-  --color-muted-foreground: var(--muted-foreground);
+  --color-bg: var(--bg);
+  --color-bg-2: var(--bg-2);
+  --color-bg-sunken: var(--bg-sunken);
+  --color-fg: var(--fg);
+  --color-fg-dim: var(--fg-dim);
+  --color-fg-mute: var(--fg-mute);
+  --color-line: var(--line);
+  --color-line-2: var(--line-2);
   --color-accent: var(--accent);
-  --color-accent-foreground: var(--accent-foreground);
-  --color-destructive: var(--destructive);
-  --color-border: var(--border);
-  --color-input: var(--input);
-  --color-ring: var(--ring);
+  --color-accent-2: var(--accent-2);
+
+  /* Keep shadcn/Tailwind base tokens wired for future UI components. */
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+  --color-border: var(--line);
+  --color-input: var(--line-2);
+  --color-ring: var(--accent);
+  --color-muted: var(--bg-2);
+  --color-muted-foreground: var(--fg-dim);
+  --color-primary: var(--accent);
+  --color-primary-foreground: #14100a;
+
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
+  --font-serif: var(--font-fraunces);
+
+  --radius-sm: 2px;
+  --radius-md: 3px;
+  --radius-lg: 4px;
 }
 
 :root {
-  --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
-  --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
-  --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
-  --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
-  --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
+  --bg: #0b0b0f;
+  --bg-2: #131318;
+  --bg-sunken: #070709;
+  --fg: #eceaf2;
+  --fg-dim: #9a97a6;
+  --fg-mute: #63616e;
+  --line: rgba(236, 234, 242, 0.1);
+  --line-2: rgba(236, 234, 242, 0.16);
+  --accent: #c8a15a;
+  --accent-2: #e0be7e;
+
+  --maxw: 1280px;
+  --gutter: clamp(20px, 5vw, 72px);
+
+  color-scheme: dark;
 }
 
-.dark {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.205 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.205 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.922 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.704 0.191 22.216);
-  --border: oklch(1 0 0 / 10%);
-  --input: oklch(1 0 0 / 15%);
-  --ring: oklch(0.556 0 0);
+/* Centered content column with responsive gutters. */
+.wrap {
+  max-width: var(--maxw);
+  margin-inline: auto;
+  padding-inline: var(--gutter);
 }
 
 @layer base {
   * {
-    border-color: var(--border);
-    outline-color: color-mix(in oklab, var(--ring) 50%, transparent);
+    border-color: var(--line);
   }
   body {
-    background-color: var(--background);
-    color: var(--foreground);
+    background-color: var(--bg);
+    color: var(--fg);
+  }
+  ::selection {
+    background: color-mix(in oklab, var(--accent) 40%, transparent);
+    color: var(--fg);
+  }
+  :focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 3px;
+  }
+}
+
+/* Uppercase technical label — eyebrows, kickers, small-caps metadata. */
+.label {
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+}
+
+/* Hero scrim — layered gradients that seat the headline over the image. */
+.hero-scrim {
+  background:
+    linear-gradient(to top, var(--bg) 4%, transparent 46%),
+    linear-gradient(
+      to right,
+      rgba(11, 11, 15, 0.82) 0%,
+      rgba(11, 11, 15, 0.3) 46%,
+      transparent 75%
+    ),
+    radial-gradient(120% 90% at 80% 10%, transparent 40%, rgba(7, 7, 9, 0.55) 100%);
+}
+
+/* Colecciones — asymmetric editorial grid. */
+.collections {
+  display: grid;
+  grid-template-columns: repeat(6, 1fr);
+  gap: 14px;
+}
+.col-tile {
+  position: relative;
+  overflow: hidden;
+  border-radius: 3px;
+  grid-column: span 2;
+  aspect-ratio: 3 / 4;
+}
+.col-tile:first-child {
+  grid-column: span 2;
+  grid-row: span 2;
+  aspect-ratio: auto;
+}
+.col-tile img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  filter: saturate(0.92) brightness(0.82);
+  transition:
+    transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1),
+    filter 0.6s ease;
+}
+.col-tile:hover img {
+  transform: scale(1.06);
+  filter: saturate(1.05) brightness(0.92);
+}
+.col-tile::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(to top, rgba(7, 7, 9, 0.85) 6%, transparent 55%);
+}
+@media (max-width: 900px) {
+  .collections {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .col-tile,
+  .col-tile:first-child {
+    grid-column: span 1;
+    grid-row: auto;
+    aspect-ratio: 3 / 4;
+  }
+}
+
+/* Trabajo — justified masonry via CSS columns. */
+.work {
+  columns: 3;
+  column-gap: 14px;
+}
+.work figure {
+  break-inside: avoid;
+  margin-bottom: 14px;
+  position: relative;
+  overflow: hidden;
+  border-radius: 3px;
+}
+.work img {
+  width: 100%;
+  height: auto;
+  filter: brightness(0.9) saturate(0.95);
+  transition:
+    transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1),
+    filter 0.5s ease;
+}
+.work figure:hover img {
+  transform: scale(1.04);
+  filter: brightness(1) saturate(1.05);
+}
+.work figcaption {
+  position: absolute;
+  inset: auto 0 0 0;
+  padding: 40px 16px 14px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  background: linear-gradient(to top, rgba(7, 7, 9, 0.8), transparent);
+  opacity: 0;
+  transform: translateY(8px);
+  transition:
+    opacity 0.4s ease,
+    transform 0.4s ease;
+}
+.work figure:hover figcaption {
+  opacity: 1;
+  transform: translateY(0);
+}
+@media (max-width: 900px) {
+  .work {
+    columns: 2;
+  }
+}
+@media (max-width: 560px) {
+  .work {
+    columns: 1;
+  }
+}
+
+/* Scroll-reveal: content is visible by default (SSR / no-JS safe). The reveal
+   animation is pure progressive enhancement — only the [data-reveal] hook, once
+   JS marks the document ready, hides then eases content in. */
+@media (prefers-reduced-motion: no-preference) {
+  html.js [data-reveal] {
+    opacity: 0;
+    transform: translateY(26px);
+    transition:
+      opacity 0.9s ease,
+      transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1);
+  }
+  html.js [data-reveal].is-in {
+    opacity: 1;
+    transform: none;
   }
 }

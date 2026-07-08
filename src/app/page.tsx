@@ -1,13 +1,44 @@
-export default function Home() {
+import { Hero } from "@/components/hero";
+import { SectionHead } from "@/components/section-head";
+import { CollectionGrid } from "@/components/collection-grid";
+import { WorkGrid } from "@/components/work-grid";
+import { EthosStrip } from "@/components/ethos-strip";
+import { CtaBand } from "@/components/cta-band";
+import { getCollections, getFeaturedItems } from "@/lib/portfolio";
+
+export default async function Home() {
+  const [collections, featured] = await Promise.all([getCollections(), getFeaturedItems(8)]);
+
   return (
-    <main className="flex flex-1 flex-col items-center justify-center gap-4 p-8 text-center">
-      <p className="text-muted-foreground text-sm tracking-widest uppercase">Alejo Frames</p>
-      <h1 className="text-4xl font-semibold tracking-tight sm:text-5xl">
-        Photography portfolio &amp; private galleries
-      </h1>
-      <p className="text-muted-foreground max-w-md text-balance">
-        Phase 0 scaffold is live. Portfolio and client gallery delivery are on the way.
-      </p>
-    </main>
+    <>
+      <Hero />
+
+      <section id="colecciones" className="wrap py-[clamp(72px,12vh,140px)]">
+        <div data-reveal>
+          <SectionHead
+            kicker="Por temática"
+            title="Colecciones"
+            linkHref="/work"
+            linkLabel="Ver todas"
+          />
+        </div>
+        <CollectionGrid collections={collections} />
+      </section>
+
+      <section id="work" className="wrap py-[clamp(72px,12vh,140px)]">
+        <div data-reveal>
+          <SectionHead
+            kicker="Selección"
+            title="Trabajo reciente"
+            linkHref="/work"
+            linkLabel="Portafolio completo"
+          />
+        </div>
+        <WorkGrid items={featured} />
+      </section>
+
+      <EthosStrip />
+      <CtaBand />
+    </>
   );
 }

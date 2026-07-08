@@ -6,6 +6,10 @@ import { EthosStrip } from "@/components/ethos-strip";
 import { CtaBand } from "@/components/cta-band";
 import { getCollections, getFeaturedItems } from "@/lib/portfolio";
 
+// Rendered per-request on the droplet against its local Postgres (the build
+// runs in CI without the prod DB). See work/[slug]/page.tsx.
+export const dynamic = "force-dynamic";
+
 export default async function Home() {
   const [collections, featured] = await Promise.all([getCollections(), getFeaturedItems(8)]);
 

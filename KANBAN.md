@@ -1,12 +1,11 @@
 # Task Management with kanban-md
 
 This project uses **kanban-md** as the task board. Every task is a Markdown file under `kanban/`.
-You (the agent) own the board: create tasks from `PLAN.md`, claim them, and move them as you work.
+You (the agent) own the board: claim tasks, work them, and move them as you go.
 
 The board itself is gitignored (`kanban/`) — it is local working state, not a committed artifact.
-`.claude/agents/` is gitignored too, under this repo's existing "claude code per-user config" rule,
-so the sub-agent definitions currently live only on this machine. This file and `AGENTS.md` are
-committed.
+This file, `AGENTS.md`, and the sub-agent definitions under `.claude/agents/` ARE committed;
+`.gitignore` excludes `.claude/*` but re-includes `.claude/agents/`.
 
 ## The board is the source of truth
 
@@ -22,7 +21,7 @@ the identity model collapsed `clients` into `users`, deviating from `PLAN.md` §
 
 ## Board conventions
 
-- Statuses: `backlog` → `in-progress` → `review` → `done`. (`todo` and `archived` exist but are unused by default.)
+- Statuses: `epics` (containers, never worked) and `backlog` → `in-progress` → `review` → `done`. (`archived` exists but is unused.)
 - `in-progress` and `review` require a claim (`require_claim: true`). Always pass `--claim agent-1`.
 - One task per vertical slice. A slice is vertical: it should leave the app in a
   working, deployable state on its own.
@@ -97,8 +96,8 @@ to production. Each hands off to the next; none of them skips ahead.
    ```
 
 3. **Implement**: delegate to the `photo-implementer` sub-agent with the task ID.
-   It reads `PLAN.md` + the task, writes code and tests, and reports back.
-   Do not start another task while one is in flight.
+   It reads the task and its epic first, `PLAN.md` for background, then writes code
+   and tests and reports back. Do not start another task while one is in flight.
 
 4. **Hand off to review**:
 

@@ -6,7 +6,11 @@ This project uses **kanban-md** for task management. Always follow the workflow 
 
 ## Source of truth
 
-[`PLAN.md`](./PLAN.md) is the approved architecture, domain model, and phased roadmap. Deviating from it is allowed only when the deviation is deliberate, explained, and recorded — as the identity model already was (one `users` table with a role, instead of the separate `clients` table the plan originally described).
+**The kanban board is the source of truth.** Each task body carries its own goal, verified context, acceptance criteria and known traps — read the task first, and treat it as sufficient. Work is grouped into epics (parent tasks tagged `epic`); epics are never implemented directly, only their child slices are.
+
+[`PLAN.md`](./PLAN.md) is the background: the product's reasoning, domain model, business rules and phasing. Read it for _why_. When the board and the plan disagree, the board wins — and the drift gets written into the task body so it stays visible. That has already happened once: the identity model collapsed `clients` into `users`, deviating from `PLAN.md` §6 for a reason recorded in the code and the commit.
+
+Priority order is set by the project owner and overrides the plan's own sequencing: **the admin dashboard first, the public site last.**
 
 ## Verification is not optional
 

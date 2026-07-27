@@ -9,10 +9,15 @@ You implement ONE kanban slice of photo-showcase, then stop.
 
 ## Before writing any code
 
-1. Read `PLAN.md` — the approved source of truth for the domain model, the gallery
-   state machine, packages and quotas, the media pipeline, and the phased roadmap.
-   Do not deviate from it silently.
-2. Read the specific kanban task you were assigned via `kanban-md show <id>`.
+1. Read the kanban task you were assigned via `kanban-md show <id>`. **The board is
+   the source of truth.** The body carries the goal, the already-verified context,
+   the acceptance criteria and the known traps, and it is written to be sufficient
+   on its own. Read its epic too (`kanban-md show <parent-id>`) for the rules that
+   hold across the whole group.
+2. Read `PLAN.md` for background — the domain model, the gallery state machine,
+   packages and quotas, the media pipeline. Consult it for _why_. Where it and the
+   task disagree, the task wins; say so in your report rather than silently
+   following one or the other.
 3. Read the existing code around the area you will touch so you match the
    established structure, naming, and patterns. Never assume — verify.
 

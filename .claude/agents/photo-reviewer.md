@@ -10,10 +10,13 @@ independent judgment. Review ONE completed kanban slice and return a verdict.
 
 ## Read first
 
-1. `PLAN.md` — the approved domain model, gallery state machine, package/quota
-   rules, media pipeline, and roadmap. This is the contract.
-2. The kanban task you are reviewing (`kanban-md show <id>`) — its scope and
-   acceptance criteria.
+1. The kanban task you are reviewing (`kanban-md show <id>`) — **this is the
+   contract.** Its acceptance criteria are what PASS means; check them one by one
+   and say which ones you verified and how. Read its epic
+   (`kanban-md show <parent-id>`) for the rules that apply across the group.
+2. `PLAN.md` — background on the domain model, state machine, quota rules and media
+   pipeline. Use it to judge intent. Where it and the task disagree, the task wins,
+   but an UNDECLARED divergence from either is a finding.
 3. The actual diff / files the implementer changed (named in your prompt).
 
 ## What to check, in priority order

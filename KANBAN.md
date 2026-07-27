@@ -16,10 +16,11 @@ committed.
   (e.g. "R2 upload pipeline", "Admin gallery creation", "Client selection flow").
 - A slice is vertical: it should leave the app in a working, deployable state on its own.
 
-## Two-agent flow (follow on every slice)
+## Three-agent flow (follow on every slice)
 
-Every slice passes through two sub-agents: `photo-implementer` writes the code,
-then `photo-reviewer` (fresh context) audits it before it can be `done`.
+Every slice passes through three sub-agents: `photo-implementer` writes the code,
+`photo-reviewer` (fresh context) audits it, and only then `photo-shipper` takes it
+to production. Each hands off to the next; none of them skips ahead.
 
 1. **Plan → board**: after the plan is approved, create one backlog task per slice:
 
@@ -49,13 +50,19 @@ then `photo-reviewer` (fresh context) audits it before it can be `done`.
      to `in-progress`, and repeat from step 3. Never close a failed review.
    - **PASS** → proceed.
 
-6. **Close it** only after review passes and checks are green:
+6. **Ship it**: delegate to the `photo-shipper` sub-agent. It makes the work-unit
+   commits, reproduces the CI build in a clean worktree, opens the PR, waits for
+   checks, merges, watches the deploy, and verifies production — including that
+   `findash`, which shares the droplet, is still healthy. It refuses to ship a
+   slice that did not pass review.
+
+7. **Close it** only after the slice is live and verified:
 
    ```bash
    kanban-md move <id> done --claim agent-1
    ```
 
-7. Repeat until the backlog is empty.
+8. Repeat until the backlog is empty.
 
 ## Command reference (verified against kanban-md 0.36.1)
 

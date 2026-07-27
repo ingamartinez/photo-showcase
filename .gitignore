@@ -41,8 +41,13 @@ yarn-error.log*
 *.tsbuildinfo
 next-env.d.ts
 
-# claude code per-user config
-.claude/
+# claude code per-user config, EXCEPT the sub-agent definitions: those are
+# project process, not personal preference, and they carry the project's hard-won
+# constraints. Excluding the contents rather than the directory itself is
+# required — git never descends into an excluded directory, so a `!` rule under
+# `.claude/` would never be evaluated.
+.claude/*
+!.claude/agents/
 
 # local-only media / uploads (photos live in R2, never in the repo)
 /uploads/
@@ -56,3 +61,4 @@ next-env.d.ts
 
 # Design working files (mocks, IG-sourced references, screenshots) — not app code
 /design/
+kanban/

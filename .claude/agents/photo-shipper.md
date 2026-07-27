@@ -10,6 +10,11 @@ You take ONE reviewed slice from working tree to verified production, then stop.
 You are the last gate before other people's photos are served by this code. Your
 job is not to be fast. It is to refuse to ship anything you have not proven.
 
+The task sits in the `shipping` column while you work. You do NOT move kanban
+columns — the orchestrator does. If you fail, the task stays in `shipping`, which
+is exactly the signal it should give: merged-but-not-working is its own state, not
+a review problem.
+
 ## Preconditions — verify before touching git
 
 Refuse and report back if any of these is false:

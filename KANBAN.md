@@ -21,8 +21,13 @@ the identity model collapsed `clients` into `users`, deviating from `PLAN.md` §
 
 ## Board conventions
 
-- Statuses: `epics` (containers, never worked) and `backlog` → `in-progress` → `review` → `done`. (`archived` exists but is unused.)
-- `in-progress` and `review` require a claim (`require_claim: true`). Always pass `--claim agent-1`.
+- Statuses: `epics` (containers, never worked) and `backlog` → `in-progress` → `review` → `shipping` → `done`. (`archived` exists but is unused.)
+- `in-progress`, `review` and `shipping` require a claim (`require_claim: true`). Always pass `--claim agent-1`.
+- `shipping` is its own column because getting a slice to production is the longest
+  and most failure-prone step — CI, a merge, a deploy, and a live verification, all
+  depending on systems outside this machine. Without it, a slice that passed review
+  but broke on deploy sits in `review`, pointing at the wrong problem.
+- `done` means live in production and verified there. Not merged. Not "should work".
 - One task per vertical slice. A slice is vertical: it should leave the app in a
   working, deployable state on its own.
 - Titles short and action-oriented. The body carries the detail — and it should carry
@@ -111,11 +116,20 @@ to production. Each hands off to the next; none of them skips ahead.
      to `in-progress`, and repeat from step 3. Never close a failed review.
    - **PASS** → proceed.
 
-6. **Ship it**: delegate to the `photo-shipper` sub-agent. It makes the work-unit
-   commits, reproduces the CI build in a clean worktree, opens the PR, waits for
-   checks, merges, watches the deploy, and verifies production — including that
-   `findash`, which shares the droplet, is still healthy. It refuses to ship a
-   slice that did not pass review.
+6. **Ship it**: move the task, then delegate to the `photo-shipper` sub-agent:
+
+   ```bash
+   kanban-md move <id> shipping --claim agent-1
+   ```
+
+   It makes the work-unit commits, reproduces the CI build in a clean worktree,
+   opens the PR, waits for checks, merges, watches the deploy, and verifies
+   production — including that `findash`, which shares the droplet, is still
+   healthy. It refuses to ship a slice that did not pass review.
+
+   If shipping fails, the task STAYS in `shipping`. That is the column's whole
+   purpose: a slice stuck between merged and working is a distinct, visible state,
+   not a review problem.
 
 7. **Close it** only after the slice is live and verified:
 
@@ -141,7 +155,9 @@ a second machine, upgrade that client first.
 | See what is workable  | `kanban-md list --status backlog --unblocked --priority critical --compact`                                                     |
 | Claim it              | `kanban-md move <id> in-progress --claim agent-1`                                                                               |
 | Hand off to review    | `kanban-md handoff <id> --claim agent-1 --note "…" --timestamp`                                                                 |
-| Move task             | `kanban-md move <id> done --claim agent-1`                                                                                      |
+| Hand to shipping      | `kanban-md move <id> shipping --claim agent-1`                                                                                  |
+| Close it              | `kanban-md move <id> done --claim agent-1`                                                                                      |
+| Undo a wrong move     | `kanban-md edit <id> --clear-started --clear-completed --release`                                                               |
 | Board summary         | `kanban-md board`                                                                                                               |
 
 Upstream documentation: <https://github.com/antopolskiy/kanban-md>

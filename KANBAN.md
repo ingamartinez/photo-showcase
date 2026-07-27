@@ -58,7 +58,7 @@ kanban-md list --status backlog --unblocked --priority critical --compact
 kanban-md move <id> in-progress --claim agent-1
 ```
 
-**Do not use `kanban-md pick` here.** Verified against 0.36.1: `pick` accepts neither
+**Do not use `kanban-md pick` here.** Verified against 0.36.1 and 0.37.0: `pick` accepts neither
 `--unblocked` nor `--priority`, so it will happily hand you a low-priority task whose
 dependencies are unfinished. The two-step above is deliberate — the choice of what to
 work on next should be made looking at the unblocked set, not delegated to an ID sort.
@@ -125,7 +125,11 @@ to production. Each hands off to the next; none of them skips ahead.
 
 8. Repeat until the backlog is empty.
 
-## Command reference (verified against kanban-md 0.36.1)
+## Command reference (verified against kanban-md 0.37.0)
+
+Board config is schema **v11**. It migrated automatically from v10 on the first
+0.37.0 run; a v10 binary will no longer open it. If this board is ever opened from
+a second machine, upgrade that client first.
 
 | Action                | Command                                                                                                                         |
 | --------------------- | ------------------------------------------------------------------------------------------------------------------------------- |

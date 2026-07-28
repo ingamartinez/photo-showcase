@@ -13,6 +13,7 @@ import { db } from "@/lib/db";
 import { accounts, sessions, users, verificationTokens } from "@/lib/db/schema";
 import { authEnv, resendEnv } from "@/lib/env";
 import { sendGalleryAccessEmail } from "@/lib/gallery-access-email";
+import { sendLoginEmail } from "@/lib/login-email";
 
 // Task #21: publishing a gallery emails the client a magic link that signs
 // them in DIRECTLY — no `/login` detour — straight into their gallery. That
@@ -79,6 +80,22 @@ export const { handlers, auth, signIn, signOut } = NextAuth(() => {
         // PLAN.md §4: short-lived links. Auth.js defaults to 24 h, which is far
         // too long for a credential that arrives in an inbox.
         maxAge: 15 * 60,
+        // Task #59: the built-in `sendVerificationRequest` (from
+        // `@auth/core/providers/resend.js`) throws a PLAIN `Error` on a
+        // failed send, which `Auth()` swallows into a redirect instead of
+        // rejecting `signIn()`'s caller — `signIn(..., { redirect: false })`
+        // then resolves with an ordinary URL STRING, not a rejection — see
+        // src/lib/login-email.ts's header comment for the full trace through
+        // `@auth/core`. Overriding it with `sendLoginEmail`, which always
+        // throws `AuthError`, is what makes `signIn()` actually REJECT on a
+        // Resend outage. src/app/(marketing)/login/actions.ts still swallows
+        // that `AuthError` into the same neutral "sent" response as an
+        // unknown address — intentional, per #9/#43's anti-enumeration
+        // guarantee, not a leftover bug — but it now does so because it
+        // chose to, having actually observed a rejection, not because a
+        // crash was silently downgraded into a fake success by `Auth()`.
+        sendVerificationRequest: ({ identifier, url }) =>
+          sendLoginEmail({ apiKey: RESEND_API_KEY, from: EMAIL_FROM, to: identifier, url }),
       }),
       // Second, independent Email provider instance for task #21's "your
       // gallery is ready" link — see this file's header comment above for

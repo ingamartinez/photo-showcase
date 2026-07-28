@@ -1,8 +1,9 @@
-// vitest test workers run under Node, not Bun — the bare `bun` module
-// specifier used by src/lib/r2.ts (`import { S3Client } from "bun"`) only
-// resolves inside the Bun runtime. Any test that imports r2.ts, even
-// transitively, must mock "bun" before that import happens or the whole
-// suite fails with "Cannot find package 'bun'".
+// vitest test workers run under Node, not Bun — the global `Bun` namespace
+// src/lib/r2.ts constructs `Bun.S3Client` off (see that file's header
+// comment for why it's a global reference and not a value `import { S3Client
+// } from "bun"`) only exists inside the real Bun runtime. Any test that
+// imports r2.ts, even transitively, must stub the `Bun` global before
+// `getClient()` is ever called or it fails with "Bun is not defined".
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const write = vi.fn().mockResolvedValue(0);
@@ -15,10 +16,6 @@ class FakeS3Client {
   delete = del;
 }
 
-vi.mock("bun", () => ({
-  S3Client: FakeS3Client,
-}));
-
 // r2Env() validates presence via zod; it doesn't care whether the values are
 // real, so dummy strings are enough to exercise the client factory without
 // touching the real bucket.
@@ -27,6 +24,7 @@ beforeEach(() => {
   process.env.R2_ACCESS_KEY_ID = "test-key-id";
   process.env.R2_SECRET_ACCESS_KEY = "test-secret";
   process.env.R2_BUCKET = "test-bucket";
+  vi.stubGlobal("Bun", { S3Client: FakeS3Client });
   write.mockClear();
   presign.mockClear();
   del.mockClear();

@@ -10,8 +10,24 @@
 //
 // Do not import this from a client component: `r2Env()` reads secrets and
 // must stay server-only.
-
-import { S3Client } from "bun";
+//
+// `S3Client` is imported as a TYPE ONLY (erased at compile time, zero
+// runtime footprint) and constructed at runtime off the global `Bun`
+// namespace instead of a value import of the "bun" module specifier. This
+// matters because `next build`'s "Collecting page data" step evaluates every
+// route module's compiled output in a plain Node.js worker process (spawned
+// via jest-worker) even when the whole `next build` invocation itself runs
+// under `bun run build` — that worker cannot resolve the bare `bun` module
+// specifier, and it fails on evaluation alone, before anything in this file
+// is ever called. A value `import { S3Client } from "bun"` survives into the
+// compiled bundle and breaks that step for every route that reaches this
+// module, regardless of `r2Env()`'s own laziness (a DIFFERENT trap from the
+// module-scope-env one this file already guards against below). The global
+// `Bun` reference below is inert during that evaluation (nothing calls
+// `getClient()` at module scope) and resolves for real once this code
+// actually runs — dev, build, and production all execute under the real
+// Bun runtime in this app, where the `Bun` global is always present.
+import type { S3Client } from "bun";
 import { r2Env } from "@/lib/env";
 
 // Presigned GET URLs are handed to the browser only after a route has
@@ -31,7 +47,7 @@ let client: S3Client | undefined;
 function getClient(): S3Client {
   if (!client) {
     const env = r2Env();
-    client = new S3Client({
+    client = new Bun.S3Client({
       accessKeyId: env.R2_ACCESS_KEY_ID,
       secretAccessKey: env.R2_SECRET_ACCESS_KEY,
       bucket: env.R2_BUCKET,

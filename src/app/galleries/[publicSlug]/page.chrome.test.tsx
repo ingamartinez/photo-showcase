@@ -39,6 +39,15 @@ vi.mock("@/lib/galleries", () => ({
     const [year, month, day] = sessionDate.split("-");
     return `${day}/${month}/${year}`;
   },
+  // <ProofGrid> (via <SelectionCounter>, task #24) also pulls `formatCop`
+  // off this same module — real Intl formatting, not a stand-in, so the
+  // rendered surcharge/extra-price text matches production byte for byte.
+  formatCop: (amountCop: number) =>
+    new Intl.NumberFormat("es-CO", {
+      style: "currency",
+      currency: "COP",
+      maximumFractionDigits: 0,
+    }).format(amountCop),
 }));
 
 vi.mock("@/lib/r2", () => ({

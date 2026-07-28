@@ -95,7 +95,12 @@ export default async function ClientGalleryPage({
         </p>
       </div>
 
-      <ProofGrid initialAssets={initialAssets} />
+      <ProofGrid
+        initialAssets={initialAssets}
+        packageName={gallery.package.name}
+        includedPhotosSnapshot={gallery.includedPhotosSnapshot}
+        extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}
+      />
     </>
   );
 }

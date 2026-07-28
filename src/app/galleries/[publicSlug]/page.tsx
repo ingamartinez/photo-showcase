@@ -90,7 +90,9 @@ export default async function ClientGalleryPage({
         <h1 className="max-w-[24ch] font-serif text-[clamp(28px,4vw,44px)] leading-[1.05] font-normal tracking-[-0.015em] text-balance">
           {gallery.title}
         </h1>
-        <p className="text-fg-mute mt-2 text-sm">Sesión: {formatSessionDate(gallery.sessionDate)}</p>
+        <p className="text-fg-mute mt-2 text-sm">
+          Sesión: {formatSessionDate(gallery.sessionDate)}
+        </p>
       </div>
 
       <ProofGrid initialAssets={initialAssets} />

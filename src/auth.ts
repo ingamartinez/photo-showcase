@@ -12,6 +12,30 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { accounts, sessions, users, verificationTokens } from "@/lib/db/schema";
 import { authEnv, resendEnv } from "@/lib/env";
+import { sendGalleryAccessEmail } from "@/lib/gallery-access-email";
+
+// Task #21: publishing a gallery emails the client a magic link that signs
+// them in DIRECTLY — no `/login` detour — straight into their gallery. That
+// is a deliberate product choice (friendlier, one click) with an accepted
+// tradeoff: forwarding this email hands the recipient access for as long as
+// the link is valid. The 15-minute `maxAge` on the "resend" provider below
+// is wrong for this use case (a client opens "your photos are ready" hours
+// or a day later, not in the next 15 minutes) — this is its OWN, separate
+// token lifetime, on its OWN provider instance, so extending it can never
+// accidentally loosen the login link above.
+//
+// 48 hours: long enough that a client who only checks personal email in the
+// evening still catches it the next day; short enough that a stale,
+// forwarded copy of the email stops being a usable credential within two
+// days rather than staying live indefinitely. Single-use is not a separate
+// mechanism bolted on top — it comes for free from reusing Auth.js's own
+// `verificationTokens` table (see schema.ts's comment: "Auth.js deletes the
+// row when it is consumed") via a second Resend provider below, instead of
+// a hand-rolled token flow. The first click consumes the token and
+// establishes a real database session; a forwarded copy of the SAME link
+// stops working after that first click, not merely after 48h — which is
+// the meaningfully safer of the two options given the forwarding risk.
+export const GALLERY_ACCESS_MAX_AGE_SECONDS = 48 * 60 * 60;
 
 declare module "next-auth" {
   interface Session {
@@ -55,6 +79,23 @@ export const { handlers, auth, signIn, signOut } = NextAuth(() => {
         // PLAN.md §4: short-lived links. Auth.js defaults to 24 h, which is far
         // too long for a credential that arrives in an inbox.
         maxAge: 15 * 60,
+      }),
+      // Second, independent Email provider instance for task #21's "your
+      // gallery is ready" link — see this file's header comment above for
+      // the maxAge/single-use reasoning. Sharing the SAME `apiKey`/`from`
+      // (Resend account, verified sender) but a different `id`, `maxAge`,
+      // and `sendVerificationRequest` is exactly what a second provider
+      // entry is for: it reuses Auth.js's whole email-provider pipeline
+      // (token generation, the `signIn` callback's account-enumeration
+      // guard below, the generic `/api/auth/callback/:provider` handler,
+      // session creation on click) without duplicating any of it.
+      Resend({
+        id: "gallery-access",
+        apiKey: RESEND_API_KEY,
+        from: EMAIL_FROM,
+        maxAge: GALLERY_ACCESS_MAX_AGE_SECONDS,
+        sendVerificationRequest: ({ identifier, url }) =>
+          sendGalleryAccessEmail({ apiKey: RESEND_API_KEY, from: EMAIL_FROM, to: identifier, url }),
       }),
     ],
     pages: {

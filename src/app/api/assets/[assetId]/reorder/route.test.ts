@@ -254,6 +254,45 @@ describe("PATCH /api/assets/[assetId]/reorder — validation and not-found", () 
   });
 });
 
+describe("PATCH /api/assets/[assetId]/reorder — gallery status gate", () => {
+  it.each(["selected", "delivered", "archived"])(
+    "refuses with 409 when the gallery status is %s, without touching sort_order",
+    async (status) => {
+      authMock.mockResolvedValue(adminSession());
+      const db = await seededDb();
+      db.__rows.galleries.length = 0;
+      db.__rows.galleries.push(galleryRow({ status }));
+      const { PATCH } = await import("./route");
+
+      const response = await PATCH(requestFor(ASSET_2_ID, "up"), paramsFor(ASSET_2_ID));
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({ error: "gallery_locked" });
+      const byId = Object.fromEntries(db.__rows.assets.map((r) => [r.id, r.sortOrder]));
+      expect(byId[ASSET_1_ID]).toBe(0);
+      expect(byId[ASSET_2_ID]).toBe(1);
+    },
+  );
+
+  it.each(["draft", "proofing"])(
+    "still allows the reorder when the gallery status is %s",
+    async (status) => {
+      authMock.mockResolvedValue(adminSession());
+      const db = await seededDb();
+      db.__rows.galleries.length = 0;
+      db.__rows.galleries.push(galleryRow({ status }));
+      const { PATCH } = await import("./route");
+
+      const response = await PATCH(requestFor(ASSET_2_ID, "up"), paramsFor(ASSET_2_ID));
+
+      expect(response.status).toBe(200);
+      const byId = Object.fromEntries(db.__rows.assets.map((r) => [r.id, r.sortOrder]));
+      expect(byId[ASSET_1_ID]).toBe(1);
+      expect(byId[ASSET_2_ID]).toBe(0);
+    },
+  );
+});
+
 describe("PATCH /api/assets/[assetId]/reorder — happy path", () => {
   it("swaps sort_order with the previous asset when moving up", async () => {
     authMock.mockResolvedValue(adminSession());

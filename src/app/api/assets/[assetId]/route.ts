@@ -30,6 +30,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets } from "@/lib/db/schema";
+import type { Gallery } from "@/lib/db/schema";
 import { requireApiSession } from "@/lib/auth-guards";
 import { loadOwnedAsset } from "@/lib/asset-access";
 import { deleteObject } from "@/lib/r2";
@@ -37,6 +38,24 @@ import { deleteObject } from "@/lib/r2";
 export const runtime = "nodejs";
 
 const assetIdSchema = z.uuid();
+
+// Once a gallery has moved past `draft`/`proofing`, its set of assets is
+// meant to be settled (task #56, raised by the #20 review). Deleting an
+// asset after the client has SELECTED it would silently change what they
+// already committed to — including the price they accepted, since
+// selection counts and the surcharge are derived from which assets exist
+// and are marked selected (PLAN.md), never stored independently. DELIVERED
+// is worse: the client already has the photos, and this would move the
+// record of what they were given out from under them. ARCHIVED refuses
+// outright, not merely warns — an archived gallery is a closed historical
+// record, there is no legitimate workflow reason left to delete from it,
+// and "warn but allow" would still let through exactly the mutation this
+// gate exists to stop.
+const ASSET_MUTATION_BLOCKED_STATUSES = new Set<Gallery["status"]>([
+  "selected",
+  "delivered",
+  "archived",
+]);
 
 function errorResponse(error: string, status: number): NextResponse {
   return NextResponse.json({ error }, { status });
@@ -75,7 +94,15 @@ export async function DELETE(
   if (!lookup.ok) {
     return errorResponse(lookup.error, lookup.status);
   }
-  const { asset } = lookup;
+  const { asset, gallery } = lookup;
+
+  // The status gate, checked BEFORE any mutation — see the constant's
+  // comment above for why each of these three statuses refuses. Matches
+  // #15's convention for a wrong-state gallery: 409, not 403 (the caller is
+  // authorized, the gallery's current state just refuses this action).
+  if (ASSET_MUTATION_BLOCKED_STATUSES.has(gallery.status)) {
+    return errorResponse("gallery_locked", 409);
+  }
 
   await db.delete(assets).where(eq(assets.id, asset.id));
 

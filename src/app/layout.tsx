@@ -1,9 +1,25 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono, Fraunces } from "next/font/google";
 import "./globals.css";
-import { SiteHeader } from "@/components/site-header";
-import { SiteFooter } from "@/components/site-footer";
 import { RevealInit } from "@/components/reveal-init";
+
+// True root layout: fonts, the `<html>`/`<body>` shell, and nothing that
+// belongs to one product surface but not the other. `SiteHeader`/`SiteFooter`
+// used to live here, which meant `/dashboard` inherited the marketing chrome
+// by construction — every route under this file shares it, full stop.
+//
+// The marketing chrome now lives in `(marketing)/layout.tsx` and the
+// dashboard chrome in `dashboard/layout.tsx`. Two different nested layouts,
+// not two Next.js *root* layouts (which would each need their own `<html>`/
+// `<body>` — see Next's "multiple root layouts" pattern): this app is one
+// site behind one domain, so duplicating the document shell would only cost
+// a second place for the font/meta setup below to drift. `(marketing)` is a
+// real Next.js route group — parentheses, no URL segment — because `/`,
+// `/about`, `/contact`, `/work*` and `/login*` are otherwise unrelated
+// top-level paths that need to share one layout without a common URL prefix.
+// `dashboard/` deliberately is NOT a route group: `/dashboard` already IS
+// the URL prefix every guarded page lives under, so a plain segment layout
+// gives the same shared-layout scoping with no parentheses needed.
 
 // Body / UI face.
 const geistSans = Geist({
@@ -59,9 +75,7 @@ export default function RootLayout({
             __html: "document.documentElement.classList.add('js')",
           }}
         />
-        <SiteHeader />
-        <main className="flex-1">{children}</main>
-        <SiteFooter />
+        {children}
         <RevealInit />
       </body>
     </html>

@@ -40,6 +40,20 @@ export async function getClientsWithGalleryCount(): Promise<ClientWithGalleryCou
   }));
 }
 
+export type ClientForPicker = { id: string; name: string | null; email: string };
+
+/** Every client, alphabetically by name (falling back to email when a client
+ * has no name) — for the gallery-creation client picker. Unlike the clients
+ * list page (newest first), a picker is easier to scan sorted by name. */
+export async function getClientsForPicker(): Promise<ClientForPicker[]> {
+  const rows = await db.query.users.findMany({
+    where: eq(users.role, "client"),
+    columns: { id: true, name: true, email: true },
+  });
+
+  return [...rows].sort((a, b) => (a.name ?? a.email).localeCompare(b.name ?? b.email));
+}
+
 /** Spanish, pluralized copy for the gallery count shown next to each client. */
 export function formatGalleryCount(count: number): string {
   if (count === 0) return "Sin galerías todavía";

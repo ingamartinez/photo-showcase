@@ -227,6 +227,42 @@ describe("DELETE /api/assets/[assetId] — validation and not-found", () => {
   });
 });
 
+describe("DELETE /api/assets/[assetId] — gallery status gate", () => {
+  it.each(["selected", "delivered", "archived"])(
+    "refuses with 409 when the gallery status is %s, without deleting anything",
+    async (status) => {
+      authMock.mockResolvedValue(adminSession());
+      const db = await seededDb();
+      db.__rows.galleries.length = 0;
+      db.__rows.galleries.push(galleryRow({ status }));
+      const { DELETE } = await import("./route");
+
+      const response = await DELETE(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({ error: "gallery_locked" });
+      expect(db.__rows.assets).toHaveLength(1);
+      expect(deleteObjectMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(["draft", "proofing"])(
+    "still allows the delete when the gallery status is %s",
+    async (status) => {
+      authMock.mockResolvedValue(adminSession());
+      const db = await seededDb();
+      db.__rows.galleries.length = 0;
+      db.__rows.galleries.push(galleryRow({ status }));
+      const { DELETE } = await import("./route");
+
+      const response = await DELETE(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
+
+      expect(response.status).toBe(200);
+      expect(db.__rows.assets).toHaveLength(0);
+    },
+  );
+});
+
 describe("DELETE /api/assets/[assetId] — happy path and orphan avoidance", () => {
   it("removes the assets row and deletes the proof object in R2", async () => {
     authMock.mockResolvedValue(adminSession());

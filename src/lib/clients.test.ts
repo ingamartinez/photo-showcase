@@ -91,6 +91,32 @@ describe("getClientsWithGalleryCount", () => {
   });
 });
 
+describe("getClientsForPicker", () => {
+  it("queries only role = client, not admins", async () => {
+    findManyMock.mockResolvedValue([]);
+    const { getClientsForPicker } = await import("./clients");
+
+    await getClientsForPicker();
+
+    expect(findManyMock).toHaveBeenCalledTimes(1);
+    const args = findManyMock.mock.calls[0]?.[0] as { where: unknown };
+    expect(eqColumnAndValue(args.where)).toEqual({ column: "role", value: "client" });
+  });
+
+  it("sorts alphabetically by name, falling back to email when a client has no name", async () => {
+    findManyMock.mockResolvedValue([
+      { id: "u1", name: "Zoe", email: "zoe@example.com" },
+      { id: "u2", name: null, email: "ana@example.com" },
+      { id: "u3", name: "Beto", email: "beto@example.com" },
+    ]);
+    const { getClientsForPicker } = await import("./clients");
+
+    const result = await getClientsForPicker();
+
+    expect(result.map((c) => c.id)).toEqual(["u2", "u3", "u1"]);
+  });
+});
+
 describe("formatGalleryCount", () => {
   it.each([
     [0, "Sin galerías todavía"],

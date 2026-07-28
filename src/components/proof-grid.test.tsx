@@ -7,20 +7,10 @@ import { ProofGrid } from "./proof-grid";
 import type { ProofAsset } from "./proof-grid";
 
 // <ProofGrid> renders <SelectionCounter>, which imports `formatCop` off
-// `@/lib/galleries` — a module that (transitively, via src/lib/db) pulls in
-// `import "server-only"`. jsdom cannot resolve that bare import even with
-// `vi.mock("server-only", ...)` (see src/app/galleries/[publicSlug]/page.chrome.test.tsx's
-// own comment on the same issue), so the whole module is mocked here instead,
-// with `formatCop` reimplemented against the exact same Intl call as the
-// real one so the rendered COP text matches production byte for byte.
-vi.mock("@/lib/galleries", () => ({
-  formatCop: (amountCop: number) =>
-    new Intl.NumberFormat("es-CO", {
-      style: "currency",
-      currency: "COP",
-      maximumFractionDigits: 0,
-    }).format(amountCop),
-}));
+// `@/lib/format` — a plain module with no `server-only`/`@/lib/db` import
+// (see that module's own header comment for why it lives there and not on
+// `@/lib/galleries`), so unlike that module, jsdom resolves it directly;
+// no mock needed here, the real `formatCop` runs.
 
 function jsonResponse(status: number, body: unknown): Response {
   return {

@@ -37,6 +37,12 @@ vi.mock("@/lib/galleries", () => ({
     const [year, month, day] = sessionDate.split("-");
     return `${day}/${month}/${year}`;
   },
+}));
+
+// `formatCop` lives in `@/lib/format` (a plain, DB-free module — see that
+// file's own header comment for why), NOT `@/lib/galleries` — mocked
+// separately here since `@/lib/galleries` is mocked wholesale above.
+vi.mock("@/lib/format", () => ({
   formatCop: (amountCop: number) => `$ ${amountCop.toLocaleString("es-CO")}`,
 }));
 

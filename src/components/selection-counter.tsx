@@ -11,7 +11,14 @@
 // when a client is still within their included count; the same sentence
 // structure at every count is also what makes the number changing (not the
 // shape of the sentence) the only thing the client notices as they toggle.
-import { formatCop } from "@/lib/galleries";
+//
+// `formatCop` comes from `@/lib/format`, NOT `@/lib/galleries` — this is a
+// Client Component (rendered by `<ProofGrid>`, which is `"use client"`), and
+// `@/lib/galleries` imports `@/lib/db` (Postgres), which needs Node's `tls`.
+// Importing it here bundled the whole DB module graph into the browser
+// bundle and broke the production build; see `@/lib/format`'s own header
+// comment for the full story.
+import { formatCop } from "@/lib/format";
 import type { QuotaResult } from "@/lib/quota";
 
 export function SelectionCounter({

@@ -1,22 +1,13 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import { SelectionCounter } from "./selection-counter";
 import { computeQuota } from "@/lib/quota";
 
-// `@/lib/galleries` (transitively, via src/lib/db) pulls in a bare `import
-// "server-only"` that jsdom cannot resolve even with `vi.mock("server-only",
-// ...)` — see src/app/galleries/[publicSlug]/page.chrome.test.tsx's own
-// comment on the same issue. Mocked wholesale here instead, with `formatCop`
-// reimplemented against the exact same Intl call as the real one.
-vi.mock("@/lib/galleries", () => ({
-  formatCop: (amountCop: number) =>
-    new Intl.NumberFormat("es-CO", {
-      style: "currency",
-      currency: "COP",
-      maximumFractionDigits: 0,
-    }).format(amountCop),
-}));
+// No `@/lib/format` mock needed: unlike `@/lib/galleries`, it has no
+// `server-only`/`@/lib/db` import for jsdom to choke on — see that module's
+// own header comment for exactly why it was split out. The real `formatCop`
+// runs here.
 
 afterEach(() => {
   cleanup();

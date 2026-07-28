@@ -3,12 +3,8 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/auth-guards";
-import {
-  formatCop,
-  formatGalleryStatus,
-  formatSessionDate,
-  getGalleryDetail,
-} from "@/lib/galleries";
+import { formatGalleryStatus, formatSessionDate, getGalleryDetail } from "@/lib/galleries";
+import { formatCop } from "@/lib/format";
 import { getPresignedUrl } from "@/lib/r2";
 import { GalleryWorkspace } from "@/components/gallery-workspace";
 import { PublishGalleryButton } from "@/components/publish-gallery-button";

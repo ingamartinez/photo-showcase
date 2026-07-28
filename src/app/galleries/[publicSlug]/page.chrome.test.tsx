@@ -39,16 +39,13 @@ vi.mock("@/lib/galleries", () => ({
     const [year, month, day] = sessionDate.split("-");
     return `${day}/${month}/${year}`;
   },
-  // <ProofGrid> (via <SelectionCounter>, task #24) also pulls `formatCop`
-  // off this same module — real Intl formatting, not a stand-in, so the
-  // rendered surcharge/extra-price text matches production byte for byte.
-  formatCop: (amountCop: number) =>
-    new Intl.NumberFormat("es-CO", {
-      style: "currency",
-      currency: "COP",
-      maximumFractionDigits: 0,
-    }).format(amountCop),
 }));
+
+// <ProofGrid> (via <SelectionCounter>, task #24) pulls `formatCop` off
+// `@/lib/format`, NOT `@/lib/galleries` — a plain module with no
+// `server-only`/`@/lib/db` import (see that module's own header comment),
+// so unlike `@/lib/galleries` above, jsdom resolves it directly and no mock
+// is needed here; the real `formatCop` runs.
 
 vi.mock("@/lib/r2", () => ({
   getPresignedUrl: (key: string) => `https://r2.example.com/${key}?presigned=1`,

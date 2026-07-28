@@ -109,18 +109,6 @@ export function formatSessionDate(sessionDate: string): string {
   return `${day}/${month}/${year}`;
 }
 
-/** Colombian peso, whole units (the schema's *_cop columns carry no
- * decimals — see schema.ts). Used for the frozen package terms shown on the
- * gallery detail page; never for anything computed off the LIVE `packages`
- * row (see this file's header comment and PLAN.md §3's snapshot rule). */
-export function formatCop(amountCop: number): string {
-  return new Intl.NumberFormat("es-CO", {
-    style: "currency",
-    currency: "COP",
-    maximumFractionDigits: 0,
-  }).format(amountCop);
-}
-
 export type GalleryDetailAsset = {
   id: string;
   originalFilename: string;

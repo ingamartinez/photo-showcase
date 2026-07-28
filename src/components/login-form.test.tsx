@@ -3,12 +3,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { LoginForm } from "./login-form";
-import type { LoginActionState } from "@/app/login/actions";
+import type { LoginActionState } from "@/app/(marketing)/login/actions";
 
 const requestMagicLinkMock =
   vi.fn<(state: LoginActionState, formData: FormData) => Promise<LoginActionState>>();
 
-vi.mock("@/app/login/actions", () => ({
+vi.mock("@/app/(marketing)/login/actions", () => ({
   requestMagicLink: (...args: [LoginActionState, FormData]) => requestMagicLinkMock(...args),
 }));
 

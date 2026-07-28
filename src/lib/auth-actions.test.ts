@@ -36,7 +36,7 @@ describe("signOutAction", () => {
   });
 
   // Guards against the same implicit-redirect trap flagged for `signIn()` in
-  // `src/app/login/actions.ts` (task #11's note): leaving `redirectTo`
+  // `src/app/(marketing)/login/actions.ts` (task #11's note): leaving `redirectTo`
   // unset falls back to Auth.js reading the `Referer` header, which is not a
   // destination this action controls or can reason about.
   it("never calls signOut() without an explicit redirectTo", async () => {

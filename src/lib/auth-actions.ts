@@ -19,10 +19,11 @@ import { signOut } from "@/auth";
 
 export async function signOutAction(): Promise<void> {
   // Explicit destination — the same class of implicit-redirect trap flagged
-  // for `signIn()` in `src/app/login/actions.ts` (task #11's note): leaving
-  // `redirectTo` unset falls back to the `Referer` header. There is no
-  // protected area to return to yet (the dashboard route group is task #17),
-  // so home is the only sane landing page today; whichever slice adds a real
-  // signed-out landing page should reconsider this destination too.
+  // for `signIn()` in `src/app/(marketing)/login/actions.ts` (task #11's
+  // note): leaving `redirectTo` unset falls back to the `Referer` header.
+  // Task #17 has since added the protected area this action is called from
+  // (`src/app/dashboard/`) — home is still the right destination: it is a
+  // public page, which is exactly what "signing out returns to a public
+  // page" requires, and there is no other signed-out landing page to prefer.
   await signOut({ redirectTo: "/" });
 }

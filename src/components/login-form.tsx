@@ -1,7 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
-import { requestMagicLink, type LoginActionState } from "@/app/login/actions";
+import { requestMagicLink, type LoginActionState } from "@/app/(marketing)/login/actions";
 import { CheckEmailNotice } from "@/components/check-email-notice";
 
 const initialState: LoginActionState = { status: "idle" };

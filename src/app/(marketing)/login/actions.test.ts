@@ -77,7 +77,25 @@ describe("requestMagicLink", () => {
     expect(signInMock).toHaveBeenCalledWith("resend", {
       email: "client@example.com",
       redirect: false,
+      redirectTo: "/dashboard",
     });
+  });
+
+  // Task #17's fix for #9's round-2 review note: without an explicit
+  // `redirectTo`, `signIn()`'s `redirect: false` path still falls back to
+  // the `Referer` header for the magic link's baked-in `callbackUrl` (see
+  // `next-auth/lib/actions.js`), which resolves to `/login` and bounces a
+  // successful login right back to the entrance. Asserted as its own test,
+  // separate from the equality check above, so it fails with a readable
+  // message if `redirectTo` is ever dropped instead of silently passing a
+  // now-vacuous object match.
+  it("passes an explicit redirectTo so a successful login lands on the dashboard, not back on /login", async () => {
+    signInMock.mockResolvedValue("https://alejoframes.com/api/auth/verify-request");
+
+    await requestMagicLink({ status: "idle" }, formDataWith("client@example.com"));
+
+    const [, options] = signInMock.mock.calls[0] as [string, { redirectTo?: string }];
+    expect(options.redirectTo).toBe("/dashboard");
   });
 
   it("swallows the AuthError thrown for an unknown address and returns the SAME confirmation state", async () => {

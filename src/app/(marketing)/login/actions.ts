@@ -51,7 +51,15 @@ export async function requestMagicLink(
 
   const startedAt = Date.now();
   try {
-    await signIn("resend", { email: parsed.data.email, redirect: false });
+    // Explicit destination — without `redirectTo`, `signIn()`'s own
+    // `redirect: false` short-circuit still falls back to the `Referer`
+    // header (see `next-auth/lib/actions.js`), so the magic link's baked-in
+    // `callbackUrl` would resolve to wherever this action happened to be
+    // called from — `/login` in practice, bouncing a successful login right
+    // back to the entrance instead of landing on the dashboard. Flagged by
+    // #9's round-2 review, fixed here because this is the slice that
+    // introduces the destination.
+    await signIn("resend", { email: parsed.data.email, redirect: false, redirectTo: "/dashboard" });
   } catch (error) {
     // The signIn callback in src/auth.ts returns false for an address that
     // doesn't belong to an existing user; Auth.js turns that into an

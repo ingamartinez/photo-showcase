@@ -1,0 +1,165 @@
+// @vitest-environment jsdom
+//
+// Same reasoning as src/app/dashboard/galleries/page.chrome.test.tsx: jsdom
+// cannot resolve the bare `import "server-only"` pulled in transitively by
+// src/lib/auth-guards.ts and src/lib/galleries.ts, even with
+// `vi.mock("server-only", ...)`. So both of those modules are mocked
+// WHOLESALE here, and `@/lib/r2` (server-only via r2Env(), see its header
+// comment) is mocked too.
+//
+// page.test.ts (node environment) proves the admin guard and the notFound()
+// branches are real; this file is the other half — the only place that
+// proves the gallery's frozen terms and its assets are actually wired into
+// markup, not just that the page resolves.
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { cleanup, render, screen } from "@testing-library/react";
+import type { Session } from "next-auth";
+import GalleryDetailPage from "./page";
+import type { GalleryDetail } from "@/lib/galleries";
+
+const requireAdminMock = vi.fn<() => Promise<Session>>();
+vi.mock("@/lib/auth-guards", () => ({ requireAdmin: () => requireAdminMock() }));
+
+const getGalleryDetailMock = vi.fn<() => Promise<GalleryDetail | null>>();
+vi.mock("@/lib/galleries", () => ({
+  getGalleryDetail: () => getGalleryDetailMock(),
+  formatGalleryStatus: (status: string) => {
+    const labels: Record<string, string> = {
+      draft: "Borrador",
+      proofing: "En pruebas",
+      selected: "Selección enviada",
+      delivered: "Entregada",
+      archived: "Archivada",
+    };
+    return labels[status] ?? status;
+  },
+  formatSessionDate: (sessionDate: string) => {
+    const [year, month, day] = sessionDate.split("-");
+    return `${day}/${month}/${year}`;
+  },
+  formatCop: (amountCop: number) => `$ ${amountCop.toLocaleString("es-CO")}`,
+}));
+
+vi.mock("@/lib/r2", () => ({
+  getPresignedUrl: (key: string) => `https://r2.example.com/${key}?presigned=1`,
+}));
+
+const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
+
+function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
+  return {
+    id: GALLERY_ID,
+    title: "Boda Ana y Beto",
+    publicSlug: "abc123",
+    status: "proofing",
+    sessionDate: "2026-08-01",
+    createdAt: new Date("2026-07-01"),
+    client: { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+    package: { id: 1, name: "Estándar" },
+    includedPhotosSnapshot: 13,
+    extraPhotoPriceCopSnapshot: 5_000,
+    assets: [],
+    ...overrides,
+  };
+}
+
+function paramsFor(galleryId: string) {
+  return { params: Promise.resolve({ galleryId }) };
+}
+
+beforeEach(() => {
+  requireAdminMock.mockReset();
+  requireAdminMock.mockResolvedValue({
+    user: { id: "admin-1", role: "admin", email: "admin@example.com" },
+    expires: "2099-01-01T00:00:00.000Z",
+  } as Session);
+  getGalleryDetailMock.mockReset();
+});
+
+afterEach(() => {
+  cleanup();
+});
+
+describe("GalleryDetailPage chrome", () => {
+  it("renders the gallery's title, client, session date, status and frozen package terms", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail());
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByText("Boda Ana y Beto")).toBeDefined();
+    expect(screen.getByText(/Ana Pérez/)).toBeDefined();
+    expect(screen.getByText(/01\/08\/2026/)).toBeDefined();
+    expect(screen.getByText("En pruebas")).toBeDefined();
+    expect(screen.getByText("Estándar")).toBeDefined();
+    expect(screen.getByText("13")).toBeDefined();
+  });
+
+  // The headline rule this epic repeats everywhere: the terms shown come off
+  // the gallery's OWN frozen snapshot columns. A live-package price leaking
+  // through here (e.g. because a future refactor reads `gallery.package.
+  // priceCop` instead of `gallery.extraPhotoPriceCopSnapshot`) would slip
+  // past a test that only checks "some number renders" — this pins the
+  // snapshot value itself.
+  it("shows the gallery's frozen extraPhotoPriceCopSnapshot, not a live package price", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ extraPhotoPriceCopSnapshot: 7_777 }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByText("$ 7.777")).toBeDefined();
+  });
+
+  it("renders every asset's thumbnail and filename", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        assets: [
+          {
+            id: "a1",
+            originalFilename: "IMG_0001.JPG",
+            proofKey: "galleries/g1/proofs/a1.webp",
+            proofWidth: 1600,
+            proofHeight: 1067,
+            isSelected: false,
+            sortOrder: 0,
+          },
+          {
+            id: "a2",
+            originalFilename: "IMG_0002.JPG",
+            proofKey: "galleries/g1/proofs/a2.webp",
+            proofWidth: 1600,
+            proofHeight: 1067,
+            isSelected: true,
+            sortOrder: 1,
+          },
+        ],
+      }),
+    );
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByText("IMG_0001.JPG")).toBeDefined();
+    expect(screen.getByText("IMG_0002.JPG")).toBeDefined();
+    const images = screen.getAllByRole("img");
+    expect(images).toHaveLength(2);
+    expect(images[0]?.getAttribute("src")).toBe(
+      "https://r2.example.com/galleries/g1/proofs/a1.webp?presigned=1",
+    );
+
+    // "2 fotos subidas" and "1 seleccionada" — the derived counts (never
+    // stored, per PLAN.md §6) computed straight off the assets array.
+    expect(screen.getByText("2")).toBeDefined();
+    expect(screen.getByText("1")).toBeDefined();
+  });
+
+  it("renders the empty state and the upload widget when there are no assets yet", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ assets: [] }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByText(/Todavía no subiste fotos/)).toBeDefined();
+    expect(screen.getByText("Subir fotos")).toBeDefined();
+  });
+});

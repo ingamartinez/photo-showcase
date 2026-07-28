@@ -124,3 +124,22 @@ curl https://alejoframes.com/api/health   # expect {"ok":true,...,"db":"ok"}
 Gallery media lives in a private Cloudflare R2 bucket served via presigned URLs
 (see PLAN.md §5). Provision the bucket + credentials when Phase 2 lands; nothing
 to do at Phase 0.
+
+## Proof processing (sharp) — server font prerequisite
+
+`src/lib/images.ts` renders the watermark as an SVG `<text>` element through
+sharp's bundled librsvg/pango/fontconfig stack. sharp ships that text-rendering
+stack but ships **no font files** — on Linux it resolves fonts from the host's
+fontconfig, so the droplet needs at least one font package installed:
+
+```bash
+sudo apt-get install -y fonts-dejavu-core
+```
+
+If no font is resolvable, librsvg silently rasterizes fully transparent
+glyphs. `processProof` guards against this (`assertTileHasInk` throws if the
+rasterized watermark tile's alpha channel is fully transparent), so a missing
+font surfaces as a loud proof-processing failure rather than a silently
+unwatermarked proof — but the guard only turns the failure mode from silent
+to loud, it doesn't fix it. Install the font package before shipping this
+slice to the droplet.

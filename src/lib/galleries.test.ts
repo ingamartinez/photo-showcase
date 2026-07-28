@@ -81,6 +81,19 @@ describe("getGalleriesWithDetails", () => {
   });
 });
 
+describe("isGalleryVisibleToClient", () => {
+  it.each([
+    ["draft", false],
+    ["proofing", true],
+    ["selected", true],
+    ["delivered", true],
+    ["archived", false],
+  ] as const)("status %s -> visible to client: %s", async (status, expected) => {
+    const { isGalleryVisibleToClient } = await import("./galleries");
+    expect(isGalleryVisibleToClient(status)).toBe(expected);
+  });
+});
+
 describe("formatGalleryStatus", () => {
   it.each([
     ["draft", "Borrador"],

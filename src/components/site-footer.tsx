@@ -27,7 +27,14 @@ const COLUMNS: { heading: string; links: { href: string; label: string; external
     },
   ];
 
-export function SiteFooter() {
+type SiteFooterProps = {
+  /** `/galleries` when signed in, `/login` otherwise — resolved server-side by the layout. */
+  clientAreaHref: string;
+  /** "Mis galerías" when signed in, "Acceso a clientes" otherwise. */
+  clientAreaLabel: string;
+};
+
+export function SiteFooter({ clientAreaHref, clientAreaLabel }: SiteFooterProps) {
   return (
     <footer className="border-line mt-auto border-t pt-16 pb-10">
       <div className="wrap">
@@ -72,6 +79,9 @@ export function SiteFooter() {
         <div className="border-line text-fg-mute mt-14 flex flex-wrap justify-between gap-4 border-t pt-[22px] font-mono text-[11px] tracking-[0.06em]">
           <span>© 2025 Alejo Frames — Medellín</span>
           <span>Cosplay · Event · Photography</span>
+          <Link href={clientAreaHref} className="hover:text-accent-2 transition-colors">
+            {clientAreaLabel}
+          </Link>
         </div>
       </div>
     </footer>

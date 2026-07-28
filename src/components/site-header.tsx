@@ -9,7 +9,14 @@ const NAV = [
   { href: "/about", label: "Estudio" },
 ];
 
-export function SiteHeader() {
+type SiteHeaderProps = {
+  /** `/galleries` when signed in, `/login` otherwise — resolved server-side by the layout. */
+  clientAreaHref: string;
+  /** "Mis galerías" when signed in, "Acceso a clientes" otherwise. */
+  clientAreaLabel: string;
+};
+
+export function SiteHeader({ clientAreaHref, clientAreaLabel }: SiteHeaderProps) {
   const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
@@ -40,6 +47,12 @@ export function SiteHeader() {
             {item.label}
           </Link>
         ))}
+        <Link
+          href={clientAreaHref}
+          className="text-fg-dim hover:text-fg hidden text-[13px] tracking-[0.08em] uppercase transition-colors sm:inline"
+        >
+          {clientAreaLabel}
+        </Link>
         <Link
           href="/contact"
           className="border-line-2 text-fg hover:border-accent hover:text-accent-2 rounded-sm border px-[18px] py-[9px] text-[13px] tracking-[0.1em] uppercase transition-colors"

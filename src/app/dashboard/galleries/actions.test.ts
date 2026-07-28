@@ -8,9 +8,28 @@ vi.mock("server-only", () => ({}));
 // Same boundary as src/app/dashboard/clients/actions.test.ts: mock only
 // `@/auth`'s `auth()`, leave `requireAdmin()`'s own redirect()/forbidden()
 // logic real, so a test only passes if this action actually calls
-// requireAdmin().
+// requireAdmin(). `signIn` is exported too (task #21's publishGallery now
+// imports it from this same module) — unused by createGallery itself, but
+// listed explicitly rather than left to resolve to `undefined`, same stance
+// as src/app/dashboard/layout.test.ts's own `@/auth` mock.
 const authMock = vi.fn();
-vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
+vi.mock("@/auth", () => ({
+  auth: (...args: unknown[]) => authMock(...args),
+  signIn: vi.fn(),
+}));
+
+// The real "next-auth" package's root index eagerly imports `./lib/env.js`
+// (which imports `next/server`) and `./lib/actions.js` at module scope —
+// there is no way to pull just `AuthError` off it without loading that
+// whole chain, which fails to resolve under Vitest. Mocked wholesale here
+// (task #21's actions.ts now imports `AuthError` from "next-auth" too, for
+// publishGallery's error handling) — same fix as
+// src/app/(marketing)/login/actions.test.ts already applies for the same
+// reason; see that file's comment on why `instanceof AuthError` still holds
+// against a mocked class.
+vi.mock("next-auth", () => ({
+  AuthError: class AuthError extends Error {},
+}));
 
 // `revalidatePath` throws outside a real Next.js request — stub it so the
 // action's own logic, not Next's internals, is what this suite exercises.

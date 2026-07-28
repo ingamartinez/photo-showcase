@@ -10,8 +10,24 @@ vi.mock("server-only", () => ({}));
 // Same boundary as src/app/dashboard/clients/page.test.ts: mock only
 // `@/auth`'s `auth()`, leave `redirect()`/`forbidden()` from `next/navigation`
 // real, so this only passes if the page actually calls requireAdmin().
+// `signIn` is listed too — this page renders <GalleryForm>, which imports
+// `createGallery` from ./actions, which (task #21) now imports `signIn`
+// from this same module.
 const authMock = vi.fn();
-vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
+vi.mock("@/auth", () => ({
+  auth: (...args: unknown[]) => authMock(...args),
+  signIn: vi.fn(),
+}));
+
+// This page renders <GalleryForm>, which imports `createGallery` from
+// ./actions, which (task #21) now imports `AuthError` from "next-auth" too.
+// The real "next-auth" package's root index eagerly imports `./lib/env.js`
+// (which imports `next/server`) at module scope, which fails to resolve
+// under Vitest — mocked wholesale for the same reason as
+// src/app/(marketing)/login/actions.test.ts.
+vi.mock("next-auth", () => ({
+  AuthError: class AuthError extends Error {},
+}));
 
 // The queries themselves are covered by src/lib/galleries.test.ts,
 // src/lib/clients.test.ts and src/lib/packages.test.ts — this file only

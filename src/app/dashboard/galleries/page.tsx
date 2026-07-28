@@ -40,23 +40,27 @@ export default async function GalleriesPage() {
             </li>
           ) : (
             galleries.map((gallery) => (
-              <li
-                key={gallery.id}
-                className="flex flex-wrap items-center justify-between gap-3 p-6"
-              >
-                <div>
-                  <p className="font-serif text-lg">{gallery.title}</p>
-                  <p className="text-fg-mute text-sm">
-                    {gallery.client.name ?? gallery.client.email} · {gallery.package.name}
-                  </p>
-                  <p className="text-fg-mute text-sm">
-                    Sesión: {formatSessionDate(gallery.sessionDate)}
-                  </p>
-                </div>
-                <div className="flex flex-col items-end gap-1">
-                  <span className="label text-fg-mute">{formatGalleryStatus(gallery.status)}</span>
-                  <span className="text-fg-mute text-sm">{gallery.photoCount} fotos</span>
-                </div>
+              <li key={gallery.id}>
+                <Link
+                  href={`/dashboard/galleries/${gallery.id}`}
+                  className="hover:bg-line-2/20 flex flex-wrap items-center justify-between gap-3 p-6 transition-colors"
+                >
+                  <div>
+                    <p className="font-serif text-lg">{gallery.title}</p>
+                    <p className="text-fg-mute text-sm">
+                      {gallery.client.name ?? gallery.client.email} · {gallery.package.name}
+                    </p>
+                    <p className="text-fg-mute text-sm">
+                      Sesión: {formatSessionDate(gallery.sessionDate)}
+                    </p>
+                  </div>
+                  <div className="flex flex-col items-end gap-1">
+                    <span className="label text-fg-mute">
+                      {formatGalleryStatus(gallery.status)}
+                    </span>
+                    <span className="text-fg-mute text-sm">{gallery.photoCount} fotos</span>
+                  </div>
+                </Link>
               </li>
             ))
           )}

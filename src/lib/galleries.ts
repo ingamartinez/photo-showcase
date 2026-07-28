@@ -9,7 +9,7 @@
 // epic's central rule).
 import "server-only";
 
-import { desc } from "drizzle-orm";
+import { desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { galleries } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
@@ -87,4 +87,86 @@ export function formatGalleryStatus(status: Gallery["status"]): string {
 export function formatSessionDate(sessionDate: string): string {
   const [year, month, day] = sessionDate.split("-");
   return `${day}/${month}/${year}`;
+}
+
+/** Colombian peso, whole units (the schema's *_cop columns carry no
+ * decimals — see schema.ts). Used for the frozen package terms shown on the
+ * gallery detail page; never for anything computed off the LIVE `packages`
+ * row (see this file's header comment and PLAN.md §3's snapshot rule). */
+export function formatCop(amountCop: number): string {
+  return new Intl.NumberFormat("es-CO", {
+    style: "currency",
+    currency: "COP",
+    maximumFractionDigits: 0,
+  }).format(amountCop);
+}
+
+export type GalleryDetailAsset = {
+  id: string;
+  originalFilename: string;
+  proofKey: string;
+  proofWidth: number;
+  proofHeight: number;
+  isSelected: boolean;
+  sortOrder: number;
+};
+
+export type GalleryDetail = {
+  id: string;
+  title: string;
+  publicSlug: string;
+  status: Gallery["status"];
+  sessionDate: string;
+  createdAt: Date;
+  client: { id: string; name: string | null; email: string };
+  package: { id: number; name: string };
+  includedPhotosSnapshot: number;
+  extraPhotoPriceCopSnapshot: number;
+  assets: GalleryDetailAsset[];
+};
+
+/** A single gallery with every detail its admin workspace page needs: the
+ * client and package it's bound to, its frozen terms (never the live
+ * `packages` row — same rule as `getGalleriesWithDetails` above), and its
+ * assets ordered for display (`sort_order` ascending, the same ordering the
+ * proof-upload route appends new uploads to the end of).
+ *
+ * Returns `null` when no gallery with this id exists, rather than throwing —
+ * the caller (the detail page) turns that into a real 404 via `notFound()`. */
+export async function getGalleryDetail(galleryId: string): Promise<GalleryDetail | null> {
+  const row = await db.query.galleries.findFirst({
+    where: eq(galleries.id, galleryId),
+    with: {
+      client: { columns: { id: true, name: true, email: true } },
+      package: { columns: { id: true, name: true } },
+      assets: {
+        orderBy: (assetsTable, { asc: assetAsc }) => [assetAsc(assetsTable.sortOrder)],
+        columns: {
+          id: true,
+          originalFilename: true,
+          proofKey: true,
+          proofWidth: true,
+          proofHeight: true,
+          isSelected: true,
+          sortOrder: true,
+        },
+      },
+    },
+  });
+
+  if (!row) return null;
+
+  return {
+    id: row.id,
+    title: row.title,
+    publicSlug: row.publicSlug,
+    status: row.status,
+    sessionDate: row.sessionDate,
+    createdAt: row.createdAt,
+    client: { id: row.client.id, name: row.client.name, email: row.client.email },
+    package: { id: row.package.id, name: row.package.name },
+    includedPhotosSnapshot: row.includedPhotosSnapshot,
+    extraPhotoPriceCopSnapshot: row.extraPhotoPriceCopSnapshot,
+    assets: row.assets,
+  };
 }

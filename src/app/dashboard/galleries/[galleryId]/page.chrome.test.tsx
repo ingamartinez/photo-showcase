@@ -44,6 +44,17 @@ vi.mock("@/lib/r2", () => ({
   getPresignedUrl: (key: string) => `https://r2.example.com/${key}?presigned=1`,
 }));
 
+// The page now renders <PublishGalleryButton> whenever a fixture's status
+// is "draft" — its module imports `publishGallery` from here, which
+// transitively pulls in `@/lib/auth-guards` (`import "server-only"`,
+// unresolvable under jsdom — see this file's header comment) if left real.
+// Mocked wholesale for the same reason as page.test.ts's mock of this
+// module.
+const publishGalleryMock = vi.fn();
+vi.mock("@/app/dashboard/galleries/actions", () => ({
+  publishGallery: (...args: unknown[]) => publishGalleryMock(...args),
+}));
+
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
 
 function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
@@ -74,6 +85,7 @@ beforeEach(() => {
     expires: "2099-01-01T00:00:00.000Z",
   } as Session);
   getGalleryDetailMock.mockReset();
+  publishGalleryMock.mockReset();
 });
 
 afterEach(() => {
@@ -161,5 +173,28 @@ describe("GalleryDetailPage chrome", () => {
 
     expect(screen.getByText(/Todavía no subiste fotos/)).toBeDefined();
     expect(screen.getByText("Subir fotos")).toBeDefined();
+  });
+
+  // Task #21's UI half of the guard: hiding the button once a gallery is no
+  // longer "draft" is UX only (publishGallery() itself re-checks the status
+  // server-side — see actions.ts's isPublishable()), but it still must be
+  // wired correctly, or the photographer would see a dead-end button on an
+  // already-published gallery.
+  it("shows the publish button for a draft gallery, not for one already in proofing", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "draft" }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByRole("button", { name: "Publicar galería" })).toBeDefined();
+  });
+
+  it("hides the publish button once the gallery is already in proofing", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "proofing" }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.queryByRole("button", { name: "Publicar galería" })).toBeNull();
   });
 });

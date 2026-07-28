@@ -11,6 +11,7 @@ import {
 } from "@/lib/galleries";
 import { getPresignedUrl } from "@/lib/r2";
 import { GalleryWorkspace } from "@/components/gallery-workspace";
+import { PublishGalleryButton } from "@/components/publish-gallery-button";
 
 export const metadata: Metadata = {
   title: "Galería",
@@ -83,18 +84,28 @@ export default async function GalleryDetailPage({
           <p className="text-fg-mute text-sm">Sesión: {formatSessionDate(gallery.sessionDate)}</p>
         </div>
 
-        <dl className="border-line-2 grid grid-cols-2 gap-x-8 gap-y-2 rounded-sm border p-6 text-sm">
-          <dt className="text-fg-mute">Paquete</dt>
-          <dd>{gallery.package.name}</dd>
-          <dt className="text-fg-mute">Fotos incluidas</dt>
-          <dd>{gallery.includedPhotosSnapshot}</dd>
-          <dt className="text-fg-mute">Foto extra</dt>
-          <dd>{formatCop(gallery.extraPhotoPriceCopSnapshot)}</dd>
-          <dt className="text-fg-mute">Fotos subidas</dt>
-          <dd>{gallery.assets.length}</dd>
-          <dt className="text-fg-mute">Seleccionadas</dt>
-          <dd>{selectedCount}</dd>
-        </dl>
+        <div className="flex flex-col items-end gap-4">
+          <dl className="border-line-2 grid grid-cols-2 gap-x-8 gap-y-2 rounded-sm border p-6 text-sm">
+            <dt className="text-fg-mute">Paquete</dt>
+            <dd>{gallery.package.name}</dd>
+            <dt className="text-fg-mute">Fotos incluidas</dt>
+            <dd>{gallery.includedPhotosSnapshot}</dd>
+            <dt className="text-fg-mute">Foto extra</dt>
+            <dd>{formatCop(gallery.extraPhotoPriceCopSnapshot)}</dd>
+            <dt className="text-fg-mute">Fotos subidas</dt>
+            <dd>{gallery.assets.length}</dd>
+            <dt className="text-fg-mute">Seleccionadas</dt>
+            <dd>{selectedCount}</dd>
+          </dl>
+
+          {/* Guarded server-side by publishGallery() itself (draft-only,
+              non-empty gallery) — hiding the button once the gallery has
+              moved past "draft" is UX, not the authority; see
+              src/app/dashboard/galleries/actions.ts's isPublishable(). */}
+          {gallery.status === "draft" && (
+            <PublishGalleryButton galleryId={gallery.id} clientEmail={gallery.client.email} />
+          )}
+        </div>
       </div>
 
       <div className="mt-12">

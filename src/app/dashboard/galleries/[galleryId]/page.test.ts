@@ -15,6 +15,15 @@ vi.mock("server-only", () => ({}));
 const authMock = vi.fn();
 vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 
+// The page now renders <PublishGalleryButton>, whose module imports
+// `publishGallery` from here — mocked wholesale (this file never exercises
+// that action) so this test never has to also stand up `@/lib/db` writes or
+// `@/auth`'s `signIn`, same reasoning as gallery-form.test.tsx's mock of
+// this same module.
+vi.mock("@/app/dashboard/galleries/actions", () => ({
+  publishGallery: vi.fn(),
+}));
+
 const getGalleryDetailMock = vi.fn();
 vi.mock("@/lib/galleries", async () => {
   const actual = await vi.importActual<typeof import("@/lib/galleries")>("@/lib/galleries");

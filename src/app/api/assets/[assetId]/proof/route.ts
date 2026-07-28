@@ -9,14 +9,25 @@
 //
 // Proofs carry the SIMPLER of the two access rules in this app (see
 // .../final/route.ts for the other one): once a client owns the gallery an
-// asset belongs to, they may see every proof in it, at any gallery status.
-// There is no additional "has this been delivered" or "was this selected"
-// gate here — proofing IS the stage where the client is meant to be looking
-// at every proof to decide what to select.
+// asset belongs to, they may see every proof in it, in every status a
+// non-admin can even reach.
+//
+// That last clause matters (task #63): a `draft` gallery is one the
+// photographer has NOT decided to show yet, and `/galleries/[publicSlug]`
+// (src/app/galleries/[publicSlug]/page.tsx) already 404s a client who tries
+// to view one, via `isGalleryVisibleToClient()` in src/lib/galleries.ts.
+// Before #63 this route had no equivalent gate, so a client holding an
+// asset id from their own draft gallery could still fetch a presigned URL
+// for it — the API disagreeing with the page about what "not shown yet"
+// means. This route calls the SAME `isGalleryVisibleToClient()` the page
+// uses (never a second, hand-rolled copy of its status list) so the two
+// can't drift apart again. Admins bypass this gate entirely — task #20's
+// admin workspace previews `draft` galleries constantly, by design.
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { requireApiSession } from "@/lib/auth-guards";
 import { loadOwnedAsset } from "@/lib/asset-access";
+import { isGalleryVisibleToClient } from "@/lib/galleries";
 import { getPresignedUrl } from "@/lib/r2";
 
 export const runtime = "nodejs";
@@ -54,7 +65,16 @@ export async function GET(
   if (!lookup.ok) {
     return errorResponse(lookup.error, lookup.status);
   }
+  const { asset, gallery } = lookup;
 
-  const url = getPresignedUrl(lookup.asset.proofKey);
+  // The status gate task #63 adds: mirrors the page's own gate exactly (see
+  // the file header), and only for non-admins — an admin has already passed
+  // `loadOwnedAsset()`'s "admin sees everything" ownership check above and
+  // must keep seeing every proof regardless of gallery status.
+  if (session.user.role !== "admin" && !isGalleryVisibleToClient(gallery.status)) {
+    return errorResponse("gallery_not_visible", 404);
+  }
+
+  const url = getPresignedUrl(asset.proofKey);
   return NextResponse.json({ url });
 }

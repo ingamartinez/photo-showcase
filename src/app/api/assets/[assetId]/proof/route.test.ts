@@ -251,6 +251,73 @@ describe("GET /api/assets/[assetId]/proof — authorization", () => {
   });
 });
 
+describe("GET /api/assets/[assetId]/proof — gallery status gate (task #63)", () => {
+  // The task's headline acceptance criterion: a client holding a valid asset
+  // id from their OWN `draft` gallery must be refused, exactly like
+  // `/galleries/[publicSlug]` already 404s that same gallery for them.
+  it("refuses a client reading a proof from their own draft gallery", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ status: "draft" }));
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "gallery_not_visible" });
+    expect(getPresignedUrlMock).not.toHaveBeenCalled();
+  });
+
+  // The same client succeeds once the gallery moves to `proofing` — proves
+  // the gate is on gallery status, not a blanket refusal.
+  it("lets the same client read the proof once the gallery is proofing", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ status: "proofing" }));
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
+
+    expect(response.status).toBe(200);
+  });
+
+  // `selected` and `delivered` are the other two statuses
+  // `isGalleryVisibleToClient()` allows — proven directly rather than only
+  // through `draft`/`proofing`, so a regression that narrows the set to just
+  // `proofing` would also be caught here.
+  it.each(["selected", "delivered"] as const)(
+    "lets the client read the proof when the gallery is %s",
+    async (status) => {
+      authMock.mockResolvedValue(clientASession());
+      const db = await seededDb();
+      db.__rows.galleries.length = 0;
+      db.__rows.galleries.push(galleryRow({ status }));
+      const { GET } = await import("./route");
+
+      const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
+
+      expect(response.status).toBe(200);
+    },
+  );
+
+  // Admins bypass the gate entirely — task #20's admin workspace previews
+  // `draft` galleries constantly, by design, and must not regress.
+  it("lets an admin read a proof from a draft gallery", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ status: "draft" }));
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
+
+    expect(response.status).toBe(200);
+    expect(getPresignedUrlMock).toHaveBeenCalled();
+  });
+});
+
 describe("GET /api/assets/[assetId]/proof — validation and not-found", () => {
   it("rejects a malformed asset id with 400, before ever querying the database", async () => {
     authMock.mockResolvedValue(clientASession());

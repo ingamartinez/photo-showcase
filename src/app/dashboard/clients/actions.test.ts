@@ -38,6 +38,14 @@ vi.mock("next/cache", () => ({
 // like chunk has `.name` + `.table`, a Param-like chunk has `.value` +
 // `.encoder`; verified against the real shape with a throwaway script
 // before writing this).
+// Task #47's negative-control sentinel — see the `@/lib/db` mock factory
+// below for what it triggers. Declared with `const` (not `vi.hoisted`)
+// because it is only read INSIDE the (also hoisted) `vi.mock("@/lib/db", ...)`
+// factory at call time, never at module-eval time — Vitest only requires
+// `vi.hoisted()` for values a hoisted factory needs during its own
+// evaluation, not values read later when an inner function actually runs.
+const OTHER_SQLSTATE_TRIGGER_EMAIL = "overloaded@example.com";
+
 type Row = Record<string, unknown>;
 
 function eqColumnAndValue(condition: unknown): { column?: string; value?: unknown } {
@@ -62,6 +70,20 @@ vi.mock("@/lib/db", async () => {
     db: {
       insert: () => ({
         values: async (row: Row) => {
+          // Task #47's negative control: a SENTINEL email that simulates a
+          // `DrizzleQueryError` wrapping a `PostgresError` with a DIFFERENT
+          // SQLSTATE (53300 too_many_connections, not 23505 unique_violation)
+          // — a real `PostgresError` either way (see the comment below on
+          // why that matters for `instanceof`), so the only thing that can
+          // tell the two apart is the `.code` narrowing `isUniqueViolation`
+          // carries. This must escape `createClient()` as a rethrow, not be
+          // reported as "ya existe un cliente...".
+          if (row.email === OTHER_SQLSTATE_TRIGGER_EMAIL) {
+            const pgError = Object.assign(new PostgresError("sorry, too many clients already"), {
+              code: "53300",
+            });
+            throw new DrizzleQueryError("insert into users ...", [], pgError);
+          }
           if (rows.some((r) => r.email === row.email)) {
             // The public .d.ts only exposes Error's own (message, options)
             // constructor for PostgresError — the object-shaped constructor
@@ -297,6 +319,31 @@ describe("createClient duplicate email", () => {
 
     expect(result.status).toBe("error");
     expect(result.message).toBe("Ya existe un cliente con ese correo electrónico.");
+  });
+});
+
+describe("createClient — non-unique-violation errors are not swallowed (task #47)", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+  });
+
+  // Pins `isUniqueViolation`'s `e.code === UNIQUE_VIOLATION` narrowing: a
+  // `DrizzleQueryError` wrapping a REAL `PostgresError` (same `instanceof`
+  // shape as the duplicate-email case above) but carrying a DIFFERENT
+  // SQLSTATE must rethrow, not be reported as "ya existe un cliente...".
+  // Dropping the narrowing to a bare `e instanceof postgres.PostgresError`
+  // check — the exact regression task #47 calls out — would make this
+  // error resolve to `{ status: "error" }` instead of rejecting, failing
+  // this assertion.
+  it("rethrows a PostgresError carrying a different SQLSTATE instead of reporting a duplicate", async () => {
+    const { createClient } = await import("./actions");
+
+    await expect(
+      createClient(
+        { status: "idle" },
+        formDataWith({ name: "Hugo", email: OTHER_SQLSTATE_TRIGGER_EMAIL }),
+      ),
+    ).rejects.toMatchObject({ cause: { code: "53300" } });
   });
 });
 

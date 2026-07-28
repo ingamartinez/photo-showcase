@@ -1,6 +1,10 @@
 // Server-side authorization primitives — the ONE reusable, server-side way
-// every protected page, layout, route handler, and server action answers
-// "who is this, and are they allowed here".
+// every protected page, layout, and server action answers "who is this, and
+// are they allowed here".
+//
+// Route Handlers are a deliberate exception to that claim: see "Route
+// Handlers need a different unauthenticated response" below, and use
+// `requireApiSession()` there instead of `requireSession()`.
 //
 // Why guards here, and not middleware:
 //
@@ -37,9 +41,37 @@
 // enabled there for exactly this: it is the one Next.js primitive that
 // turns a failed check into a real 403 response in a Server Component, a
 // Server Action, AND a Route Handler, with no per-context branching here.
+// That is why `requireAdmin()`'s wrong-role path (`forbidden()`) needs no
+// route-handler-specific variant below — only the unauthenticated path does.
+//
+// Route Handlers need a different unauthenticated response:
+//
+//   `requireSession()` calls `redirect("/login")`, which is correct for a
+//   page navigation (the browser follows the 307 to an HTML form) and wrong
+//   for a Route Handler backing a `fetch()` call: the caller gets a 307 to
+//   an HTML document it never asked for and cannot parse as JSON, instead
+//   of a clear "you are not signed in". Next.js has no interrupt equivalent
+//   to `forbidden()` for this case that actually helps here either —
+//   `unauthorized()` from `next/navigation` throws the same kind of digest
+//   `forbidden()` does, but a Route Handler catching that digest gets back
+//   an empty-bodied `Response` (see `next/dist/server/route-modules/app-route
+//   /module.js`), not the JSON body a `fetch()` caller needs to distinguish
+//   "not signed in" from any other failure.
+//
+//   So `requireApiSession()` below does not throw at all: it returns the
+//   `Session` on success and a ready-to-return `NextResponse` (401, JSON
+//   body, no `Location` header) on failure, and the Route Handler is
+//   responsible for returning that response as-is. This is a second,
+//   explicitly-named export rather than an option on `requireSession()` on
+//   purpose — a flag that changes 307-vs-401 based on how the caller says it
+//   is being invoked is a guess about the call site, and a guess about the
+//   call site is wrong exactly once, silently. Route Handlers state which
+//   surface they are by calling the function that matches, not by passing a
+//   parameter `requireSession()` would otherwise have to trust.
 import "server-only";
 
 import { forbidden, redirect } from "next/navigation";
+import { NextResponse } from "next/server";
 import type { Session } from "next-auth";
 import { auth } from "@/auth";
 
@@ -57,6 +89,40 @@ export async function requireSession(): Promise<Session> {
   const session = await auth();
   if (!session) {
     redirect("/login");
+  }
+  return session;
+}
+
+/**
+ * Route-handler variant of `requireSession()`. Use this, never
+ * `requireSession()`, inside `route.ts` — a JSON API has no HTML form to
+ * follow a `redirect("/login")` to.
+ *
+ * Returns the `Session` when signed in. When signed out, does NOT redirect
+ * and does NOT throw: it returns a `NextResponse` (401, `{ "error":
+ * "unauthorized" }`, no `Location` header) that the caller must return
+ * immediately —
+ *
+ * ```ts
+ * const sessionOrResponse = await requireApiSession();
+ * if (sessionOrResponse instanceof NextResponse) return sessionOrResponse;
+ * const session = sessionOrResponse;
+ * ```
+ *
+ * Same freshness guarantee as `requireSession()`: `auth()` is called fresh
+ * every time, never cached, so a session row deleted by sign-out stops
+ * granting access on the very next call.
+ *
+ * Wrong-role (signed in, not admin) is a separate concern from this
+ * function: call `requireAdmin()` — or check `session.user.role` and call
+ * `forbidden()` directly — after getting a `Session` back from here.
+ * `forbidden()` already produces a real 403 in a Route Handler with no
+ * variant needed, unlike the unauthenticated case this function exists for.
+ */
+export async function requireApiSession(): Promise<Session | NextResponse> {
+  const session = await auth();
+  if (!session) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
   return session;
 }

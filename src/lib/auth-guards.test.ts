@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "next-auth";
-import { requireAdmin, requireSession } from "./auth-guards";
+import { NextResponse } from "next/server";
+import { requireAdmin, requireApiSession, requireSession } from "./auth-guards";
 
 // `import "server-only"` only resolves inside a real Next.js bundle (webpack
 // aliases it away); Vitest never does, so it must be stubbed for anything
@@ -81,6 +82,54 @@ describe("requireSession", () => {
     await expect(requireSession()).rejects.toMatchObject({
       digest: "NEXT_REDIRECT;replace;/login;307;",
     });
+
+    expect(authMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("requireApiSession", () => {
+  it("returns the session as-is when signed in", async () => {
+    const session = sessionFor("client");
+    authMock.mockResolvedValue(session);
+
+    await expect(requireApiSession()).resolves.toBe(session);
+  });
+
+  // The acceptance criterion this proves: an unauthenticated Route Handler
+  // request gets a real 401 with a JSON body — a client `fetch()` can
+  // `.json()` the response instead of choking on a redirect's HTML target.
+  // Asserting on the actual `NextResponse` (status, header, body), not on a
+  // mock, is what makes this fail if the 401 path is ever swapped back for
+  // `redirect()` or dropped entirely — see the task report's removal
+  // experiment for what breaks, and how, when each check below is deleted.
+  it("returns a 401 JSON response, not a redirect, when there is no session", async () => {
+    authMock.mockResolvedValue(null);
+
+    const result = await requireApiSession();
+
+    expect(result).toBeInstanceOf(NextResponse);
+    const response = result as NextResponse;
+    expect(response.status).toBe(401);
+    // A `Location` header is what a redirect uses to tell the browser where
+    // to go next; a JSON API caller has no browser navigation to follow, so
+    // this guard must never set one on the unauthenticated response.
+    expect(response.headers.get("Location")).toBeNull();
+    await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
+  });
+
+  // Same freshness contract as `requireSession()`: a session row deleted by
+  // sign-out between two calls must flip the second call from "signed in"
+  // to the 401 response, never to a cached prior answer.
+  it("re-reads auth() on every call instead of caching a prior result", async () => {
+    const session = sessionFor("client");
+
+    authMock.mockResolvedValueOnce(session);
+    await expect(requireApiSession()).resolves.toBe(session);
+
+    authMock.mockResolvedValueOnce(null);
+    const result = await requireApiSession();
+    expect(result).toBeInstanceOf(NextResponse);
+    expect((result as NextResponse).status).toBe(401);
 
     expect(authMock).toHaveBeenCalledTimes(2);
   });

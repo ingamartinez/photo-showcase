@@ -1,9 +1,16 @@
 // @vitest-environment jsdom
+import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProofGrid } from "./proof-grid";
 import type { ProofAsset } from "./proof-grid";
+
+// <ProofGrid> renders <SelectionCounter>, which imports `formatCop` off
+// `@/lib/format` — a plain module with no `server-only`/`@/lib/db` import
+// (see that module's own header comment for why it lives there and not on
+// `@/lib/galleries`), so unlike that module, jsdom resolves it directly;
+// no mock needed here, the real `formatCop` runs.
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -25,6 +32,21 @@ function assetsFor(overrides: Partial<ProofAsset>[] = [{}]): ProofAsset[] {
   }));
 }
 
+// Every test wants the same Estándar snapshot terms (PLAN.md §3's table)
+// unless it's specifically exercising the quota — this only overrides
+// `initialAssets` most of the time.
+function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
+  return render(
+    <ProofGrid
+      initialAssets={assetsFor()}
+      packageName="Estándar"
+      includedPhotosSnapshot={13}
+      extraPhotoPriceCopSnapshot={5_000}
+      {...overrides}
+    />,
+  );
+}
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -33,15 +55,15 @@ afterEach(() => {
 
 describe("ProofGrid", () => {
   it("renders the empty state when there are no assets", () => {
-    render(<ProofGrid initialAssets={[]} />);
+    renderGrid({ initialAssets: [] });
 
     expect(screen.getByText(/todavía no subió fotos/i)).toBeDefined();
   });
 
   it("reserves each tile's aspect ratio from proofWidth/proofHeight before the image ever loads", () => {
-    const { container } = render(
-      <ProofGrid initialAssets={assetsFor([{ proofWidth: 1600, proofHeight: 1067 }])} />,
-    );
+    const { container } = renderGrid({
+      initialAssets: assetsFor([{ proofWidth: 1600, proofHeight: 1067 }]),
+    });
 
     const img = container.querySelector("img");
     const wrapper = img?.parentElement;
@@ -49,7 +71,7 @@ describe("ProofGrid", () => {
   });
 
   it("renders each asset's thumbnail by its original presigned URL", () => {
-    const { container } = render(<ProofGrid initialAssets={assetsFor([{}, {}])} />);
+    const { container } = renderGrid({ initialAssets: assetsFor([{}, {}]) });
 
     // Not getByRole("img"): each tile's <img alt=""> is deliberately
     // decorative (the enclosing button already carries an aria-label with
@@ -63,7 +85,7 @@ describe("ProofGrid", () => {
 
   it("opens the lightbox at the clicked tile's index", async () => {
     const user = userEvent.setup();
-    render(<ProofGrid initialAssets={assetsFor([{}, {}, {}])} />);
+    renderGrid({ initialAssets: assetsFor([{}, {}, {}]) });
 
     await user.click(screen.getByRole("button", { name: "Ver IMG_0002.JPG" }));
 
@@ -74,7 +96,7 @@ describe("ProofGrid", () => {
 
   it("closes the lightbox", async () => {
     const user = userEvent.setup();
-    render(<ProofGrid initialAssets={assetsFor([{}])} />);
+    renderGrid({ initialAssets: assetsFor([{}]) });
 
     await user.click(screen.getByRole("button", { name: "Ver IMG_0001.JPG" }));
     expect(screen.getByRole("dialog")).toBeDefined();
@@ -95,7 +117,7 @@ describe("ProofGrid", () => {
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
 
-    const { container } = render(<ProofGrid initialAssets={assetsFor([{}])} />);
+    const { container } = renderGrid({ initialAssets: assetsFor([{}]) });
 
     const tileImg = container.querySelector("img") as HTMLImageElement;
     expect(tileImg.src).toBe("https://r2.example.com/original-1");
@@ -118,7 +140,7 @@ describe("ProofGrid", () => {
     const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(500, { error: "boom" })));
     vi.stubGlobal("fetch", fetchMock);
 
-    const { container } = render(<ProofGrid initialAssets={assetsFor([{}])} />);
+    const { container } = renderGrid({ initialAssets: assetsFor([{}]) });
     const tileImg = container.querySelector("img") as HTMLImageElement;
 
     fireEvent.error(tileImg);
@@ -126,5 +148,169 @@ describe("ProofGrid", () => {
     fireEvent.error(tileImg);
 
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  });
+
+  describe("live quota counter", () => {
+    it("renders the initial counter computed from the assets' own isSelected flags and the snapshot terms", () => {
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }, {}]),
+        includedPhotosSnapshot: 1,
+        extraPhotoPriceCopSnapshot: 5_000,
+      });
+
+      const text = screen.getByText(/incluidas/).textContent?.replace(/\s+/g, " ");
+      expect(text).toContain("seleccionadas 2");
+      expect(text).toContain("extras 1");
+    });
+
+    it("toggling a tile PATCHes the selection route and replaces the counter with the server's own response, not a local increment", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(200, {
+            asset: { id: "a1", isSelected: true, selectedAt: "2026-07-28T00:00:00.000Z" },
+            quota: {
+              selected: 99,
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+              extras: 86,
+              surchargeCop: 430_000,
+            },
+          }),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      renderGrid({ initialAssets: assetsFor([{ isSelected: false }]) });
+
+      await user.click(screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" }));
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/assets/a1/selection",
+        expect.objectContaining({
+          method: "PATCH",
+          body: JSON.stringify({ selected: true }),
+        }),
+      );
+      // Deliberately the server's own (unrealistic) numbers, not "1" — this
+      // proves the counter renders whatever the response says rather than
+      // computing its own count of tiles toggled on screen.
+      await vi.waitFor(() => {
+        const text = screen.getByText(/incluidas/).textContent?.replace(/\s+/g, " ");
+        expect(text).toContain("seleccionadas 99");
+        expect(text).toContain("extras 86");
+      });
+    });
+
+    it("shows the deselect state and toggles back off", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(200, {
+            asset: { id: "a1", isSelected: false, selectedAt: null },
+            quota: {
+              selected: 0,
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+              extras: 0,
+              surchargeCop: 0,
+            },
+          }),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      renderGrid({ initialAssets: assetsFor([{ isSelected: true }]) });
+
+      await user.click(screen.getByRole("button", { name: /Quitar de seleccionadas/ }));
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/assets/a1/selection",
+        expect.objectContaining({ body: JSON.stringify({ selected: false }) }),
+      );
+    });
+
+    it("shows an inline error and leaves the tile's prior state alone when the toggle request fails", async () => {
+      const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(500, { error: "boom" })));
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      renderGrid({ initialAssets: assetsFor([{ isSelected: false }]) });
+
+      await user.click(screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" }));
+
+      await vi.waitFor(() =>
+        expect(screen.getByText("No se pudo actualizar la selección.")).toBeDefined(),
+      );
+      // Still shows "Seleccionar", not "✓ Seleccionada" — the failed toggle
+      // never flipped local state, because state is only ever set from a
+      // confirmed response.
+      expect(screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" })).toBeDefined();
+    });
+
+    // Forces the exact race the #24 review flagged: two DIFFERENT assets
+    // toggled in issue order A-then-B, but their responses resolve OUT OF
+    // ORDER (B first, A last) — the normal shape of a phone connection, not
+    // a contrived edge case. The counter must end up showing B's numbers
+    // (the LAST thing actually issued), never A's, even though A's response
+    // is literally the last thing to arrive.
+    it("keeps the counter at the LATER-issued toggle's numbers when responses resolve out of order", async () => {
+      const resolvers: ((value: Response) => void)[] = [];
+      const fetchMock = vi.fn(
+        () =>
+          new Promise<Response>((resolve) => {
+            resolvers.push(resolve);
+          }),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      renderGrid({ initialAssets: assetsFor([{ isSelected: false }, { isSelected: false }]) });
+
+      // Issue order: a1 first, then a2.
+      await user.click(screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" }));
+      await user.click(screen.getByRole("button", { name: "Seleccionar: IMG_0002.JPG" }));
+      expect(resolvers).toHaveLength(2);
+
+      // Resolve OUT OF ORDER: a2 (issued second) resolves FIRST.
+      resolvers[1]!(
+        jsonResponse(200, {
+          asset: { id: "a2", isSelected: true, selectedAt: "2026-07-28T00:00:00.000Z" },
+          quota: {
+            selected: 15,
+            includedPhotosSnapshot: 13,
+            extraPhotoPriceCopSnapshot: 5_000,
+            extras: 2,
+            surchargeCop: 10_000,
+          },
+        }),
+      );
+      await vi.waitFor(() => {
+        const text = screen.getByText(/incluidas/).textContent?.replace(/\s+/g, " ");
+        expect(text).toContain("seleccionadas 15");
+      });
+
+      // a1 (issued FIRST) resolves LAST, with a lower, now-stale count.
+      resolvers[0]!(
+        jsonResponse(200, {
+          asset: { id: "a1", isSelected: true, selectedAt: "2026-07-28T00:00:00.000Z" },
+          quota: {
+            selected: 14,
+            includedPhotosSnapshot: 13,
+            extraPhotoPriceCopSnapshot: 5_000,
+            extras: 1,
+            surchargeCop: 5_000,
+          },
+        }),
+      );
+      // Give the stale response's own microtasks a turn, then assert the
+      // counter is STILL a2's numbers — the response from the
+      // earlier-issued request must be discarded, not applied just because
+      // it happened to arrive last.
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      const text = screen.getByText(/incluidas/).textContent?.replace(/\s+/g, " ");
+      expect(text).toContain("seleccionadas 15");
+      expect(text).toContain("extras 2");
+    });
   });
 });

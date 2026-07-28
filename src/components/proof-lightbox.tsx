@@ -16,6 +16,8 @@ export function ProofLightbox({
   onClose,
   onNavigate,
   onImageError,
+  onToggleSelection,
+  pendingAssetIds,
 }: {
   assets: ProofAsset[];
   // Keyed by asset id. <ProofGrid> owns this state and shares it with the
@@ -27,6 +29,12 @@ export function ProofLightbox({
   onClose: () => void;
   onNavigate: (index: number) => void;
   onImageError: (assetId: string) => void;
+  // Task #24: the client can also toggle selection from the full-screen
+  // view, not only the grid tile behind it — same handler <ProofGrid>
+  // passes to <ProofTile>, so both surfaces go through the exact same
+  // round trip and the exact same server-recomputed quota response.
+  onToggleSelection: (assetId: string, nextSelected: boolean) => void;
+  pendingAssetIds: Set<string>;
 }) {
   const asset = assets[index];
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -103,15 +111,28 @@ export function ProofLightbox({
         <p className="text-fg-dim truncate text-xs sm:text-sm">
           {index + 1} / {assets.length} · {asset.originalFilename}
         </p>
-        <button
-          ref={closeButtonRef}
-          type="button"
-          onClick={onClose}
-          aria-label="Cerrar"
-          className="text-fg hover:text-accent-2 -m-2 p-2 text-2xl leading-none transition-colors"
-        >
-          ×
-        </button>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={() => onToggleSelection(asset.id, !asset.isSelected)}
+            disabled={pendingAssetIds.has(asset.id)}
+            aria-pressed={asset.isSelected}
+            className={`rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+              asset.isSelected ? "bg-accent text-bg" : "bg-fg/10 text-fg hover:bg-fg/20"
+            }`}
+          >
+            {asset.isSelected ? "✓ Seleccionada" : "Seleccionar"}
+          </button>
+          <button
+            ref={closeButtonRef}
+            type="button"
+            onClick={onClose}
+            aria-label="Cerrar"
+            className="text-fg hover:text-accent-2 -m-2 p-2 text-2xl leading-none transition-colors"
+          >
+            ×
+          </button>
+        </div>
       </div>
 
       <div

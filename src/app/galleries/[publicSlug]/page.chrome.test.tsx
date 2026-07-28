@@ -41,6 +41,12 @@ vi.mock("@/lib/galleries", () => ({
   },
 }));
 
+// <ProofGrid> (via <SelectionCounter>, task #24) pulls `formatCop` off
+// `@/lib/format`, NOT `@/lib/galleries` — a plain module with no
+// `server-only`/`@/lib/db` import (see that module's own header comment),
+// so unlike `@/lib/galleries` above, jsdom resolves it directly and no mock
+// is needed here; the real `formatCop` runs.
+
 vi.mock("@/lib/r2", () => ({
   getPresignedUrl: (key: string) => `https://r2.example.com/${key}?presigned=1`,
 }));

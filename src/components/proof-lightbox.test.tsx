@@ -1,10 +1,11 @@
 // @vitest-environment jsdom
+import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ProofLightbox } from "./proof-lightbox";
 import type { ProofAsset } from "./proof-grid";
 
-function assetsFor(count: number): ProofAsset[] {
+function assetsFor(count: number, overrides: Partial<ProofAsset>[] = []): ProofAsset[] {
   return Array.from({ length: count }, (_, index) => ({
     id: `a${index + 1}`,
     originalFilename: `IMG_000${index + 1}.JPG`,
@@ -12,17 +13,20 @@ function assetsFor(count: number): ProofAsset[] {
     proofHeight: 1067,
     isSelected: false,
     proofUrl: `https://r2.example.com/proof-${index + 1}`,
+    ...overrides[index],
   }));
 }
 
 let onClose: ReturnType<typeof vi.fn<() => void>>;
 let onNavigate: ReturnType<typeof vi.fn<(index: number) => void>>;
 let onImageError: ReturnType<typeof vi.fn<(assetId: string) => void>>;
+let onToggleSelection: ReturnType<typeof vi.fn<(assetId: string, nextSelected: boolean) => void>>;
 
 beforeEach(() => {
   onClose = vi.fn();
   onNavigate = vi.fn();
   onImageError = vi.fn();
+  onToggleSelection = vi.fn();
 });
 
 afterEach(() => {
@@ -30,18 +34,28 @@ afterEach(() => {
   document.body.style.overflow = "";
 });
 
+// Every test below wants the same handlers and an empty `pendingAssetIds` by
+// default — this only ever overrides `assets`/`urls`/`index`, so the toggle
+// wiring doesn't need repeating in every single test.
+function renderLightbox(overrides: Partial<ComponentProps<typeof ProofLightbox>> = {}) {
+  return render(
+    <ProofLightbox
+      assets={assetsFor(3)}
+      urls={{}}
+      index={1}
+      onClose={onClose}
+      onNavigate={onNavigate}
+      onImageError={onImageError}
+      onToggleSelection={onToggleSelection}
+      pendingAssetIds={new Set()}
+      {...overrides}
+    />,
+  );
+}
+
 describe("ProofLightbox", () => {
   it("renders the current asset's image, filename, and position", () => {
-    render(
-      <ProofLightbox
-        assets={assetsFor(3)}
-        urls={{}}
-        index={1}
-        onClose={onClose}
-        onNavigate={onNavigate}
-        onImageError={onImageError}
-      />,
-    );
+    renderLightbox({ assets: assetsFor(3), index: 1 });
 
     expect(screen.getByText(/2 \/ 3/)).toBeDefined();
     const img = screen.getByAltText("IMG_0002.JPG") as HTMLImageElement;
@@ -49,32 +63,18 @@ describe("ProofLightbox", () => {
   });
 
   it("prefers the shared refreshed URL over the asset's own stale proofUrl", () => {
-    render(
-      <ProofLightbox
-        assets={assetsFor(1)}
-        urls={{ a1: "https://r2.example.com/refreshed" }}
-        index={0}
-        onClose={onClose}
-        onNavigate={onNavigate}
-        onImageError={onImageError}
-      />,
-    );
+    renderLightbox({
+      assets: assetsFor(1),
+      urls: { a1: "https://r2.example.com/refreshed" },
+      index: 0,
+    });
 
     const img = screen.getByAltText("IMG_0001.JPG") as HTMLImageElement;
     expect(img.src).toBe("https://r2.example.com/refreshed");
   });
 
   it("calls onImageError with the asset id when the <img> fails to load", () => {
-    render(
-      <ProofLightbox
-        assets={assetsFor(1)}
-        urls={{}}
-        index={0}
-        onClose={onClose}
-        onNavigate={onNavigate}
-        onImageError={onImageError}
-      />,
-    );
+    renderLightbox({ assets: assetsFor(1), index: 0 });
 
     fireEvent.error(screen.getByAltText("IMG_0001.JPG"));
 
@@ -82,16 +82,7 @@ describe("ProofLightbox", () => {
   });
 
   it("closes on Escape", () => {
-    render(
-      <ProofLightbox
-        assets={assetsFor(3)}
-        urls={{}}
-        index={1}
-        onClose={onClose}
-        onNavigate={onNavigate}
-        onImageError={onImageError}
-      />,
-    );
+    renderLightbox();
 
     fireEvent.keyDown(window, { key: "Escape" });
 
@@ -99,16 +90,7 @@ describe("ProofLightbox", () => {
   });
 
   it("navigates with ArrowRight/ArrowLeft from the middle of the set", () => {
-    render(
-      <ProofLightbox
-        assets={assetsFor(3)}
-        urls={{}}
-        index={1}
-        onClose={onClose}
-        onNavigate={onNavigate}
-        onImageError={onImageError}
-      />,
-    );
+    renderLightbox();
 
     fireEvent.keyDown(window, { key: "ArrowRight" });
     expect(onNavigate).toHaveBeenCalledWith(2);
@@ -126,6 +108,8 @@ describe("ProofLightbox", () => {
         onClose={onClose}
         onNavigate={onNavigate}
         onImageError={onImageError}
+        onToggleSelection={onToggleSelection}
+        pendingAssetIds={new Set()}
       />,
     );
 
@@ -140,6 +124,8 @@ describe("ProofLightbox", () => {
         onClose={onClose}
         onNavigate={onNavigate}
         onImageError={onImageError}
+        onToggleSelection={onToggleSelection}
+        pendingAssetIds={new Set()}
       />,
     );
 
@@ -156,6 +142,8 @@ describe("ProofLightbox", () => {
         onClose={onClose}
         onNavigate={onNavigate}
         onImageError={onImageError}
+        onToggleSelection={onToggleSelection}
+        pendingAssetIds={new Set()}
       />,
     );
 
@@ -170,6 +158,8 @@ describe("ProofLightbox", () => {
         onClose={onClose}
         onNavigate={onNavigate}
         onImageError={onImageError}
+        onToggleSelection={onToggleSelection}
+        pendingAssetIds={new Set()}
       />,
     );
 
@@ -178,16 +168,7 @@ describe("ProofLightbox", () => {
   });
 
   it("navigates via the on-screen prev/next buttons", () => {
-    render(
-      <ProofLightbox
-        assets={assetsFor(3)}
-        urls={{}}
-        index={1}
-        onClose={onClose}
-        onNavigate={onNavigate}
-        onImageError={onImageError}
-      />,
-    );
+    renderLightbox();
 
     fireEvent.click(screen.getByRole("button", { name: "Foto siguiente" }));
     expect(onNavigate).toHaveBeenCalledWith(2);
@@ -197,16 +178,7 @@ describe("ProofLightbox", () => {
   });
 
   it("locks body scroll while mounted, and restores it on unmount", () => {
-    const { unmount } = render(
-      <ProofLightbox
-        assets={assetsFor(1)}
-        urls={{}}
-        index={0}
-        onClose={onClose}
-        onNavigate={onNavigate}
-        onImageError={onImageError}
-      />,
-    );
+    const { unmount } = renderLightbox({ assets: assetsFor(1), index: 0 });
 
     expect(document.body.style.overflow).toBe("hidden");
 
@@ -216,18 +188,43 @@ describe("ProofLightbox", () => {
   });
 
   it("moves focus to the close button on open", () => {
-    render(
-      <ProofLightbox
-        assets={assetsFor(1)}
-        urls={{}}
-        index={0}
-        onClose={onClose}
-        onNavigate={onNavigate}
-        onImageError={onImageError}
-      />,
-    );
+    renderLightbox({ assets: assetsFor(1), index: 0 });
 
     expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cerrar" }));
+  });
+
+  // Task #24: the client can toggle selection from the full-screen view too,
+  // not only the grid tile behind it.
+  describe("selection toggle", () => {
+    it("shows 'Seleccionar' for an unselected asset and calls onToggleSelection(id, true) on click", () => {
+      renderLightbox({ assets: assetsFor(1, [{ isSelected: false }]), index: 0 });
+
+      fireEvent.click(screen.getByRole("button", { name: "Seleccionar" }));
+
+      expect(onToggleSelection).toHaveBeenCalledWith("a1", true);
+    });
+
+    it("shows the selected state and calls onToggleSelection(id, false) to deselect", () => {
+      renderLightbox({ assets: assetsFor(1, [{ isSelected: true }]), index: 0 });
+
+      const button = screen.getByRole("button", { name: /Seleccionada/ });
+      expect(button.getAttribute("aria-pressed")).toBe("true");
+
+      fireEvent.click(button);
+
+      expect(onToggleSelection).toHaveBeenCalledWith("a1", false);
+    });
+
+    it("disables the toggle button while this asset's toggle is pending", () => {
+      renderLightbox({
+        assets: assetsFor(1, [{ isSelected: false }]),
+        index: 0,
+        pendingAssetIds: new Set(["a1"]),
+      });
+
+      const button = screen.getByRole("button", { name: "Seleccionar" }) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+    });
   });
 
   describe("touch swipe", () => {
@@ -247,16 +244,7 @@ describe("ProofLightbox", () => {
     }
 
     it("swipes left to advance to the next photo", () => {
-      render(
-        <ProofLightbox
-          assets={assetsFor(3)}
-          urls={{}}
-          index={1}
-          onClose={onClose}
-          onNavigate={onNavigate}
-          onImageError={onImageError}
-        />,
-      );
+      renderLightbox();
 
       const container = swipeContainer();
       fireEvent.touchStart(container, { touches: touchList(200) });
@@ -266,16 +254,7 @@ describe("ProofLightbox", () => {
     });
 
     it("swipes right to go to the previous photo", () => {
-      render(
-        <ProofLightbox
-          assets={assetsFor(3)}
-          urls={{}}
-          index={1}
-          onClose={onClose}
-          onNavigate={onNavigate}
-          onImageError={onImageError}
-        />,
-      );
+      renderLightbox();
 
       const container = swipeContainer();
       fireEvent.touchStart(container, { touches: touchList(100) });
@@ -288,16 +267,7 @@ describe("ProofLightbox", () => {
     // barely any movement) must not be misread as a swipe. Below the 40px
     // threshold in either direction, nothing should navigate.
     it("does not navigate when the movement is below the 40px swipe threshold", () => {
-      render(
-        <ProofLightbox
-          assets={assetsFor(3)}
-          urls={{}}
-          index={1}
-          onClose={onClose}
-          onNavigate={onNavigate}
-          onImageError={onImageError}
-        />,
-      );
+      renderLightbox();
 
       const container = swipeContainer();
       fireEvent.touchStart(container, { touches: touchList(200) });
@@ -307,16 +277,7 @@ describe("ProofLightbox", () => {
     });
 
     it("does not navigate on a swipe left past the last photo", () => {
-      render(
-        <ProofLightbox
-          assets={assetsFor(3)}
-          urls={{}}
-          index={2}
-          onClose={onClose}
-          onNavigate={onNavigate}
-          onImageError={onImageError}
-        />,
-      );
+      renderLightbox({ index: 2 });
 
       const container = swipeContainer();
       fireEvent.touchStart(container, { touches: touchList(200) });
@@ -326,16 +287,7 @@ describe("ProofLightbox", () => {
     });
 
     it("does not navigate on a swipe right before the first photo", () => {
-      render(
-        <ProofLightbox
-          assets={assetsFor(3)}
-          urls={{}}
-          index={0}
-          onClose={onClose}
-          onNavigate={onNavigate}
-          onImageError={onImageError}
-        />,
-      );
+      renderLightbox({ index: 0 });
 
       const container = swipeContainer();
       fireEvent.touchStart(container, { touches: touchList(100) });

@@ -9,7 +9,7 @@
 // epic's central rule).
 import "server-only";
 
-import { count, desc, eq, sql } from "drizzle-orm";
+import { and, count, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { galleries } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
@@ -273,4 +273,60 @@ export async function getGalleryDetail(galleryId: string): Promise<GalleryDetail
  * rendering anything; see that page's own comment. */
 export async function getGalleryDetailBySlug(publicSlug: string): Promise<GalleryDetail | null> {
   return findGalleryDetail(eq(galleries.publicSlug, publicSlug));
+}
+
+export type ClientGalleryListItem = {
+  id: string;
+  title: string;
+  publicSlug: string;
+  status: Gallery["status"];
+  sessionDate: string;
+  photoCount: number;
+};
+
+/** Every gallery visible to a CLIENT (task #22's `/galleries` list) —
+ * scoped to exactly one user's own galleries and nothing else.
+ *
+ * `clientId` MUST be the SESSION's own `user.id` (`requireSession()`'s
+ * result) — never an id taken from the URL or a form field. This is the
+ * task's own core acceptance criterion, and it holds structurally here, not
+ * just by caller convention: this function has no "give me everyone's
+ * galleries" code path at all, admin or otherwise — `eq(galleries.clientId,
+ * clientId)` is unconditional. An admin calling this with their OWN user id
+ * (the same way any client would) gets back only galleries where THAT id is
+ * the client, i.e. their own — never every gallery in the system, which is
+ * the separate, deliberately-unfiltered job `getGalleriesWithDetails` above
+ * does for the ADMIN workspace.
+ *
+ * Also filters to `CLIENT_VISIBLE_STATUSES` (defined above,
+ * `isGalleryVisibleToClient`'s own backing set) in the SAME `where`, so a
+ * `draft` gallery is invisible here even though it already belongs to this
+ * client — the photographer is still assembling it, see that set's own
+ * comment for why draft must never reach a client. Done as a SQL `inArray`,
+ * not a post-fetch `.filter()`, for the same pagination-safety reason
+ * `getGalleriesWithDetails`'s header comment gives for its `orderBy`: once
+ * this list is paginated, filtering in JS after the DB has already picked a
+ * page would silently return the wrong rows. */
+export async function getGalleriesForClient(clientId: string): Promise<ClientGalleryListItem[]> {
+  const rows = await db.query.galleries.findMany({
+    where: and(
+      eq(galleries.clientId, clientId),
+      inArray(galleries.status, [...CLIENT_VISIBLE_STATUSES]),
+    ),
+    orderBy: desc(galleries.sessionDate),
+    with: {
+      // Only the id is needed to count — same reasoning as
+      // `getGalleriesWithDetails` above.
+      assets: { columns: { id: true } },
+    },
+  });
+
+  return rows.map((row) => ({
+    id: row.id,
+    title: row.title,
+    publicSlug: row.publicSlug,
+    status: row.status,
+    sessionDate: row.sessionDate,
+    photoCount: row.assets.length,
+  }));
 }

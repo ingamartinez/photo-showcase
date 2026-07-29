@@ -18,6 +18,7 @@ export function ProofLightbox({
   onImageError,
   onToggleSelection,
   pendingAssetIds,
+  isLocked,
 }: {
   assets: ProofAsset[];
   // Keyed by asset id. <ProofGrid> owns this state and shares it with the
@@ -35,6 +36,9 @@ export function ProofLightbox({
   // round trip and the exact same server-recomputed quota response.
   onToggleSelection: (assetId: string, nextSelected: boolean) => void;
   pendingAssetIds: Set<string>;
+  // Task #25: same UX-only mirror of the server-side lock as
+  // <ProofTile>'s own `isLocked` — see proof-grid.tsx's header comment.
+  isLocked: boolean;
 }) {
   const asset = assets[index];
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -115,7 +119,7 @@ export function ProofLightbox({
           <button
             type="button"
             onClick={() => onToggleSelection(asset.id, !asset.isSelected)}
-            disabled={pendingAssetIds.has(asset.id)}
+            disabled={pendingAssetIds.has(asset.id) || isLocked}
             aria-pressed={asset.isSelected}
             className={`rounded-full px-3 py-1 text-xs font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
               asset.isSelected ? "bg-accent text-bg" : "bg-fg/10 text-fg hover:bg-fg/20"

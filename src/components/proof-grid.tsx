@@ -55,6 +55,10 @@
 import { useCallback, useRef, useState } from "react";
 import { ProofLightbox } from "@/components/proof-lightbox";
 import { SelectionCounter } from "@/components/selection-counter";
+import {
+  SubmitSelectionPanel,
+  type SubmitSelectionOutcome,
+} from "@/components/submit-selection-panel";
 import { computeQuota, type QuotaResult } from "@/lib/quota";
 
 export type ProofAsset = {
@@ -66,18 +70,42 @@ export type ProofAsset = {
   proofUrl: string;
 };
 
+// Hand-rolled, not imported from `@/lib/db/schema`'s `Gallery["status"]`:
+// even a type-only import is erased at compile time and technically safe
+// to bundle, but this file's own header comment already tells the story of
+// ONE import off the wrong module breaking the production build (task #24's
+// review) — duplicating five string literals here costs nothing and removes
+// any need to reason about it ever again. Keep in sync with
+// `galleryStatus` in schema.ts.
+export type GalleryStatus = "draft" | "proofing" | "selected" | "delivered" | "archived";
+
+// A gallery is no longer accepting toggles or a fresh submission once it has
+// left `proofing` — see the submit route's own REOPEN POLICY comment
+// (src/app/api/galleries/[galleryId]/submit-selection/route.ts) for why only
+// an admin, not the client, can undo this.
+const SUBMITTED_STATUSES = new Set<GalleryStatus>(["selected", "delivered", "archived"]);
+
 type SelectionResponse = {
   asset: { id: string; isSelected: boolean; selectedAt: string | null };
   quota: QuotaResult;
 };
 
 export function ProofGrid({
+  galleryId,
   initialAssets,
+  initialStatus,
+  initialSubmittedAt,
   packageName,
   includedPhotosSnapshot,
   extraPhotoPriceCopSnapshot,
 }: {
+  // Task #25's submit route is keyed on this — see that route's own header
+  // comment for why the internal id, not the page's `publicSlug`, is the
+  // right identifier for a same-origin `fetch()` call.
+  galleryId: string;
   initialAssets: ProofAsset[];
+  initialStatus: GalleryStatus;
+  initialSubmittedAt: string | null;
   // The gallery's own frozen commercial terms (schema.ts's
   // `includedPhotosSnapshot` / `extraPhotoPriceCopSnapshot`) — passed
   // through from the server component that renders this page
@@ -112,6 +140,25 @@ export function ProofGrid({
       extraPhotoPriceCopSnapshot,
     }),
   );
+  // Task #25: once the gallery has left `proofing`, no further toggle or
+  // resubmission is possible — flipped locally the moment a submission
+  // succeeds (via `handleSubmitted` below), with no page reload, exactly
+  // like every other piece of state in this component. The SERVER is the
+  // real authority on this (both the PATCH selection route's
+  // `SELECTION_LOCKED_STATUSES` and the submit route's own status gate) —
+  // this only decides what this component renders; see
+  // <SubmitSelectionPanel>'s own header comment for the same disclaimer.
+  const [isLocked, setIsLocked] = useState(SUBMITTED_STATUSES.has(initialStatus));
+  const [submittedAt, setSubmittedAt] = useState<string | null>(initialSubmittedAt);
+  // `toggleSelection` below is a `useCallback` with an EMPTY dependency
+  // array (deliberate — see its own existing comments on why the guards
+  // inside it are refs, not state), so it would otherwise only ever see the
+  // `isLocked` value from the render it was first created in. Mirrored into
+  // a ref, updated at the single call site that can ever flip `isLocked`
+  // (`handleSubmitted` below), the same "ref for synchronous truth, state
+  // for rendering" split `pendingIdsRef` already uses.
+  const isLockedRef = useRef(isLocked);
+
   const [pendingIds, setPendingIds] = useState<Set<string>>(new Set());
   // The ACTUAL guard against a same-asset double toggle — `pendingIds`
   // (state, above) only disables the button visually and lags one render
@@ -142,6 +189,12 @@ export function ProofGrid({
   const appliedQuotaSequenceRef = useRef(0);
 
   const toggleSelection = useCallback(async (assetId: string, nextSelected: boolean) => {
+    // UX-only mirror of the PATCH route's own server-side lock — a click
+    // that somehow still reaches here (a stale render, a race with
+    // `handleSubmitted` below) would get refused with a 409 anyway; this
+    // just avoids firing the request at all once the UI already knows the
+    // answer.
+    if (isLockedRef.current) return;
     if (pendingIdsRef.current.has(assetId)) return;
     pendingIdsRef.current.add(assetId);
     setPendingIds(new Set(pendingIdsRef.current));
@@ -191,6 +244,20 @@ export function ProofGrid({
     }
   }, []);
 
+  // <SubmitSelectionPanel>'s success callback — the ONE place `isLocked`
+  // ever flips. Also replaces `quota` wholesale with the submit route's own
+  // recomputation, same "never trust a number this component didn't get
+  // handed by the server" stance `toggleSelection` already follows above,
+  // and covers the idempotent "already_submitted" outcome identically to a
+  // fresh "submitted" one — both mean "the gallery is locked, here is the
+  // real quota", which is all this component needs to know.
+  const handleSubmitted = useCallback((outcome: SubmitSelectionOutcome) => {
+    isLockedRef.current = true;
+    setIsLocked(true);
+    setSubmittedAt(outcome.submittedAt);
+    setQuota(outcome.quota);
+  }, []);
+
   if (initialAssets.length === 0) {
     return (
       <p className="text-fg-dim text-[15px] leading-relaxed">
@@ -216,6 +283,7 @@ export function ProofGrid({
               src={urls[asset.id] ?? asset.proofUrl}
               isSelected={isSelected}
               isPending={pendingIds.has(asset.id)}
+              isLocked={isLocked}
               onError={() => void refreshUrl(asset.id)}
               onOpen={() => setLightboxIndex(index)}
               onToggleSelection={() => void toggleSelection(asset.id, !isSelected)}
@@ -223,6 +291,16 @@ export function ProofGrid({
           );
         })}
       </ul>
+
+      <div className="mt-6 flex justify-end">
+        <SubmitSelectionPanel
+          galleryId={galleryId}
+          quota={quota}
+          isLocked={isLocked}
+          submittedAt={submittedAt}
+          onSubmitted={handleSubmitted}
+        />
+      </div>
 
       {lightboxIndex !== null && (
         <ProofLightbox
@@ -237,6 +315,7 @@ export function ProofGrid({
           onImageError={(assetId) => void refreshUrl(assetId)}
           onToggleSelection={(assetId, nextSelected) => void toggleSelection(assetId, nextSelected)}
           pendingAssetIds={pendingIds}
+          isLocked={isLocked}
         />
       )}
     </>
@@ -248,6 +327,7 @@ function ProofTile({
   src,
   isSelected,
   isPending,
+  isLocked,
   onError,
   onOpen,
   onToggleSelection,
@@ -256,6 +336,10 @@ function ProofTile({
   src: string;
   isSelected: boolean;
   isPending: boolean;
+  // Task #25: once submitted, every toggle button renders disabled — UX
+  // only, see this file's own `toggleSelection`/`isLockedRef` comment for
+  // the real, server-side gate this mirrors.
+  isLocked: boolean;
   onError: () => void;
   onOpen: () => void;
   onToggleSelection: () => void;
@@ -303,7 +387,7 @@ function ProofTile({
       <button
         type="button"
         onClick={onToggleSelection}
-        disabled={isPending}
+        disabled={isPending || isLocked}
         aria-pressed={isSelected}
         aria-label={
           isSelected

@@ -20,9 +20,12 @@ vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 // wholesale (this file never exercises either action) so this test never
 // has to also stand up `@/lib/db` writes or `@/auth`'s `signIn`, same
 // reasoning as gallery-form.test.tsx's mock of this same module.
+// `deliverGallery` is mocked here too (task #86): <GalleryWorkspace> now
+// renders <DeliverGalleryButton> itself, whose module imports it from here.
 vi.mock("@/app/dashboard/galleries/actions", () => ({
   publishGallery: vi.fn(),
   unlockSelection: vi.fn(),
+  deliverGallery: vi.fn(),
 }));
 
 const getGalleryDetailMock = vi.fn();

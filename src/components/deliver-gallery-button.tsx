@@ -1,7 +1,13 @@
 "use client";
 
-// Deliver action (task #27), rendered by the gallery detail page ONLY while
-// `gallery.status === "selected"` — same "hiding is UX, not authority" stance
+// Deliver action (task #27), rendered by <GalleryWorkspace> — which owns the
+// live asset list — and gated on its `canDeliver` prop, i.e. only while
+// `gallery.status === "selected"`. Task #86 moved it here from the gallery
+// detail page: as a sibling of the workspace it was fed a pending-finals count
+// computed once at page render, so it stayed disabled after the last final
+// uploaded while the counter beside it already said everything was in. Reading
+// the workspace's own live count is what stops those two ever disagreeing.
+// Same "hiding is UX, not authority" stance
 // documented on `isDeliverable()` in
 // src/app/dashboard/galleries/actions.ts: `deliverGallery` re-checks the
 // gallery's real status AND every selected asset's own `finalKey` itself, on

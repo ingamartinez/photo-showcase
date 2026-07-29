@@ -13,20 +13,25 @@ import { and, count, eq } from "drizzle-orm";
 import { AuthError } from "next-auth";
 import { signIn } from "@/auth";
 import { db } from "@/lib/db";
-import { assets, galleries, packages, users } from "@/lib/db/schema";
+import { assets, galleries, galleryClients, packages } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 import { requireAdmin } from "@/lib/auth-guards";
+import { getGalleryClients } from "@/lib/galleries";
 import { generateGallerySlug } from "@/lib/slug";
 import { authEnv, resendEnv } from "@/lib/env";
 import { computeQuota } from "@/lib/quota";
 import { sendUnlockNotificationEmail } from "@/lib/unlock-notification-email";
 
 const createGallerySchema = z.object({
-  // Both ids come from <select> pickers fed by getClientsForPicker() /
-  // getActivePackages() (src/lib/clients.ts, src/lib/packages.ts) — a plain
-  // presence + shape check here is enough; a value that doesn't actually
-  // reference an existing row is caught below, at the insert itself.
-  clientId: z.string().trim().min(1, "Elegí un cliente."),
+  // Fed by a `<select multiple>` picker backed by getClientsForPicker()
+  // (src/lib/clients.ts) — a plain presence + shape check here is enough; a
+  // value that doesn't actually reference an existing row is caught below,
+  // at the insert itself. Task #94: a gallery can now belong to SEVERAL
+  // clients, so this is an ARRAY, not a single id — `.min(1)` is the
+  // APPLICATION-layer half of "a gallery with zero clients is unreachable by
+  // design" (schema.ts's own comment on `galleryClients` explains why the
+  // database can't enforce that lower bound by itself).
+  clientIds: z.array(z.string().trim().min(1)).min(1, "Elegí al menos un cliente."),
   packageId: z
     .string()
     .trim()
@@ -74,7 +79,10 @@ export async function createGallery(
   await requireAdmin();
 
   const parsed = createGallerySchema.safeParse({
-    clientId: formData.get("clientId"),
+    // `<select multiple>` posts one FormData entry per selected option, all
+    // under the same `name` — `getAll`, not `get`, is what surfaces every
+    // one of them (task #94).
+    clientIds: formData.getAll("clientIds"),
     packageId: formData.get("packageId"),
     title: formData.get("title"),
     sessionDate: formData.get("sessionDate"),
@@ -107,21 +115,50 @@ export async function createGallery(
     return { status: "error", message: "Ese paquete ya no está disponible." };
   }
 
+  // Deduped defensively before the insert — a native `<select multiple>`
+  // cannot post the same option twice, but a crafted request could. Without
+  // this, a duplicate pair would hit `gallery_clients`'s composite primary
+  // key (schema.ts) and raise a 23505 SQLSTATE this function has no catch
+  // for at all (the `catch` block below only ever handles
+  // `FOREIGN_KEY_VIOLATION`) — an unhandled 23505 would escape as an
+  // uncaught 500, indistinguishable in the error alone from an actual
+  // `public_slug` collision (`generateGallerySlug()`'s own 128 bits of
+  // randomness makes that collision astronomically unlikely, but not
+  // impossible — see that function's own comment). Deduping here removes
+  // the only REACHABLE source of a `gallery_clients` 23505 entirely, rather
+  // than trying to add a second, ambiguous catch for it.
+  const clientIds = [...new Set(parsed.data.clientIds)];
+
   try {
-    await db.insert(galleries).values({
-      clientId: parsed.data.clientId,
-      packageId: pkg.id,
-      title: parsed.data.title,
-      sessionDate: parsed.data.sessionDate,
-      // Unguessable, generated fresh for every gallery — never derived from
-      // the title or a counter (schema.ts's comment on `publicSlug`).
-      publicSlug: generateGallerySlug(),
-      includedPhotosSnapshot: pkg.includedPhotos,
-      extraPhotoPriceCopSnapshot: pkg.extraPhotoPriceCop,
+    // The gallery row and its client memberships are inserted together, in
+    // ONE transaction (task #94): a gallery that committed with zero clients
+    // attached would be the exact "unreachable by design" state
+    // schema.ts's comment on `galleryClients` says the app relies on the
+    // FORM to prevent — a partial failure here (gallery inserted, memberships
+    // not) must never leave that state sitting in the database.
+    await db.transaction(async (tx) => {
+      const [gallery] = await tx
+        .insert(galleries)
+        .values({
+          packageId: pkg.id,
+          title: parsed.data.title,
+          sessionDate: parsed.data.sessionDate,
+          // Unguessable, generated fresh for every gallery — never derived
+          // from the title or a counter (schema.ts's comment on
+          // `publicSlug`).
+          publicSlug: generateGallerySlug(),
+          includedPhotosSnapshot: pkg.includedPhotos,
+          extraPhotoPriceCopSnapshot: pkg.extraPhotoPriceCop,
+        })
+        .returning({ id: galleries.id });
+
+      await tx
+        .insert(galleryClients)
+        .values(clientIds.map((clientId) => ({ galleryId: gallery!.id, userId: clientId })));
     });
   } catch (error) {
     if (hasPostgresErrorCode(error, FOREIGN_KEY_VIOLATION)) {
-      return { status: "error", message: "Elegí un cliente válido." };
+      return { status: "error", message: "Elegí clientes válidos." };
     }
     throw error;
   }
@@ -182,6 +219,21 @@ function isPublishable(status: Gallery["status"]): boolean {
  * mildly redundant, never incorrect or insecure, since each link is its own
  * single-use token) and retries the UPDATE. This is a smaller, safer leak
  * than a gallery stuck showing "proofing" with no client ever notified.
+ *
+ * Task #94 — SEVERAL clients, ALL-OR-NOTHING send: a gallery can now have
+ * more than one client attached, so this sends the SAME magic-link email to
+ * every one of them (`Promise.allSettled`, not a `for` loop with an early
+ * `return` — one client's Resend failure must never stop the others from
+ * getting theirs). The status flip below still only happens if EVERY send
+ * succeeded — a partial send (2 of 3 clients notified) is treated the same
+ * as a total failure for the PURPOSE of the status flip, not swallowed into
+ * a vague "something went wrong": the returned error message names exactly
+ * which address(es) failed, and retrying is safe for the clients who
+ * already got theirs (mildly redundant, never incorrect, same reasoning as
+ * the single-client case above — each magic link is its own single-use
+ * token). This preserves the ORIGINAL invariant this function's ordering
+ * comment already relies on ("never half-published without every client
+ * notified"), generalized from one recipient to N instead of replaced.
  */
 export async function publishGallery(
   _prevState: PublishGalleryState,
@@ -220,42 +272,55 @@ export async function publishGallery(
     return { status: "error", message: "Subí al menos una foto antes de publicar la galería." };
   }
 
-  const [client] = await db
-    .select({ email: users.email })
-    .from(users)
-    .where(eq(users.id, gallery.clientId))
-    .limit(1);
-  if (!client) {
-    // Unreachable in practice — `galleries.clientId` is a NOT NULL FK onto
-    // `users` — but this action never trusts that a row it just read by id
-    // still exists a moment later without checking, same stance as
-    // createGallery's own defense-in-depth checks above.
-    return { status: "error", message: "No encontramos al cliente de esta galería." };
+  // Task #94: a gallery can have SEVERAL clients now — `gallery.clientId`
+  // is gone entirely (schema.ts), replaced by this join-table read. An
+  // empty list is unreachable BY DESIGN (gallery-form.tsx requires at least
+  // one at creation, and there is no client-removal path yet to strip the
+  // last one afterward) but this action never trusts that invariant
+  // blindly, same stance as createGallery's own defense-in-depth checks
+  // above.
+  const clients = await getGalleryClients(gallery.id);
+  if (clients.length === 0) {
+    return { status: "error", message: "No encontramos clientes para esta galería." };
   }
 
-  try {
-    await signIn("gallery-access", {
-      email: client.email,
-      redirect: false,
-      // Task #22/#23 (backlog, epic #4) own building the page this points
-      // at; the URL shape itself — `publicSlug`, the only identifier the
-      // epic allows in a URL (PLAN.md §6) — is settled here, ahead of that
-      // page. This app already ships forward-pointing links to
-      // not-yet-built destinations on purpose (see
-      // src/app/dashboard/page.tsx's own comment on /dashboard/clients
-      // 404ing "ahead of its content"); until #22/#23 land, following this
-      // link 404s after establishing a real, valid session — not broken,
-      // just early.
-      redirectTo: `/galleries/${gallery.publicSlug}`,
-    });
-  } catch (error) {
-    if (error instanceof AuthError) {
-      return {
-        status: "error",
-        message: "No pudimos enviarle el correo al cliente. Probá de nuevo en un momento.",
-      };
-    }
-    throw error;
+  const sendResults = await Promise.allSettled(
+    clients.map((client) =>
+      signIn("gallery-access", {
+        email: client.email,
+        redirect: false,
+        // Task #22/#23 (backlog, epic #4) own building the page this points
+        // at; the URL shape itself — `publicSlug`, the only identifier the
+        // epic allows in a URL (PLAN.md §6) — is settled here, ahead of that
+        // page. This app already ships forward-pointing links to
+        // not-yet-built destinations on purpose (see
+        // src/app/dashboard/page.tsx's own comment on /dashboard/clients
+        // 404ing "ahead of its content"); until #22/#23 land, following this
+        // link 404s after establishing a real, valid session — not broken,
+        // just early.
+        redirectTo: `/galleries/${gallery.publicSlug}`,
+      }),
+    ),
+  );
+
+  // A rejection that ISN'T an `AuthError` is a genuine bug/outage this
+  // action has no story for (same "let it crash rather than silently
+  // pretend" stance the single-client version already took) — surfaced by
+  // rethrowing, not folded into the partial-failure message below.
+  const unexpected = sendResults.find(
+    (result): result is PromiseRejectedResult =>
+      result.status === "rejected" && !(result.reason instanceof AuthError),
+  );
+  if (unexpected) throw unexpected.reason;
+
+  const failedEmails = clients
+    .filter((_, index) => sendResults[index]!.status === "rejected")
+    .map((client) => client.email);
+  if (failedEmails.length > 0) {
+    return {
+      status: "error",
+      message: `No pudimos enviarle el correo a: ${failedEmails.join(", ")}. Probá de nuevo — quien ya lo recibió puede recibir un segundo correo sin problema.`,
+    };
   }
 
   try {
@@ -446,11 +511,13 @@ export async function unlockSelection(
   }
   const unlockedGallery = updated[0]!;
 
-  const [client] = await db
-    .select({ name: users.name, email: users.email })
-    .from(users)
-    .where(eq(users.id, unlockedGallery.clientId))
-    .limit(1);
+  // Task #94: a gallery can have SEVERAL clients now — `unlockedGallery.
+  // clientId` is gone entirely (schema.ts), replaced by this join-table
+  // read. An empty list is unreachable BY DESIGN (gallery-form.tsx requires
+  // at least one client at creation, and there is no removal path yet), but
+  // never trusted blindly, same stance as this file's own
+  // `publishGallery`/`createGallery` lookups above.
+  const clients = await getGalleryClients(unlockedGallery.id);
 
   // Quota AT THE MOMENT OF UNLOCK — since a `selected` gallery's assets
   // cannot be toggled (`SELECTION_LOCKED_STATUSES` on the sibling PATCH
@@ -468,43 +535,73 @@ export async function unlockSelection(
     extraPhotoPriceCopSnapshot: unlockedGallery.extraPhotoPriceCopSnapshot,
   });
 
-  let emailFailed = false;
-  if (!client) {
-    // Unreachable in practice — `galleries.clientId` is a NOT NULL FK onto
-    // `users` — but never trusted blindly, same stance as this file's own
-    // `publishGallery`/`createGallery` lookups above.
-    emailFailed = true;
+  // Task #94 — SEVERAL clients, PARTIAL failure named explicitly: this used
+  // to be a single best-effort send collapsed into one boolean
+  // (`emailFailed`). With N clients, "one address bounced, the rest didn't"
+  // is a new state this product hasn't had before — reported here as EXACTLY
+  // which address(es) failed, not folded into a generic "couldn't notify
+  // the client" the way a single boolean would. The unlock itself is NEVER
+  // rolled back for an email failure (partial or total) — same "the state
+  // transition already committed, notification is best-effort" stance the
+  // header comment above already takes; this only changes what a failure
+  // REPORTS, not what it does.
+  let failedEmails: string[] = [];
+  if (clients.length === 0) {
+    // Unreachable BY DESIGN (see the lookup above) — treated the same as
+    // every client's send failing, since there is nobody to notify either
+    // way.
+    failedEmails = [];
   } else {
     try {
       const { RESEND_API_KEY, EMAIL_FROM } = resendEnv();
       const { AUTH_URL } = authEnv();
-      await sendUnlockNotificationEmail({
-        apiKey: RESEND_API_KEY,
-        from: EMAIL_FROM,
-        to: client.email,
-        clientName: client.name,
-        clientEmail: client.email,
-        galleryTitle: unlockedGallery.title,
-        // The CLIENT's own gallery URL (`/galleries/[publicSlug]`), not the
-        // admin dashboard URL `sendSubmissionNotificationEmail` builds —
-        // see src/lib/unlock-notification-email.ts's own comment on why.
-        galleryUrl: new URL(`/galleries/${unlockedGallery.publicSlug}`, AUTH_URL).toString(),
-        reason,
-        quota,
-      });
+      // The CLIENT's own gallery URL (`/galleries/[publicSlug]`), not the
+      // admin dashboard URL `sendSubmissionNotificationEmail` builds — see
+      // src/lib/unlock-notification-email.ts's own comment on why. Built
+      // once and reused for every client — it does not vary per recipient.
+      const galleryUrl = new URL(`/galleries/${unlockedGallery.publicSlug}`, AUTH_URL).toString();
+
+      const sendResults = await Promise.allSettled(
+        clients.map((client) =>
+          sendUnlockNotificationEmail({
+            apiKey: RESEND_API_KEY,
+            from: EMAIL_FROM,
+            to: client.email,
+            clientName: client.name,
+            clientEmail: client.email,
+            galleryTitle: unlockedGallery.title,
+            galleryUrl,
+            reason,
+            quota,
+          }),
+        ),
+      );
+      failedEmails = clients
+        .filter((_, index) => sendResults[index]!.status === "rejected")
+        .map((client) => client.email);
     } catch {
-      emailFailed = true;
+      // `resendEnv()`/`authEnv()` itself threw (missing config) before any
+      // send was even attempted — every client counts as unreached.
+      failedEmails = clients.map((client) => client.email);
     }
   }
 
   revalidatePath(`/dashboard/galleries/${unlockedGallery.id}`);
   revalidatePath("/dashboard/galleries");
 
-  if (emailFailed) {
+  if (clients.length === 0) {
     return {
       status: "unlocked_email_failed",
       message:
-        "Desbloqueamos la selección, pero no pudimos avisarle al cliente por correo. " +
+        "Desbloqueamos la selección, pero no encontramos clientes a quién avisar por correo. " +
+        "Avisale por otro medio (WhatsApp / llamada).",
+    };
+  }
+  if (failedEmails.length > 0) {
+    return {
+      status: "unlocked_email_failed",
+      message:
+        `Desbloqueamos la selección, pero no pudimos avisarle por correo a: ${failedEmails.join(", ")}. ` +
         "Avisale por otro medio (WhatsApp / llamada).",
     };
   }
@@ -671,46 +768,61 @@ export async function deliverGallery(
   }
   const deliveredGallery = updated[0]!;
 
-  const [client] = await db
-    .select({ email: users.email })
-    .from(users)
-    .where(eq(users.id, deliveredGallery.clientId))
-    .limit(1);
+  // Task #94: a gallery can have SEVERAL clients now —
+  // `deliveredGallery.clientId` is gone entirely (schema.ts), replaced by
+  // this join-table read. An empty list is unreachable BY DESIGN
+  // (gallery-form.tsx requires at least one client at creation, and there is
+  // no removal path yet), but never trusted blindly, same stance as this
+  // file's own `publishGallery`/`unlockSelection` lookups above.
+  const clients = await getGalleryClients(deliveredGallery.id);
 
-  let emailFailed = false;
-  if (!client) {
-    // Unreachable in practice — `galleries.clientId` is a NOT NULL FK onto
-    // `users` — but never trusted blindly, same stance as this file's own
-    // `publishGallery`/`unlockSelection` lookups above.
-    emailFailed = true;
-  } else {
-    try {
-      // See this function's own header comment for why this reuses
-      // `signIn("gallery-access", ...)` — the SAME provider `publishGallery`
-      // uses — rather than a bare gallery URL: this is what actually
-      // guarantees "a working link", not just "a link".
-      await signIn("gallery-access", {
-        email: client.email,
-        redirect: false,
-        redirectTo: `/galleries/${deliveredGallery.publicSlug}`,
-      });
-    } catch (error) {
-      if (error instanceof AuthError) {
-        emailFailed = true;
-      } else {
-        throw error;
-      }
-    }
+  // SEVERAL clients, PARTIAL failure named explicitly — same shape as
+  // `publishGallery`'s own send loop above (this reuses the identical
+  // `signIn("gallery-access", ...)` mechanism, see this function's own
+  // header comment for why), reported via WHICH address(es) failed rather
+  // than a single collapsed boolean, same reasoning as `unlockSelection`'s
+  // own rewrite.
+  let failedEmails: string[] = [];
+  if (clients.length > 0) {
+    const sendResults = await Promise.allSettled(
+      clients.map((client) =>
+        signIn("gallery-access", {
+          email: client.email,
+          redirect: false,
+          redirectTo: `/galleries/${deliveredGallery.publicSlug}`,
+        }),
+      ),
+    );
+
+    // Same "an unexpected, non-`AuthError` rejection is a bug/outage, not a
+    // partial-send state" stance as `publishGallery` above.
+    const unexpected = sendResults.find(
+      (result): result is PromiseRejectedResult =>
+        result.status === "rejected" && !(result.reason instanceof AuthError),
+    );
+    if (unexpected) throw unexpected.reason;
+
+    failedEmails = clients
+      .filter((_, index) => sendResults[index]!.status === "rejected")
+      .map((client) => client.email);
   }
 
   revalidatePath(`/dashboard/galleries/${deliveredGallery.id}`);
   revalidatePath("/dashboard/galleries");
 
-  if (emailFailed) {
+  if (clients.length === 0) {
     return {
       status: "delivered_email_failed",
       message:
-        "Entregamos la galería, pero no pudimos avisarle al cliente por correo. " +
+        "Entregamos la galería, pero no encontramos clientes a quién avisar por correo. " +
+        "Avisale por otro medio (WhatsApp / llamada).",
+    };
+  }
+  if (failedEmails.length > 0) {
+    return {
+      status: "delivered_email_failed",
+      message:
+        `Entregamos la galería, pero no pudimos avisarle por correo a: ${failedEmails.join(", ")}. ` +
         "Avisale por otro medio (WhatsApp / llamada).",
     };
   }

@@ -35,14 +35,15 @@ export type WorkspaceAsset = {
 export function GalleryWorkspace({
   galleryId,
   initialAssets,
-  clientEmail,
+  clientEmails,
   canDeliver,
 }: {
   galleryId: string;
   initialAssets: WorkspaceAsset[];
-  // The client's email, needed only to render <DeliverGalleryButton>'s own
-  // confirmation copy — see that component's own prop comment.
-  clientEmail: string;
+  // Every client's email (task #94 — a gallery can have several now),
+  // needed only to render <DeliverGalleryButton>'s own confirmation copy —
+  // see that component's own prop comment.
+  clientEmails: string[];
   // Task #86 fix: whether the gallery's OWN status is currently "selected"
   // (computed server-side — see src/app/dashboard/galleries/[galleryId]/page.tsx).
   // Hiding the button outside "selected" is UX only, same "hiding is not the
@@ -136,7 +137,7 @@ export function GalleryWorkspace({
           {canDeliver && (
             <DeliverGalleryButton
               galleryId={galleryId}
-              clientEmail={clientEmail}
+              clientEmails={clientEmails}
               pendingFinalsCount={pendingFinalsCount}
             />
           )}

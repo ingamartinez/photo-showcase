@@ -34,10 +34,14 @@ afterEach(() => {
 });
 
 describe("GalleryForm", () => {
-  it("renders client, package, title and session-date fields", () => {
+  it("renders clients (multi-select), package, title and session-date fields", () => {
     render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
 
-    expect(screen.getByLabelText("Cliente")).toBeDefined();
+    // Task #94: a gallery can have several clients now — "Clientes"
+    // (plural), a `<select multiple>`.
+    const clientsSelect = screen.getByLabelText("Clientes");
+    expect(clientsSelect).toBeDefined();
+    expect(clientsSelect).toHaveProperty("multiple", true);
     expect(screen.getByLabelText("Paquete")).toBeDefined();
     expect(screen.getByLabelText("Título")).toBeDefined();
     expect(screen.getByLabelText("Fecha de la sesión")).toBeDefined();
@@ -50,12 +54,14 @@ describe("GalleryForm", () => {
     expect(screen.getByRole("option", { name: "beto@example.com" })).toBeDefined();
   });
 
-  it("submits the chosen client, package, title and session date through the action", async () => {
+  it("submits every SELECTED client (several), plus package, title and session date, through the action", async () => {
     createGalleryMock.mockResolvedValue({ status: "created" });
     const user = userEvent.setup();
     render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
 
-    await user.selectOptions(screen.getByLabelText("Cliente"), "u1");
+    // Task #94: selecting BOTH options on the multi-select — the action
+    // must receive both, not just the first.
+    await user.selectOptions(screen.getByLabelText("Clientes"), ["u1", "u2"]);
     await user.selectOptions(screen.getByLabelText("Paquete"), "1");
     await user.type(screen.getByLabelText("Título"), "Boda Ana y Beto");
     await user.type(screen.getByLabelText("Fecha de la sesión"), "2026-08-01");
@@ -63,7 +69,7 @@ describe("GalleryForm", () => {
 
     await screen.findByText("Galería creada.");
     const [, formData] = createGalleryMock.mock.calls[0] as [CreateGalleryState, FormData];
-    expect(formData.get("clientId")).toBe("u1");
+    expect(formData.getAll("clientIds")).toEqual(["u1", "u2"]);
     expect(formData.get("packageId")).toBe("1");
     expect(formData.get("title")).toBe("Boda Ana y Beto");
     expect(formData.get("sessionDate")).toBe("2026-08-01");
@@ -77,7 +83,7 @@ describe("GalleryForm", () => {
     const user = userEvent.setup();
     render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
 
-    await user.selectOptions(screen.getByLabelText("Cliente"), "u1");
+    await user.selectOptions(screen.getByLabelText("Clientes"), "u1");
     await user.selectOptions(screen.getByLabelText("Paquete"), "1");
     await user.type(screen.getByLabelText("Título"), "Boda");
     await user.type(screen.getByLabelText("Fecha de la sesión"), "2026-08-01");

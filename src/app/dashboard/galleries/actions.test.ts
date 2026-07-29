@@ -80,16 +80,74 @@ function eqColumnAndValue(condition: unknown): { column?: string; value?: unknow
 vi.mock("@/lib/db", async () => {
   const { PostgresError } = await import("postgres");
   const { DrizzleQueryError } = await import("drizzle-orm");
-  const { packages, galleries } = await import("@/lib/db/schema");
+  const { packages, galleries, galleryClients } = await import("@/lib/db/schema");
 
   const packageRows: Row[] = [];
   const userRows: Row[] = [];
   const galleryRows: Row[] = [];
+  const galleryClientRows: Row[] = [];
 
   function throwWrapped(message: string, code: string): never {
     const pgError = Object.assign(new PostgresError(message), { code });
     throw new DrizzleQueryError("insert into galleries ...", [], pgError);
   }
+
+  // Factory rather than a single fixed function, so `db.transaction` below
+  // can hand its callback a version that writes into PENDING arrays instead
+  // of the committed ones directly — the only way to make a mid-transaction
+  // failure's rollback actually observable (review finding: this fake used
+  // to write straight into the shared committed arrays, so "never a gallery
+  // with zero clients" was documented but unproven — a gallery row would
+  // have stuck around even after the `gallery_clients` insert failed).
+  // Uniqueness/FK checks still read the COMMITTED arrays (`galleryRows`/
+  // `userRows`), matching Postgres: a slug collision or a bad client id is
+  // checked against what's actually durable, not against another
+  // in-progress transaction's own uncommitted rows.
+  function makeInsertInto(targetGalleryRows: Row[], targetGalleryClientRows: Row[]) {
+    return function insertInto(table: unknown) {
+      return {
+        values: (rowOrRows: Row | Row[]) => {
+          const rows = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
+
+          if (table === galleries) {
+            const row = rows[0]!;
+            if (galleryRows.some((g) => g.publicSlug === row.publicSlug)) {
+              throwWrapped(
+                'duplicate key value violates unique constraint "galleries_public_slug_idx"',
+                "23505",
+              );
+            }
+            const stored: Row = { id: crypto.randomUUID(), createdAt: new Date(), ...row };
+            targetGalleryRows.push(stored);
+            const resultPromise = Promise.resolve([stored]);
+            return Object.assign(resultPromise, {
+              returning: async () => [stored],
+            });
+          }
+
+          if (table === galleryClients) {
+            for (const row of rows) {
+              if (!userRows.some((u) => u.id === row.userId)) {
+                throwWrapped(
+                  'insert or update on table "gallery_clients" violates foreign key constraint "gallery_clients_user_id_users_id_fk"',
+                  "23503",
+                );
+              }
+            }
+            const stored = rows.map((row) => ({ createdAt: new Date(), ...row }));
+            targetGalleryClientRows.push(...stored);
+            const resultPromise = Promise.resolve(stored);
+            return Object.assign(resultPromise, {
+              returning: async () => stored,
+            });
+          }
+
+          throw new Error("this fake only supports inserting galleries/galleryClients");
+        },
+      };
+    };
+  }
+  const insertInto = makeInsertInto(galleryRows, galleryClientRows);
 
   return {
     db: {
@@ -105,31 +163,33 @@ vi.mock("@/lib/db", async () => {
           }),
         }),
       }),
-      insert: (table: unknown) => ({
-        values: async (row: Row) => {
-          if (table !== galleries) throw new Error("this fake only supports inserting galleries");
-          if (!userRows.some((u) => u.id === row.clientId)) {
-            throwWrapped(
-              'insert or update on table "galleries" violates foreign key constraint "galleries_client_id_users_id_fk"',
-              "23503",
-            );
-          }
-          if (galleryRows.some((g) => g.publicSlug === row.publicSlug)) {
-            throwWrapped(
-              'duplicate key value violates unique constraint "galleries_public_slug_idx"',
-              "23505",
-            );
-          }
-          const stored: Row = { id: crypto.randomUUID(), createdAt: new Date(), ...row };
-          galleryRows.push(stored);
-          return [stored];
-        },
-      }),
+      insert: (table: unknown) => insertInto(table),
+      // Buffers every write the callback makes into PENDING arrays, and only
+      // merges them into the committed `galleryRows`/`galleryClientRows`
+      // AFTER `fn` resolves without throwing — a throw propagates straight
+      // out of this `async` function instead, and the pending arrays are
+      // simply discarded, exactly mirroring a real Postgres ROLLBACK. See
+      // this file's own comment on `makeInsertInto` above for why the
+      // uniqueness/FK checks still read the committed arrays regardless.
+      transaction: async (
+        fn: (tx: { insert: ReturnType<typeof makeInsertInto> }) => Promise<unknown>,
+      ) => {
+        const pendingGalleryRows: Row[] = [];
+        const pendingGalleryClientRows: Row[] = [];
+        const result = await fn({
+          insert: makeInsertInto(pendingGalleryRows, pendingGalleryClientRows),
+        });
+        galleryRows.push(...pendingGalleryRows);
+        galleryClientRows.push(...pendingGalleryClientRows);
+        return result;
+      },
       // Only what src/lib/galleries.ts's getGalleriesWithDetails() needs:
       // real joins against the SAME userRows/packageRows arrays `insert`
       // above reads/mutates, so a test that mutates a package row after
       // creating a gallery is read back through a genuinely live join, not a
-      // second, disconnected fixture.
+      // second, disconnected fixture. `galleryClients` here mirrors the
+      // REAL relational query's shape (task #94) — one row per membership,
+      // each carrying its joined `user`.
       query: {
         galleries: {
           findMany: async () =>
@@ -137,14 +197,21 @@ vi.mock("@/lib/db", async () => {
               .sort((a, b) => (b.createdAt as Date).getTime() - (a.createdAt as Date).getTime())
               .map((g) => ({
                 ...g,
-                client: userRows.find((u) => u.id === g.clientId),
+                galleryClients: galleryClientRows
+                  .filter((gc) => gc.galleryId === g.id)
+                  .map((gc) => ({ user: userRows.find((u) => u.id === gc.userId) })),
                 package: packageRows.find((p) => p.id === g.packageId),
                 assets: [],
               })),
         },
       },
       // Test-only escape hatch, not part of the real `db` shape.
-      __rows: { packages: packageRows, users: userRows, galleries: galleryRows },
+      __rows: {
+        packages: packageRows,
+        users: userRows,
+        galleries: galleryRows,
+        galleryClients: galleryClientRows,
+      },
     },
   };
 });
@@ -163,17 +230,26 @@ function clientSession(): Session {
   } as Session;
 }
 
-function formDataWith(fields: Record<string, string | undefined>) {
+function formDataWith(fields: Record<string, string | string[] | undefined>) {
   const data = new FormData();
   for (const [key, value] of Object.entries(fields)) {
-    if (value !== undefined) data.set(key, value);
+    if (value === undefined) continue;
+    // Task #94: `clientIds` is an array — `<select multiple>` posts one
+    // FormData entry per selected option under the SAME name, so this
+    // `.append`s each one instead of `.set`ting a single value, matching
+    // what `formData.getAll("clientIds")` (createGallery's own read) expects.
+    if (Array.isArray(value)) {
+      for (const v of value) data.append(key, v);
+    } else {
+      data.set(key, value);
+    }
   }
   return data;
 }
 
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
-    db: { __rows: { packages: Row[]; users: Row[]; galleries: Row[] } };
+    db: { __rows: { packages: Row[]; users: Row[]; galleries: Row[]; galleryClients: Row[] } };
   };
   return db;
 }
@@ -216,6 +292,7 @@ beforeEach(async () => {
   db.__rows.packages.length = 0;
   db.__rows.users.length = 0;
   db.__rows.galleries.length = 0;
+  db.__rows.galleryClients.length = 0;
   db.__rows.packages.push({ ...ESTANDAR_PACKAGE }, { ...RETIRED_PACKAGE });
   db.__rows.users.push({ ...CLIENT_ROW });
 });
@@ -229,7 +306,7 @@ describe("createGallery authorization", () => {
       createGallery(
         { status: "idle" },
         formDataWith({
-          clientId: "client-1",
+          clientIds: ["client-1"],
           packageId: "1",
           title: "Boda",
           sessionDate: "2026-08-01",
@@ -249,7 +326,7 @@ describe("createGallery authorization", () => {
       createGallery(
         { status: "idle" },
         formDataWith({
-          clientId: "client-1",
+          clientIds: ["client-1"],
           packageId: "1",
           title: "Boda",
           sessionDate: "2026-08-01",
@@ -282,7 +359,7 @@ describe("createGallery validation", () => {
     const result = await createGallery(
       { status: "idle" },
       formDataWith({
-        clientId: "client-1",
+        clientIds: ["client-1"],
         packageId: "not-a-number",
         title: "Boda",
         sessionDate: "2026-08-01",
@@ -299,7 +376,7 @@ describe("createGallery validation", () => {
     const result = await createGallery(
       { status: "idle" },
       formDataWith({
-        clientId: "client-1",
+        clientIds: ["client-1"],
         packageId: "1",
         title: "  ",
         sessionDate: "2026-08-01",
@@ -316,7 +393,7 @@ describe("createGallery validation", () => {
     const result = await createGallery(
       { status: "idle" },
       formDataWith({
-        clientId: "client-1",
+        clientIds: ["client-1"],
         packageId: "1",
         title: "Boda",
         sessionDate: "08/01/2026",
@@ -339,7 +416,7 @@ describe("createGallery package resolution", () => {
     const result = await createGallery(
       { status: "idle" },
       formDataWith({
-        clientId: "client-1",
+        clientIds: ["client-1"],
         packageId: "999",
         title: "Boda",
         sessionDate: "2026-08-01",
@@ -359,7 +436,7 @@ describe("createGallery package resolution", () => {
     const result = await createGallery(
       { status: "idle" },
       formDataWith({
-        clientId: "client-1",
+        clientIds: ["client-1"],
         packageId: "2",
         title: "Boda",
         sessionDate: "2026-08-01",
@@ -384,7 +461,7 @@ describe("createGallery success + frozen terms", () => {
     const result = await createGallery(
       { status: "idle" },
       formDataWith({
-        clientId: "client-1",
+        clientIds: ["client-1"],
         packageId: "1",
         title: "Boda Ana y Beto",
         sessionDate: "2026-08-01",
@@ -402,7 +479,7 @@ describe("createGallery success + frozen terms", () => {
     await createGallery(
       { status: "idle" },
       formDataWith({
-        clientId: "client-1",
+        clientIds: ["client-1"],
         packageId: "1",
         title: "Boda Ana y Beto",
         sessionDate: "2026-08-01",
@@ -411,7 +488,6 @@ describe("createGallery success + frozen terms", () => {
 
     const stored = db.__rows.galleries.find((g) => g.title === "Boda Ana y Beto");
     expect(stored).toMatchObject({
-      clientId: "client-1",
       packageId: 1,
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
@@ -419,6 +495,14 @@ describe("createGallery success + frozen terms", () => {
     // `status` isn't written by this action at all — the DB column default
     // ("draft", schema.ts) is what puts a new gallery there, not this insert.
     expect(stored).not.toHaveProperty("status");
+    // Task #94: the gallery row itself carries NO client reference at all
+    // anymore (schema.ts) — membership lives entirely in the separate
+    // `gallery_clients` join table, written in the SAME transaction.
+    expect(stored).not.toHaveProperty("clientId");
+    expect(stored).not.toHaveProperty("clientIds");
+    expect(db.__rows.galleryClients).toEqual([
+      expect.objectContaining({ galleryId: stored!.id, userId: "client-1" }),
+    ]);
   });
 
   // THE highest-value test in this slice (per the task): prove the snapshot
@@ -433,7 +517,7 @@ describe("createGallery success + frozen terms", () => {
     const created = await createGallery(
       { status: "idle" },
       formDataWith({
-        clientId: "client-1",
+        clientIds: ["client-1"],
         packageId: "1",
         title: "Boda Ana y Beto",
         sessionDate: "2026-08-01",
@@ -468,7 +552,7 @@ describe("createGallery success + frozen terms", () => {
     const result = await createGallery(
       { status: "idle" },
       formDataWith({
-        clientId: "does-not-exist",
+        clientIds: ["does-not-exist"],
         packageId: "1",
         title: "Boda",
         sessionDate: "2026-08-01",
@@ -476,7 +560,83 @@ describe("createGallery success + frozen terms", () => {
     );
 
     expect(result.status).toBe("error");
-    expect(result.message).toBe("Elegí un cliente válido.");
+    expect(result.message).toBe("Elegí clientes válidos.");
+  });
+
+  // Review finding on task #94: this suite's own comment used to claim
+  // "never a gallery with zero clients" (the reason `createGallery` wraps
+  // both inserts in ONE transaction, actions.ts's own header comment) was
+  // "documented but unproven" — the fake `db.transaction` wrote straight
+  // into the committed row arrays, so a gallery row would have stuck around
+  // even after the SAME failure the test above already exercises. Proven
+  // here directly: the gallery insert that ran first inside the SAME failed
+  // transaction as the test above must never be visible afterward either.
+  it("never leaves the gallery row behind when the gallery_clients insert fails inside the same transaction", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    const result = await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["does-not-exist"],
+        packageId: "1",
+        title: "Boda Rechazada",
+        sessionDate: "2026-08-01",
+      }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(db.__rows.galleries.find((g) => g.title === "Boda Rechazada")).toBeUndefined();
+  });
+
+  // Task #94's own acceptance criterion: several real clients, one gallery,
+  // all written together in the same transaction.
+  it("attaches SEVERAL clients to the same gallery when more than one is selected", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+    db.__rows.users.push({ id: "client-2", name: "Beto Ruiz", email: "beto@example.com" });
+
+    const result = await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1", "client-2"],
+        packageId: "1",
+        title: "Boda Ana y Beto",
+        sessionDate: "2026-08-01",
+      }),
+    );
+
+    expect(result).toEqual({ status: "created" });
+    const stored = db.__rows.galleries.find((g) => g.title === "Boda Ana y Beto")!;
+    const memberships = db.__rows.galleryClients.filter((gc) => gc.galleryId === stored.id);
+    expect(memberships.map((gc) => gc.userId).sort()).toEqual(["client-1", "client-2"]);
+  });
+
+  // Review finding on task #94: the defensive dedupe (actions.ts's own
+  // comment right above `const clientIds = [...new Set(...)]`) had no test
+  // posting the same client id twice — a native `<select multiple>` can
+  // never do this, but a crafted request could, and without the dedupe this
+  // would hit `gallery_clients`'s composite primary key (schema.ts) as a
+  // 23505 this function has no catch for.
+  it("dedupes a client id posted twice, writing only ONE membership row", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    const result = await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1", "client-1"],
+        packageId: "1",
+        title: "Boda Ana y Beto",
+        sessionDate: "2026-08-01",
+      }),
+    );
+
+    expect(result).toEqual({ status: "created" });
+    const stored = db.__rows.galleries.find((g) => g.title === "Boda Ana y Beto")!;
+    const memberships = db.__rows.galleryClients.filter((gc) => gc.galleryId === stored.id);
+    expect(memberships).toHaveLength(1);
+    expect(memberships[0]?.userId).toBe("client-1");
   });
 
   // Acceptance criterion: two galleries never share a slug. Forces a
@@ -492,7 +652,7 @@ describe("createGallery success + frozen terms", () => {
     const first = await createGallery(
       { status: "idle" },
       formDataWith({
-        clientId: "client-1",
+        clientIds: ["client-1"],
         packageId: "1",
         title: "Primera",
         sessionDate: "2026-08-01",
@@ -504,7 +664,7 @@ describe("createGallery success + frozen terms", () => {
       createGallery(
         { status: "idle" },
         formDataWith({
-          clientId: "client-2",
+          clientIds: ["client-2"],
           packageId: "1",
           title: "Segunda",
           sessionDate: "2026-08-02",

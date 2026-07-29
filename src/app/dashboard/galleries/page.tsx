@@ -48,7 +48,11 @@ export default async function GalleriesPage() {
                   <div>
                     <p className="font-serif text-lg">{gallery.title}</p>
                     <p className="text-fg-mute text-sm">
-                      {gallery.client.name ?? gallery.client.email} · {gallery.package.name}
+                      {/* Task #94: a gallery can have several clients now —
+                          joined with " · " so the list still fits on one
+                          line without truncating anyone. */}
+                      {gallery.clients.map((client) => client.name ?? client.email).join(" · ")} ·{" "}
+                      {gallery.package.name}
                     </p>
                     <p className="text-fg-mute text-sm">
                       Sesión: {formatSessionDate(gallery.sessionDate)}

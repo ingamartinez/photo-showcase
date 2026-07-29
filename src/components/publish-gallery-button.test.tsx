@@ -23,7 +23,7 @@ describe("PublishGalleryButton", () => {
   it("renders a submit button carrying the gallery id as a hidden field", async () => {
     publishGalleryMock.mockResolvedValue({ status: "published" });
     const user = userEvent.setup();
-    render(<PublishGalleryButton galleryId={GALLERY_ID} clientEmail="ana@example.com" />);
+    render(<PublishGalleryButton galleryId={GALLERY_ID} clientEmails={["ana@example.com"]} />);
 
     await user.click(screen.getByRole("button", { name: "Publicar galería" }));
 
@@ -34,7 +34,7 @@ describe("PublishGalleryButton", () => {
   it("shows a confirmation naming the client's email once published", async () => {
     publishGalleryMock.mockResolvedValue({ status: "published" });
     const user = userEvent.setup();
-    render(<PublishGalleryButton galleryId={GALLERY_ID} clientEmail="ana@example.com" />);
+    render(<PublishGalleryButton galleryId={GALLERY_ID} clientEmails={["ana@example.com"]} />);
 
     await user.click(screen.getByRole("button", { name: "Publicar galería" }));
 
@@ -46,13 +46,31 @@ describe("PublishGalleryButton", () => {
     expect(screen.queryByRole("button", { name: "Publicar galería" })).toBeNull();
   });
 
+  // Task #94: a gallery can have several clients now — the confirmation
+  // must name all of them, not just the first.
+  it("shows a confirmation naming every client's email when the gallery has several", async () => {
+    publishGalleryMock.mockResolvedValue({ status: "published" });
+    const user = userEvent.setup();
+    render(
+      <PublishGalleryButton
+        galleryId={GALLERY_ID}
+        clientEmails={["ana@example.com", "beto@example.com"]}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Publicar galería" }));
+
+    await screen.findByRole("status");
+    expect(screen.getByText(/ana@example\.com, beto@example\.com/)).toBeDefined();
+  });
+
   it("shows the error message returned by the action and keeps the button available to retry", async () => {
     publishGalleryMock.mockResolvedValue({
       status: "error",
       message: "Subí al menos una foto antes de publicar la galería.",
     });
     const user = userEvent.setup();
-    render(<PublishGalleryButton galleryId={GALLERY_ID} clientEmail="ana@example.com" />);
+    render(<PublishGalleryButton galleryId={GALLERY_ID} clientEmails={["ana@example.com"]} />);
 
     await user.click(screen.getByRole("button", { name: "Publicar galería" }));
 

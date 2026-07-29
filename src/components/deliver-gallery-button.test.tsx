@@ -27,7 +27,7 @@ describe("DeliverGalleryButton", () => {
     render(
       <DeliverGalleryButton
         galleryId={GALLERY_ID}
-        clientEmail={CLIENT_EMAIL}
+        clientEmails={[CLIENT_EMAIL]}
         pendingFinalsCount={0}
       />,
     );
@@ -44,7 +44,7 @@ describe("DeliverGalleryButton", () => {
     render(
       <DeliverGalleryButton
         galleryId={GALLERY_ID}
-        clientEmail={CLIENT_EMAIL}
+        clientEmails={[CLIENT_EMAIL]}
         pendingFinalsCount={0}
       />,
     );
@@ -54,6 +54,25 @@ describe("DeliverGalleryButton", () => {
     await screen.findByRole("status");
     expect(screen.getByText(`Entregada — le enviamos un correo a ${CLIENT_EMAIL}.`)).toBeDefined();
     expect(screen.queryByRole("button", { name: "Entregar galería" })).toBeNull();
+  });
+
+  // Task #94: a gallery can have several clients now — the confirmation
+  // must name all of them, not just the first.
+  it("shows a confirmation naming every client's email when the gallery has several", async () => {
+    deliverGalleryMock.mockResolvedValue({ status: "delivered" });
+    const user = userEvent.setup();
+    render(
+      <DeliverGalleryButton
+        galleryId={GALLERY_ID}
+        clientEmails={["ana@example.com", "beto@example.com"]}
+        pendingFinalsCount={0}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Entregar galería" }));
+
+    await screen.findByRole("status");
+    expect(screen.getByText(/ana@example\.com, beto@example\.com/)).toBeDefined();
   });
 
   // The delivery itself already committed by the time this state is reached
@@ -69,7 +88,7 @@ describe("DeliverGalleryButton", () => {
     render(
       <DeliverGalleryButton
         galleryId={GALLERY_ID}
-        clientEmail={CLIENT_EMAIL}
+        clientEmails={[CLIENT_EMAIL]}
         pendingFinalsCount={0}
       />,
     );
@@ -92,7 +111,7 @@ describe("DeliverGalleryButton", () => {
     render(
       <DeliverGalleryButton
         galleryId={GALLERY_ID}
-        clientEmail={CLIENT_EMAIL}
+        clientEmails={[CLIENT_EMAIL]}
         pendingFinalsCount={0}
       />,
     );
@@ -113,7 +132,7 @@ describe("DeliverGalleryButton", () => {
     render(
       <DeliverGalleryButton
         galleryId={GALLERY_ID}
-        clientEmail={CLIENT_EMAIL}
+        clientEmails={[CLIENT_EMAIL]}
         pendingFinalsCount={2}
       />,
     );

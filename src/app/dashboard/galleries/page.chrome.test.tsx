@@ -86,7 +86,7 @@ describe("GalleriesPage chrome", () => {
         sessionDate: "2026-08-01",
         createdAt: new Date("2026-07-01"),
         selectionSubmittedAt: null,
-        client: { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+        clients: [{ id: "u1", name: "Ana Pérez", email: "ana@example.com" }],
         package: { id: 1, name: "Estándar" },
         includedPhotosSnapshot: 13,
         extraPhotoPriceCopSnapshot: 5_000,
@@ -111,6 +111,38 @@ describe("GalleriesPage chrome", () => {
     expect(screen.queryByText("Todavía no armaste ninguna galería.")).toBeNull();
   });
 
+  // Review finding on task #94: every fixture in this file used to carry a
+  // single client, so page.tsx's own `.join(" · ")` (one gallery's several
+  // clients rendered on ONE line, separated by a middle dot) had never
+  // actually been rendered with more than one.
+  it("joins several clients' names with a middle dot on one line", async () => {
+    getGalleriesWithDetailsMock.mockResolvedValue([
+      {
+        id: "g1",
+        title: "Boda Ana y Beto",
+        publicSlug: "abc123",
+        status: "draft",
+        sessionDate: "2026-08-01",
+        createdAt: new Date("2026-07-01"),
+        selectionSubmittedAt: null,
+        clients: [
+          { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+          { id: "u2", name: "Beto Gómez", email: "beto@example.com" },
+        ],
+        package: { id: 1, name: "Estándar" },
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+        photoCount: 24,
+      },
+    ]);
+
+    const element = await GalleriesPage();
+    render(element);
+
+    const listItem = screen.getByText("Boda Ana y Beto").closest("li")!;
+    expect(within(listItem).getByText(/Ana Pérez · Beto Gómez/)).toBeDefined();
+  });
+
   // Task #75's core acceptance criterion: a submitted gallery must be
   // identifiable without reading the status text, and that has to hold in a
   // list long enough to actually scroll — one row proves nothing (see this
@@ -124,7 +156,7 @@ describe("GalleriesPage chrome", () => {
       sessionDate: "2026-08-01",
       createdAt: new Date("2026-07-01"),
       selectionSubmittedAt: i === 12 ? new Date("2026-07-28") : null,
-      client: { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+      clients: [{ id: "u1", name: "Ana Pérez", email: "ana@example.com" }],
       package: { id: 1, name: "Estándar" },
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,

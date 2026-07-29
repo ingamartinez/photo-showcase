@@ -82,7 +82,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     status: "draft",
     sessionDate: "2026-08-01",
     createdAt: new Date("2026-07-01"),
-    client: { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+    clients: [{ id: "u1", name: "Ana Pérez", email: "ana@example.com" }],
     package: { id: 1, name: "Estándar" },
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,

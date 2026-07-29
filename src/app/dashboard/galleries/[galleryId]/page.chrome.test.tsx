@@ -90,7 +90,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     status: "proofing",
     sessionDate: "2026-08-01",
     createdAt: new Date("2026-07-01"),
-    client: { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+    clients: [{ id: "u1", name: "Ana Pérez", email: "ana@example.com" }],
     package: { id: 1, name: "Estándar" },
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
@@ -139,6 +139,36 @@ describe("GalleryDetailPage chrome", () => {
     expect(screen.getByText("En pruebas")).toBeDefined();
     expect(screen.getByText("Estándar")).toBeDefined();
     expect(screen.getByText("13")).toBeDefined();
+  });
+
+  // Review finding on task #94: every fixture in this file used to carry a
+  // single client, so the plural rendering page.tsx's own comment describes
+  // ("Task #94: a gallery can have several clients now — one line per
+  // client") had never actually been rendered with more than one. This
+  // proves it for real: a SECOND client gets its OWN `<p>`, not squashed
+  // into the first one.
+  it("renders one line per client when a gallery has several", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        clients: [
+          { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+          { id: "u2", name: "Beto Gómez", email: "beto@example.com" },
+        ],
+      }),
+    );
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    const anaLine = screen.getByText(/Ana Pérez/);
+    const betoLine = screen.getByText(/Beto Gómez/);
+    expect(anaLine).toBeDefined();
+    expect(betoLine).toBeDefined();
+    // Two DISTINCT paragraphs, not one client's name/email crammed next to
+    // the other's inside a single node.
+    expect(anaLine).not.toBe(betoLine);
+    expect(anaLine.tagName).toBe("P");
+    expect(betoLine.tagName).toBe("P");
   });
 
   // The headline rule this epic repeats everywhere: the terms shown come off

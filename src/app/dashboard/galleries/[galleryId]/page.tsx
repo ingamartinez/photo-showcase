@@ -14,6 +14,7 @@ import { getPresignedUrl } from "@/lib/r2";
 import { GalleryWorkspace } from "@/components/gallery-workspace";
 import { PublishGalleryButton } from "@/components/publish-gallery-button";
 import { UnlockSelectionPanel } from "@/components/unlock-selection-panel";
+import { DeliverGalleryButton } from "@/components/deliver-gallery-button";
 
 export const metadata: Metadata = {
   title: "Galería",
@@ -61,6 +62,13 @@ export default async function GalleryDetailPage({
   // than polling all of them on a timer, so a long-open tab stays correct
   // without hammering the read route for assets nobody has scrolled past.
   const selectedCount = gallery.assets.filter((asset) => asset.isSelected).length;
+  // Task #27's own guard, computed here off the SAME `gallery.assets` this
+  // page already fetched — passed to <DeliverGalleryButton> only to disable
+  // it and explain why; `deliverGallery` itself re-reads this fresh and is
+  // the actual authority (see that action's own comment).
+  const pendingFinalsCount = gallery.assets.filter(
+    (asset) => asset.isSelected && asset.finalKey === null,
+  ).length;
   const initialAssets = gallery.assets.map((asset) => ({
     id: asset.id,
     originalFilename: asset.originalFilename,
@@ -124,6 +132,18 @@ export default async function GalleryDetailPage({
               past "selected" is UX, not the authority; see
               src/app/dashboard/galleries/actions.ts's isUnlockable(). */}
           {gallery.status === "selected" && <UnlockSelectionPanel galleryId={gallery.id} />}
+
+          {/* Task #27: guarded server-side by deliverGallery() itself
+              (selected-only, no missing finals) — hiding the button once the
+              gallery has moved past "selected" is UX, not the authority; see
+              src/app/dashboard/galleries/actions.ts's isDeliverable(). */}
+          {gallery.status === "selected" && (
+            <DeliverGalleryButton
+              galleryId={gallery.id}
+              clientEmail={gallery.client.email}
+              pendingFinalsCount={pendingFinalsCount}
+            />
+          )}
 
           {/* The unlock audit trail (task #73) — who last unlocked this
               gallery's submitted selection, when, and their optional note.

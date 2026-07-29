@@ -71,9 +71,13 @@ const publishGalleryMock = vi.fn();
 // Same reasoning, same file, for <UnlockSelectionPanel> (task #73): its
 // module imports `unlockSelection` from here too.
 const unlockSelectionMock = vi.fn();
+// Same reasoning, same file, for <DeliverGalleryButton> (task #27): its
+// module imports `deliverGallery` from here too.
+const deliverGalleryMock = vi.fn();
 vi.mock("@/app/dashboard/galleries/actions", () => ({
   publishGallery: (...args: unknown[]) => publishGalleryMock(...args),
   unlockSelection: (...args: unknown[]) => unlockSelectionMock(...args),
+  deliverGallery: (...args: unknown[]) => deliverGalleryMock(...args),
 }));
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
@@ -115,6 +119,7 @@ beforeEach(() => {
   });
   publishGalleryMock.mockReset();
   unlockSelectionMock.mockReset();
+  deliverGalleryMock.mockReset();
 });
 
 afterEach(() => {
@@ -275,5 +280,90 @@ describe("GalleryDetailPage chrome", () => {
     render(element);
 
     expect(screen.queryByText(/Desbloqueada el/)).toBeNull();
+  });
+
+  // Task #27's UI half of the same "hiding is UX only" guard: deliverGallery()
+  // itself re-checks the gallery's real status AND every selected asset's
+  // finalKey server-side (isDeliverable() + the missing-finals check), but
+  // the button still must be wired to appear only for a `selected` gallery.
+  it("shows the deliver button for a selected gallery, not for one still in proofing", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "selected" }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByRole("button", { name: "Entregar galería" })).toBeDefined();
+  });
+
+  it("hides the deliver button for a gallery still in proofing", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "proofing" }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.queryByRole("button", { name: "Entregar galería" })).toBeNull();
+  });
+
+  // The page computes `pendingFinalsCount` itself, off the SAME
+  // `gallery.assets` it already fetched, and hands it to
+  // <DeliverGalleryButton> purely to disable the button — deliverGallery()
+  // itself is the real guard (see that action's own comment). Wired here so
+  // a selected-but-incomplete gallery cannot be delivered from a stale click.
+  it("disables the deliver button when a selected asset still lacks a final", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        status: "selected",
+        assets: [
+          {
+            id: "a1",
+            originalFilename: "IMG_0001.JPG",
+            proofKey: "galleries/g1/proofs/a1.webp",
+            proofWidth: 1600,
+            proofHeight: 1067,
+            isSelected: true,
+            sortOrder: 0,
+            finalKey: null,
+            isEdited: false,
+          },
+        ],
+      }),
+    );
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByRole("button", { name: "Entregar galería" })).toHaveProperty(
+      "disabled",
+      true,
+    );
+  });
+
+  it("enables the deliver button once every selected asset has its final", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        status: "selected",
+        assets: [
+          {
+            id: "a1",
+            originalFilename: "IMG_0001.JPG",
+            proofKey: "galleries/g1/proofs/a1.webp",
+            proofWidth: 1600,
+            proofHeight: 1067,
+            isSelected: true,
+            sortOrder: 0,
+            finalKey: "galleries/g1/assets/a1/final.jpg",
+            isEdited: true,
+          },
+        ],
+      }),
+    );
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByRole("button", { name: "Entregar galería" })).toHaveProperty(
+      "disabled",
+      false,
+    );
   });
 });

@@ -172,6 +172,60 @@ describe("formatSessionDate", () => {
   });
 });
 
+describe("getGalleriesForClient", () => {
+  it("filters by the given clientId AND restricts to client-visible statuses in the same where clause", async () => {
+    findManyMock.mockResolvedValue([]);
+    const { and, eq, inArray } = await import("drizzle-orm");
+    const { galleries } = await import("./db/schema");
+    const { getGalleriesForClient } = await import("./galleries");
+
+    await getGalleriesForClient("user-1");
+
+    expect(findManyMock).toHaveBeenCalledTimes(1);
+    const args = findManyMock.mock.calls[0]?.[0] as { where: unknown };
+    expect(args.where).toEqual(
+      and(
+        eq(galleries.clientId, "user-1"),
+        inArray(galleries.status, ["proofing", "selected", "delivered"]),
+      ),
+    );
+  });
+
+  it("derives photoCount from the joined assets and never returns another client's row", async () => {
+    findManyMock.mockResolvedValue([
+      {
+        id: "g1",
+        title: "Boda Ana y Beto",
+        publicSlug: "abc123",
+        status: "proofing",
+        sessionDate: "2026-08-01",
+        assets: [{ id: "a1" }, { id: "a2" }],
+      },
+    ]);
+    const { getGalleriesForClient } = await import("./galleries");
+
+    const result = await getGalleriesForClient("user-1");
+
+    expect(result).toEqual([
+      {
+        id: "g1",
+        title: "Boda Ana y Beto",
+        publicSlug: "abc123",
+        status: "proofing",
+        sessionDate: "2026-08-01",
+        photoCount: 2,
+      },
+    ]);
+  });
+
+  it("returns an empty list when the client has no galleries at all", async () => {
+    findManyMock.mockResolvedValue([]);
+    const { getGalleriesForClient } = await import("./galleries");
+
+    await expect(getGalleriesForClient("user-1")).resolves.toEqual([]);
+  });
+});
+
 describe("getGalleryDetail", () => {
   const galleryRow = {
     id: "g1",

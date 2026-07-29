@@ -24,6 +24,12 @@ beforeEach(() => {
   findManyMock.mockReset();
   findFirstMock.mockReset();
   selectMock.mockReset();
+  // Default chainable stub for `db.select(...).from(...).where(...)`, used
+  // by `getGalleriesForClient`'s ownership subquery (task #98) — tests that
+  // care about the subquery's own arguments override this via
+  // `selectMock.mockReturnValue(...)` in the test body, which runs after
+  // this and wins.
+  selectMock.mockReturnValue({ from: () => ({ where: () => [] }) });
 });
 
 describe("getGalleriesWithDetails", () => {
@@ -181,19 +187,40 @@ describe("getGalleriesForClient", () => {
   // a subquery against `gallery_clients`, still combined with the
   // client-visible-statuses filter in the SAME `where` (unchanged reasoning,
   // see this function's own header comment on pagination safety).
+  //
+  // Task #98: that subquery used to be a raw `sql` template and is now the
+  // query-builder chain `db.select(...).from(...).where(...)` (see this
+  // function's own header comment for why the raw-template version broke
+  // production). This test is still a STRUCTURAL check — it verifies the
+  // subquery and the outer `where` are BUILT correctly, but (like the
+  // template-comparison test it replaces) it never asks the real relational
+  // query builder to render anything, so it could not have caught #98 on its
+  // own. `galleries.query-rendering.test.ts` complements it with the thing
+  // this test structurally cannot do: it renders the REAL query through the
+  // REAL `db.query.galleries.findMany` and asserts on the actual SQL text.
   it("filters by galleries this clientId is attached to via gallery_clients, AND restricts to client-visible statuses in the same where clause", async () => {
+    const subqueryStub = { __marker: "gallery-clients-owned-by-user-1" };
+    const whereMock = vi.fn().mockReturnValue(subqueryStub);
+    const fromMock = vi.fn().mockReturnValue({ where: whereMock });
+    selectMock.mockReturnValue({ from: fromMock });
     findManyMock.mockResolvedValue([]);
-    const { and, eq, inArray, sql } = await import("drizzle-orm");
+    const { and, eq, inArray } = await import("drizzle-orm");
     const { galleries, galleryClients } = await import("./db/schema");
     const { getGalleriesForClient } = await import("./galleries");
 
     await getGalleriesForClient("user-1");
 
+    // The ownership subquery: SELECT gallery_id FROM gallery_clients WHERE
+    // user_id = clientId.
+    expect(selectMock).toHaveBeenCalledWith({ id: galleryClients.galleryId });
+    expect(fromMock).toHaveBeenCalledWith(galleryClients);
+    expect(whereMock).toHaveBeenCalledWith(eq(galleryClients.userId, "user-1"));
+
     expect(findManyMock).toHaveBeenCalledTimes(1);
     const args = findManyMock.mock.calls[0]?.[0] as { where: unknown };
     expect(args.where).toEqual(
       and(
-        sql`${galleries.id} in (select ${galleryClients.galleryId} from ${galleryClients} where ${eq(galleryClients.userId, "user-1")})`,
+        inArray(galleries.id, subqueryStub as never),
         inArray(galleries.status, ["proofing", "selected", "delivered"]),
       ),
     );
@@ -233,18 +260,30 @@ describe("getGalleriesForClient", () => {
     await expect(getGalleriesForClient("user-1")).resolves.toEqual([]);
   });
 
-  // Review finding: the test above (:184-200) only deep-equals the `where`
-  // expression against an identically-built one — a genuine, reviewer-
-  // verified property (confirmed by rendering both through
-  // `PgDialect.sqlToQuery`), but still a change-detector on its own: any
-  // rewrite of this function fails it, correct or not, and it never actually
-  // asks the database anything. This test complements it with REAL row-level
-  // filtering: `findMany`'s fake implementation below renders the `where` it
-  // was actually called with through drizzle's own `PgDialect` (the exact
-  // technique used to verify the template test), reads out the bound
-  // parameters (`clientId`, then the allowed statuses), and filters a
-  // seeded `gallery_clients` fixture with them — no canned per-call result,
-  // no admin bypass hardcoded into the test itself.
+  // Review finding: the test above only deep-equals the `where` expression
+  // against an identically-built one — a genuine, reviewer-verified
+  // property, but still a change-detector on its own: any rewrite of this
+  // function fails it, correct or not, and it never actually asks the
+  // database anything. This test complements it with REAL row-level
+  // filtering, still using drizzle's own `PgDialect` to render real SQL
+  // (never a canned per-call result, never an admin bypass hardcoded into
+  // the test itself) — but now split across TWO rendering points, one per
+  // query-builder call the fixed function makes:
+  //   1. the mocked `.where(...)` step of the `db.select(...)` ownership
+  //      subquery renders JUST that `eq(galleryClients.userId, clientId)`
+  //      condition (single-table, no relational-query aliasing involved)
+  //      to read out `clientId` and resolve it to real owned gallery ids;
+  //   2. `findMany`'s fake implementation then renders the OUTER `where`
+  //      it was actually called with — now `and(inArray(galleries.id,
+  //      <owned ids>), inArray(galleries.status, <visible statuses>))`,
+  //      both built from real arrays, no mock objects embedded in the SQL
+  //      tree — and filters the seeded fixtures with the resulting params.
+  //
+  // Task #98: this test (like the one above it) mocks `findMany` entirely,
+  // so it exercises drizzle's SQL RENDERING but never the relational query
+  // BUILDER's own aliasing behavior — the thing that actually broke
+  // production. See `galleries.query-rendering.test.ts` for the test that
+  // closes that specific gap.
   it("filters seeded rows for real: a client sees only their own galleries, and an admin who owns none gets []", async () => {
     const { PgDialect } = await import("drizzle-orm/pg-core");
     const dialect = new PgDialect();
@@ -272,12 +311,21 @@ describe("getGalleriesForClient", () => {
       { galleryId: "g2", userId: "client-b" },
     ];
 
-    findManyMock.mockImplementation(async ({ where }: { where: unknown }) => {
-      const { params } = dialect.sqlToQuery(where as Parameters<typeof dialect.sqlToQuery>[0]);
-      const [clientId, ...allowedStatuses] = params as string[];
-      const ownedGalleryIds = galleryClientRows
+    let lastOwnedGalleryIds: string[] = [];
+    const subqueryWhereMock = vi.fn((condition: unknown) => {
+      const { params } = dialect.sqlToQuery(condition as Parameters<typeof dialect.sqlToQuery>[0]);
+      const clientId = params[0] as string;
+      lastOwnedGalleryIds = galleryClientRows
         .filter((row) => row.userId === clientId)
         .map((row) => row.galleryId);
+      return lastOwnedGalleryIds;
+    });
+    selectMock.mockReturnValue({ from: () => ({ where: subqueryWhereMock }) });
+
+    findManyMock.mockImplementation(async ({ where }: { where: unknown }) => {
+      const { params } = dialect.sqlToQuery(where as Parameters<typeof dialect.sqlToQuery>[0]);
+      const ownedGalleryIds = params.slice(0, lastOwnedGalleryIds.length) as string[];
+      const allowedStatuses = params.slice(lastOwnedGalleryIds.length) as string[];
       return galleryRows.filter(
         (row) => ownedGalleryIds.includes(row.id) && allowedStatuses.includes(row.status),
       );

@@ -383,12 +383,36 @@ export type ClientGalleryListItem = {
 export async function getGalleriesForClient(clientId: string): Promise<ClientGalleryListItem[]> {
   const rows = await db.query.galleries.findMany({
     where: and(
-      // A raw `sql` subquery, same style this file's own `orderBy` above
-      // already uses (`coalesce(...)`), rather than `db.select(...)`
-      // composed inline — this keeps the WHOLE `where` a single, plain SQL
-      // expression built out of `eq`/`inArray`/`sql` alone, with no second
-      // query-builder chain buried inside it to reason about separately.
-      sql`${galleries.id} in (select ${galleryClients.galleryId} from ${galleryClients} where ${eq(galleryClients.userId, clientId)})`,
+      // Task #98 (production incident): this used to be a raw `sql`
+      // template — `sql`${galleries.id} in (select ${galleryClients.galleryId}
+      // from ${galleryClients} where ...)`` — on the stated theory that a
+      // single plain SQL expression built out of `eq`/`inArray`/`sql` alone,
+      // with no second query-builder chain buried inside it, would be easier
+      // to reason about than a nested `db.select(...)`. That theory is
+      // false for THIS query, and broke `/galleries` in production: inside
+      // `db.query.galleries.findMany`, Drizzle's relational query builder
+      // aliases the root table as `"galleries"`, and column references
+      // embedded in a raw `sql` template inherit THAT alias instead of
+      // their own table's — so `${galleryClients.galleryId}` and
+      // `${galleryClients.userId}` above both rendered as
+      // `"galleries"."gallery_id"` / `"galleries"."user_id"`, columns that
+      // don't exist. The query-builder subquery below has no such problem:
+      // `db.select(...).from(...).where(...)` qualifies its own columns
+      // against ITS OWN `from`, independent of whatever alias the outer
+      // relational query happens to use. Any raw `sql` template that
+      // references a table OTHER than the relational query's root table is
+      // this same trap waiting to fire — see
+      // galleries.query-rendering.test.ts, which asserts on the SQL the
+      // real relational query builder actually renders rather than the
+      // expression in isolation, precisely because that isolation is what
+      // let this ship.
+      inArray(
+        galleries.id,
+        db
+          .select({ id: galleryClients.galleryId })
+          .from(galleryClients)
+          .where(eq(galleryClients.userId, clientId)),
+      ),
       inArray(galleries.status, [...CLIENT_VISIBLE_STATUSES]),
     ),
     orderBy: desc(galleries.sessionDate),

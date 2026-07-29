@@ -7,10 +7,12 @@ this README is one-time host setup **you run by SSH**.
 
 ## Files
 
-| Path                            | Purpose                                                            |
-| ------------------------------- | ------------------------------------------------------------------ |
-| `systemd/photoshowcase.service` | systemd unit for the Next.js standalone process (port 3300).       |
-| `caddy/Caddyfile`               | Reverse-proxy block for `alejoframes.com` (apex) + `www` redirect. |
+| Path                             | Purpose                                                                                   |
+| -------------------------------- | ----------------------------------------------------------------------------------------- |
+| `systemd/photoshowcase.service`  | systemd unit for the Next.js standalone process (port 3300).                              |
+| `caddy/Caddyfile`                | Reverse-proxy block for `alejoframes.com` (apex) + `www` redirect.                        |
+| `cron/photoshowcase-backup.sh`   | Daily `pg_dump` + daily R2 off-site sync of the `photoshowcase` DB. See `cron/README.md`. |
+| `cron/photoshowcase-backup.cron` | `/etc/cron.d` schedule for the backup script.                                             |
 
 ## One-time droplet bring-up
 
@@ -117,6 +119,20 @@ Push to `main` (or run the **Deploy** workflow manually). On success:
 
 ```bash
 curl https://alejoframes.com/api/health   # expect {"ok":true,...,"db":"ok"}
+```
+
+## Backups
+
+The `photoshowcase` database — not the R2 media bucket — is the irreplaceable
+artifact: it's what says which photos belong to which client, what they
+selected, and what they were quoted at. See `cron/README.md` for the full
+runbook (install steps, retention, manual runs, restore-test log).
+
+Quick install:
+
+```bash
+sudo install -m 0755 infra/cron/photoshowcase-backup.sh /usr/local/bin/photoshowcase-backup.sh
+sudo install -m 0644 infra/cron/photoshowcase-backup.cron /etc/cron.d/photoshowcase-backup
 ```
 
 ## Media storage (R2) — Phase 2

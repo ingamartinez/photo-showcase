@@ -36,6 +36,7 @@ import { assets, galleries, users } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 import { requireApiSession } from "@/lib/auth-guards";
 import { isGalleryVisibleToClient } from "@/lib/galleries";
+import { isGalleryOwner } from "@/lib/gallery-access";
 import { authEnv, resendEnv } from "@/lib/env";
 import { sendSubmissionNotificationEmail } from "@/lib/admin-notification-email";
 import { computeQuota, type QuotaResult } from "@/lib/quota";
@@ -99,14 +100,15 @@ export async function POST(
     return errorResponse("gallery_not_found", 404);
   }
 
-  // Gate 1 — ownership: the gallery's own client, or an admin. 403 (not
-  // 404) for a wrong owner, matching src/lib/asset-access.ts's
-  // loadOwnedAsset: the gallery id is a random UUID (schema.ts), not
-  // sequential, so confirming "this id exists" here leaks nothing an
-  // attacker could walk.
+  // Gate 1 — ownership: one of the gallery's OWN clients (task #94 — a
+  // gallery can now have several), or an admin. Shared through
+  // src/lib/gallery-access.ts's isGalleryOwner rather than a rewritten
+  // comparison — see that module's header comment. 403 (not 404) for a
+  // wrong owner, matching src/lib/asset-access.ts's loadOwnedAsset: the
+  // gallery id is a random UUID (schema.ts), not sequential, so confirming
+  // "this id exists" here leaks nothing an attacker could walk.
   const isAdmin = session.user.role === "admin";
-  const isOwner = isAdmin || gallery.clientId === session.user.id;
-  if (!isOwner) {
+  if (!(await isGalleryOwner(gallery.id, session))) {
     return errorResponse("forbidden", 403);
   }
 
@@ -259,19 +261,29 @@ export async function POST(
   try {
     quota = await currentQuota(submittedGallery);
 
-    const [client] = await db
-      .select({ name: users.name, email: users.email })
-      .from(users)
-      .where(eq(users.id, gallery.clientId))
-      .limit(1);
-    // Unreachable in practice — galleries.clientId is a NOT NULL FK — but
-    // this route never trusts a row it read moments ago still exists
-    // without checking, same stance as publishGallery's own client lookup.
-    if (!client) {
-      throw new Error(
-        `Gallery ${gallery.id} has no resolvable client (clientId=${gallery.clientId})`,
-      );
-    }
+    // WHO submitted — task #94: a gallery can now have SEVERAL clients, so
+    // "look up the gallery's client" (the old `eq(users.id, gallery.clientId)`
+    // this replaced) no longer resolves to a single, unambiguous row — that
+    // column is gone entirely (schema.ts). The session that made THIS
+    // request is the one genuinely correct source for "who submitted":
+    // whichever client actually clicked submit is the one this email should
+    // name, not an arbitrary member of the gallery's client list. This also
+    // needs no extra query and can never be "missing" the way a lookup by id
+    // could — `session` is already a verified, authenticated session by the
+    // time this line runs (see `requireApiSession` above). An admin
+    // submitting on a client's behalf (gate 1 allows it, same as every
+    // sibling route) is named honestly here too: the admin, not a client —
+    // that IS who acted.
+    const submittedByName = session.user.name ?? null;
+    // `session.user.email` is typed optional by NextAuth's `DefaultSession`,
+    // but `users.email` is NOT NULL (schema.ts) and the database session
+    // strategy (src/auth.ts) populates `session.user` straight from that row
+    // on every request — unreachable in practice, same stance as
+    // `unlockSelection`'s own `unlockedByEmail` fallback
+    // (src/app/dashboard/galleries/actions.ts) — but the fallback keeps this
+    // email from silently losing the actor's address entirely if it ever did
+    // happen.
+    const submittedByEmail = session.user.email ?? session.user.id;
 
     // PLAN.md §4: a single admin. Looked up by role, never hardcoded via an
     // env var — the moment the photographer's own login address changes
@@ -293,8 +305,8 @@ export async function POST(
       apiKey: RESEND_API_KEY,
       from: EMAIL_FROM,
       to: admin.email,
-      clientName: client.name,
-      clientEmail: client.email,
+      clientName: submittedByName,
+      clientEmail: submittedByEmail,
       galleryTitle: gallery.title,
       galleryUrl: new URL(`/dashboard/galleries/${gallery.id}`, AUTH_URL).toString(),
       quota,

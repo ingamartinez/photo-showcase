@@ -7,6 +7,7 @@ import {
   getGalleryDetailBySlug,
   isGalleryVisibleToClient,
 } from "@/lib/galleries";
+import { isGalleryOwner } from "@/lib/gallery-access";
 import { getPresignedUrl } from "@/lib/r2";
 import { ProofGrid } from "@/components/proof-grid";
 
@@ -45,20 +46,22 @@ export default async function ClientGalleryPage({
   const gallery = await getGalleryDetailBySlug(publicSlug);
   if (!gallery) notFound();
 
-  // Ownership: the gallery's own client, or an admin — the same rule
-  // src/lib/asset-access.ts's loadOwnedAsset() applies per-asset, applied
-  // here at the gallery level since this page resolves ONE gallery
-  // directly, not an asset. An unguessable slug in the URL is NOT treated
-  // as proof of anything by itself (task #23's core security requirement,
-  // restated after the route was corrected to use the slug instead of the
-  // id: the slug only stops enumeration, it is not authorization) —
-  // ownership is decided from the gallery row's own `clientId` against the
-  // SESSION only. A signed-in client who obtains another client's slug
-  // still gets a real 403 here, not a redirect and not a 404 that would let
-  // them fish for which slugs resolve to a real gallery.
+  // Ownership: one of the gallery's OWN clients (task #94 — a gallery can
+  // now have several), or an admin — the same rule src/lib/asset-access.ts's
+  // loadOwnedAsset() applies per-asset, applied here at the gallery level
+  // since this page resolves ONE gallery directly, not an asset. An
+  // unguessable slug in the URL is NOT treated as proof of anything by
+  // itself (task #23's core security requirement, restated after the route
+  // was corrected to use the slug instead of the id: the slug only stops
+  // enumeration, it is not authorization) — ownership is decided by
+  // src/lib/gallery-access.ts's `isGalleryOwner` (the session against the
+  // gallery's own clients), never here directly, so this stays in lockstep
+  // with every sibling route instead of rewriting the same comparison.
+  // A signed-in client who obtains another client's slug still gets a real
+  // 403 here, not a redirect and not a 404 that would let them fish for
+  // which slugs resolve to a real gallery.
   const isAdmin = session.user.role === "admin";
-  const isOwner = isAdmin || gallery.client.id === session.user.id;
-  if (!isOwner) forbidden();
+  if (!(await isGalleryOwner(gallery.id, session))) forbidden();
 
   // A draft gallery is still being assembled by the photographer — never
   // shown to a client even when their own session legitimately owns it. See

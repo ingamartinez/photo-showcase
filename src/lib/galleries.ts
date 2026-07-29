@@ -11,7 +11,7 @@ import "server-only";
 
 import { and, count, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { galleries } from "@/lib/db/schema";
+import { galleries, galleryClients } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 
 export type GalleryWithDetails = {
@@ -25,7 +25,13 @@ export type GalleryWithDetails = {
   // below: populated unconditionally off the row's own column, `null` is the
   // honest "not submitted yet" state, not an absent/optional one.
   selectionSubmittedAt: Date | null;
-  client: { id: string; name: string | null; email: string };
+  // PLURAL since task #94 — a gallery can now belong to several clients (a
+  // couple's own separate logins, a family, two businesses sharing a
+  // shoot). Order matches the DB join's own row order (see
+  // `getGalleriesWithDetails`'s query below); this list is for DISPLAY only
+  // ("which humans is this gallery for"), never for an ownership decision —
+  // see src/lib/gallery-access.ts for the one function that answers that.
+  clients: { id: string; name: string | null; email: string }[];
   package: { id: number; name: string };
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
@@ -65,7 +71,11 @@ export async function getGalleriesWithDetails(): Promise<GalleryWithDetails[]> {
   const rows = await db.query.galleries.findMany({
     orderBy: desc(sql`coalesce(${galleries.selectionSubmittedAt}, ${galleries.createdAt})`),
     with: {
-      client: { columns: { id: true, name: true, email: true } },
+      // Task #94: `client` (a single `one()` relation off the old
+      // `clientId` FK) became `galleryClients` (a join table, `many()`) —
+      // each row here carries the joined `user` alongside it, mapped below
+      // into the plural `clients` list this function now returns.
+      galleryClients: { with: { user: { columns: { id: true, name: true, email: true } } } },
       package: { columns: { id: true, name: true } },
       // Only the id is needed to count — pulling full asset rows here would
       // be wasted work for a list that only ever shows a number (same
@@ -82,7 +92,11 @@ export async function getGalleriesWithDetails(): Promise<GalleryWithDetails[]> {
     sessionDate: row.sessionDate,
     createdAt: row.createdAt,
     selectionSubmittedAt: row.selectionSubmittedAt,
-    client: { id: row.client.id, name: row.client.name, email: row.client.email },
+    clients: row.galleryClients.map((gc) => ({
+      id: gc.user.id,
+      name: gc.user.name,
+      email: gc.user.email,
+    })),
     // Narrowed explicitly to id + name — even though the query only selects
     // those two columns (the `with: { package: { columns: ... } }` above),
     // this makes it impossible for a future change to that `columns` list to
@@ -190,7 +204,10 @@ export type GalleryDetail = {
   status: Gallery["status"];
   sessionDate: string;
   createdAt: Date;
-  client: { id: string; name: string | null; email: string };
+  // PLURAL since task #94 — see `GalleryWithDetails.clients`'s own comment
+  // above for why, and src/lib/gallery-access.ts for the ownership check
+  // this list must never substitute for.
+  clients: { id: string; name: string | null; email: string }[];
   package: { id: number; name: string };
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
@@ -218,7 +235,9 @@ async function findGalleryDetail(where: ReturnType<typeof eq>): Promise<GalleryD
   const row = await db.query.galleries.findFirst({
     where,
     with: {
-      client: { columns: { id: true, name: true, email: true } },
+      // Task #94: see `getGalleriesWithDetails`'s own comment on the
+      // identical `galleryClients` shape above.
+      galleryClients: { with: { user: { columns: { id: true, name: true, email: true } } } },
       package: { columns: { id: true, name: true } },
       assets: {
         orderBy: (assetsTable, { asc: assetAsc }) => [assetAsc(assetsTable.sortOrder)],
@@ -246,7 +265,11 @@ async function findGalleryDetail(where: ReturnType<typeof eq>): Promise<GalleryD
     status: row.status,
     sessionDate: row.sessionDate,
     createdAt: row.createdAt,
-    client: { id: row.client.id, name: row.client.name, email: row.client.email },
+    clients: row.galleryClients.map((gc) => ({
+      id: gc.user.id,
+      name: gc.user.name,
+      email: gc.user.email,
+    })),
     package: { id: row.package.id, name: row.package.name },
     includedPhotosSnapshot: row.includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot: row.extraPhotoPriceCopSnapshot,
@@ -279,10 +302,38 @@ export async function getGalleryDetail(galleryId: string): Promise<GalleryDetail
  *
  * That said, an unguessable slug is NOT an authorization check by itself —
  * it only stops enumeration. The page calling this still verifies the
- * resolved gallery's `clientId` against the signed-in session before
- * rendering anything; see that page's own comment. */
+ * signed-in session against the resolved gallery's own clients (task #94 —
+ * src/lib/gallery-access.ts's `isGalleryOwner`) before rendering anything;
+ * see that page's own comment. */
 export async function getGalleryDetailBySlug(publicSlug: string): Promise<GalleryDetail | null> {
   return findGalleryDetail(eq(galleries.publicSlug, publicSlug));
+}
+
+export type GalleryClientContact = { id: string; name: string | null; email: string };
+
+/** Every client attached to one gallery, for the WRITE side (task #94):
+ * `src/app/dashboard/galleries/actions.ts`'s publish/unlock/deliver actions
+ * each used to look up exactly one client via the old `clientId` FK; now
+ * that a gallery can have several, they call this instead of joining
+ * `gallery_clients` themselves three separate times. A dedicated, minimal
+ * query — not folded into `findGalleryDetail` above — because those actions
+ * only ever need id/name/email, never the rest of `GalleryDetail`'s shape
+ * (assets, package, snapshot terms).
+ *
+ * Returns an EMPTY array, never throws, when a gallery has no clients
+ * attached — `gallery-form.tsx` requires picking at least one at creation
+ * (see schema.ts's comment on `galleryClients` for why the database itself
+ * cannot enforce that lower bound), so an empty result here would mean the
+ * requirement was bypassed somehow (a manual DB edit, a bug), not a normal
+ * state — every caller must decide what to do with zero clients rather than
+ * assuming at least one, which is exactly why this returns a list instead of
+ * throwing or returning `null`. */
+export async function getGalleryClients(galleryId: string): Promise<GalleryClientContact[]> {
+  const rows = await db.query.galleryClients.findMany({
+    where: eq(galleryClients.galleryId, galleryId),
+    with: { user: { columns: { id: true, name: true, email: true } } },
+  });
+  return rows.map((row) => ({ id: row.user.id, name: row.user.name, email: row.user.email }));
 }
 
 export type ClientGalleryListItem = {
@@ -301,12 +352,24 @@ export type ClientGalleryListItem = {
  * result) — never an id taken from the URL or a form field. This is the
  * task's own core acceptance criterion, and it holds structurally here, not
  * just by caller convention: this function has no "give me everyone's
- * galleries" code path at all, admin or otherwise — `eq(galleries.clientId,
- * clientId)` is unconditional. An admin calling this with their OWN user id
- * (the same way any client would) gets back only galleries where THAT id is
- * the client, i.e. their own — never every gallery in the system, which is
- * the separate, deliberately-unfiltered job `getGalleriesWithDetails` above
- * does for the ADMIN workspace.
+ * galleries" code path at all, admin or otherwise.
+ *
+ * Task #94 replaced the single `clientId` FK with the `galleryClients` join
+ * table — a gallery can now belong to several clients — but this function's
+ * NO-ADMIN-BYPASS property is unchanged and re-proven by mutation in this
+ * file's own test suite: the `where` below is still an unconditional filter
+ * to galleries where the GIVEN id is attached (expressed as a subquery
+ * against `gallery_clients`, `inArray(galleries.id, <ids this user is
+ * attached to>)`, since a gallery can now match on more than one row), never
+ * a `role === "admin"` check anywhere in this function. An admin calling
+ * this with their OWN user id (the same way any client would) gets back only
+ * galleries THAT id is attached to, i.e. their own (almost certainly none) —
+ * never every gallery in the system, which is the separate,
+ * deliberately-unfiltered job `getGalleriesWithDetails` above does for the
+ * ADMIN workspace. `isGalleryOwner` (src/lib/gallery-access.ts), by
+ * contrast, DOES bypass for an admin — that is the correct rule for a
+ * single-gallery access check, and a DIFFERENT question from this one; see
+ * that module's own header comment for why the two must not be conflated.
  *
  * Also filters to `CLIENT_VISIBLE_STATUSES` (defined above,
  * `isGalleryVisibleToClient`'s own backing set) in the SAME `where`, so a
@@ -320,7 +383,12 @@ export type ClientGalleryListItem = {
 export async function getGalleriesForClient(clientId: string): Promise<ClientGalleryListItem[]> {
   const rows = await db.query.galleries.findMany({
     where: and(
-      eq(galleries.clientId, clientId),
+      // A raw `sql` subquery, same style this file's own `orderBy` above
+      // already uses (`coalesce(...)`), rather than `db.select(...)`
+      // composed inline — this keeps the WHOLE `where` a single, plain SQL
+      // expression built out of `eq`/`inArray`/`sql` alone, with no second
+      // query-builder chain buried inside it to reason about separately.
+      sql`${galleries.id} in (select ${galleryClients.galleryId} from ${galleryClients} where ${eq(galleryClients.userId, clientId)})`,
       inArray(galleries.status, [...CLIENT_VISIBLE_STATUSES]),
     ),
     orderBy: desc(galleries.sessionDate),

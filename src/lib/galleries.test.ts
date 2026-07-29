@@ -37,7 +37,11 @@ describe("getGalleriesWithDetails", () => {
         sessionDate: "2026-08-01",
         createdAt: new Date("2026-07-01"),
         selectionSubmittedAt: null,
-        client: { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+        // Task #94: the mocked relational query's row shape — one
+        // `galleryClients` row per attached client, each carrying its
+        // joined `user` — matching the `with: { galleryClients: { with: {
+        // user: ... } } }` shape `getGalleriesWithDetails` now asks for.
+        galleryClients: [{ user: { id: "u1", name: "Ana Pérez", email: "ana@example.com" } }],
         // Live package row — priceCop/includedPhotos here are the CURRENT
         // offer, deliberately NOT what this function should report as the
         // gallery's terms.
@@ -60,7 +64,7 @@ describe("getGalleriesWithDetails", () => {
         sessionDate: "2026-08-01",
         createdAt: new Date("2026-07-01"),
         selectionSubmittedAt: null,
-        client: { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+        clients: [{ id: "u1", name: "Ana Pérez", email: "ana@example.com" }],
         package: { id: 2, name: "Estándar" },
         includedPhotosSnapshot: 13,
         extraPhotoPriceCopSnapshot: 5_000,
@@ -173,10 +177,14 @@ describe("formatSessionDate", () => {
 });
 
 describe("getGalleriesForClient", () => {
-  it("filters by the given clientId AND restricts to client-visible statuses in the same where clause", async () => {
+  // Task #94: `galleries.clientId` is gone — ownership is now expressed as
+  // a subquery against `gallery_clients`, still combined with the
+  // client-visible-statuses filter in the SAME `where` (unchanged reasoning,
+  // see this function's own header comment on pagination safety).
+  it("filters by galleries this clientId is attached to via gallery_clients, AND restricts to client-visible statuses in the same where clause", async () => {
     findManyMock.mockResolvedValue([]);
-    const { and, eq, inArray } = await import("drizzle-orm");
-    const { galleries } = await import("./db/schema");
+    const { and, eq, inArray, sql } = await import("drizzle-orm");
+    const { galleries, galleryClients } = await import("./db/schema");
     const { getGalleriesForClient } = await import("./galleries");
 
     await getGalleriesForClient("user-1");
@@ -185,7 +193,7 @@ describe("getGalleriesForClient", () => {
     const args = findManyMock.mock.calls[0]?.[0] as { where: unknown };
     expect(args.where).toEqual(
       and(
-        eq(galleries.clientId, "user-1"),
+        sql`${galleries.id} in (select ${galleryClients.galleryId} from ${galleryClients} where ${eq(galleryClients.userId, "user-1")})`,
         inArray(galleries.status, ["proofing", "selected", "delivered"]),
       ),
     );
@@ -224,6 +232,72 @@ describe("getGalleriesForClient", () => {
 
     await expect(getGalleriesForClient("user-1")).resolves.toEqual([]);
   });
+
+  // Review finding: the test above (:184-200) only deep-equals the `where`
+  // expression against an identically-built one — a genuine, reviewer-
+  // verified property (confirmed by rendering both through
+  // `PgDialect.sqlToQuery`), but still a change-detector on its own: any
+  // rewrite of this function fails it, correct or not, and it never actually
+  // asks the database anything. This test complements it with REAL row-level
+  // filtering: `findMany`'s fake implementation below renders the `where` it
+  // was actually called with through drizzle's own `PgDialect` (the exact
+  // technique used to verify the template test), reads out the bound
+  // parameters (`clientId`, then the allowed statuses), and filters a
+  // seeded `gallery_clients` fixture with them — no canned per-call result,
+  // no admin bypass hardcoded into the test itself.
+  it("filters seeded rows for real: a client sees only their own galleries, and an admin who owns none gets []", async () => {
+    const { PgDialect } = await import("drizzle-orm/pg-core");
+    const dialect = new PgDialect();
+
+    const galleryRows = [
+      {
+        id: "g1",
+        title: "Boda Ana y Beto",
+        publicSlug: "abc123",
+        status: "proofing",
+        sessionDate: "2026-08-01",
+        assets: [],
+      },
+      {
+        id: "g2",
+        title: "Bautizo de Juan",
+        publicSlug: "def456",
+        status: "selected",
+        sessionDate: "2026-07-15",
+        assets: [],
+      },
+    ];
+    const galleryClientRows = [
+      { galleryId: "g1", userId: "client-a" },
+      { galleryId: "g2", userId: "client-b" },
+    ];
+
+    findManyMock.mockImplementation(async ({ where }: { where: unknown }) => {
+      const { params } = dialect.sqlToQuery(where as Parameters<typeof dialect.sqlToQuery>[0]);
+      const [clientId, ...allowedStatuses] = params as string[];
+      const ownedGalleryIds = galleryClientRows
+        .filter((row) => row.userId === clientId)
+        .map((row) => row.galleryId);
+      return galleryRows.filter(
+        (row) => ownedGalleryIds.includes(row.id) && allowedStatuses.includes(row.status),
+      );
+    });
+    const { getGalleriesForClient } = await import("./galleries");
+
+    const clientAResult = await getGalleriesForClient("client-a");
+    expect(clientAResult).toHaveLength(1);
+    expect(clientAResult[0]?.id).toBe("g1");
+
+    const clientBResult = await getGalleriesForClient("client-b");
+    expect(clientBResult).toHaveLength(1);
+    expect(clientBResult[0]?.id).toBe("g2");
+
+    // An admin's own user id was never inserted into `gallery_clients` for
+    // ANY gallery seeded above — this function carries no admin bypass
+    // (unlike src/lib/gallery-access.ts's isGalleryOwner, which does), so an
+    // admin who owns nothing genuinely gets [], not every gallery.
+    await expect(getGalleriesForClient("admin-1")).resolves.toEqual([]);
+  });
 });
 
 describe("getGalleryDetail", () => {
@@ -234,7 +308,9 @@ describe("getGalleryDetail", () => {
     status: "draft" as const,
     sessionDate: "2026-08-01",
     createdAt: new Date("2026-07-01"),
-    client: { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+    // Task #94: see getGalleriesWithDetails's own fixture comment above for
+    // why this is `galleryClients: [{ user: {...} }]`, not a bare `client`.
+    galleryClients: [{ user: { id: "u1", name: "Ana Pérez", email: "ana@example.com" } }],
     // Live package row — priceCop/includedPhotos here are the CURRENT
     // offer, deliberately NOT what this function should report as the
     // gallery's terms (same trap getGalleriesWithDetails already guards).
@@ -287,7 +363,7 @@ describe("getGalleryDetail", () => {
       status: "draft",
       sessionDate: "2026-08-01",
       createdAt: new Date("2026-07-01"),
-      client: { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+      clients: [{ id: "u1", name: "Ana Pérez", email: "ana@example.com" }],
       package: { id: 2, name: "Estándar" },
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,

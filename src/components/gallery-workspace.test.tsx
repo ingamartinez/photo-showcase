@@ -83,7 +83,7 @@ describe("GalleryWorkspace", () => {
       <GalleryWorkspace
         galleryId={GALLERY_ID}
         initialAssets={[]}
-        clientEmail={CLIENT_EMAIL}
+        clientEmails={[CLIENT_EMAIL]}
         canDeliver={false}
       />,
     );
@@ -109,7 +109,7 @@ describe("GalleryWorkspace", () => {
       <GalleryWorkspace
         galleryId={GALLERY_ID}
         initialAssets={[assetFor()]}
-        clientEmail={CLIENT_EMAIL}
+        clientEmails={[CLIENT_EMAIL]}
         canDeliver={false}
       />,
     );
@@ -142,7 +142,7 @@ describe("GalleryWorkspace", () => {
           assetFor({ id: "a1", originalFilename: "first.jpg", sortOrder: 0 }),
           assetFor({ id: "a2", originalFilename: "second.jpg", sortOrder: 1 }),
         ]}
-        clientEmail={CLIENT_EMAIL}
+        clientEmails={[CLIENT_EMAIL]}
         canDeliver={false}
       />,
     );
@@ -165,7 +165,7 @@ describe("GalleryWorkspace", () => {
       <GalleryWorkspace
         galleryId={GALLERY_ID}
         initialAssets={[assetFor({ isSelected: false })]}
-        clientEmail={CLIENT_EMAIL}
+        clientEmails={[CLIENT_EMAIL]}
         canDeliver={false}
       />,
     );
@@ -184,7 +184,7 @@ describe("GalleryWorkspace", () => {
           assetFor({ id: "a1", isSelected: true, hasFinal: false }),
           assetFor({ id: "a2", originalFilename: "second.jpg", isSelected: true, hasFinal: false }),
         ]}
-        clientEmail={CLIENT_EMAIL}
+        clientEmails={[CLIENT_EMAIL]}
         canDeliver={false}
       />,
     );
@@ -226,7 +226,7 @@ describe("GalleryWorkspace", () => {
       <GalleryWorkspace
         galleryId={GALLERY_ID}
         initialAssets={[assetFor({ id: "a1", isSelected: true, hasFinal: false })]}
-        clientEmail={CLIENT_EMAIL}
+        clientEmails={[CLIENT_EMAIL]}
         canDeliver
       />,
     );

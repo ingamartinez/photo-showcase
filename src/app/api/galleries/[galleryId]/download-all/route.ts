@@ -55,6 +55,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets, galleries } from "@/lib/db/schema";
 import { requireApiSession } from "@/lib/auth-guards";
+import { isGalleryOwner } from "@/lib/gallery-access";
 import { getObjectSize, getObjectStream } from "@/lib/r2";
 import {
   buildZipStream,
@@ -152,15 +153,17 @@ export async function GET(
     return errorResponse("gallery_not_found", 404);
   }
 
-  // Ownership — the gallery's own client, or an admin. Same rule as every
-  // sibling route (src/lib/asset-access.ts's loadOwnedAsset, the
-  // submit-selection route's own gate 1). 403, not a redirect, not a 404:
-  // the gallery id is a random UUID (schema.ts), not sequential, so
-  // confirming "this id exists" here leaks nothing an attacker could walk —
-  // same reasoning submit-selection's own comment gives.
+  // Ownership — one of the gallery's OWN clients (task #94 — several are
+  // possible now), or an admin. Same rule as every sibling route
+  // (src/lib/asset-access.ts's loadOwnedAsset, the submit-selection route's
+  // own gate 1), shared through src/lib/gallery-access.ts's isGalleryOwner
+  // rather than a rewritten comparison — see that module's header comment.
+  // 403, not a redirect, not a 404: the gallery id is a random UUID
+  // (schema.ts), not sequential, so confirming "this id exists" here leaks
+  // nothing an attacker could walk — same reasoning submit-selection's own
+  // comment gives.
   const isAdmin = session.user.role === "admin";
-  const isOwner = isAdmin || gallery.clientId === session.user.id;
-  if (!isOwner) {
+  if (!(await isGalleryOwner(gallery.id, session))) {
     return errorResponse("forbidden", 403);
   }
 

@@ -98,9 +98,14 @@ export default async function GalleryDetailPage({
           <h1 className="max-w-[24ch] font-serif text-[clamp(28px,4vw,44px)] leading-[1.05] font-normal tracking-[-0.015em] text-balance">
             {gallery.title}
           </h1>
-          <p className="text-fg-mute mt-2 text-sm">
-            {gallery.client.name ?? gallery.client.email} · {gallery.client.email}
-          </p>
+          {/* Task #94: a gallery can have several clients now — one line
+              per client so each name/email pair stays legible instead of
+              being crammed onto one. */}
+          {gallery.clients.map((client) => (
+            <p key={client.id} className="text-fg-mute mt-2 text-sm">
+              {client.name ?? client.email} · {client.email}
+            </p>
+          ))}
           <p className="text-fg-mute text-sm">Sesión: {formatSessionDate(gallery.sessionDate)}</p>
         </div>
 
@@ -123,7 +128,10 @@ export default async function GalleryDetailPage({
               moved past "draft" is UX, not the authority; see
               src/app/dashboard/galleries/actions.ts's isPublishable(). */}
           {gallery.status === "draft" && (
-            <PublishGalleryButton galleryId={gallery.id} clientEmail={gallery.client.email} />
+            <PublishGalleryButton
+              galleryId={gallery.id}
+              clientEmails={gallery.clients.map((client) => client.email)}
+            />
           )}
 
           {/* Task #73: guarded server-side by unlockSelection() itself
@@ -158,7 +166,7 @@ export default async function GalleryDetailPage({
         <GalleryWorkspace
           galleryId={gallery.id}
           initialAssets={initialAssets}
-          clientEmail={gallery.client.email}
+          clientEmails={gallery.clients.map((client) => client.email)}
           canDeliver={gallery.status === "selected"}
         />
       </div>

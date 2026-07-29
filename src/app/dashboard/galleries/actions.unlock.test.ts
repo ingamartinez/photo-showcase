@@ -113,16 +113,18 @@ function project(row: Row, columns: Record<string, unknown> | undefined): Row {
 }
 
 vi.mock("@/lib/db", async () => {
-  const { assets, galleries, users } = await import("@/lib/db/schema");
+  const { assets, galleries, users, galleryClients } = await import("@/lib/db/schema");
 
   const galleryRows: Row[] = [];
   const assetRows: Row[] = [];
   const userRows: Row[] = [];
+  const galleryClientRows: Row[] = [];
 
   function rowsFor(table: unknown): Row[] {
     if (table === galleries) return galleryRows;
     if (table === assets) return assetRows;
     if (table === users) return userRows;
+    if (table === galleryClients) return galleryClientRows;
     throw new Error("fake db: unsupported table");
   }
 
@@ -167,15 +169,37 @@ vi.mock("@/lib/db", async () => {
           },
         }),
       }),
+      // Task #94: `getGalleryClients` (src/lib/galleries.ts) reads through
+      // the relational API, `db.query.galleryClients.findMany(...)` — this
+      // is what unlockSelection now calls instead of a `users` lookup by
+      // the (now nonexistent) `gallery.clientId`.
+      query: {
+        galleryClients: {
+          findMany: async (args: { where: unknown }) => {
+            const { dbColumnName, value } = eqConditions(args.where)[0]!;
+            if (dbColumnName !== "gallery_id") {
+              throw new Error("fake db: expected a where on galleryClients.galleryId");
+            }
+            return galleryClientRows
+              .filter((r) => r.galleryId === value)
+              .map((r) => ({ user: userRows.find((u) => u.id === r.userId) }));
+          },
+        },
+      },
       // Test-only escape hatches, not part of the real `db` shape.
-      __rows: { galleries: galleryRows, assets: assetRows, users: userRows },
+      __rows: {
+        galleries: galleryRows,
+        assets: assetRows,
+        users: userRows,
+        galleryClients: galleryClientRows,
+      },
     },
   };
 });
 
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
-    db: { __rows: { galleries: Row[]; assets: Row[]; users: Row[] } };
+    db: { __rows: { galleries: Row[]; assets: Row[]; users: Row[]; galleryClients: Row[] } };
   };
   return db;
 }
@@ -202,7 +226,6 @@ const ASSET_1_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
 function galleryRow(overrides: Row = {}): Row {
   return {
     id: GALLERY_ID,
-    clientId: CLIENT_ID,
     packageId: 1,
     title: "Boda Ana y Beto",
     sessionDate: "2026-08-01",
@@ -243,8 +266,12 @@ beforeEach(async () => {
   db.__rows.galleries.length = 0;
   db.__rows.assets.length = 0;
   db.__rows.users.length = 0;
+  db.__rows.galleryClients.length = 0;
   db.__rows.galleries.push(galleryRow());
   db.__rows.users.push({ id: CLIENT_ID, name: "Ana Pérez", email: CLIENT_EMAIL });
+  // Task #94: ownership/notification recipients now come from the
+  // `gallery_clients` join table, not a `clientId` column on the gallery.
+  db.__rows.galleryClients.push({ galleryId: GALLERY_ID, userId: CLIENT_ID });
   db.__rows.assets.push({ id: ASSET_1_ID, galleryId: GALLERY_ID, isSelected: true });
 });
 
@@ -404,6 +431,27 @@ describe("unlockSelection success", () => {
     expect(call.galleryUrl).toBe("http://localhost:3300/galleries/abc123");
   });
 
+  // Task #94's own acceptance criterion: every client attached to the
+  // gallery is notified, not just the first.
+  it("emails EVERY client attached to the gallery when there are several", async () => {
+    const db = await seededDb();
+    db.__rows.users.push({ id: "client-b", name: "Beto Ruiz", email: "beto@example.com" });
+    db.__rows.galleryClients.push({ galleryId: GALLERY_ID, userId: "client-b" });
+    const { unlockSelection } = await import("./actions");
+
+    const result = await unlockSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result).toEqual({ status: "unlocked" });
+    expect(sendUnlockNotificationEmailMock).toHaveBeenCalledTimes(2);
+    const recipients = sendUnlockNotificationEmailMock.mock.calls.map(
+      (call) => (call[0] as { to: string }).to,
+    );
+    expect(recipients.sort()).toEqual(["beto@example.com", CLIENT_EMAIL].sort());
+  });
+
   // The gate this task's own acceptance criterion asks to verify against —
   // the REAL SELECTION_LOCKED_STATUSES set, not an assumption — imported
   // directly from the sibling PATCH route rather than duplicated here, so a
@@ -446,9 +494,38 @@ describe("unlockSelection — client notification failure", () => {
     expect(revalidatePathMock).toHaveBeenCalledWith("/dashboard/galleries");
   });
 
-  it("also reports the distinct failure result when the gallery's client row is unexpectedly missing", async () => {
+  // Task #94's own decision: a partial send failure names exactly which
+  // address(es) failed, rather than collapsing into the same generic
+  // message a total failure would produce.
+  it("names the specific address that failed when one of several clients' sends fails", async () => {
     const db = await seededDb();
-    db.__rows.users.length = 0;
+    db.__rows.users.push({ id: "client-b", name: "Beto Ruiz", email: "beto@example.com" });
+    db.__rows.galleryClients.push({ galleryId: GALLERY_ID, userId: "client-b" });
+    sendUnlockNotificationEmailMock.mockImplementation(async (params: { to: string }) => {
+      if (params.to === "beto@example.com") throw new Error("Resend error (500): boom");
+    });
+    const { unlockSelection } = await import("./actions");
+
+    const result = await unlockSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result.status).toBe("unlocked_email_failed");
+    expect(result.message).toContain("beto@example.com");
+    expect(result.message).not.toContain(CLIENT_EMAIL);
+    // The unlock itself still committed for BOTH clients — a partial email
+    // failure never rolls back the durable state transition.
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+  });
+
+  it("also reports the distinct failure result when the gallery has no clients attached at all", async () => {
+    const db = await seededDb();
+    // Task #94: unreachable BY DESIGN (gallery-form.tsx requires at least
+    // one client at creation) but proven here anyway, same "never trust the
+    // invariant blindly" stance as this file's own header comment on the
+    // action.
+    db.__rows.galleryClients.length = 0;
     const { unlockSelection } = await import("./actions");
 
     const result = await unlockSelection(

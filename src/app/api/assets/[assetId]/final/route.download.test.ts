@@ -66,61 +66,83 @@ function keyFromFakeUrl(url: string): string {
 // return the live row reference).
 type Row = Record<string, unknown>;
 
-function eqColumnAndValue(condition: unknown): { column?: string; value?: unknown } {
-  const chunks = (condition as { queryChunks?: unknown[] }).queryChunks ?? [];
-  let dbColumnName: string | undefined;
-  let table: unknown;
-  let value: unknown;
-  for (const chunk of chunks) {
-    if (chunk && typeof chunk === "object") {
-      if ("name" in chunk && "table" in chunk) {
-        dbColumnName = (chunk as { name: string }).name;
-        table = (chunk as { table: unknown }).table;
+// Resolves EVERY `eq()` this condition is built from, however deep — a bare
+// `eq()` at the top level, or several nested inside an `and(...)` (drizzle
+// wraps `and(eqA, eqB)` in an EXTRA parens/`" and "` SQL node one level
+// deeper than a flat `queryChunks` array). Task #94's `isGalleryOwner`
+// (src/lib/gallery-access.ts) is the first caller in this suite to need the
+// `and(eq(), eq())` shape at all — every prior `eq()`-only condition here
+// still resolves to a single-element list.
+function eqConditions(condition: unknown): { column?: string; value?: unknown }[] {
+  const results: { column?: string; value?: unknown }[] = [];
+  function walk(node: unknown) {
+    if (!node || typeof node !== "object") return;
+    const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+    if (!chunks) return;
+    let dbColumnName: string | undefined;
+    let table: unknown;
+    let value: unknown;
+    for (const chunk of chunks) {
+      if (chunk && typeof chunk === "object") {
+        if ("name" in chunk && "table" in chunk) {
+          dbColumnName = (chunk as { name: string }).name;
+          table = (chunk as { table: unknown }).table;
+        }
+        if ("value" in chunk && "encoder" in chunk) value = (chunk as { value: unknown }).value;
       }
-      if ("value" in chunk && "encoder" in chunk) value = (chunk as { value: unknown }).value;
     }
+    if (dbColumnName && table) {
+      const jsKey = Object.entries(table as Record<string, unknown>).find(
+        ([, col]) =>
+          col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
+      )?.[0];
+      results.push({ column: jsKey, value });
+      return;
+    }
+    for (const chunk of chunks) walk(chunk);
   }
-  if (!dbColumnName || !table) return { column: undefined, value };
-  const jsKey = Object.entries(table as Record<string, unknown>).find(
-    ([, col]) => col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
-  )?.[0];
-  return { column: jsKey, value };
+  walk(condition);
+  return results;
 }
 
 vi.mock("@/lib/db", async () => {
-  const { assets, galleries } = await import("@/lib/db/schema");
+  const { assets, galleries, galleryClients } = await import("@/lib/db/schema");
   const assetRows: Row[] = [];
   const galleryRows: Row[] = [];
+  const galleryClientRows: Row[] = [];
   function project(row: Row): Row {
     return { ...row };
+  }
+  function rowsFor(table: unknown): Row[] {
+    if (table === assets) return assetRows;
+    if (table === galleries) return galleryRows;
+    if (table === galleryClients) return galleryClientRows;
+    throw new Error("fake db: unsupported table in select().where()");
   }
   return {
     db: {
       select: () => ({
         from: (table: unknown) => ({
           where: (condition: unknown) => {
-            const { column, value } = eqColumnAndValue(condition);
-            if (!column) throw new Error("eqColumnAndValue: not an eq() condition");
-            if (table === assets) {
-              const rows = assetRows.filter((r) => r[column] === value).map(project);
-              return { limit: async (n: number) => rows.slice(0, n) };
+            const conditions = eqConditions(condition);
+            if (conditions.length === 0 || conditions.some((c) => !c.column)) {
+              throw new Error("eqConditions: not a supported eq()/and(eq(), eq()) condition");
             }
-            if (table === galleries) {
-              const rows = galleryRows.filter((r) => r[column] === value).map(project);
-              return { limit: async (n: number) => rows.slice(0, n) };
-            }
-            throw new Error("fake db: unsupported table in select().where()");
+            const rows = rowsFor(table)
+              .filter((r) => conditions.every(({ column, value }) => r[column!] === value))
+              .map(project);
+            return { limit: async (n: number) => rows.slice(0, n) };
           },
         }),
       }),
-      __rows: { assets: assetRows, galleries: galleryRows },
+      __rows: { assets: assetRows, galleries: galleryRows, galleryClients: galleryClientRows },
     },
   };
 });
 
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
-    db: { __rows: { assets: Row[]; galleries: Row[] } };
+    db: { __rows: { assets: Row[]; galleries: Row[]; galleryClients: Row[] } };
   };
   return db;
 }
@@ -187,9 +209,14 @@ async function seedGalleryAndAsset(overrides: {
   const db = await seededDb();
   db.__rows.galleries.push({
     id: GALLERY_ID,
-    clientId: overrides.clientId ?? "client-a",
     title: "Boda Ana y Beto",
     status: overrides.galleryStatus,
+  });
+  // Task #94: ownership is now a `gallery_clients` row, not a `clientId`
+  // column on the gallery itself.
+  db.__rows.galleryClients.push({
+    galleryId: GALLERY_ID,
+    userId: overrides.clientId ?? "client-a",
   });
   db.__rows.assets.push({
     id: ASSET_ID,
@@ -224,6 +251,7 @@ beforeEach(async () => {
   const db = await seededDb();
   db.__rows.assets.length = 0;
   db.__rows.galleries.length = 0;
+  db.__rows.galleryClients.length = 0;
 });
 
 describe("GET .../final vs GET .../proof — real bytes, real dimensions (task #28)", () => {

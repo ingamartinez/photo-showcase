@@ -46,37 +46,55 @@ vi.mock("@/lib/images", () => ({
 
 type Row = Record<string, unknown>;
 
-function eqColumnAndValue(condition: unknown): { column?: string; value?: unknown } {
-  const chunks = (condition as { queryChunks?: unknown[] }).queryChunks ?? [];
-  let dbColumnName: string | undefined;
-  let table: unknown;
-  let value: unknown;
-  for (const chunk of chunks) {
-    if (chunk && typeof chunk === "object") {
-      if ("name" in chunk && "table" in chunk) {
-        dbColumnName = (chunk as { name: string }).name;
-        table = (chunk as { table: unknown }).table;
+// Resolves EVERY `eq()` this condition is built from, however deep — a bare
+// `eq()` at the top level, or several nested inside an `and(...)` (drizzle
+// wraps `and(eqA, eqB)` in an EXTRA parens/`" and "` SQL node one level
+// deeper than a flat `queryChunks` array). Task #94's `isGalleryOwner`
+// (src/lib/gallery-access.ts) is the first caller in this suite to need the
+// `and(eq(), eq())` shape at all — every prior `eq()`-only condition here
+// still resolves to a single-element list.
+function eqConditions(condition: unknown): { column?: string; value?: unknown }[] {
+  const results: { column?: string; value?: unknown }[] = [];
+  function walk(node: unknown) {
+    if (!node || typeof node !== "object") return;
+    const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+    if (!chunks) return;
+    let dbColumnName: string | undefined;
+    let table: unknown;
+    let value: unknown;
+    for (const chunk of chunks) {
+      if (chunk && typeof chunk === "object") {
+        if ("name" in chunk && "table" in chunk) {
+          dbColumnName = (chunk as { name: string }).name;
+          table = (chunk as { table: unknown }).table;
+        }
+        if ("value" in chunk && "encoder" in chunk) value = (chunk as { value: unknown }).value;
       }
-      if ("value" in chunk && "encoder" in chunk) value = (chunk as { value: unknown }).value;
     }
+    if (dbColumnName && table) {
+      // Corrected version: resolves the JS property key through `table`'s
+      // own entries instead of hardcoding a snake_case<->camelCase
+      // transform — see src/app/api/galleries/[galleryId]/proofs/route.test.ts
+      // for the same helper and its rationale.
+      const jsKey = Object.entries(table as Record<string, unknown>).find(
+        ([, col]) =>
+          col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
+      )?.[0];
+      results.push({ column: jsKey, value });
+      return;
+    }
+    for (const chunk of chunks) walk(chunk);
   }
-  if (!dbColumnName || !table) return { column: undefined, value };
-  // Corrected version: resolves the JS property key through `table`'s own
-  // entries instead of hardcoding a snake_case<->camelCase transform — see
-  // src/app/api/galleries/[galleryId]/proofs/route.test.ts for the same
-  // helper and its rationale. Not the older buggy copy in
-  // src/app/dashboard/galleries/actions.test.ts.
-  const jsKey = Object.entries(table as Record<string, unknown>).find(
-    ([, col]) => col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
-  )?.[0];
-  return { column: jsKey, value };
+  walk(condition);
+  return results;
 }
 
 vi.mock("@/lib/db", async () => {
-  const { assets, galleries } = await import("@/lib/db/schema");
+  const { assets, galleries, galleryClients } = await import("@/lib/db/schema");
 
   const assetRows: Row[] = [];
   const galleryRows: Row[] = [];
+  const galleryClientRows: Row[] = [];
 
   // Always returns a FRESH COPY, never the live row object — a real
   // `SELECT` is a point-in-time snapshot, not a handle a later UPDATE could
@@ -90,23 +108,26 @@ vi.mock("@/lib/db", async () => {
     return { ...row };
   }
 
+  function rowsFor(table: unknown): Row[] {
+    if (table === assets) return assetRows;
+    if (table === galleries) return galleryRows;
+    if (table === galleryClients) return galleryClientRows;
+    throw new Error("fake db: unsupported table in select().where()");
+  }
+
   return {
     db: {
       select: () => ({
         from: (table: unknown) => ({
           where: (condition: unknown) => {
-            const { column, value } = eqColumnAndValue(condition);
-            if (!column) throw new Error("eqColumnAndValue: not an eq() condition");
-
-            if (table === assets) {
-              const rows = assetRows.filter((r) => r[column] === value).map(project);
-              return { limit: async (n: number) => rows.slice(0, n) };
+            const conditions = eqConditions(condition);
+            if (conditions.length === 0 || conditions.some((c) => !c.column)) {
+              throw new Error("eqConditions: not a supported eq()/and(eq(), eq()) condition");
             }
-            if (table === galleries) {
-              const rows = galleryRows.filter((r) => r[column] === value).map(project);
-              return { limit: async (n: number) => rows.slice(0, n) };
-            }
-            throw new Error("fake db: unsupported table in select().where()");
+            const rows = rowsFor(table)
+              .filter((r) => conditions.every(({ column, value }) => r[column!] === value))
+              .map(project);
+            return { limit: async (n: number) => rows.slice(0, n) };
           },
         }),
       }),
@@ -114,22 +135,26 @@ vi.mock("@/lib/db", async () => {
         set: (patch: Row) => ({
           where: async (condition: unknown) => {
             if (table !== assets) throw new Error("fake db: unsupported table in update()");
-            const { column, value } = eqColumnAndValue(condition);
-            if (!column) throw new Error("eqColumnAndValue: not an eq() condition");
+            const conditions = eqConditions(condition);
+            if (conditions.length === 0 || conditions.some((c) => !c.column)) {
+              throw new Error("eqConditions: not a supported eq()/and(eq(), eq()) condition");
+            }
             for (const row of assetRows) {
-              if (row[column] === value) Object.assign(row, patch);
+              if (conditions.every(({ column, value }) => row[column!] === value)) {
+                Object.assign(row, patch);
+              }
             }
           },
         }),
       }),
-      __rows: { assets: assetRows, galleries: galleryRows },
+      __rows: { assets: assetRows, galleries: galleryRows, galleryClients: galleryClientRows },
     },
   };
 });
 
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
-    db: { __rows: { assets: Row[]; galleries: Row[] } };
+    db: { __rows: { assets: Row[]; galleries: Row[]; galleryClients: Row[] } };
   };
   return db;
 }
@@ -161,7 +186,6 @@ function adminSession(): Session {
 function galleryRow(overrides: Partial<Row> = {}): Row {
   return {
     id: GALLERY_A_ID,
-    clientId: "client-a",
     packageId: 1,
     title: "Boda Ana y Beto",
     sessionDate: "2026-08-01",
@@ -235,11 +259,15 @@ beforeEach(async () => {
   const db = await seededDb();
   db.__rows.galleries.length = 0;
   db.__rows.assets.length = 0;
+  db.__rows.galleryClients.length = 0;
   // Selected + delivered + a finalKey present — the fully-unlocked case.
   // Individual tests override one axis at a time to prove each gate is
   // independently enforced.
   db.__rows.galleries.push(galleryRow());
   db.__rows.assets.push(assetRow());
+  // Task #94: ownership is now a `gallery_clients` row, not a `clientId`
+  // column on the gallery itself.
+  db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-a" });
 });
 
 describe("GET /api/assets/[assetId]/final — authorization", () => {

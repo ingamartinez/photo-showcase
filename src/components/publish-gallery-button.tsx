@@ -13,17 +13,21 @@ const initialState: PublishGalleryState = { status: "idle" };
 
 export function PublishGalleryButton({
   galleryId,
-  clientEmail,
+  clientEmails,
 }: {
   galleryId: string;
-  clientEmail: string;
+  // Task #94: a gallery can have several clients now — every address in
+  // this list got the same magic-link email, see publishGallery()'s own
+  // header comment for how a partial send (some addresses fail, others
+  // don't) is handled.
+  clientEmails: string[];
 }) {
   const [state, formAction, pending] = useActionState(publishGallery, initialState);
 
   if (state.status === "published") {
     return (
       <p role="status" className="text-accent-2 text-sm">
-        Publicada — le enviamos un correo a {clientEmail}.
+        Publicada — le enviamos un correo a {clientEmails.join(", ")}.
       </p>
     );
   }

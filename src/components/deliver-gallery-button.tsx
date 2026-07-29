@@ -19,11 +19,14 @@ const initialState: DeliverGalleryState = { status: "idle" };
 
 export function DeliverGalleryButton({
   galleryId,
-  clientEmail,
+  clientEmails,
   pendingFinalsCount,
 }: {
   galleryId: string;
-  clientEmail: string;
+  // Task #94: a gallery can have several clients now — every address in
+  // this list got the delivery email, see deliverGallery()'s own header
+  // comment for how a partial send is handled.
+  clientEmails: string[];
   // Server-computed count of selected assets still missing a final (same
   // number <GalleryWorkspace>'s own live counter shows, task #26) — used
   // ONLY to disable the button and explain why, never as the actual guard.
@@ -36,7 +39,7 @@ export function DeliverGalleryButton({
   if (state.status === "delivered") {
     return (
       <p role="status" className="text-accent-2 text-sm">
-        Entregada — le enviamos un correo a {clientEmail}.
+        Entregada — le enviamos un correo a {clientEmails.join(", ")}.
       </p>
     );
   }

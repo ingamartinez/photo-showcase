@@ -29,6 +29,17 @@ function eqColumnAndValue(condition: unknown): { column?: string; value?: unknow
   return { column: jsKey, value };
 }
 
+// Task #94: ownership itself moved to src/lib/gallery-access.ts's
+// `isGalleryOwner`, which has its own dedicated, mutation-tested suite
+// (gallery-access.test.ts) covering the gallery_clients query shape. Mocked
+// here rather than re-seeded via a second fake table, so this file tests
+// exactly its own job: does `loadOwnedAsset` call `isGalleryOwner` with the
+// right gallery id, and does it honor a true/false result correctly.
+const isGalleryOwnerMock = vi.fn<(galleryId: string, session: Session) => Promise<boolean>>();
+vi.mock("@/lib/gallery-access", () => ({
+  isGalleryOwner: (...args: [string, Session]) => isGalleryOwnerMock(...args),
+}));
+
 vi.mock("@/lib/db", async () => {
   const { assets, galleries } = await import("@/lib/db/schema");
 
@@ -87,7 +98,6 @@ function adminSession(): Session {
 function galleryRow(overrides: Partial<Row> = {}): Row {
   return {
     id: GALLERY_ID,
-    clientId: "client-a",
     packageId: 1,
     title: "Boda Ana y Beto",
     sessionDate: "2026-08-01",
@@ -124,6 +134,7 @@ beforeEach(async () => {
   const db = await seededDb();
   db.__rows.galleries.length = 0;
   db.__rows.assets.length = 0;
+  isGalleryOwnerMock.mockReset();
 });
 
 describe("loadOwnedAsset", () => {
@@ -133,12 +144,14 @@ describe("loadOwnedAsset", () => {
     const result = await loadOwnedAsset(ASSET_ID, clientSession("client-a"));
 
     expect(result).toEqual({ ok: false, status: 404, error: "asset_not_found" });
+    expect(isGalleryOwnerMock).not.toHaveBeenCalled();
   });
 
   it("resolves the gallery FROM the asset's own galleryId, never from anything else", async () => {
     const db = await seededDb();
     db.__rows.galleries.push(galleryRow());
     db.__rows.assets.push(assetRow());
+    isGalleryOwnerMock.mockResolvedValue(true);
     const { loadOwnedAsset } = await import("./asset-access");
 
     const result = await loadOwnedAsset(ASSET_ID, clientSession("client-a"));
@@ -148,12 +161,16 @@ describe("loadOwnedAsset", () => {
       expect(result.gallery.id).toBe(GALLERY_ID);
       expect(result.asset.id).toBe(ASSET_ID);
     }
+    // Called with the asset's OWN galleryId, never anything the caller
+    // supplied directly — see this file's own header comment.
+    expect(isGalleryOwnerMock).toHaveBeenCalledWith(GALLERY_ID, clientSession("client-a"));
   });
 
-  it("returns 403 forbidden for a client who does not own the asset's gallery", async () => {
+  it("returns 403 forbidden when isGalleryOwner refuses the session", async () => {
     const db = await seededDb();
-    db.__rows.galleries.push(galleryRow({ clientId: "client-a" }));
+    db.__rows.galleries.push(galleryRow());
     db.__rows.assets.push(assetRow());
+    isGalleryOwnerMock.mockResolvedValue(false);
     const { loadOwnedAsset } = await import("./asset-access");
 
     const result = await loadOwnedAsset(ASSET_ID, clientSession("client-b"));
@@ -161,10 +178,11 @@ describe("loadOwnedAsset", () => {
     expect(result).toEqual({ ok: false, status: 403, error: "forbidden" });
   });
 
-  it("allows the owning client through", async () => {
+  it("allows the caller through when isGalleryOwner approves", async () => {
     const db = await seededDb();
-    db.__rows.galleries.push(galleryRow({ clientId: "client-a" }));
+    db.__rows.galleries.push(galleryRow());
     db.__rows.assets.push(assetRow());
+    isGalleryOwnerMock.mockResolvedValue(true);
     const { loadOwnedAsset } = await import("./asset-access");
 
     const result = await loadOwnedAsset(ASSET_ID, clientSession("client-a"));
@@ -172,21 +190,12 @@ describe("loadOwnedAsset", () => {
     expect(result.ok).toBe(true);
   });
 
-  it("allows an admin through regardless of which client owns the gallery", async () => {
-    const db = await seededDb();
-    db.__rows.galleries.push(galleryRow({ clientId: "client-a" }));
-    db.__rows.assets.push(assetRow());
-    const { loadOwnedAsset } = await import("./asset-access");
-
-    const result = await loadOwnedAsset(ASSET_ID, adminSession());
-
-    expect(result.ok).toBe(true);
-  });
-
   // Defensive-only branch: assets.galleryId carries a NOT NULL FK to
   // galleries, so this is unreachable in a real database. Proven here so
   // the function fails closed (404), not by throwing, if that invariant is
-  // ever violated (e.g. a bad manual DB edit).
+  // ever violated (e.g. a bad manual DB edit). `isGalleryOwner` must never
+  // even be consulted here — there is no gallery row to check ownership
+  // against.
   it("fails closed with 404 if the asset's gallery row is somehow missing", async () => {
     const db = await seededDb();
     db.__rows.assets.push(assetRow());
@@ -195,5 +204,6 @@ describe("loadOwnedAsset", () => {
     const result = await loadOwnedAsset(ASSET_ID, adminSession());
 
     expect(result).toEqual({ ok: false, status: 404, error: "gallery_not_found" });
+    expect(isGalleryOwnerMock).not.toHaveBeenCalled();
   });
 });

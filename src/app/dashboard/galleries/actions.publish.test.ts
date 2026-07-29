@@ -73,6 +73,7 @@ vi.mock("@/lib/db", async () => {
   const galleryRows: Row[] = [];
   const assetRows: Row[] = [];
   const userRows: Row[] = [];
+  const galleryClientRows: Row[] = [];
   let failNextUpdate = false;
 
   return {
@@ -121,8 +122,30 @@ vi.mock("@/lib/db", async () => {
           },
         }),
       }),
+      // Task #94: `getGalleryClients` (src/lib/galleries.ts) reads through
+      // the relational API, `db.query.galleryClients.findMany(...)` — this
+      // is what publishGallery now calls instead of a `users` lookup by the
+      // (now nonexistent) `gallery.clientId`.
+      query: {
+        galleryClients: {
+          findMany: async (args: { where: unknown }) => {
+            const { column, value } = eqColumnAndValue(args.where);
+            if (column !== "galleryId") {
+              throw new Error("fake db: expected a where on galleryClients.galleryId");
+            }
+            return galleryClientRows
+              .filter((r) => r.galleryId === value)
+              .map((r) => ({ user: userRows.find((u) => u.id === r.userId) }));
+          },
+        },
+      },
       // Test-only escape hatches, not part of the real `db` shape.
-      __rows: { galleries: galleryRows, assets: assetRows, users: userRows },
+      __rows: {
+        galleries: galleryRows,
+        assets: assetRows,
+        users: userRows,
+        galleryClients: galleryClientRows,
+      },
       __failNextUpdate: () => {
         failNextUpdate = true;
       },
@@ -133,7 +156,7 @@ vi.mock("@/lib/db", async () => {
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
     db: {
-      __rows: { galleries: Row[]; assets: Row[]; users: Row[] };
+      __rows: { galleries: Row[]; assets: Row[]; users: Row[]; galleryClients: Row[] };
       __failNextUpdate: () => void;
     };
   };
@@ -161,7 +184,6 @@ const CLIENT_EMAIL = "ana@example.com";
 function galleryRow(overrides: Row = {}): Row {
   return {
     id: GALLERY_ID,
-    clientId: CLIENT_ID,
     packageId: 1,
     title: "Boda Ana y Beto",
     sessionDate: "2026-08-01",
@@ -194,8 +216,12 @@ beforeEach(async () => {
   db.__rows.galleries.length = 0;
   db.__rows.assets.length = 0;
   db.__rows.users.length = 0;
+  db.__rows.galleryClients.length = 0;
   db.__rows.galleries.push(galleryRow());
   db.__rows.users.push({ id: CLIENT_ID, name: "Ana Pérez", email: CLIENT_EMAIL });
+  // Task #94: ownership/notification recipients now come from the
+  // `gallery_clients` join table, not a `clientId` column on the gallery.
+  db.__rows.galleryClients.push({ galleryId: GALLERY_ID, userId: CLIENT_ID });
   db.__rows.assets.push({ id: crypto.randomUUID(), galleryId: GALLERY_ID, sortOrder: 0 });
 });
 
@@ -370,6 +396,59 @@ describe("publishGallery success", () => {
       redirect: false,
       redirectTo: "/galleries/abc123",
     });
+  });
+
+  // Task #94's own acceptance criterion: every client attached to a gallery
+  // gets the email, not just the first.
+  it("emails EVERY client attached to the gallery when there are several", async () => {
+    const db = await seededDb();
+    db.__rows.users.push({ id: "client-2", name: "Beto Ruiz", email: "beto@example.com" });
+    db.__rows.galleryClients.push({ galleryId: GALLERY_ID, userId: "client-2" });
+    const { publishGallery } = await import("./actions");
+
+    const result = await publishGallery(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result).toEqual({ status: "published" });
+    expect(signInMock).toHaveBeenCalledTimes(2);
+    expect(signInMock).toHaveBeenCalledWith(
+      "gallery-access",
+      expect.objectContaining({ email: CLIENT_EMAIL }),
+    );
+    expect(signInMock).toHaveBeenCalledWith(
+      "gallery-access",
+      expect.objectContaining({ email: "beto@example.com" }),
+    );
+  });
+
+  // Task #94's own decision: a partial send failure (one address bounces,
+  // others don't) is NOT swallowed into a generic message, and does NOT
+  // flip the gallery's status — same all-or-nothing stance as the
+  // single-client case, generalized to N, with the failing address named
+  // explicitly.
+  it("names the specific address that failed when one of several sends fails, and does not flip the gallery's status", async () => {
+    const db = await seededDb();
+    db.__rows.users.push({ id: "client-2", name: "Beto Ruiz", email: "beto@example.com" });
+    db.__rows.galleryClients.push({ galleryId: GALLERY_ID, userId: "client-2" });
+    signInMock.mockImplementation(async (_provider: string, opts: { email: string }) => {
+      if (opts.email === "beto@example.com") {
+        throw new AuthError("Resend error (500): boom");
+      }
+      return "http://localhost/api/auth/verify-request?provider=gallery-access";
+    });
+    const { publishGallery } = await import("./actions");
+
+    const result = await publishGallery(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.message).toContain("beto@example.com");
+    expect(result.message).not.toContain(CLIENT_EMAIL);
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "draft" });
   });
 
   it("flips the gallery from draft to proofing and revalidates both dashboard views", async () => {

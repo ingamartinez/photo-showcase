@@ -27,21 +27,27 @@ export function GalleryForm({
       <span className="label text-fg-mute">Nueva galería</span>
 
       <div className="flex flex-col gap-2">
-        <label htmlFor="clientId" className="label text-fg-mute">
-          Cliente
+        <label htmlFor="clientIds" className="label text-fg-mute">
+          Clientes
         </label>
+        {/* Task #94: a gallery can now belong to several clients at once —
+            a couple's own separate logins, a family, two businesses sharing
+            a shoot. `multiple` + `required` means the browser itself refuses
+            to submit with zero options selected; the server action
+            (createGallery) re-checks this regardless, same "hiding/blocking
+            in the UI is not the authority" stance as every other guard in
+            this app. Hold Cmd/Ctrl (or Shift for a range) to pick more than
+            one. */}
         <select
-          id="clientId"
-          name="clientId"
+          id="clientIds"
+          name="clientIds"
+          multiple
           required
-          defaultValue=""
+          size={Math.min(6, Math.max(3, clients.length))}
           aria-invalid={state.status === "error"}
           aria-describedby={state.status === "error" ? "gallery-form-error" : undefined}
           className={inputClass}
         >
-          <option value="" disabled>
-            Elegí un cliente
-          </option>
           {clients.map((client) => (
             <option key={client.id} value={client.id}>
               {client.name ?? client.email}

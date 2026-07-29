@@ -1,0 +1,36 @@
+# photoshowcase-backup — daily pg_dump + daily R2 off-site sync, both at
+# 03:30 UTC (runs as photoshowcase user).
+#
+# Staggered 15 minutes after findash-backup (03:15 UTC) so the two pg_dump
+# runs against the same PostgreSQL instance don't overlap.
+#
+# MAILTO: cron mails a job's stdout+stderr here whenever that output is
+# non-empty, REGARDLESS of exit status — not "on failure" (that would be a
+# misreading of how cron works). photoshowcase-backup.sh is written to rely
+# on exactly that: its routine progress lines go ONLY to the log file, never
+# to stdout/stderr, so a successful run produces zero output and zero mail.
+# Only genuine problems (see the script's `err()`) print anything, which is
+# what makes this MAILTO meaningful instead of a future daily "it worked"
+# email nobody reads. MAILTO is set below to a real address instead of left
+# at cron's default (the `photoshowcase` OS user, a --shell
+# /usr/sbin/nologin service account with no inbox anyone reads).
+#
+# NOTE: as of this writing the droplet has no local MTA (`postfix`
+# inactive, no `/usr/sbin/sendmail` binary), so this alone does NOT yet
+# deliver mail — cron will fail to exec the mail command and that failure
+# itself will show up in `journalctl -u cron`, which is still strictly more
+# visible than a silent `exit 0`, but is not real alerting. Closing that gap
+# is filed as #72 (needs a minimal outbound relay, e.g. msmtp, or a
+# log-monitoring check against /srv/photoshowcase/logs/backup.log for ERROR
+# lines) — out of scope for this change.
+MAILTO=ing.amartinez94@gmail.com
+#
+# Install: cp infra/cron/photoshowcase-backup.cron /etc/cron.d/photoshowcase-backup
+# Permissions: chmod 0644 /etc/cron.d/photoshowcase-backup (owned root:root)
+#
+# Logs: /srv/photoshowcase/logs/backup.log
+#
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/sbin:/bin:/usr/sbin:/usr/bin
+
+30 3 * * * photoshowcase /usr/local/bin/photoshowcase-backup.sh

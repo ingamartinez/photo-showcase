@@ -99,7 +99,7 @@ describe("requestMagicLink", () => {
     expect(signInMock).toHaveBeenCalledWith("resend", {
       email: "client@example.com",
       redirect: false,
-      redirectTo: "/dashboard",
+      redirectTo: "/login/redirect",
     });
   });
 
@@ -112,13 +112,35 @@ describe("requestMagicLink", () => {
   // separate from the equality check above, so it fails with a readable
   // message if `redirectTo` is ever dropped instead of silently passing a
   // now-vacuous object match.
-  it("passes an explicit redirectTo so a successful login lands on the dashboard, not back on /login", async () => {
+  it("passes an explicit redirectTo so a successful login lands on the post-login dispatcher, not back on /login", async () => {
     signInMock.mockResolvedValue("https://alejoframes.com/api/auth/verify-request");
 
     await requestMagicLink({ status: "idle" }, formDataWith("client@example.com"));
 
     const [, options] = signInMock.mock.calls[0] as [string, { redirectTo?: string }];
-    expect(options.redirectTo).toBe("/dashboard");
+    expect(options.redirectTo).toBe("/login/redirect");
+  });
+
+  // Task #87's acceptance criterion, asserted directly rather than by
+  // inspection: the redirect target must not depend on WHICH address is
+  // signing in. If this action looked up the address's role here to pick a
+  // role-specific `redirectTo` (the "obvious fix" the task's own trap warns
+  // against), an admin address and a client address would produce different
+  // values below and this test would catch it — the role dispatch belongs
+  // to src/app/(marketing)/login/redirect/page.tsx, which only runs AFTER a
+  // session exists, not to this pre-authentication request path.
+  it("passes the SAME redirectTo for every address, admin-looking or client-looking alike", async () => {
+    signInMock.mockResolvedValue("https://alejoframes.com/api/auth/verify-request");
+
+    await requestMagicLink({ status: "idle" }, formDataWith("admin@example.com"));
+    const [, adminOptions] = signInMock.mock.calls[0] as [string, { redirectTo?: string }];
+
+    signInMock.mockClear();
+    await requestMagicLink({ status: "idle" }, formDataWith("client@example.com"));
+    const [, clientOptions] = signInMock.mock.calls[0] as [string, { redirectTo?: string }];
+
+    expect(adminOptions.redirectTo).toBe(clientOptions.redirectTo);
+    expect(adminOptions.redirectTo).toBe("/login/redirect");
   });
 
   it("swallows the AuthError thrown for an unknown address and returns the SAME confirmation state", async () => {

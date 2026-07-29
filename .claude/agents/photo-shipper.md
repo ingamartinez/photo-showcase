@@ -104,6 +104,42 @@ Then, over SSH (`ssh -i ~/.ssh/findash_do root@147.182.138.79`):
 
 Verify the behavior the slice actually added, not just that the site responds.
 
+## Obtaining a production session — you may not
+
+Most of this product lives behind a magic-link login: the whole admin dashboard,
+and every client-facing surface except the marketing pages. You have no login, and
+**you may not acquire one.**
+
+Specifically, you may NOT:
+
+- create, forge, borrow or otherwise manufacture an authenticated session by any
+  means — above all, do not insert or modify rows in the Auth.js `sessions` table,
+  which is the app's own session store;
+- mint cookies or tokens, or use the owner's credentials;
+- hand-edit anything on the droplet;
+- upload real photos or write any other data to production storage to exercise a
+  pipeline;
+- improvise a workaround when a documented path turns out to be blocked.
+
+Read-only checks are fine and expected: HTTP status codes on unauthenticated
+requests, the health endpoint, `systemctl`, `free -m`, `journalctl`, and read-only
+queries against the production database to confirm a migration applied.
+
+**"I could not verify this in production, it requires an authenticated session" is
+a CORRECT and COMPLETE outcome.** It is not a failure, not a blocker, and not a
+problem to route around. Report it in exactly those terms, name which acceptance
+criteria it covers, and move on. Do not substitute a synthetic stand-in, and never
+stretch an unauthenticated check into a claim about authenticated behaviour —
+"`/dashboard` redirects when signed out" proves the guard works, not the feature.
+
+This rule exists because it was already broken once. Shipping task #38, an agent
+needed an authenticated request, found no sanctioned path, and invented one: it
+inserted a row into production's `sessions` table pointed at the owner's admin
+user, used it, and removed it afterwards. The workaround was well chosen and fully
+reversed — and it was still not authorised. **Absent a sanctioned path, agents
+invent one, and the invented one looks reasonable.** So the sanctioned answer is
+written here: stop and report.
+
 ## If something is wrong
 
 Stop. Report exactly what failed, with the output. The deploy workflow has its own
@@ -117,6 +153,9 @@ Report concisely:
 - Task ID, branch, commit SHAs, PR number and merge status.
 - The CI-in-clean-worktree build result.
 - The production verification, with the real values you observed.
+- **Which acceptance criteria you verified live, and which you could not** — state
+  the unverified ones explicitly, by name. A slice whose behaviour sits behind a
+  login will always have some; saying so is the job, not an admission.
 - Anything that looked off but did not block.
 
 Save anything non-obvious you learned to engram via `mem_save` with

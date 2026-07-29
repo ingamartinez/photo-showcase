@@ -28,6 +28,9 @@ the identity model collapsed `clients` into `users`, deviating from `PLAN.md` §
   depending on systems outside this machine. Without it, a slice that passed review
   but broke on deploy sits in `review`, pointing at the wrong problem.
 - `done` means live in production and verified there. Not merged. Not "should work".
+  The one sanctioned exception is behaviour behind a login — see "What the shipping
+  agent cannot verify" below. Such a slice reaches `done` with the gap written into
+  its own body, never with a silent claim of verification.
 - One task per vertical slice. A slice is vertical: it should leave the app in a
   working, deployable state on its own.
 - Titles short and action-oriented. The body carries the detail — and it should carry
@@ -137,7 +140,43 @@ to production. Each hands off to the next; none of them skips ahead.
    kanban-md move <id> done --claim agent-1
    ```
 
+   If the shipper reported acceptance criteria it could not verify, append them to
+   the task body BEFORE closing — name what was and was not confirmed live, and what
+   the owner should open to close it. The board's own rule is that drift gets
+   recorded rather than silently resolved; an unverifiable criterion is drift.
+
+   ```bash
+   kanban-md edit <id> --claim agent-1 --append-body "…"
+   ```
+
 8. Repeat until the backlog is empty.
+
+## What the shipping agent cannot verify
+
+The admin dashboard and every client-facing surface sit behind a magic-link login.
+That design is correct and is not changing. The consequence is that **the agent that
+ships a slice cannot see most of what it shipped.** It can prove the guard fires —
+`/dashboard` 307s when signed out — which is not the same as proving the feature
+works.
+
+The decision, made deliberately after weighing the alternatives in #82: **no
+standing credential is minted for an automated agent against production.** A
+read-only smoke account and a seeded staging environment were both considered and
+both rejected as too much standing blast radius for a one-photographer site. The
+cost is accepted instead, and paid like this:
+
+- `photo-shipper` is told in its own instructions that it may not obtain a session
+  by any means, and that "I could not verify this, it requires an authenticated
+  session" is a correct and complete outcome. That prohibition is not advisory —
+  it exists because an agent shipping #38 invented its own path into production
+  auth when it found none sanctioned, and the improvisation looked entirely
+  reasonable.
+- Every such gap is written into the task body at close, naming the criteria.
+- **The owner verifies by hand.** For an admin-facing or client-facing slice that
+  is the last step, and the slice is not truly finished until it happens.
+
+If this ever becomes too expensive — enough slices, enough manual checks — reopen
+the decision rather than letting an agent route around it.
 
 ## Command reference (verified against kanban-md 0.37.0)
 

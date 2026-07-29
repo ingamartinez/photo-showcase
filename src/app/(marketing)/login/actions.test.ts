@@ -1,15 +1,21 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { AuthError } from "next-auth";
 import { requestMagicLink } from "./actions";
+import { EMAIL_LIMIT, IP_LIMIT, emailLimiter, ipLimiter } from "@/lib/login-rate-limiters";
 
 const signInMock = vi.fn();
 const cookieDeleteMock = vi.fn();
+const mockRequestIp = "203.0.113.7";
 
-// The action normalizes its own response cookies (see src/lib/auth-cookies.ts).
-// The real `next/headers` only works inside a Next.js request, so stand in for
-// the response cookie jar and record what the action does to it.
+// The action normalizes its own response cookies (see src/lib/auth-cookies.ts)
+// and reads the caller's IP for rate limiting (see src/lib/rate-limit.ts). The
+// real `next/headers` only works inside a Next.js request, so stand in for the
+// response cookie jar and the request header set alike. Every test in this
+// file shares one IP on purpose — see the top-level `beforeEach` below for why
+// that's safe.
 vi.mock("next/headers", () => ({
   cookies: async () => ({ delete: cookieDeleteMock }),
+  headers: async () => new Headers({ "x-forwarded-for": mockRequestIp }),
 }));
 
 // src/auth.ts's DB/env wiring is irrelevant here — mock the module boundary
@@ -40,6 +46,22 @@ afterAll(() => {
 
 beforeEach(() => {
   cookieDeleteMock.mockReset();
+
+  // `emailLimiter` and `ipLimiter` (src/lib/login-rate-limiters.ts) are
+  // module-scope singletons — the same object is shared by every test in
+  // this file, exactly as it is by every request in production. Without
+  // this reset, tests would silently share one rate-limit budget: an
+  // ordinary new test reusing "client@example.com" could push an unrelated,
+  // earlier-declared test's call past the limit and make `signIn` stop
+  // being invoked for it — not with a "rate limited" error, but with the
+  // SAME successful-looking `{ status: "sent" }` this slice deliberately
+  // returns on throttle. That is silent, and specifically the failure mode
+  // this rate limiter must never have: a passing test suite that no longer
+  // actually exercises the anti-enumeration branches it claims to (see the
+  // "rate limiter reset" describe block at the bottom of this file, which
+  // proves this reset is load-bearing).
+  emailLimiter.reset();
+  ipLimiter.reset();
 });
 
 function formDataWith(email: unknown) {
@@ -83,8 +105,9 @@ describe("requestMagicLink", () => {
 
   // Task #17's fix for #9's round-2 review note: without an explicit
   // `redirectTo`, `signIn()`'s `redirect: false` path still falls back to
-  // the `Referer` header for the magic link's baked-in `callbackUrl` (see
-  // `next-auth/lib/actions.js`), which resolves to `/login` and bounces a
+  // the `Referer` header (see `next-auth/lib/actions.js`), so the magic
+  // link's baked-in `callbackUrl` would resolve to wherever this action
+  // happened to be called from — `/login` in practice, bouncing a
   // successful login right back to the entrance. Asserted as its own test,
   // separate from the equality check above, so it fails with a readable
   // message if `redirectTo` is ever dropped instead of silently passing a
@@ -227,5 +250,142 @@ describe("requestMagicLink anti-enumeration timing floor", () => {
 
     expect(result.status).toBe("error");
     expect(signInMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("requestMagicLink rate limiting", () => {
+  beforeEach(() => {
+    signInMock.mockReset();
+    signInMock.mockResolvedValue("https://alejoframes.com/api/auth/verify-request");
+  });
+
+  // Every submission below carries the real 700ms anti-enumeration floor
+  // (see actions.ts's MIN_RESPONSE_MS). Fake timers keep a multi-submission
+  // test fast and deterministic instead of a real multi-second sleep — the
+  // same technique the timing-floor describe block above already uses.
+  async function submit(email: string) {
+    const pending = requestMagicLink({ status: "idle" }, formDataWith(email));
+    await vi.advanceTimersByTimeAsync(700);
+    return pending;
+  }
+
+  it(`sends mail for the ${EMAIL_LIMIT}th request to one address but not the ${EMAIL_LIMIT + 1}th (the boundary)`, async () => {
+    const email = "address-boundary@example.com";
+    vi.useFakeTimers();
+
+    try {
+      for (let i = 0; i < EMAIL_LIMIT; i++) {
+        expect(await submit(email)).toEqual({ status: "sent" });
+      }
+      expect(signInMock).toHaveBeenCalledTimes(EMAIL_LIMIT);
+
+      signInMock.mockClear();
+      const throttled = await submit(email);
+
+      // Exceeding the limit stops sending mail...
+      expect(signInMock).not.toHaveBeenCalled();
+      // ...but the response is indistinguishable from an accepted one.
+      expect(throttled).toEqual({ status: "sent" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it(`sends mail for the ${IP_LIMIT}th request from one IP but not the ${IP_LIMIT + 1}th, even for a brand-new address`, async () => {
+    vi.useFakeTimers();
+
+    try {
+      for (let i = 0; i < IP_LIMIT; i++) {
+        // A different address on every call: this proves the IP bucket, not
+        // the (per-address) email bucket, is what eventually blocks — each
+        // of these addresses is well within its own individual limit.
+        expect(await submit(`ip-boundary-${i}@example.com`)).toEqual({ status: "sent" });
+      }
+      expect(signInMock).toHaveBeenCalledTimes(IP_LIMIT);
+
+      signInMock.mockClear();
+      const throttled = await submit(`ip-boundary-${IP_LIMIT}@example.com`);
+
+      expect(signInMock).not.toHaveBeenCalled();
+      expect(throttled).toEqual({ status: "sent" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // This is the sharpest edge of this slice: the rate limiter runs BEFORE
+  // the Resend call, so a throttled request finishes signIn-free almost
+  // instantly on its own. Skipping the timing floor on that path — an easy
+  // mistake, an early `return` on throttle — would reopen exactly the
+  // response-time oracle #9/#43 closed, just keyed off request count
+  // instead of address existence.
+  it("takes the SAME amount of time to respond whether accepted or throttled by the per-address limit", async () => {
+    const email = "timing-boundary@example.com";
+    vi.useFakeTimers();
+
+    try {
+      for (let i = 0; i < EMAIL_LIMIT; i++) {
+        await submit(email);
+      }
+
+      signInMock.mockClear();
+      let resolved = false;
+      const throttled = requestMagicLink({ status: "idle" }, formDataWith(email)).then((result) => {
+        resolved = true;
+        return result;
+      });
+
+      await vi.advanceTimersByTimeAsync(650);
+      expect(resolved).toBe(false);
+
+      await vi.advanceTimersByTimeAsync(100);
+      expect(await throttled).toEqual({ status: "sent" });
+      expect(resolved).toBe(true);
+      expect(signInMock).not.toHaveBeenCalled();
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("normalizes address case before bucketing, so varying case can't be used to dodge the per-address limit", async () => {
+    const casings = ["Case@Example.com", "case@example.com", "CASE@EXAMPLE.COM"];
+    vi.useFakeTimers();
+
+    try {
+      for (const email of casings) {
+        expect(await submit(email)).toEqual({ status: "sent" });
+      }
+      expect(signInMock).toHaveBeenCalledTimes(EMAIL_LIMIT);
+
+      signInMock.mockClear();
+      const throttled = await submit("CaSe@ExAmPlE.CoM"); // yet another casing of the SAME address
+
+      expect(signInMock).not.toHaveBeenCalled();
+      expect(throttled).toEqual({ status: "sent" });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("requestMagicLink rate limiter reset between tests", () => {
+  beforeEach(() => {
+    signInMock.mockReset();
+    signInMock.mockResolvedValue("https://alejoframes.com/api/auth/verify-request");
+  });
+
+  // "client@example.com" is reused by several tests earlier in this file
+  // (at least 3 real submissions to it above, on top of whatever else
+  // shares this file's single mocked IP). Without the top-level
+  // `beforeEach` resetting `emailLimiter`/`ipLimiter` before EVERY test,
+  // this address's budget would already be exhausted by the time this test
+  // runs — `signIn` would silently never be called, and this assertion
+  // would fail. Delete that reset (or the `ipLimiter.reset()` call inside
+  // it) to see this go red; that is the point of this test existing.
+  it("starts with a full rate-limit budget, proving the top-level reset actually runs", async () => {
+    const result = await requestMagicLink({ status: "idle" }, formDataWith("client@example.com"));
+
+    expect(result).toEqual({ status: "sent" });
+    expect(signInMock).toHaveBeenCalledTimes(1);
   });
 });

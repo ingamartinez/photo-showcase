@@ -200,23 +200,29 @@ export async function POST(
   // recovery path for a missed email is the photographer noticing the
   // gallery themselves: `/dashboard/galleries` (src/app/dashboard/galleries/
   // page.tsx, via `getGalleriesWithDetails`) DOES render every gallery's
-  // `status` unconditionally, including `selected` — but honestly, that
-  // status renders as a muted label indistinguishable in weight from
-  // "Borrador", the list sorts by `createdAt` (not by who most recently
-  // submitted), and `/dashboard`'s own root reads no database at all. So a
-  // `selected`-with-no-notification gallery is PRESENT there, not HIDDEN —
-  // but it is not salient either; a photographer who never checks that list
-  // proactively could miss it for a while. Kanban #75 is filed to fix that
-  // discoverability gap directly (make a submitted-but-unremarkable gallery
-  // stand out). The real reason this route still doesn't revert on a failed
-  // send is comparative, not that the dashboard already solves it: the
-  // ALTERNATIVE (revert to `proofing` on failure, task #25's round-1
-  // design) is strictly worse on this exact axis — a reverted gallery
-  // renders as plain, unremarkable "En pruebas", identical to a client who
-  // simply hasn't submitted yet, which is LESS discoverable than `selected`
-  // ever is, and the client may by then have closed the tab believing their
-  // submission failed when it didn't. Dropping the revert dominates even
-  // under this pessimistic reading of the dashboard's current state.
+  // `status` unconditionally, including `selected`. AT THE TIME this route
+  // was written, that status rendered as a muted label indistinguishable in
+  // weight from "Borrador", the list sorted by `createdAt` (not by who most
+  // recently submitted), and `/dashboard`'s own root read no database at
+  // all — so a `selected`-with-no-notification gallery was PRESENT there,
+  // not HIDDEN, but not salient either; a photographer who never checked
+  // that list proactively could miss it for a while. Kanban #75 was filed
+  // to fix exactly that discoverability gap, and has since shipped: the
+  // `selected` status now gets the studio's accent colour and a dot instead
+  // of the muted treatment, `getGalleriesWithDetails` now orders by
+  // recency-of-activity (`selectionSubmittedAt` falling back to
+  // `createdAt`, so a stale-but-just-submitted gallery rises to the top),
+  // and `/dashboard`'s root now shows an "N selecciones esperando" banner
+  // driven by `getPendingSelectionCount`. The reason this route still
+  // doesn't revert on a failed send remains comparative, not that the
+  // dashboard solves it on its own: the ALTERNATIVE (revert to `proofing`
+  // on failure, task #25's round-1 design) is strictly worse on this exact
+  // axis — a reverted gallery renders as plain, unremarkable "En pruebas",
+  // identical to a client who simply hasn't submitted yet, which is LESS
+  // discoverable than `selected` ever is, and the client may by then have
+  // closed the tab believing their submission failed when it didn't.
+  // Dropping the revert dominates even under the pessimistic pre-#75
+  // reading of the dashboard's state, and dominates more clearly now.
   //
   // `quota` starts as `preSubmitQuota` (already computed above, off the
   // pre-UPDATE read) and is only ever refined inside the try block below —

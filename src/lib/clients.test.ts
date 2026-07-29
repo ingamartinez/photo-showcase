@@ -52,7 +52,7 @@ describe("getClientsWithGalleryCount", () => {
     expect(eqColumnAndValue(args.where)).toEqual({ column: "role", value: "client" });
   });
 
-  it("derives galleryCount from the joined galleries, never a stored count", async () => {
+  it("derives galleryCount from the joined galleryClients membership rows, never a stored count", async () => {
     findManyMock.mockResolvedValue([
       {
         id: "u1",
@@ -60,7 +60,10 @@ describe("getClientsWithGalleryCount", () => {
         email: "ana@example.com",
         phone: null,
         createdAt: new Date("2026-01-01"),
-        galleries: [{ id: "g1" }, { id: "g2" }, { id: "g3" }],
+        // Task #94: one row per gallery this client is attached to, via the
+        // new `gallery_clients` join table — see this file's own updated
+        // comment on `getClientsWithGalleryCount`'s query.
+        galleryClients: [{ galleryId: "g1" }, { galleryId: "g2" }, { galleryId: "g3" }],
       },
       {
         id: "u2",
@@ -68,7 +71,7 @@ describe("getClientsWithGalleryCount", () => {
         email: "beto@example.com",
         phone: "+57 300 000 0000",
         createdAt: new Date("2026-02-01"),
-        galleries: [],
+        galleryClients: [],
       },
     ]);
     const { getClientsWithGalleryCount } = await import("./clients");

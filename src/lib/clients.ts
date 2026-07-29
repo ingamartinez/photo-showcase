@@ -25,9 +25,14 @@ export async function getClientsWithGalleryCount(): Promise<ClientWithGalleryCou
   const rows = await db.query.users.findMany({
     where: eq(users.role, "client"),
     orderBy: desc(users.createdAt),
-    // Only the id is needed to count — pulling full gallery rows here would
-    // be wasted work for a list that only ever shows a number.
-    with: { galleries: { columns: { id: true } } },
+    // Task #94: `users.galleries` (a direct `many()` off the old
+    // `galleries.clientId` FK) became `users.galleryClients` (through the
+    // new `gallery_clients` join table, schema.ts) — each row here is one
+    // membership, i.e. one gallery this client is attached to, so counting
+    // them still answers the same "how many galleries" question. Only the
+    // id is needed to count — pulling full rows here would be wasted work
+    // for a list that only ever shows a number.
+    with: { galleryClients: { columns: { galleryId: true } } },
   });
 
   return rows.map((row) => ({
@@ -36,7 +41,7 @@ export async function getClientsWithGalleryCount(): Promise<ClientWithGalleryCou
     email: row.email,
     phone: row.phone,
     createdAt: row.createdAt,
-    galleryCount: row.galleries.length,
+    galleryCount: row.galleryClients.length,
   }));
 }
 

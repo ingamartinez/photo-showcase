@@ -22,32 +22,51 @@ vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 // test.
 type Row = Record<string, unknown>;
 
-function eqColumnAndValue(condition: unknown): { column?: string; value?: unknown } {
-  const chunks = (condition as { queryChunks?: unknown[] }).queryChunks ?? [];
-  let dbColumnName: string | undefined;
-  let table: unknown;
-  let value: unknown;
-  for (const chunk of chunks) {
-    if (chunk && typeof chunk === "object") {
-      if ("name" in chunk && "table" in chunk) {
-        dbColumnName = (chunk as { name: string }).name;
-        table = (chunk as { table: unknown }).table;
+// Resolves EVERY `eq()` this condition is built from, however deep — a bare
+// `eq()` at the top level, or several nested inside an `and(...)` (drizzle
+// wraps `and(eqA, eqB)` in an EXTRA parens/`" and "` SQL node one level
+// deeper than a flat `queryChunks` array). Task #94's `isGalleryOwner`
+// (src/lib/gallery-access.ts) is the first caller in this suite to need the
+// `and(eq(), eq())` shape at all — every prior `eq()`-only condition here
+// still resolves to a single-element list.
+function eqConditions(condition: unknown): { column?: string; value?: unknown }[] {
+  const results: { column?: string; value?: unknown }[] = [];
+  function walk(node: unknown) {
+    if (!node || typeof node !== "object") return;
+    const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+    if (!chunks) return;
+    let dbColumnName: string | undefined;
+    let table: unknown;
+    let value: unknown;
+    for (const chunk of chunks) {
+      if (chunk && typeof chunk === "object") {
+        if ("name" in chunk && "table" in chunk) {
+          dbColumnName = (chunk as { name: string }).name;
+          table = (chunk as { table: unknown }).table;
+        }
+        if ("value" in chunk && "encoder" in chunk) value = (chunk as { value: unknown }).value;
       }
-      if ("value" in chunk && "encoder" in chunk) value = (chunk as { value: unknown }).value;
     }
+    if (dbColumnName && table) {
+      const jsKey = Object.entries(table as Record<string, unknown>).find(
+        ([, col]) =>
+          col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
+      )?.[0];
+      results.push({ column: jsKey, value });
+      return;
+    }
+    for (const chunk of chunks) walk(chunk);
   }
-  if (!dbColumnName || !table) return { column: undefined, value };
-  const jsKey = Object.entries(table as Record<string, unknown>).find(
-    ([, col]) => col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
-  )?.[0];
-  return { column: jsKey, value };
+  walk(condition);
+  return results;
 }
 
 vi.mock("@/lib/db", async () => {
-  const { assets, galleries } = await import("@/lib/db/schema");
+  const { assets, galleries, galleryClients } = await import("@/lib/db/schema");
 
   const assetRows: Row[] = [];
   const galleryRows: Row[] = [];
+  const galleryClientRows: Row[] = [];
 
   function project(row: Row, columns: Record<string, unknown> | undefined): Row {
     if (!columns) return row;
@@ -56,14 +75,24 @@ vi.mock("@/lib/db", async () => {
     return projected;
   }
 
+  function rowsFor(table: unknown): Row[] {
+    if (table === assets) return assetRows;
+    if (table === galleries) return galleryRows;
+    if (table === galleryClients) return galleryClientRows;
+    throw new Error("fake db: unsupported table in select().where()");
+  }
+
   function selectFrom(columns: Record<string, unknown> | undefined, table: unknown) {
     return {
       where: (condition: unknown) => {
-        const { column, value } = eqColumnAndValue(condition);
-        if (!column) throw new Error("eqColumnAndValue: not an eq() condition");
+        const conditions = eqConditions(condition);
+        if (conditions.length === 0 || conditions.some((c) => !c.column)) {
+          throw new Error("eqConditions: not a supported eq()/and(eq(), eq()) condition");
+        }
+        const matches = (r: Row) => conditions.every(({ column, value }) => r[column!] === value);
 
         if (table === assets) {
-          const rows = assetRows.filter((r) => r[column] === value).map((r) => project(r, columns));
+          const rows = assetRows.filter(matches).map((r) => project(r, columns));
           const resultPromise = Promise.resolve(rows);
           return {
             limit: async (n: number) => rows.slice(0, n),
@@ -71,11 +100,8 @@ vi.mock("@/lib/db", async () => {
             catch: resultPromise.catch.bind(resultPromise),
           };
         }
-        if (table === galleries) {
-          const rows = galleryRows.filter((r) => r[column] === value);
-          return { limit: async (n: number) => rows.slice(0, n) };
-        }
-        throw new Error("fake db: unsupported table in select().where()");
+        const rows = rowsFor(table).filter(matches);
+        return { limit: async (n: number) => rows.slice(0, n) };
       },
     };
   }
@@ -89,23 +115,27 @@ vi.mock("@/lib/db", async () => {
         set: (patch: Row) => ({
           where: async (condition: unknown) => {
             if (table !== assets) throw new Error("fake db: unsupported table in update()");
-            const { column, value } = eqColumnAndValue(condition);
-            if (!column) throw new Error("eqColumnAndValue: not an eq() condition");
+            const conditions = eqConditions(condition);
+            if (conditions.length === 0 || conditions.some((c) => !c.column)) {
+              throw new Error("eqConditions: not a supported eq()/and(eq(), eq()) condition");
+            }
             for (const row of assetRows) {
-              if (row[column] === value) Object.assign(row, patch);
+              if (conditions.every(({ column, value }) => row[column!] === value)) {
+                Object.assign(row, patch);
+              }
             }
           },
         }),
       }),
       // Test-only escape hatch, not part of the real `db` shape.
-      __rows: { assets: assetRows, galleries: galleryRows },
+      __rows: { assets: assetRows, galleries: galleryRows, galleryClients: galleryClientRows },
     },
   };
 });
 
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
-    db: { __rows: { assets: Row[]; galleries: Row[] } };
+    db: { __rows: { assets: Row[]; galleries: Row[]; galleryClients: Row[] } };
   };
   return db;
 }
@@ -139,7 +169,6 @@ function adminSession(): Session {
 function galleryRow(overrides: Partial<Row> = {}): Row {
   return {
     id: GALLERY_A_ID,
-    clientId: "client-a",
     packageId: 1,
     title: "Boda Ana y Beto",
     sessionDate: "2026-08-01",
@@ -191,8 +220,12 @@ beforeEach(async () => {
   const db = await seededDb();
   db.__rows.galleries.length = 0;
   db.__rows.assets.length = 0;
+  db.__rows.galleryClients.length = 0;
   db.__rows.galleries.push(galleryRow());
   db.__rows.assets.push(assetRow({ id: ASSET_1_ID, sortOrder: 0 }));
+  // Task #94: ownership is now a `gallery_clients` row, not a `clientId`
+  // column on the gallery itself.
+  db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-a" });
 });
 
 describe("PATCH /api/assets/[assetId]/selection — authorization", () => {
@@ -230,7 +263,9 @@ describe("PATCH /api/assets/[assetId]/selection — authorization", () => {
     const db = await seededDb();
     db.__rows.galleries.length = 0;
     db.__rows.assets.length = 0;
-    db.__rows.galleries.push(galleryRow({ id: GALLERY_B_ID, clientId: "client-b" }));
+    db.__rows.galleryClients.length = 0;
+    db.__rows.galleries.push(galleryRow({ id: GALLERY_B_ID }));
+    db.__rows.galleryClients.push({ galleryId: GALLERY_B_ID, userId: "client-b" });
     db.__rows.assets.push(assetRow({ galleryId: GALLERY_B_ID }));
     const { PATCH } = await import("./route");
 
@@ -382,7 +417,10 @@ describe("PATCH /api/assets/[assetId]/selection — gallery status gate", () => 
     authMock.mockResolvedValue(adminSession());
     const db = await seededDb();
     db.__rows.galleries.length = 0;
-    db.__rows.galleries.push(galleryRow({ status: "draft", clientId: "someone-else" }));
+    // Admin bypasses ownership entirely (src/lib/gallery-access.ts) — no
+    // `gallery_clients` row is seeded for this gallery at all, on purpose.
+    db.__rows.galleryClients.length = 0;
+    db.__rows.galleries.push(galleryRow({ status: "draft" }));
     const { PATCH } = await import("./route");
 
     const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
@@ -419,6 +457,38 @@ describe("PATCH /api/assets/[assetId]/selection — persistence and quota recomp
     expect(body.asset.isSelected).toBe(false);
     expect(body.asset.selectedAt).toBeNull();
     expect(db.__rows.assets[0]?.selectedAt).toBeNull();
+  });
+
+  // Task #94's "shared selection, ATTRIBUTED" decision — schema.ts's comment
+  // on `assets.selectedBy` requires this route to keep it in lockstep with
+  // `isSelected`, in BOTH directions. Unattributed selections made in
+  // production can never be attributed retroactively, so this is the
+  // headline regression this test exists to catch.
+  it("stamps selected_by with the acting session's user id on select", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assets[0]?.selectedBy).toBe("client-a");
+  });
+
+  it("clears selected_by back to null on deselect, even though a different actor selected it", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.assets[0] = assetRow({
+      isSelected: true,
+      selectedAt: new Date("2026-07-10"),
+      selectedBy: "client-b",
+    });
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assets[0]?.selectedBy).toBeNull();
   });
 
   // The task's core acceptance criterion: the response's `quota` is a fresh

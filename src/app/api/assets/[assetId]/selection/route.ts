@@ -1,8 +1,11 @@
 // PATCH /api/assets/[assetId]/selection — the client toggles whether one
 // asset is picked for editing (task #24's headline mutation).
 //
-// `is_selected` / `selected_at` are the only things this route writes.
-// `selected` (the count), `extras`, and `surchargeCop` are never stored —
+// `is_selected` / `selected_at` / `selected_by` are the only things this
+// route writes (`selected_by`, task #94 — see schema.ts's comment on
+// `assets.selectedBy` for the attribution decision this lockstep write
+// implements). `selected` (the count), `extras`, and `surchargeCop` are
+// never stored —
 // PLAN.md §3 and schema.ts's comment on `assets.isSelected` are explicit
 // that the count is DERIVED. So after every toggle this route re-reads every
 // sibling asset's `isSelected` flag from the database and hands the caller
@@ -148,7 +151,15 @@ export async function PATCH(
 
   const isSelected = bodyResult.data.selected;
   const selectedAt = isSelected ? new Date() : null;
-  await db.update(assets).set({ isSelected, selectedAt }).where(eq(assets.id, asset.id));
+  // `selectedBy` is kept in lockstep with `isSelected` right here — the
+  // acting session's own user id on select, `null` again on deselect — see
+  // schema.ts's comment on `assets.selectedBy` for why deselect clears it
+  // rather than keeping the last actor.
+  const selectedBy = isSelected ? session.user.id : null;
+  await db
+    .update(assets)
+    .set({ isSelected, selectedAt, selectedBy })
+    .where(eq(assets.id, asset.id));
 
   // Re-read every sibling's flag AFTER the write above, so the count this
   // response reports already reflects the toggle that just happened — see

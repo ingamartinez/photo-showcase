@@ -185,11 +185,13 @@ export const galleries = pgTable(
   "galleries",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    clientId: text("client_id")
-      .notNull()
-      // Restrict, not cascade: deleting a person must never silently take their
-      // delivered galleries with it.
-      .references(() => users.id, { onDelete: "restrict" }),
+    // A gallery's clients used to live here as a single NOT NULL FK
+    // (`client_id`, `onDelete: "restrict"`). Task #94 (2026-07-29) replaced
+    // that with the `galleryClients` join table below: a gallery can now
+    // belong to SEVERAL clients at once (a couple's own logins, a family, two
+    // businesses sharing a shoot) — see that table's own comment for the full
+    // model, and src/lib/gallery-access.ts for the single ownership check
+    // every route now shares instead of comparing this column directly.
     packageId: integer("package_id")
       .notNull()
       .references(() => packages.id, { onDelete: "restrict" }),
@@ -236,6 +238,49 @@ export const galleries = pgTable(
   (t) => [uniqueIndex("galleries_public_slug_idx").on(t.publicSlug)],
 );
 
+// The join table that replaced `galleries.clientId` (task #94, 2026-07-29):
+// a gallery can now have SEVERAL clients attached to it at once — a couple's
+// own separate logins into the SAME gallery, a family, two businesses
+// sharing a shoot. Everyone attached shares the same rights and picks into
+// the SAME shared selection (see `assets.selectedBy` below for how that
+// shared selection still shows who chose what) — there is no per-client
+// permission model in this slice, deliberately (kanban #94's own "Not in
+// this slice").
+//
+// Composite primary key on the pair, same pattern as `accounts` above — this
+// is what makes "attach client X to gallery Y twice" a no-op unique
+// violation instead of a silent duplicate row, with no extra unique index
+// needed.
+//
+// `userId` restricts on delete for the IDENTICAL reason the old
+// `galleries.clientId` FK did: deleting a person must never silently strip a
+// delivered gallery of its only link to a human. `galleryId` cascades,
+// mirroring `assets.galleryId` below — if a gallery is ever deleted, its
+// membership rows disappear with it, the same way its assets already do
+// (there is no gallery-delete feature in this app today; this only follows
+// the convention `assets.galleryId` already set, for the day one exists).
+//
+// A gallery with ZERO clients is unreachable BY DESIGN — `gallery-form.tsx`
+// requires picking at least one at creation — but that lower bound is
+// enforced at the APPLICATION layer, not here: Postgres has no built-in "at
+// least one row per gallery_id" constraint short of a trigger, and there is
+// no "remove the last client from a gallery" code path anywhere in this app
+// yet for such a trigger to guard against. Revisit if a client-removal
+// feature is ever added.
+export const galleryClients = pgTable(
+  "gallery_clients",
+  {
+    galleryId: uuid("gallery_id")
+      .notNull()
+      .references(() => galleries.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [primaryKey({ columns: [t.galleryId, t.userId] })],
+);
+
 // One row per photo. Carries both representations of the same asset: the proof
 // (always present) and the final (only after the photo is selected and edited).
 export const assets = pgTable("assets", {
@@ -252,13 +297,46 @@ export const assets = pgTable("assets", {
   proofHeight: integer("proof_height").notNull(),
   isSelected: boolean("is_selected").notNull().default(false),
   selectedAt: timestamp("selected_at", { withTimezone: true }),
+  // WHO last set `isSelected`/`selectedAt` — task #94's "shared selection,
+  // ATTRIBUTED" decision (2026-07-29, owner-approved): with several clients
+  // now able to pick into the SAME shared set, an anonymous boolean is no
+  // longer enough — the picker needs to show who chose each photo. This
+  // stays nullable and is ALWAYS kept in lockstep with `isSelected`: set to
+  // the acting session's user id the instant `isSelected` flips to `true`,
+  // and cleared back to `null` the instant it flips to `false` (see the
+  // PATCH /api/assets/[assetId]/selection route) — never left stale.
+  //
+  // DESELECTION, decided explicitly rather than left implicit: if A selects
+  // a photo and B later deselects it, this column goes back to `null`, NOT
+  // "B" — same lockstep as `selectedAt`, which already goes back to `null`
+  // on deselect. The alternative (keep B as the last actor even though their
+  // action UNDID the pick) would make `selectedBy` answer a different
+  // question — "who last touched this row" instead of "who picked this photo
+  // right now" — and the UI has no way to tell those two apart without a
+  // second flag; showing a name next to an unselected thumbnail would read
+  // as an active pick that isn't real. A true "who did what, in order" audit
+  // would need a separate append-only event table, not a single column —
+  // out of scope for this slice (kanban #94's own "Not in this slice").
+  //
+  // `onDelete: "set null"`, deliberately NOT "restrict" like
+  // `gallery_clients.userId` above — different columns, different failure
+  // modes if the referenced user disappears. `gallery_clients.userId`
+  // restricts because deleting that row silently would strip a gallery of
+  // its only remaining link to a person; there is no equivalent loss here —
+  // `isSelected`/`selectedAt` stay exactly as correct with `selectedBy` wiped
+  // to `null` as with it populated. Restricting here instead would mean a
+  // client who is removed from a gallery (or whose account is deleted)
+  // blocks that indefinitely just because they once picked a photo — a
+  // stale attribution has no business holding a person's own account
+  // hostage.
+  selectedBy: text("selected_by").references(() => users.id, { onDelete: "set null" }),
   isEdited: boolean("is_edited").notNull().default(false),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
 export const usersRelations = relations(users, ({ many }) => ({
-  galleries: many(galleries),
+  galleryClients: many(galleryClients),
 }));
 
 export const packagesRelations = relations(packages, ({ many }) => ({
@@ -266,16 +344,23 @@ export const packagesRelations = relations(packages, ({ many }) => ({
 }));
 
 export const galleriesRelations = relations(galleries, ({ one, many }) => ({
-  client: one(users, { fields: [galleries.clientId], references: [users.id] }),
+  galleryClients: many(galleryClients),
   package: one(packages, { fields: [galleries.packageId], references: [packages.id] }),
   assets: many(assets),
 }));
 
+export const galleryClientsRelations = relations(galleryClients, ({ one }) => ({
+  gallery: one(galleries, { fields: [galleryClients.galleryId], references: [galleries.id] }),
+  user: one(users, { fields: [galleryClients.userId], references: [users.id] }),
+}));
+
 export const assetsRelations = relations(assets, ({ one }) => ({
   gallery: one(galleries, { fields: [assets.galleryId], references: [galleries.id] }),
+  selector: one(users, { fields: [assets.selectedBy], references: [users.id] }),
 }));
 
 export type User = typeof users.$inferSelect;
 export type Package = typeof packages.$inferSelect;
 export type Gallery = typeof galleries.$inferSelect;
+export type GalleryClient = typeof galleryClients.$inferSelect;
 export type Asset = typeof assets.$inferSelect;

@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
-import { PageHeader } from "@/components/page-header";
 import { LoginForm } from "@/components/login-form";
+import { getLoginErrorMessage } from "./auth-error";
 
 export const metadata: Metadata = {
   title: "Ingresar",
@@ -9,17 +9,17 @@ export const metadata: Metadata = {
   robots: { index: false, follow: false },
 };
 
-export default function LoginPage() {
-  return (
-    <>
-      <PageHeader
-        eyebrow="Acceso privado"
-        title="Ingresá a tu galería."
-        lead="Escribí el correo con el que reservaste la sesión. Te enviamos un enlace de acceso — sin contraseñas."
-      />
-      <section className="wrap max-w-[440px] pb-[clamp(64px,10vh,120px)]">
-        <LoginForm />
-      </section>
-    </>
-  );
+// Also the target of Auth.js's `pages.error` redirect (`/login?error=...`,
+// see src/auth.ts) — an expired or already-used magic link, or any other
+// signin failure, lands back here with an `error` code in the query string
+// instead of a raw stack trace.
+export default async function LoginPage({
+  searchParams,
+}: {
+  searchParams: Promise<{ error?: string | string[] }>;
+}) {
+  const { error } = await searchParams;
+  const errorCode = Array.isArray(error) ? error[0] : error;
+
+  return <LoginForm authErrorMessage={getLoginErrorMessage(errorCode)} />;
 }

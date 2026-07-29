@@ -1,3 +1,16 @@
+// The surrounding <PageHeader /> copy for the "sent" state — shared for the
+// same reason as <CheckEmailNotice /> below: <LoginForm />'s inline "sent"
+// state and the standalone /login/check-email page (where Auth.js's own
+// `pages.verifyRequest` redirect lands) show the exact same screen, so the
+// header text around the notice must not drift from it either. (Found in
+// #9's review: the header used to stay on /login's "Escribí el correo..."
+// copy while the notice below it already said the link was sent.)
+export const CHECK_EMAIL_HEADER = {
+  eyebrow: "Acceso privado",
+  title: "Enlace en camino.",
+  lead: "Abrí el enlace desde este mismo dispositivo para entrar a tu galería.",
+} as const;
+
 // The "we sent you something, maybe" confirmation. Deliberately shared between
 // the inline state of <LoginForm /> and the standalone /login/check-email page
 // (where Auth.js's own `pages.verifyRequest` redirect lands), so the wording

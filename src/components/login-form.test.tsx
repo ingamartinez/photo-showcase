@@ -39,6 +39,25 @@ describe("LoginForm", () => {
     expect(screen.getByText(/Revisá tu correo/)).toBeDefined();
   });
 
+  it("swaps the surrounding header along with the form after a successful submit", async () => {
+    // Regression guard for #9's review comment: the header used to keep
+    // reading "Escribí el correo..." even once the notice below already said
+    // the link was sent.
+    requestMagicLinkMock.mockResolvedValue({ status: "sent" });
+    const user = userEvent.setup();
+    render(<LoginForm />);
+
+    expect(screen.getByRole("heading", { name: "Ingresá a tu galería." })).toBeDefined();
+
+    await user.type(screen.getByLabelText("Correo electrónico"), "client@example.com");
+    await user.click(screen.getByRole("button", { name: "Enviar enlace de acceso" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Enlace en camino." })).toBeDefined();
+    });
+    expect(screen.queryByRole("heading", { name: "Ingresá a tu galería." })).toBeNull();
+  });
+
   it("shows the SAME confirmation screen regardless of which address was submitted", async () => {
     // The component has no way of knowing (and must not care) whether the
     // action's "sent" result came from a known or unknown address — that is
@@ -74,5 +93,26 @@ describe("LoginForm", () => {
       expect(screen.getByRole("alert")).toBeDefined();
     });
     expect(screen.getByText("Ingresá un correo electrónico válido.")).toBeDefined();
+  });
+
+  it("renders the auth error message next to the form when one is passed in", () => {
+    // Comes from Auth.js's `pages.error` redirect via
+    // src/app/(marketing)/login/page.tsx — see auth-error.ts.
+    render(
+      <LoginForm authErrorMessage="Este enlace ya venció o ya se usó. Pedí uno nuevo abajo." />,
+    );
+
+    expect(
+      screen.getByText("Este enlace ya venció o ya se usó. Pedí uno nuevo abajo."),
+    ).toBeDefined();
+    // The form itself must still be usable — an error must never replace the
+    // ability to request a fresh link.
+    expect(screen.getByLabelText("Correo electrónico")).toBeDefined();
+  });
+
+  it("renders no auth error banner when none is passed", () => {
+    render(<LoginForm />);
+
+    expect(screen.queryAllByRole("alert")).toHaveLength(0);
   });
 });

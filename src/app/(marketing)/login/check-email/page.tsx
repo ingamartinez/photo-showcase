@@ -1,6 +1,6 @@
 import type { Metadata } from "next";
 import { PageHeader } from "@/components/page-header";
-import { CheckEmailNotice } from "@/components/check-email-notice";
+import { CHECK_EMAIL_HEADER, CheckEmailNotice } from "@/components/check-email-notice";
 
 export const metadata: Metadata = {
   title: "Revisá tu correo",
@@ -18,11 +18,7 @@ export const metadata: Metadata = {
 export default function CheckEmailPage() {
   return (
     <>
-      <PageHeader
-        eyebrow="Acceso privado"
-        title="Enlace en camino."
-        lead="Abrí el enlace desde este mismo dispositivo para entrar a tu galería."
-      />
+      <PageHeader {...CHECK_EMAIL_HEADER} />
       <section className="wrap max-w-[440px] pb-[clamp(64px,10vh,120px)]">
         <CheckEmailNotice />
       </section>

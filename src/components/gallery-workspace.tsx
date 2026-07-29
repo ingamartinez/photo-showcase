@@ -15,6 +15,7 @@
 import { useCallback, useMemo, useState } from "react";
 import { AssetTile } from "@/components/asset-tile";
 import { ProofUploader } from "@/components/proof-uploader";
+import { DeliverGalleryButton } from "@/components/deliver-gallery-button";
 
 export type WorkspaceAsset = {
   id: string;
@@ -34,9 +35,30 @@ export type WorkspaceAsset = {
 export function GalleryWorkspace({
   galleryId,
   initialAssets,
+  clientEmail,
+  canDeliver,
 }: {
   galleryId: string;
   initialAssets: WorkspaceAsset[];
+  // The client's email, needed only to render <DeliverGalleryButton>'s own
+  // confirmation copy — see that component's own prop comment.
+  clientEmail: string;
+  // Task #86 fix: whether the gallery's OWN status is currently "selected"
+  // (computed server-side — see src/app/dashboard/galleries/[galleryId]/page.tsx).
+  // Hiding the button outside "selected" is UX only, same "hiding is not the
+  // authority" stance as everywhere else on this page — `deliverGallery`
+  // itself re-checks the status.
+  //
+  // Why this one is safe as a prop while `pendingFinalsCount` was NOT: this is
+  // a plain prop, never seeded into `useState`, so it re-evaluates whenever the
+  // server re-renders this route. `unlockSelection` — the one control on this
+  // page that moves a gallery OUT of "selected" — is a Server Action calling
+  // `revalidatePath`, and Next returns fresh Flight data for the whole route
+  // and merges it client-side. No full browser navigation is involved, and none
+  // is needed: `canDeliver` flips to `false` and the button disappears.
+  // `pendingFinalsCount` broke precisely because it could NOT do that — uploads
+  // mutate local state only, with no server round trip to re-render against.
+  canDeliver: boolean;
 }) {
   const [assets, setAssets] = useState<WorkspaceAsset[]>(initialAssets);
 
@@ -51,6 +73,14 @@ export function GalleryWorkspace({
   // updates the instant a final finishes uploading, with no
   // `router.refresh()` — same reasoning as every other mutation in this
   // component.
+  //
+  // Task #86 fix: this is now the ONLY place `pendingFinalsCount` is
+  // computed on this page. <DeliverGalleryButton> below reads THIS value
+  // directly, rather than a second copy computed once, server-side, at page
+  // render (`src/app/dashboard/galleries/[galleryId]/page.tsx` used to do
+  // that) — the bug this fixed was exactly two counters over the same fact,
+  // disagreeing because only one of them updated after an upload. There is
+  // only one now.
   const selectedCount = useMemo(() => sorted.filter((asset) => asset.isSelected).length, [sorted]);
   const pendingFinalsCount = useMemo(
     () => sorted.filter((asset) => asset.isSelected && !asset.hasFinal).length,
@@ -85,12 +115,32 @@ export function GalleryWorkspace({
     <div className="flex flex-col gap-10">
       <ProofUploader galleryId={galleryId} onUploaded={handleUploaded} />
 
-      {selectedCount > 0 && (
-        <p className="text-fg-dim text-sm">
-          {pendingFinalsCount > 0
-            ? `Faltan ${pendingFinalsCount} de ${selectedCount} finales por subir.`
-            : `Los ${selectedCount} finales de la selección ya están subidos.`}
-        </p>
+      {(selectedCount > 0 || canDeliver) && (
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          {selectedCount > 0 && (
+            <p className="text-fg-dim text-sm">
+              {pendingFinalsCount > 0
+                ? `Faltan ${pendingFinalsCount} de ${selectedCount} finales por subir.`
+                : `Los ${selectedCount} finales de la selección ya están subidos.`}
+            </p>
+          )}
+
+          {/* Task #27: guarded server-side by deliverGallery() itself
+              (selected-only, no missing finals) — hiding the button once the
+              gallery has moved past "selected" is UX, not the authority; see
+              src/app/dashboard/galleries/actions.ts's isDeliverable(). Task
+              #86 fix: rendered HERE, reading `pendingFinalsCount` straight
+              off this component's own live state, rather than as a sibling
+              fed a server-rendered snapshot that never updated after an
+              upload. */}
+          {canDeliver && (
+            <DeliverGalleryButton
+              galleryId={galleryId}
+              clientEmail={clientEmail}
+              pendingFinalsCount={pendingFinalsCount}
+            />
+          )}
+        </div>
       )}
 
       {sorted.length === 0 ? (

@@ -11,8 +11,21 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { GalleryWorkspace, type WorkspaceAsset } from "./gallery-workspace";
+import type { DeliverGalleryState } from "@/app/dashboard/galleries/actions";
+
+// <GalleryWorkspace> now renders <DeliverGalleryButton> itself (task #86) —
+// its module imports `deliverGallery` from here, which transitively pulls in
+// `@/lib/db`/`@/auth`/etc. Mocked wholesale for the same reason
+// deliver-gallery-button.test.tsx already mocks this module: this suite
+// never exercises the real server action.
+const deliverGalleryMock =
+  vi.fn<(state: DeliverGalleryState, formData: FormData) => Promise<DeliverGalleryState>>();
+vi.mock("@/app/dashboard/galleries/actions", () => ({
+  deliverGallery: (...args: [DeliverGalleryState, FormData]) => deliverGalleryMock(...args),
+}));
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
+const CLIENT_EMAIL = "ana@example.com";
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -40,6 +53,7 @@ afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  deliverGalleryMock.mockReset();
 });
 
 describe("GalleryWorkspace", () => {
@@ -65,7 +79,14 @@ describe("GalleryWorkspace", () => {
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
 
-    render(<GalleryWorkspace galleryId={GALLERY_ID} initialAssets={[]} />);
+    render(
+      <GalleryWorkspace
+        galleryId={GALLERY_ID}
+        initialAssets={[]}
+        clientEmail={CLIENT_EMAIL}
+        canDeliver={false}
+      />,
+    );
 
     expect(screen.getByText(/Todavía no subiste fotos/)).toBeDefined();
 
@@ -84,7 +105,14 @@ describe("GalleryWorkspace", () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const user = userEvent.setup();
 
-    render(<GalleryWorkspace galleryId={GALLERY_ID} initialAssets={[assetFor()]} />);
+    render(
+      <GalleryWorkspace
+        galleryId={GALLERY_ID}
+        initialAssets={[assetFor()]}
+        clientEmail={CLIENT_EMAIL}
+        canDeliver={false}
+      />,
+    );
     expect(screen.getByText("IMG_0001.JPG")).toBeDefined();
 
     await user.click(screen.getByRole("button", { name: "Eliminar" }));
@@ -114,6 +142,8 @@ describe("GalleryWorkspace", () => {
           assetFor({ id: "a1", originalFilename: "first.jpg", sortOrder: 0 }),
           assetFor({ id: "a2", originalFilename: "second.jpg", sortOrder: 1 }),
         ]}
+        clientEmail={CLIENT_EMAIL}
+        canDeliver={false}
       />,
     );
 
@@ -132,7 +162,12 @@ describe("GalleryWorkspace", () => {
   // obvious — which selected assets still lack a final."
   it("shows no pending-finals summary when nothing is selected yet", () => {
     render(
-      <GalleryWorkspace galleryId={GALLERY_ID} initialAssets={[assetFor({ isSelected: false })]} />,
+      <GalleryWorkspace
+        galleryId={GALLERY_ID}
+        initialAssets={[assetFor({ isSelected: false })]}
+        clientEmail={CLIENT_EMAIL}
+        canDeliver={false}
+      />,
     );
 
     expect(screen.queryByText(/finales/)).toBeNull();
@@ -149,6 +184,8 @@ describe("GalleryWorkspace", () => {
           assetFor({ id: "a1", isSelected: true, hasFinal: false }),
           assetFor({ id: "a2", originalFilename: "second.jpg", isSelected: true, hasFinal: false }),
         ]}
+        clientEmail={CLIENT_EMAIL}
+        canDeliver={false}
       />,
     );
 
@@ -164,5 +201,43 @@ describe("GalleryWorkspace", () => {
     fireEvent.change(firstInput!, { target: { files: [file] } });
 
     await waitFor(() => expect(screen.getByText("Faltan 1 de 2 finales por subir.")).toBeDefined());
+  });
+
+  // Task #86's own regression: the deliver control used to live outside this
+  // component, fed a `pendingFinalsCount` prop computed ONCE, server-side, at
+  // page render — nothing updated it after an upload, so a photographer who
+  // uploaded the last missing final without reloading saw the counter above
+  // say "ya están subidos" while the button stayed disabled. Proven by
+  // MUTATION, not just by asserting the happy path: temporarily reintroducing
+  // that bug (freezing `pendingFinalsCount` at its value from
+  // `initialAssets` instead of recomputing it from `sorted`/`assets`) makes
+  // this exact test fail — the button stays disabled after the upload
+  // resolves, because `waitFor` never observes it flip. Restoring the fix
+  // (deriving the prop from the SAME live `assets` state on every render, as
+  // implemented above) makes it pass again. This test would ALSO fail if
+  // <DeliverGalleryButton> stopped disabling on `pendingFinalsCount > 0`
+  // entirely, so it is not vacuous in the other direction either.
+  it("enables the deliver button, without a page reload, the instant the last missing final finishes uploading", async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(200, { asset: { id: "a1" } })));
+    vi.stubGlobal("fetch", fetchMock);
+    deliverGalleryMock.mockResolvedValue({ status: "idle" });
+
+    render(
+      <GalleryWorkspace
+        galleryId={GALLERY_ID}
+        initialAssets={[assetFor({ id: "a1", isSelected: true, hasFinal: false })]}
+        clientEmail={CLIENT_EMAIL}
+        canDeliver
+      />,
+    );
+
+    const deliverButton = () => screen.getByRole("button", { name: "Entregar galería" });
+    expect(deliverButton()).toHaveProperty("disabled", true);
+
+    const file = new File(["edited"], "a1-edit.jpg", { type: "image/jpeg" });
+    const finalInput = screen.getByLabelText("Subir final") as HTMLInputElement;
+    fireEvent.change(finalInput, { target: { files: [file] } });
+
+    await waitFor(() => expect(deliverButton()).toHaveProperty("disabled", false));
   });
 });

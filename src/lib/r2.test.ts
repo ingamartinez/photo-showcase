@@ -137,6 +137,37 @@ describe("getPresignedUrl", () => {
     expect(PRESIGNED_URL_TTL_SECONDS).toBeGreaterThan(0);
     expect(Number.isFinite(PRESIGNED_URL_TTL_SECONDS)).toBe(true);
   });
+
+  // Task #28: the `contentDisposition` override is what makes a phone
+  // browser download a final instead of just displaying it — see the
+  // function's own comment in r2.ts. Forwarded straight through to the S3
+  // client's own `presign()` as `contentDisposition`, which is what actually
+  // becomes the signed `response-content-disposition` query parameter.
+  it("forwards contentDisposition to the underlying presign call when given", async () => {
+    const { getPresignedUrl, PRESIGNED_URL_TTL_SECONDS } = await import("./r2");
+    getPresignedUrl("galleries/g/finals/a.jpg", {
+      contentDisposition: 'attachment; filename="foto.jpg"',
+    });
+    expect(presign).toHaveBeenCalledWith("galleries/g/finals/a.jpg", {
+      expiresIn: PRESIGNED_URL_TTL_SECONDS,
+      contentDisposition: 'attachment; filename="foto.jpg"',
+    });
+  });
+
+  // A proof URL (src/app/api/assets/[assetId]/proof/route.ts) never passes
+  // this option — proofs are meant to be BROWSED inline in a grid, not
+  // downloaded. Confirms the option is genuinely optional: no key is added
+  // to the presign call at all when it's omitted, not an override set to
+  // `undefined`.
+  it("omits contentDisposition entirely from the presign call when not given", async () => {
+    const { getPresignedUrl, PRESIGNED_URL_TTL_SECONDS } = await import("./r2");
+    getPresignedUrl("galleries/g/proofs/a.webp");
+    expect(presign).toHaveBeenCalledWith("galleries/g/proofs/a.webp", {
+      expiresIn: PRESIGNED_URL_TTL_SECONDS,
+    });
+    const callArgs = presign.mock.calls[0]?.[1] as Record<string, unknown>;
+    expect(Object.hasOwn(callArgs, "contentDisposition")).toBe(false);
+  });
 });
 
 describe("deleteObject", () => {

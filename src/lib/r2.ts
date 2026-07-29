@@ -123,9 +123,26 @@ export async function putObject(
 
 /** Short-lived presigned GET URL for `key`. Callers must have already
  * verified the requesting session owns the gallery — this module has no
- * notion of ownership, it only talks to R2. */
-export function getPresignedUrl(key: string): string {
-  return getClient().presign(key, { expiresIn: PRESIGNED_URL_TTL_SECONDS });
+ * notion of ownership, it only talks to R2.
+ *
+ * `contentDisposition` (task #28) is forwarded straight to R2's
+ * `response-content-disposition` presign override — it does NOT change what
+ * gets stored, only what header R2 answers THIS GET with. This is the fix
+ * for "a phone browser opened the file instead of downloading it": a plain
+ * presigned URL has no `Content-Disposition`, and a mobile browser
+ * navigating to an `image/*` URL with no such header renders it inline
+ * (exactly what a client wants for a PROOF, browsed in a grid — see the
+ * proof route, which never passes this option — but not for a FINAL, which
+ * exists to be saved to the phone's camera roll/downloads). Passing
+ * `attachment; filename="…"` here is what turns that same navigation into an
+ * actual download with a sensible filename, on both iOS Safari and Android
+ * Chrome, without needing any client-side download plumbing beyond a normal
+ * navigation to this URL. */
+export function getPresignedUrl(key: string, options?: { contentDisposition?: string }): string {
+  return getClient().presign(key, {
+    expiresIn: PRESIGNED_URL_TTL_SECONDS,
+    ...(options?.contentDisposition ? { contentDisposition: options.contentDisposition } : {}),
+  });
 }
 
 /** Deletes an object from R2 (e.g. when a gallery or asset is removed). */

@@ -510,3 +510,209 @@ export async function unlockSelection(
   }
   return { status: "unlocked" };
 }
+
+// ---------------------------------------------------------------------------
+// Deliver a gallery (task #27) — selected -> delivered, plus the client's
+// email. Closes the delivery chain task #26 started: that task made
+// `assets.finalKey`/`isEdited` real and gave the admin workspace a per-asset
+// "Falta el final" indicator (a convenience, not a control); this action is
+// the control.
+// ---------------------------------------------------------------------------
+
+export type DeliverGalleryState = {
+  status: "idle" | "error" | "delivered" | "delivered_email_failed";
+  message?: string;
+};
+
+const deliverGallerySchema = z.object({ galleryId: z.uuid() });
+
+// Same "the check IS the authority, hiding the button is only UX" stance as
+// `isPublishable`/`isUnlockable` above. Only a gallery sitting in `selected`
+// — a submitted selection the photographer has (presumably) finished editing
+// — has anything to deliver: `draft`/`proofing` were never submitted,
+// `delivered` is already delivered (this is what makes a double-submit a
+// no-op instead of a second email), `archived` is further along than
+// delivery makes sense for.
+function isDeliverable(status: Gallery["status"]): boolean {
+  return status === "selected";
+}
+
+/**
+ * selected -> delivered. The epic's central rule for this task: **refuse
+ * delivery while any selected asset still lacks a final** — half-delivering
+ * is worse than not delivering, because the client has no way to tell which
+ * of their photos are missing from which are still coming. This is checked
+ * HERE, in the action itself, not only by <GalleryWorkspace>'s own
+ * "Faltan N de M finales por subir" counter (task #26) — that counter is a
+ * convenience for the photographer while they work, not the authority; a
+ * crafted request (or a stale page) must be refused exactly the same way a
+ * missing click on the button would be. Read fresh, off the database, right
+ * before the transition — never trusted from anything the caller supplied.
+ *
+ * Guarded the same way publishGallery/unlockSelection already are: the
+ * UPDATE's own `WHERE status = 'selected'` is the REAL, atomic guard
+ * (`isDeliverable` above only fails fast, before ever writing) — a
+ * double-click, or two admin tabs, can only ever deliver a given gallery
+ * once, and only the winner's `deliveredAt` and email survive. A gallery
+ * already `delivered` fails the pre-flight `isDeliverable` check on any
+ * later call, so a sequential double-submit never reaches the UPDATE at
+ * all — the SAME "the second call short-circuits before the CAS" shape
+ * `unlockSelection`'s own test suite documents and guards against being
+ * mistaken for proof of the atomic guard.
+ *
+ * The client notification reuses the exact mechanism `publishGallery` uses —
+ * `signIn("gallery-access", ...)` — rather than a bare
+ * `/galleries/${publicSlug}` URL (the shape `sendUnlockNotificationEmail`'s
+ * own `galleryUrl` uses). That distinction is deliberate, not copy-paste
+ * drift: `unlockSelection` fires while the client is presumably still
+ * mid-selection, with a magic-link session from the original publish email
+ * that is very likely still valid (`GALLERY_ACCESS_MAX_AGE_SECONDS` is the
+ * TOKEN's lifetime, but the database SESSION it establishes on click lives
+ * far longer). Delivery, by contrast, can land days or weeks after that —
+ * the photographer has to actually finish editing every selected photo in
+ * between — by which point the client's original session may well have
+ * expired. A bare URL into an expired session is not "a working link", it's
+ * a login wall; re-running the SAME single-use, session-establishing
+ * magic-link flow `publishGallery` already relies on is what actually
+ * satisfies this task's own acceptance criterion ("a working link to the
+ * gallery"), regardless of how stale the client's last session is.
+ *
+ * Ordering, deliberately the REVERSE of `publishGallery`'s own "send first,
+ * then flip status": here the atomic status UPDATE happens FIRST, and the
+ * email is attempted only after it commits — the same ordering
+ * `unlockSelection` uses, for the same reason. `publishGallery`'s "send
+ * first" ordering exists specifically because THAT transition has no
+ * `deliveredAt`-shaped audit stamp and nothing else in the app surfaces a
+ * `draft` gallery to anyone; committing the status before confirming the
+ * send risks a client-visible `proofing` gallery with no email ever sent,
+ * and no photographer-visible signal that anything is wrong. Here, a
+ * `delivered` gallery IS what the photographer wanted to happen and is
+ * fully visible on `/dashboard/galleries` either way; deferring the email
+ * until after the CAS commits is what makes the transition itself
+ * idempotent under a genuine race (see the concurrent-delivery test suite)
+ * without needing to first read-then-write-then-maybe-revert around a
+ * network call whose failure must never roll back a durably-committed
+ * delivery.
+ */
+export async function deliverGallery(
+  _prevState: DeliverGalleryState,
+  formData: FormData,
+): Promise<DeliverGalleryState> {
+  // Admin-only surface, checked at the data-access path itself — not only by
+  // the page hiding the button once a gallery is no longer `selected`. See
+  // this file's own repeated stance on `isPublishable`/`isUnlockable` above
+  // and the epic's "every route and action is admin-only" rule.
+  await requireAdmin();
+
+  const parsed = deliverGallerySchema.safeParse({ galleryId: formData.get("galleryId") });
+  if (!parsed.success) {
+    return { status: "error", message: "Galería inválida." };
+  }
+
+  const [gallery] = await db
+    .select()
+    .from(galleries)
+    .where(eq(galleries.id, parsed.data.galleryId))
+    .limit(1);
+  if (!gallery) {
+    return { status: "error", message: "La galería no existe." };
+  }
+  if (!isDeliverable(gallery.status)) {
+    return {
+      status: "error",
+      message: "Esta galería no tiene una selección enviada para entregar.",
+    };
+  }
+
+  // THE core rule of this slice, enforced here — not only in the UI. A fresh
+  // read, off the database, of every sibling asset: any asset that is
+  // SELECTED but has no `finalKey` yet blocks the whole delivery. A narrow
+  // race exists between this read and the CAS UPDATE below (an admin could
+  // in principle delete a final in one tab between the two) — accepted, not
+  // fixed here, the same class of small, undocumented-away race
+  // submit-selection's own `empty_selection` check tolerates ahead of ITS
+  // CAS UPDATE: admin-only, not a security boundary, and not worth folding
+  // this count into the UPDATE's own WHERE as a correlated EXISTS subquery
+  // for this slice's acceptance criterion.
+  const siblings = await db
+    .select({ isSelected: assets.isSelected, finalKey: assets.finalKey })
+    .from(assets)
+    .where(eq(assets.galleryId, gallery.id));
+  const missingFinalsCount = siblings.filter(
+    (row) => row.isSelected && row.finalKey === null,
+  ).length;
+  if (missingFinalsCount > 0) {
+    return {
+      status: "error",
+      message:
+        missingFinalsCount === 1
+          ? "Falta 1 final por subir antes de poder entregar esta galería."
+          : `Faltan ${missingFinalsCount} finales por subir antes de poder entregar esta galería.`,
+    };
+  }
+
+  const now = new Date();
+  const updated = await db
+    .update(galleries)
+    .set({ status: "delivered", deliveredAt: now })
+    .where(and(eq(galleries.id, gallery.id), eq(galleries.status, "selected")))
+    .returning();
+
+  if (updated.length === 0) {
+    // Lost the race — some other call already moved this gallery out of
+    // `selected` between the read above and this UPDATE (a second delivery
+    // click, or a concurrent admin tab). Same "the CAS is the only source of
+    // truth" stance as unlockSelection's own losing branch: nothing more to
+    // do, no partial write happened.
+    return {
+      status: "error",
+      message: "Esta galería ya no tiene una selección enviada — puede que ya se haya entregado.",
+    };
+  }
+  const deliveredGallery = updated[0]!;
+
+  const [client] = await db
+    .select({ email: users.email })
+    .from(users)
+    .where(eq(users.id, deliveredGallery.clientId))
+    .limit(1);
+
+  let emailFailed = false;
+  if (!client) {
+    // Unreachable in practice — `galleries.clientId` is a NOT NULL FK onto
+    // `users` — but never trusted blindly, same stance as this file's own
+    // `publishGallery`/`unlockSelection` lookups above.
+    emailFailed = true;
+  } else {
+    try {
+      // See this function's own header comment for why this reuses
+      // `signIn("gallery-access", ...)` — the SAME provider `publishGallery`
+      // uses — rather than a bare gallery URL: this is what actually
+      // guarantees "a working link", not just "a link".
+      await signIn("gallery-access", {
+        email: client.email,
+        redirect: false,
+        redirectTo: `/galleries/${deliveredGallery.publicSlug}`,
+      });
+    } catch (error) {
+      if (error instanceof AuthError) {
+        emailFailed = true;
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  revalidatePath(`/dashboard/galleries/${deliveredGallery.id}`);
+  revalidatePath("/dashboard/galleries");
+
+  if (emailFailed) {
+    return {
+      status: "delivered_email_failed",
+      message:
+        "Entregamos la galería, pero no pudimos avisarle al cliente por correo. " +
+        "Avisale por otro medio (WhatsApp / llamada).",
+    };
+  }
+  return { status: "delivered" };
+}

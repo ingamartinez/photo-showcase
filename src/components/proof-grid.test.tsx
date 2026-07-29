@@ -28,6 +28,7 @@ function assetsFor(overrides: Partial<ProofAsset>[] = [{}]): ProofAsset[] {
     proofHeight: 1067,
     isSelected: false,
     proofUrl: `https://r2.example.com/original-${index + 1}`,
+    hasFinal: false,
     ...override,
   }));
 }
@@ -387,6 +388,87 @@ describe("ProofGrid", () => {
       expect(screen.getByRole("button", { name: /Quitar de seleccionadas/ })).toHaveProperty(
         "disabled",
         true,
+      );
+    });
+  });
+
+  // Task #28: the delivered-gallery download affordance. `hasFinal` is a UI
+  // hint only (see <ProofGrid>'s own comment on `ProofAsset.hasFinal`) — the
+  // real gate is `GET /api/assets/[assetId]/final` itself, proven separately
+  // in that route's own test suite. These tests only prove THIS component
+  // renders the button in exactly the cases it should, and wires a click
+  // through to a real download.
+  describe("delivered gallery downloads", () => {
+    it("does not render a download button for a non-delivered gallery, even for an asset with hasFinal", () => {
+      renderGrid({
+        initialStatus: "selected",
+        initialAssets: assetsFor([{ isSelected: true, hasFinal: true }]),
+      });
+
+      expect(screen.queryByRole("button", { name: /Descargar/ })).toBeNull();
+    });
+
+    it("does not render a download button for a delivered gallery's asset that has no final", () => {
+      renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([{ isSelected: false, hasFinal: false }]),
+      });
+
+      expect(screen.queryByRole("button", { name: /Descargar/ })).toBeNull();
+    });
+
+    it("renders a download button for a delivered gallery's asset that has a final", () => {
+      renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([{ isSelected: true, hasFinal: true }]),
+      });
+
+      expect(screen.getByRole("button", { name: "Descargar: IMG_0001.JPG" })).toBeDefined();
+    });
+
+    it("clicking the download button fetches the final's presigned URL and navigates to it", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(jsonResponse(200, { url: "https://r2.example.com/final-download-url" })),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => {});
+      const user = userEvent.setup();
+
+      renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([{ isSelected: true, hasFinal: true }]),
+      });
+
+      await user.click(screen.getByRole("button", { name: "Descargar: IMG_0001.JPG" }));
+
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/assets/a1/final"));
+      await vi.waitFor(() => expect(clickSpy).toHaveBeenCalledTimes(1));
+      // The anchor navigated to is the exact URL the route returned — this
+      // is what carries the `Content-Disposition: attachment` header that
+      // actually triggers a phone download (src/lib/r2.ts's own comment on
+      // `getPresignedUrl`'s `contentDisposition` option); this test can't
+      // observe that header itself (no real network call), only that the
+      // component navigates to the URL the route handed it.
+      const clickedAnchor = clickSpy.mock.instances[0] as unknown as HTMLAnchorElement;
+      expect(clickedAnchor.href).toBe("https://r2.example.com/final-download-url");
+    });
+
+    it("shows an inline error when the download request fails", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(jsonResponse(404, { error: "final_not_available" })),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([{ isSelected: true, hasFinal: true }]),
+      });
+
+      await user.click(screen.getByRole("button", { name: "Descargar: IMG_0001.JPG" }));
+
+      await vi.waitFor(() =>
+        expect(screen.getByText("No se pudo descargar la foto.")).toBeDefined(),
       );
     });
   });

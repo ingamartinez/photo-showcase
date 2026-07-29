@@ -53,6 +53,7 @@
 // anything to compute in the first place, not by re-deriving the same maths
 // twice and hoping they stay in sync.
 import { useCallback, useRef, useState } from "react";
+import { DownloadFinalButton } from "@/components/download-final-button";
 import { ProofLightbox } from "@/components/proof-lightbox";
 import { SelectionCounter } from "@/components/selection-counter";
 import {
@@ -68,6 +69,19 @@ export type ProofAsset = {
   proofHeight: number;
   isSelected: boolean;
   proofUrl: string;
+  // Whether this asset's final is actually downloadable (task #28): selected
+  // AND edited AND a final object exists — the SAME three-condition gate
+  // `GET /api/assets/[assetId]/final` itself enforces (see that route's own
+  // comment), computed server-side by the page that renders this component
+  // (src/app/galleries/[publicSlug]/page.tsx) and handed down as a plain
+  // boolean. Deliberately NOT the raw `finalKey` — same "the raw R2 key must
+  // never reach the browser" discipline `WorkspaceAsset.hasFinal` already
+  // follows in src/components/gallery-workspace.tsx. This is a UI hint ONLY:
+  // the route re-checks all three conditions itself on every request, so a
+  // stale or wrong value here can make the download button render when it
+  // shouldn't (or not render when it should) but can never actually unlock a
+  // final this session doesn't own or that isn't really ready.
+  hasFinal: boolean;
 };
 
 // Hand-rolled, not imported from `@/lib/db/schema`'s `Gallery["status"]`:
@@ -266,6 +280,16 @@ export function ProofGrid({
     );
   }
 
+  // Task #28: a gallery only ever reaches `delivered` once (PLAN.md §2's
+  // state machine has no path back out of it toward the client-visible
+  // statuses), so — unlike `isLocked` above — this never needs to flip after
+  // mount; `initialStatus` alone is enough for this component's whole
+  // lifetime. Whether a GIVEN asset's download button actually renders is
+  // still per-asset (`asset.hasFinal` below): a delivered gallery can easily
+  // contain unselected assets that were never edited and have no final at
+  // all.
+  const isDelivered = initialStatus === "delivered";
+
   return (
     <>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
@@ -284,6 +308,7 @@ export function ProofGrid({
               isSelected={isSelected}
               isPending={pendingIds.has(asset.id)}
               isLocked={isLocked}
+              showDownload={isDelivered && asset.hasFinal}
               onError={() => void refreshUrl(asset.id)}
               onOpen={() => setLightboxIndex(index)}
               onToggleSelection={() => void toggleSelection(asset.id, !isSelected)}
@@ -316,6 +341,7 @@ export function ProofGrid({
           onToggleSelection={(assetId, nextSelected) => void toggleSelection(assetId, nextSelected)}
           pendingAssetIds={pendingIds}
           isLocked={isLocked}
+          isDelivered={isDelivered}
         />
       )}
     </>
@@ -328,6 +354,7 @@ function ProofTile({
   isSelected,
   isPending,
   isLocked,
+  showDownload,
   onError,
   onOpen,
   onToggleSelection,
@@ -340,6 +367,10 @@ function ProofTile({
   // only, see this file's own `toggleSelection`/`isLockedRef` comment for
   // the real, server-side gate this mirrors.
   isLocked: boolean;
+  // Task #28: `<ProofGrid>`'s own `isDelivered && asset.hasFinal` — see that
+  // component's header comment on `ProofAsset.hasFinal` for why this is a UI
+  // hint only, never the real gate.
+  showDownload: boolean;
   onError: () => void;
   onOpen: () => void;
   onToggleSelection: () => void;
@@ -400,6 +431,16 @@ function ProofTile({
       >
         {isSelected ? "✓ Seleccionada" : "Seleccionar"}
       </button>
+
+      {/* Bottom-right, not on top of the selection badge above — task #28's
+          own affordance, shown only once the gallery is delivered AND this
+          specific asset actually has a final (see <ProofGrid>'s own
+          `showDownload` computation). */}
+      {showDownload && (
+        <div className="absolute right-2 bottom-2 z-10">
+          <DownloadFinalButton assetId={asset.id} originalFilename={asset.originalFilename} />
+        </div>
+      )}
     </li>
   );
 }

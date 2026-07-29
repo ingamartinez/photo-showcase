@@ -59,15 +59,52 @@ function getClient(): S3Client {
 
 // Key builders — the ONLY place these strings are formed. Nothing else in
 // the app should concatenate a gallery id or asset id into an R2 key by hand.
+//
+// Dev and prod currently share one R2 bucket and one set of credentials
+// (task #38). Every key funnels through `namespacedKey` below, which prefixes
+// the key with `dev/` unless `APP_ENV` is exactly `"production"`. That keeps
+// dev writes in a distinct, separable slice of the bucket, and it fails
+// CLOSED: any environment that never sets `APP_ENV` (a fresh clone, a
+// misconfigured host, a future CI job) gets the `dev/` prefix by default, not
+// the bare production shape.
+//
+// This deliberately does NOT read `process.env.NODE_ENV`. `NODE_ENV` is
+// constant-folded by Next/Turbopack at build time (see
+// `node_modules/next/dist/build/define-env.js`) — the `?:` branch on it gets
+// dead-code-eliminated out of the compiled server bundle entirely, so a
+// build produces the SAME hardcoded key shape regardless of which machine or
+// environment later runs it. `APP_ENV` is not a Next-recognized build-time
+// constant, so `r2Env()`'s own pattern of reading `process.env` lazily
+// inside a function (never at module scope) stays dynamic through the build,
+// the same way it already does for the R2 credentials themselves.
+//
+// This mechanism keys off `APP_ENV` alone — it is a naming convention
+// enforced by this one function, not a capability restriction. It does NOT,
+// on its own, stop a process from constructing a bare `galleries/…` key: any
+// code that sets `APP_ENV=production` (accidentally or otherwise) before
+// calling `proofKey`/`finalKey` gets the production shape. The isolation this
+// buys is only as good as `APP_ENV` being set correctly wherever this process
+// runs — see `.github/workflows/deploy.yml`'s release.env step, the only
+// place `APP_ENV=production` is written for the real deployed process. A
+// stronger option (separate bucket + scoped token) was considered and
+// rejected as disproportionate for now; see task #38.
+//
+// Any future key builder added to this file — e.g. #26's finals-upload path —
+// inherits the namespacing for free by construction: it must call
+// `namespacedKey` for its path to end up in the bucket at all, the same way
+// `proofKey` and `finalKey` do below.
+function namespacedKey(key: string): string {
+  return process.env.APP_ENV === "production" ? key : `dev/${key}`;
+}
 
 /** Low-res, watermarked proof. Exists for every asset from the start. */
 export function proofKey(galleryId: string, assetId: string): string {
-  return `galleries/${galleryId}/proofs/${assetId}.webp`;
+  return namespacedKey(`galleries/${galleryId}/proofs/${assetId}.webp`);
 }
 
 /** Full-res, no watermark. Exists only for assets the client selected. */
 export function finalKey(galleryId: string, assetId: string): string {
-  return `galleries/${galleryId}/finals/${assetId}.jpg`;
+  return namespacedKey(`galleries/${galleryId}/finals/${assetId}.jpg`);
 }
 
 /** Whatever Bun's S3Client accepts as a write body: buffers, blobs, streams, ... */

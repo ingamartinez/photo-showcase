@@ -23,10 +23,12 @@ vi.mock("@/lib/images", () => ({
 const putObjectMock = vi.fn();
 const deleteObjectMock = vi.fn();
 vi.mock("@/lib/r2", () => ({
-  // Mirrors src/lib/r2.ts's real key format exactly — this route's own
-  // failure-cleanup logic reuses the SAME key it uploaded to when it calls
-  // deleteObject(), so the fake must be deterministic and match the shape a
-  // real caller would see, not merely return a fixed string.
+  // A deterministic fake, not src/lib/r2.ts's real key format — that real
+  // format is environment-namespaced (task #38: `dev/` prefix unless
+  // `APP_ENV=production`) and this suite doesn't stub `APP_ENV`. What matters
+  // here is only that this route's own failure-cleanup logic reuses the SAME
+  // key it uploaded to when it calls deleteObject(), so the fake must be
+  // deterministic per (galleryId, assetId), not merely return a fixed string.
   proofKey: (galleryId: string, assetId: string) => `galleries/${galleryId}/proofs/${assetId}.webp`,
   putObject: (...args: unknown[]) => putObjectMock(...args),
   deleteObject: (...args: unknown[]) => deleteObjectMock(...args),

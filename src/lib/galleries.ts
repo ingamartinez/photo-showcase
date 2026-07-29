@@ -131,6 +131,16 @@ export type GalleryDetail = {
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
   assets: GalleryDetailAsset[];
+  // `Date | null`, not optional (task #25's own review): `findGalleryDetail`
+  // below populates this UNCONDITIONALLY off the row's own column, so an
+  // `undefined` arm can never actually occur — declaring it optional would
+  // describe a shape wider than any real value this function ever returns,
+  // and every `undefined`-shaped check downstream (this file's own
+  // `?.toISOString()` callers) would be dead code no test could ever
+  // exercise. `null` is the honest, reachable "not submitted yet" state —
+  // `galleries.selectionSubmittedAt` was always nullable for exactly that
+  // reason (unset until a client submits, schema.ts).
+  selectionSubmittedAt: Date | null;
 };
 
 /** Shared by `getGalleryDetail` (admin, looked up by id) and
@@ -175,6 +185,7 @@ async function findGalleryDetail(where: ReturnType<typeof eq>): Promise<GalleryD
     includedPhotosSnapshot: row.includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot: row.extraPhotoPriceCopSnapshot,
     assets: row.assets,
+    selectionSubmittedAt: row.selectionSubmittedAt,
   };
 }
 

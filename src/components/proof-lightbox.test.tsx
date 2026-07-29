@@ -48,6 +48,7 @@ function renderLightbox(overrides: Partial<ComponentProps<typeof ProofLightbox>>
       onImageError={onImageError}
       onToggleSelection={onToggleSelection}
       pendingAssetIds={new Set()}
+      isLocked={false}
       {...overrides}
     />,
   );
@@ -110,6 +111,7 @@ describe("ProofLightbox", () => {
         onImageError={onImageError}
         onToggleSelection={onToggleSelection}
         pendingAssetIds={new Set()}
+        isLocked={false}
       />,
     );
 
@@ -126,6 +128,7 @@ describe("ProofLightbox", () => {
         onImageError={onImageError}
         onToggleSelection={onToggleSelection}
         pendingAssetIds={new Set()}
+        isLocked={false}
       />,
     );
 
@@ -144,6 +147,7 @@ describe("ProofLightbox", () => {
         onImageError={onImageError}
         onToggleSelection={onToggleSelection}
         pendingAssetIds={new Set()}
+        isLocked={false}
       />,
     );
 
@@ -160,6 +164,7 @@ describe("ProofLightbox", () => {
         onImageError={onImageError}
         onToggleSelection={onToggleSelection}
         pendingAssetIds={new Set()}
+        isLocked={false}
       />,
     );
 
@@ -220,6 +225,19 @@ describe("ProofLightbox", () => {
         assets: assetsFor(1, [{ isSelected: false }]),
         index: 0,
         pendingAssetIds: new Set(["a1"]),
+      });
+
+      const button = screen.getByRole("button", { name: "Seleccionar" }) as HTMLButtonElement;
+      expect(button.disabled).toBe(true);
+    });
+
+    // Task #25: the same UX-only mirror of the server-side submission lock
+    // as <ProofTile>'s own `isLocked` prop.
+    it("disables the toggle button once the gallery is locked", () => {
+      renderLightbox({
+        assets: assetsFor(1, [{ isSelected: false }]),
+        index: 0,
+        isLocked: true,
       });
 
       const button = screen.getByRole("button", { name: "Seleccionar" }) as HTMLButtonElement;

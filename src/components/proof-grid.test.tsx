@@ -38,7 +38,10 @@ function assetsFor(overrides: Partial<ProofAsset>[] = [{}]): ProofAsset[] {
 function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
   return render(
     <ProofGrid
+      galleryId="g1"
       initialAssets={assetsFor()}
+      initialStatus="proofing"
+      initialSubmittedAt={null}
       packageName="Estándar"
       includedPhotosSnapshot={13}
       extraPhotoPriceCopSnapshot={5_000}
@@ -311,6 +314,80 @@ describe("ProofGrid", () => {
       const text = screen.getByText(/incluidas/).textContent?.replace(/\s+/g, " ");
       expect(text).toContain("seleccionadas 15");
       expect(text).toContain("extras 2");
+    });
+  });
+
+  // Task #25: the lock/submit wiring between <ProofGrid>, <SubmitSelectionPanel>,
+  // and the per-tile/lightbox toggle buttons.
+  describe("submission lock", () => {
+    it("renders the submit button and enabled toggles for a gallery still in proofing", () => {
+      renderGrid({ initialStatus: "proofing", initialAssets: assetsFor([{ isSelected: true }]) });
+
+      expect(screen.getByRole("button", { name: "Enviar selección" })).toBeDefined();
+      expect(screen.getByRole("button", { name: /Quitar de seleccionadas/ })).toHaveProperty(
+        "disabled",
+        false,
+      );
+    });
+
+    it("starts locked — disabled toggles and the already-submitted message, no submit button — for a gallery already past proofing", () => {
+      renderGrid({
+        initialStatus: "selected",
+        initialSubmittedAt: "2026-07-28T12:00:00.000Z",
+        initialAssets: assetsFor([{ isSelected: true }]),
+      });
+
+      expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
+      // Pinned to the CORRECTED copy, not just the shared "Selección
+      // enviada" prefix — see submit-selection-panel.test.tsx's own comment
+      // on this exact assertion for why the prefix alone doesn't catch a
+      // regression back to the dishonest "ya fue notificado" string.
+      expect(screen.getByText(/tiene acceso/)).toBeDefined();
+      expect(screen.getByRole("button", { name: /Quitar de seleccionadas/ })).toHaveProperty(
+        "disabled",
+        true,
+      );
+    });
+
+    it("locks every toggle button and replaces the submit button with the confirmation message once a submission succeeds", async () => {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      const submittedQuota = {
+        selected: 1,
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+        extras: 0,
+        surchargeCop: 0,
+      };
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(200, {
+            status: "submitted",
+            quota: submittedQuota,
+            submittedAt: "2026-07-28T12:00:00.000Z",
+          }),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      renderGrid({
+        galleryId: "g1",
+        initialStatus: "proofing",
+        initialAssets: assetsFor([{ isSelected: true }]),
+      });
+
+      await user.click(screen.getByRole("button", { name: "Enviar selección" }));
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/submit-selection", {
+        method: "POST",
+      });
+      // Pinned to the CORRECTED copy — see the previous test's own comment.
+      await vi.waitFor(() => expect(screen.getByText(/tiene acceso/)).toBeDefined());
+      expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
+      expect(screen.getByRole("button", { name: /Quitar de seleccionadas/ })).toHaveProperty(
+        "disabled",
+        true,
+      );
     });
   });
 });

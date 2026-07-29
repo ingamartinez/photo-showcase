@@ -66,6 +66,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
     assets: [],
+    selectionSubmittedAt: null,
     ...overrides,
   };
 }
@@ -155,5 +156,46 @@ describe("ClientGalleryPage chrome", () => {
     render(element);
 
     expect(screen.getByText(/todavía no subió fotos/i)).toBeDefined();
+  });
+
+  // Task #25, wired end to end through the real page: a gallery that
+  // already left `proofing` renders the "already submitted" message, not
+  // the submit button — and its toggle buttons render disabled.
+  it("shows the already-submitted message, not the submit button, for a selected gallery", async () => {
+    getGalleryDetailBySlugMock.mockResolvedValue(
+      galleryDetail({
+        status: "selected",
+        selectionSubmittedAt: new Date("2026-07-28T12:00:00.000Z"),
+        assets: [
+          {
+            id: "a1",
+            originalFilename: "IMG_0001.JPG",
+            proofKey: "galleries/g1/proofs/a1.webp",
+            proofWidth: 1600,
+            proofHeight: 1067,
+            isSelected: true,
+            sortOrder: 0,
+          },
+        ],
+      }),
+    );
+
+    const element = await ClientGalleryPage(paramsFor(SLUG));
+    render(element);
+
+    // Not `getByText`: the gallery's own status badge (formatGalleryStatus)
+    // renders the SAME Spanish label ("Selección enviada") for the `selected`
+    // status, so this specific status message — the submit panel's own
+    // `role="status"` — is queried by role to disambiguate the two. Matched
+    // against the CORRECTED copy specifically ("tiene acceso"), not just the
+    // "Selección enviada" prefix both the status badge and the (earlier,
+    // dishonest) panel copy share — see submit-selection-panel.test.tsx's
+    // own comment on this exact pinning.
+    expect(screen.getByRole("status").textContent).toMatch(/tiene acceso/);
+    expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
+    expect(screen.getByRole("button", { name: /Quitar de seleccionadas/ })).toHaveProperty(
+      "disabled",
+      true,
+    );
   });
 });

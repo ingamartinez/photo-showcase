@@ -76,6 +76,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
     assets: [],
+    selectionSubmittedAt: null,
     ...overrides,
   };
 }

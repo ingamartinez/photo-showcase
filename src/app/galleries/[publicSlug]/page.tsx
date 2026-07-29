@@ -96,7 +96,12 @@ export default async function ClientGalleryPage({
       </div>
 
       <ProofGrid
+        galleryId={gallery.id}
         initialAssets={initialAssets}
+        initialStatus={gallery.status}
+        initialSubmittedAt={
+          gallery.selectionSubmittedAt ? gallery.selectionSubmittedAt.toISOString() : null
+        }
         packageName={gallery.package.name}
         includedPhotosSnapshot={gallery.includedPhotosSnapshot}
         extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}

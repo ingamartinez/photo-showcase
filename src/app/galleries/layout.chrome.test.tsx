@@ -47,4 +47,34 @@ describe("GalleriesLayout chrome", () => {
     expect(screen.getByText("ana@example.com")).toBeDefined();
     expect(screen.getByText("contenido")).toBeDefined();
   });
+
+  // #96: the logo used to be a hardcoded `Link href="/galleries"`, which
+  // drops an admin previewing a gallery on the ownership-scoped client
+  // index — empty for them, since `getGalleriesForClient()` never bypasses
+  // for admins. Pin the actual href per role, not just that a link renders.
+  it("points the logo at /galleries for a signed-in client", async () => {
+    requireSessionMock.mockResolvedValue({
+      user: { id: "client-1", role: "client", email: "ana@example.com" },
+      expires: "2099-01-01T00:00:00.000Z",
+    } as Session);
+
+    const element = await GalleriesLayout({ children: <div>contenido</div> });
+    render(element);
+
+    const logo = screen.getByRole("link", { name: "Alejo Frames" });
+    expect(logo.getAttribute("href")).toBe("/galleries");
+  });
+
+  it("points the logo at /dashboard for a signed-in admin previewing a gallery", async () => {
+    requireSessionMock.mockResolvedValue({
+      user: { id: "admin-1", role: "admin", email: "alejo@example.com" },
+      expires: "2099-01-01T00:00:00.000Z",
+    } as Session);
+
+    const element = await GalleriesLayout({ children: <div>contenido</div> });
+    render(element);
+
+    const logo = screen.getByRole("link", { name: "Alejo Frames" });
+    expect(logo.getAttribute("href")).toBe("/dashboard");
+  });
 });

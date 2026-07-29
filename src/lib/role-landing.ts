@@ -2,13 +2,18 @@
 // keyed by `role` alone — never by anything a request can influence besides
 // the session Auth.js already verified.
 //
-// Two call sites need exactly this decision, and until #91 each hardcoded
-// its own copy:
+// Three call sites need exactly this decision:
 //   - `(marketing)/login/redirect/page.tsx` (#87) — the post-magic-link
 //     dispatcher, evaluated once right after Auth.js creates a session.
 //   - `(marketing)/layout.tsx` (#91) — the public site chrome, evaluated on
 //     every page render to decide which link the header/footer offer a
 //     signed-in visitor.
+//   - `galleries/layout.tsx` (#96) — the client-area chrome's logo, which an
+//     admin also renders while previewing a client's gallery.
+//
+// The first two each hardcoded their own copy of the ternary until #91. The
+// third never duplicated it — it hardcoded the client destination as a bare
+// string literal, which is the same assumption wearing different clothes.
 //
 // Before #91, the layout re-derived this by checking only "does a session
 // exist", never `session.user.role` — so a signed-in ADMIN fell into the

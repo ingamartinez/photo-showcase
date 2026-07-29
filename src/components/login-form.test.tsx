@@ -39,6 +39,25 @@ describe("LoginForm", () => {
     expect(screen.getByText(/Revisá tu correo/)).toBeDefined();
   });
 
+  it("swaps the surrounding header along with the form after a successful submit", async () => {
+    // Regression guard for #9's review comment: the header used to keep
+    // reading "Escribí el correo..." even once the notice below already said
+    // the link was sent.
+    requestMagicLinkMock.mockResolvedValue({ status: "sent" });
+    const user = userEvent.setup();
+    render(<LoginForm />);
+
+    expect(screen.getByRole("heading", { name: "Ingresá a tu galería." })).toBeDefined();
+
+    await user.type(screen.getByLabelText("Correo electrónico"), "client@example.com");
+    await user.click(screen.getByRole("button", { name: "Enviar enlace de acceso" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("heading", { name: "Enlace en camino." })).toBeDefined();
+    });
+    expect(screen.queryByRole("heading", { name: "Ingresá a tu galería." })).toBeNull();
+  });
+
   it("shows the SAME confirmation screen regardless of which address was submitted", async () => {
     // The component has no way of knowing (and must not care) whether the
     // action's "sent" result came from a known or unknown address — that is

@@ -206,6 +206,32 @@ export const galleries = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     selectionSubmittedAt: timestamp("selection_submitted_at", { withTimezone: true }),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    // Unlock audit trail (task #73) — the admin-only escape hatch that
+    // replaces hand-editing `status` back to 'proofing' with a manual SQL
+    // `UPDATE` against production (the exact hatch task #25's review flagged
+    // as the only recovery path for a stuck `selected` gallery). Only the
+    // MOST RECENT unlock is kept here (overwritten on a second unlock of the
+    // same gallery) — this is "who did it and when, at minimum" per the
+    // task's own acceptance criterion, not an append-only history table.
+    //
+    // `unlockedByEmail` stores the acting admin's OWN session email as a
+    // plain snapshot at write time, not a foreign key onto `users` — same
+    // "frozen fact, not a live-updating reference" reasoning as
+    // `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot` above, and
+    // consistent with PLAN.md §4 ("identity is the email"). A FK would need
+    // a join (or a second relation to `users`, ambiguous with `clientId`'s
+    // existing one) just to answer "who", for an app with exactly one admin.
+    //
+    // `selectionSubmittedAt` above is DELIBERATELY UNTOUCHED by an unlock —
+    // see src/app/dashboard/galleries/actions.ts's `unlockSelection` for the
+    // full reasoning (task #75 made it a sort key; clearing it here would
+    // regress the exact discoverability problem #75 exists to fix).
+    unlockedAt: timestamp("unlocked_at", { withTimezone: true }),
+    unlockedByEmail: text("unlocked_by_email"),
+    // Optional — an admin unlocking mid-phone-call must never be blocked on
+    // typing a note first (task #73's own scope note: "consider a reason
+    // field", decided as optional).
+    unlockReason: text("unlock_reason"),
   },
   (t) => [uniqueIndex("galleries_public_slug_idx").on(t.publicSlug)],
 );

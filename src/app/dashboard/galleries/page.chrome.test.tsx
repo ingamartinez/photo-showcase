@@ -85,6 +85,7 @@ describe("GalleriesPage chrome", () => {
         status: "draft",
         sessionDate: "2026-08-01",
         createdAt: new Date("2026-07-01"),
+        selectionSubmittedAt: null,
         client: { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
         package: { id: 1, name: "Estándar" },
         includedPhotosSnapshot: 13,
@@ -108,6 +109,42 @@ describe("GalleriesPage chrome", () => {
     // Sanity check against a false positive, same reasoning as
     // clients/page.chrome.test.tsx: the empty-state copy must be absent.
     expect(screen.queryByText("Todavía no armaste ninguna galería.")).toBeNull();
+  });
+
+  // Task #75's core acceptance criterion: a submitted gallery must be
+  // identifiable without reading the status text, and that has to hold in a
+  // list long enough to actually scroll — one row proves nothing (see this
+  // file's task comment history / the ticket's own wording).
+  it("marks only the 'selected' status with the accent treatment, even buried in a 24-row list", async () => {
+    const galleries: GalleryWithDetails[] = Array.from({ length: 24 }, (_, i) => ({
+      id: `g${i}`,
+      title: `Galería ${i}`,
+      publicSlug: `slug-${i}`,
+      status: i === 12 ? "selected" : "proofing",
+      sessionDate: "2026-08-01",
+      createdAt: new Date("2026-07-01"),
+      selectionSubmittedAt: i === 12 ? new Date("2026-07-28") : null,
+      client: { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+      package: { id: 1, name: "Estándar" },
+      includedPhotosSnapshot: 13,
+      extraPhotoPriceCopSnapshot: 5_000,
+      photoCount: 10,
+    }));
+    getGalleriesWithDetailsMock.mockResolvedValue(galleries);
+
+    const element = await GalleriesPage();
+    const { container } = render(element);
+
+    // Every other row keeps the same muted treatment as before...
+    const mutedStatuses = screen.getAllByText("En pruebas");
+    expect(mutedStatuses).toHaveLength(23);
+    mutedStatuses.forEach((el) => expect(el.className).toContain("text-fg-mute"));
+
+    // ...only the submitted row gets the studio's accent colour and a dot —
+    // buried at index 12 of 24, not conveniently first.
+    const selectedStatus = screen.getByText("Selección enviada");
+    expect(selectedStatus.className).toContain("text-accent");
+    expect(container.querySelectorAll(".bg-accent.rounded-full")).toHaveLength(1);
   });
 
   it("renders the empty state when there are no galleries yet", async () => {

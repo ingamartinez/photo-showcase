@@ -75,13 +75,25 @@ export async function requestMagicLink(
       // header (see `next-auth/lib/actions.js`), so the magic link's baked-in
       // `callbackUrl` would resolve to wherever this action happened to be
       // called from — `/login` in practice, bouncing a successful login right
-      // back to the entrance instead of landing on the dashboard. Flagged by
-      // #9's round-2 review, fixed here because this is the slice that
-      // introduces the destination.
+      // back to the entrance. Flagged by #9's round-2 review, fixed here
+      // because this is the slice that introduces the destination.
+      //
+      // `/login/redirect`, not `/dashboard`: task #87. This literal is the
+      // SAME string for every address that reaches this branch — an admin
+      // address, a client address, both indistinguishable from here — so it
+      // cannot become a second enumeration oracle alongside the one this
+      // action already closes below. Dispatching to `/dashboard` for an
+      // admin and `/galleries` for a client requires reading `role`, and
+      // `role` is only safe to read once a session exists (see
+      // src/auth.ts's `signIn` callback); doing that lookup HERE, before the
+      // session exists, would leak exactly what #43 closed, just through the
+      // redirect target instead of the response body. So the role-specific
+      // dispatch happens post-authentication, in
+      // `src/app/(marketing)/login/redirect/page.tsx`, not here.
       await signIn("resend", {
         email: parsed.data.email,
         redirect: false,
-        redirectTo: "/dashboard",
+        redirectTo: "/login/redirect",
       });
     }
     // else: throttled. Deliberately NOT an early `return` — falling through

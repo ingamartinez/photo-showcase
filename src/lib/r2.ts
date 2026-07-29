@@ -149,3 +149,42 @@ export function getPresignedUrl(key: string, options?: { contentDisposition?: st
 export async function deleteObject(key: string): Promise<void> {
   await getClient().delete(key);
 }
+
+/** Streams `key`'s bytes directly out of R2 — task #29 (download-all-as-zip).
+ * This is the one deliberate, DOCUMENTED exception in this codebase to
+ * PLAN.md §5's "the droplet never streams image bytes" rule: see the route
+ * that calls this (src/app/api/galleries/[galleryId]/download-all/route.ts)
+ * for the full reasoning behind building the zip on the droplet at all
+ * rather than in a Cloudflare Worker, and PLAN.md §11 for the decision
+ * record.
+ *
+ * Callers must have already verified the requesting session owns the
+ * gallery — same contract as `getPresignedUrl` above, this module has no
+ * notion of ownership.
+ *
+ * Returns a `ReadableStream` (Bun's native `S3File.stream()`, itself just an
+ * inherited `Blob.stream()` — `S3File extends Blob`), NOT a buffered
+ * `Buffer`/`ArrayBuffer` — the whole point of this function existing
+ * separately from `getPresignedUrl` is that callers can pipe these bytes
+ * through without ever holding a whole object in memory. See
+ * src/lib/zip-stream.ts's own header comment for how the one caller that
+ * exists today (the zip writer) uses this guarantee. */
+export function getObjectStream(key: string): ReadableStream<Uint8Array> {
+  return getClient().file(key).stream();
+}
+
+/** Byte size of the object at `key`, via R2 HEAD request — no object bytes
+ * are read. Task #29 follow-up: the download-all route's pre-flight
+ * capacity check (`checkZip32Limits` in src/lib/zip-stream.ts) needs every
+ * entry's size BEFORE opening any stream, so a gallery that would overflow
+ * this app's Zip64-less writer can be refused cleanly instead of dying
+ * mid-archive. Bun's `S3Client` exposes exactly that: `.size()` resolves a
+ * byte count off a HEAD request alone (see bun-types/s3.d.ts's own comment,
+ * "Uses HEAD request to efficiently get size") — it never downloads the
+ * object, the same guarantee `getObjectStream` above relies on for the
+ * opposite reason (it DOES want the bytes, just lazily/one at a time).
+ * Same ownership-already-verified contract as every other function in this
+ * module: this has no notion of ownership, callers must have checked it. */
+export async function getObjectSize(key: string): Promise<number> {
+  return getClient().size(key);
+}

@@ -6,6 +6,7 @@ vi.mock("server-only", () => ({}));
 
 const findManyMock = vi.fn();
 const findFirstMock = vi.fn();
+const selectMock = vi.fn();
 
 vi.mock("@/lib/db", () => ({
   db: {
@@ -15,12 +16,14 @@ vi.mock("@/lib/db", () => ({
         findFirst: (...args: unknown[]) => findFirstMock(...args),
       },
     },
+    select: (...args: unknown[]) => selectMock(...args),
   },
 }));
 
 beforeEach(() => {
   findManyMock.mockReset();
   findFirstMock.mockReset();
+  selectMock.mockReset();
 });
 
 describe("getGalleriesWithDetails", () => {
@@ -33,6 +36,7 @@ describe("getGalleriesWithDetails", () => {
         status: "draft",
         sessionDate: "2026-08-01",
         createdAt: new Date("2026-07-01"),
+        selectionSubmittedAt: null,
         client: { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
         // Live package row — priceCop/includedPhotos here are the CURRENT
         // offer, deliberately NOT what this function should report as the
@@ -55,6 +59,7 @@ describe("getGalleriesWithDetails", () => {
         status: "draft",
         sessionDate: "2026-08-01",
         createdAt: new Date("2026-07-01"),
+        selectionSubmittedAt: null,
         client: { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
         package: { id: 2, name: "Estándar" },
         includedPhotosSnapshot: 13,
@@ -69,15 +74,68 @@ describe("getGalleriesWithDetails", () => {
     expect(result[0]).not.toHaveProperty("package.includedPhotos");
   });
 
-  it("orders by createdAt descending", async () => {
+  // Task #75's core acceptance criterion: recency of SUBMISSION, not
+  // creation, must drive placement. This is expressed as a SQL `orderBy`
+  // (`COALESCE(selection_submitted_at, created_at) DESC`) rather than a
+  // post-fetch JS `.sort()` — see this function's own header comment for why
+  // (pagination safety) — so a mocked `findMany` (which doesn't actually run
+  // SQL) can only prove the SHAPE of the expression sent to the DB, not
+  // observe it reordering rows. That the expression is correct is the one
+  // thing worth asserting here; that Postgres honors its own `ORDER BY` is
+  // not this codebase's job to re-prove.
+  it("asks the DB to order by COALESCE(selectionSubmittedAt, createdAt) descending, not createdAt alone", async () => {
     findManyMock.mockResolvedValue([]);
+    const { desc, sql } = await import("drizzle-orm");
+    const { galleries } = await import("./db/schema");
     const { getGalleriesWithDetails } = await import("./galleries");
 
     await getGalleriesWithDetails();
 
     expect(findManyMock).toHaveBeenCalledTimes(1);
     const args = findManyMock.mock.calls[0]?.[0] as { orderBy: unknown };
-    expect(args.orderBy).toBeDefined();
+    expect(args.orderBy).toEqual(
+      desc(sql`coalesce(${galleries.selectionSubmittedAt}, ${galleries.createdAt})`),
+    );
+  });
+});
+
+describe("getPendingSelectionCount", () => {
+  it("counts galleries in 'selected' via a dedicated count() query, not the full detail query", async () => {
+    const whereMock = vi.fn().mockResolvedValue([{ value: 2 }]);
+    const fromMock = vi.fn().mockReturnValue({ where: whereMock });
+    selectMock.mockReturnValue({ from: fromMock });
+    const { eq } = await import("drizzle-orm");
+    const { galleries } = await import("./db/schema");
+    const { getPendingSelectionCount } = await import("./galleries");
+
+    const result = await getPendingSelectionCount();
+
+    expect(result).toBe(2);
+    expect(fromMock).toHaveBeenCalledWith(galleries);
+    // The predicate itself, not just that SOME predicate was passed — this
+    // is the one fact the whole "N selecciones esperando" banner depends on;
+    // a filter accidentally changed to another status must fail this test.
+    expect(whereMock).toHaveBeenCalledWith(eq(galleries.status, "selected"));
+    expect(findManyMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 0 when no row comes back", async () => {
+    selectMock.mockReturnValue({ from: () => ({ where: () => Promise.resolve([]) }) });
+    const { getPendingSelectionCount } = await import("./galleries");
+
+    await expect(getPendingSelectionCount()).resolves.toBe(0);
+  });
+});
+
+describe("formatPendingSelectionCount", () => {
+  it.each([
+    [0, null],
+    [1, "1 selección esperando"],
+    [2, "2 selecciones esperando"],
+    [5, "5 selecciones esperando"],
+  ])("formats %s as %s", async (pendingCount, expected) => {
+    const { formatPendingSelectionCount } = await import("./galleries");
+    expect(formatPendingSelectionCount(pendingCount)).toBe(expected);
   });
 });
 

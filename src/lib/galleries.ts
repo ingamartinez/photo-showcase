@@ -9,7 +9,7 @@
 // epic's central rule).
 import "server-only";
 
-import { desc, eq } from "drizzle-orm";
+import { count, desc, eq, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { galleries } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
@@ -21,6 +21,10 @@ export type GalleryWithDetails = {
   status: Gallery["status"];
   sessionDate: string;
   createdAt: Date;
+  // `Date | null`, same reasoning as `GalleryDetail.selectionSubmittedAt`
+  // below: populated unconditionally off the row's own column, `null` is the
+  // honest "not submitted yet" state, not an absent/optional one.
+  selectionSubmittedAt: Date | null;
   client: { id: string; name: string | null; email: string };
   package: { id: number; name: string };
   includedPhotosSnapshot: number;
@@ -28,12 +32,38 @@ export type GalleryWithDetails = {
   photoCount: number;
 };
 
-/** Every gallery, most recently created first, with the client and package it
- * is bound to, its frozen terms, and its (derived, never stored) photo
- * count. */
+/** Every gallery, with the client and package it is bound to, its frozen
+ * terms, and its (derived, never stored) photo count.
+ *
+ * Ordered by RECENCY OF ACTIVITY, not creation date (task #75) — a gallery's
+ * `selectionSubmittedAt` if it has one, else its `createdAt`. A gallery
+ * created six months ago that a client submitted this morning is the most
+ * recently-active row in the list and must rise to the top; ordering by
+ * `createdAt` alone (the previous behavior) would leave it exactly where it
+ * was created, indistinguishable from a gallery nobody has touched in
+ * months.
+ *
+ * This ordering is done IN SQL (`COALESCE(...)` below), not as a JS
+ * `.sort()` after the fetch, even though this query has no `limit`/`offset`
+ * today and either approach would return the same rows in the same order
+ * right now. The moment this list is paginated — the obvious next move once
+ * the studio has hundreds of galleries — a JS-side sort would be silently
+ * wrong: Postgres would pick the wrong N rows for the requested page using
+ * its own (unmodified) order, and re-sorting only that wrong subset in JS
+ * cannot recover the correct page. Ordering in SQL is the only shape that
+ * survives adding `limit`/`offset` later without a rewrite. `createdAt` is
+ * `.notNull()` (schema.ts), so `COALESCE` here can never fall through to a
+ * NULL — there is no NULLS FIRST/LAST ambiguity to reason about for this
+ * particular expression.
+ *
+ * Depends on `selectionSubmittedAt` surviving unchanged once a gallery
+ * leaves `selected` — a future change (e.g. #73's proof-unlock flow) that
+ * clears this column on transition back to `proofing` would need to give
+ * this sort a replacement "last activity" signal, or a gallery unlocked
+ * seconds ago would fall back to its stale `createdAt` and look untouched. */
 export async function getGalleriesWithDetails(): Promise<GalleryWithDetails[]> {
   const rows = await db.query.galleries.findMany({
-    orderBy: desc(galleries.createdAt),
+    orderBy: desc(sql`coalesce(${galleries.selectionSubmittedAt}, ${galleries.createdAt})`),
     with: {
       client: { columns: { id: true, name: true, email: true } },
       package: { columns: { id: true, name: true } },
@@ -51,6 +81,7 @@ export async function getGalleriesWithDetails(): Promise<GalleryWithDetails[]> {
     status: row.status,
     sessionDate: row.sessionDate,
     createdAt: row.createdAt,
+    selectionSubmittedAt: row.selectionSubmittedAt,
     client: { id: row.client.id, name: row.client.name, email: row.client.email },
     // Narrowed explicitly to id + name — even though the query only selects
     // those two columns (the `with: { package: { columns: ... } }` above),
@@ -62,6 +93,31 @@ export async function getGalleriesWithDetails(): Promise<GalleryWithDetails[]> {
     extraPhotoPriceCopSnapshot: row.extraPhotoPriceCopSnapshot,
     photoCount: row.assets.length,
   }));
+}
+
+/** How many galleries are sitting in `selected` — submitted by a client and
+ * awaiting the photographer's review. Powers the "N selecciones esperando"
+ * count on `/dashboard` (task #75), which today reads no database at all;
+ * without this, a submission is only visible by opening
+ * `/dashboard/galleries` and reading every row's status text. A dedicated
+ * `count()` query rather than reusing `getGalleriesWithDetails()` — the
+ * dashboard home only needs a number, not every client/package/asset join. */
+export async function getPendingSelectionCount(): Promise<number> {
+  const [row] = await db
+    .select({ value: count() })
+    .from(galleries)
+    .where(eq(galleries.status, "selected"));
+  return row?.value ?? 0;
+}
+
+/** Spanish, pluralized copy for `getPendingSelectionCount`'s result. Returns
+ * `null` at zero — the dashboard renders nothing in that case rather than a
+ * "0 selecciones esperando" that would just be noise (same shape as this
+ * file's other `format*` helpers, but zero has no useful sentence here). */
+export function formatPendingSelectionCount(pendingCount: number): string | null {
+  if (pendingCount <= 0) return null;
+  if (pendingCount === 1) return "1 selección esperando";
+  return `${pendingCount} selecciones esperando`;
 }
 
 // Statuses a CLIENT (not an admin) may view via `/galleries/[publicSlug]`

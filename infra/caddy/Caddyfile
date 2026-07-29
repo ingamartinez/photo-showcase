@@ -14,6 +14,46 @@
 #   /etc/caddy/alejoframes-origin.key   (0600 root:caddy) — matching private key
 # The cert must cover the apex `alejoframes.com` (a wildcard *.alejoframes.com
 # does NOT cover the bare apex — issue one that includes it, or a separate cert).
+#
+# Task #69 — trusted_proxies pinning for CF-Connecting-IP.
+#
+# Without this, `header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}`
+# blindly echoes a client-controlled header: anyone who reaches this origin's
+# 443 directly (Full-strict only stops the SERVER's cert from being forged, it
+# does not stop a client from skipping Cloudflare and connecting straight to
+# the droplet's IP) could send a made-up `CF-Connecting-IP` per request and
+# pick its own rate-limit bucket in src/lib/rate-limit.ts, defeating the
+# per-address cap from task #12 for the address-rotation case specifically
+# (the per-address cap itself still holds either way).
+#
+# Fix: gate which upstream header_up is used by the ACTUAL TCP peer address
+# (`remote_ip`, not a header — TCP source IPs are not spoofable by a random
+# off-path client completing a real TLS handshake). Only when the peer is a
+# genuine Cloudflare edge IP do we trust its `CF-Connecting-IP`. Otherwise we
+# fall back to Caddy's own view of the real peer (`{http.request.remote.host}`),
+# so the request is still SERVED — never dropped — just bucketed by its real
+# address instead of a forgeable one. Dropping was considered and rejected:
+# Cloudflare's ranges below will eventually go stale (see note below), and a
+# hard deny on an unrecognized-but-legitimate CF edge IP would take down the
+# site outright, which is a worse failure mode than a coarser rate-limit
+# bucket for a handful of requests. Both `reverse_proxy` blocks set (not
+# append) a single `X-Forwarded-For` value, which is what
+# src/lib/rate-limit.ts's `getClientIp` requires (see its header comment).
+#
+# Cloudflare IP range staleness — accepted explicitly, not automated:
+# ranges below are pinned as of 2026-07-28 from
+# https://www.cloudflare.com/ips-v4 and https://www.cloudflare.com/ips-v6.
+# There is no cron/CD hook that re-fetches these (the deploy workflow only
+# redeploys the Next.js app, and this Caddyfile is hand-appended per
+# infra/README.md — see task #69 for why automating this was out of scope for
+# a 1h ops slice). Cloudflare adds new ranges rarely — the IPv4 list has been
+# stable for years. If it ever does, the ONLY consequence of a stale list is
+# that requests via the new, not-yet-pinned edge range fall through to the
+# untrusted branch: they are still served, just bucketed by that Cloudflare
+# edge node's own IP instead of the true visitor's IP (a shared, coarser
+# bucket for everyone routed through that one edge) — a secondary-defense
+# degradation, not an outage. Re-check the two URLs above whenever this file
+# is next touched.
 
 # www → apex redirect (canonical host is the bare apex).
 www.alejoframes.com {
@@ -26,10 +66,42 @@ alejoframes.com {
 
 	encode zstd gzip
 
-	# Forward the real client IP that Cloudflare sets in CF-Connecting-IP.
-	reverse_proxy 127.0.0.1:3300 {
+	# Cloudflare's published edge ranges (see the header comment above for
+	# source + refresh story). `remote_ip` matches the actual TCP peer, which
+	# a client cannot forge the way it can forge a header.
+	@from_cloudflare remote_ip \
+ 173.245.48.0/20 103.21.244.0/22 103.22.200.0/22 103.31.4.0/22 \
+ 141.101.64.0/18 108.162.192.0/18 190.93.240.0/20 188.114.96.0/20 \
+ 197.234.240.0/22 198.41.128.0/17 162.158.0.0/15 104.16.0.0/13 \
+ 104.24.0.0/14 172.64.0.0/13 131.0.72.0/22 \
+ 2400:cb00::/32 2606:4700::/32 2803:f800::/32 2405:b500::/32 \
+ 2405:8100::/32 2a06:98c0::/29 2c0f:f248::/32
+
+	# Trusted path: the connection genuinely came from a Cloudflare edge, so
+	# CF-Connecting-IP is the real visitor address — forward it as-is.
+	reverse_proxy @from_cloudflare 127.0.0.1:3300 {
 		header_up Host {host}
 		header_up X-Forwarded-For {http.request.header.CF-Connecting-IP}
+		header_up X-Forwarded-Proto https
+	}
+
+	# Untrusted path: direct-to-origin (or an unrecognized edge range). Any
+	# CF-Connecting-IP header here is attacker-controlled and ignored; forward
+	# Caddy's own view of the real TCP peer instead. Still served, not dropped
+	# — see the header comment above for why.
+	#
+	# `caddy validate`/`fmt` will flag the X-Forwarded-For line below as
+	# "unnecessary" — the reverse_proxy default already forwards the same
+	# {http.request.remote.host} value when there is no PRIOR X-Forwarded-For
+	# on the request. That warning doesn't know that: it's checking a lint
+	# rule against the placeholder text, not against whether a client could
+	# supply its own X-Forwarded-For too. Keep this explicit `header_up` — it
+	# forces a SET, not an append, of a single value, which is exactly what
+	# src/lib/rate-limit.ts's getClientIp requires. False positive; do not
+	# "clean up" by deleting it.
+	reverse_proxy 127.0.0.1:3300 {
+		header_up Host {host}
+		header_up X-Forwarded-For {http.request.remote.host}
 		header_up X-Forwarded-Proto https
 	}
 

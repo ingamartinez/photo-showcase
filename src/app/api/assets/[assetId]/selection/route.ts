@@ -74,7 +74,17 @@ const bodySchema = z.object({ selected: z.boolean() });
 // what the client already committed to, including the surcharge they were
 // quoted. `delivered` and `archived` are closed states for the same reason
 // the other two routes refuse them.
-const SELECTION_LOCKED_STATUSES = new Set<Gallery["status"]>(["selected", "delivered", "archived"]);
+//
+// Exported (task #73) so the admin unlock action's own test suite
+// (src/app/dashboard/galleries/actions.unlock.test.ts) can assert "after
+// unlock, `proofing` is not in the REAL gate this route enforces" against
+// this exact set, instead of asserting a hand-copied string literal that
+// could silently drift from what this route actually checks.
+export const SELECTION_LOCKED_STATUSES = new Set<Gallery["status"]>([
+  "selected",
+  "delivered",
+  "archived",
+]);
 
 function errorResponse(error: string, status: number): NextResponse {
   return NextResponse.json({ error }, { status });

@@ -9,7 +9,7 @@
 import { z } from "zod";
 import postgres from "postgres";
 import { revalidatePath } from "next/cache";
-import { count, eq } from "drizzle-orm";
+import { and, count, eq } from "drizzle-orm";
 import { AuthError } from "next-auth";
 import { signIn } from "@/auth";
 import { db } from "@/lib/db";
@@ -17,6 +17,9 @@ import { assets, galleries, packages, users } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 import { requireAdmin } from "@/lib/auth-guards";
 import { generateGallerySlug } from "@/lib/slug";
+import { authEnv, resendEnv } from "@/lib/env";
+import { computeQuota } from "@/lib/quota";
+import { sendUnlockNotificationEmail } from "@/lib/unlock-notification-email";
 
 const createGallerySchema = z.object({
   // Both ids come from <select> pickers fed by getClientsForPicker() /
@@ -269,4 +272,241 @@ export async function publishGallery(
   revalidatePath(`/dashboard/galleries/${gallery.id}`);
   revalidatePath("/dashboard/galleries");
   return { status: "published" };
+}
+
+// ---------------------------------------------------------------------------
+// Unlock a submitted selection (task #73) — selected -> proofing.
+//
+// REPLACES A MANUAL-SQL ESCAPE HATCH. Before this action existed, the only
+// way to undo a client's submission was an operator running
+// `UPDATE galleries SET status = 'proofing' WHERE id = '<id>';` by hand
+// against production — task #25's own review flagged this as the sole
+// recovery path for a stuck `selected` gallery, with no operator surface and
+// no audit trail. This action is that surface: it performs the identical
+// state transition through the app's own authorization, idempotency, and
+// audit-logging, so nobody needs shell access to a production database to
+// reopen a gallery again.
+// ---------------------------------------------------------------------------
+
+export type UnlockSelectionState = {
+  status: "idle" | "error" | "unlocked" | "unlocked_email_failed";
+  message?: string;
+};
+
+const unlockSelectionSchema = z.object({
+  galleryId: z.uuid(),
+  // Optional (task #73's own scope note: "consider a reason field", decided
+  // as optional) — a quick unlock during a live phone call must never be
+  // blocked on typing a note first. `.trim()` first so a whitespace-only
+  // textarea value collapses to `undefined` (via the `.optional()` below
+  // never firing on an empty string) rather than being stored as a
+  // non-empty-looking but meaningless reason.
+  reason: z.string().trim().max(1000, "La nota es demasiado larga.").optional(),
+});
+
+// Same "the check IS the authority, hiding the button is only UX" stance as
+// `isPublishable` above. Only a gallery sitting in `selected` — a submitted,
+// not-yet-reopened selection — has anything to unlock: `draft`/`proofing`
+// were never submitted (or already reopened), `delivered`/`archived` are
+// further along than a reopen makes sense for.
+function isUnlockable(status: Gallery["status"]): boolean {
+  return status === "selected";
+}
+
+/**
+ * selected -> proofing. Implements the REOPEN POLICY task #25 decided and
+ * deliberately deferred building the admin side of (see
+ * src/app/api/galleries/[galleryId]/submit-selection/route.ts's own header
+ * comment): only an admin can undo a client's submission, and only here.
+ *
+ * `selectionSubmittedAt` is DELIBERATELY PRESERVED, never cleared, on
+ * unlock. This was this task's own open question ("clear or preserve?"),
+ * and task #75's review answered it: #75 made `selectionSubmittedAt` the
+ * SORT KEY for `/dashboard/galleries` (`getGalleriesWithDetails`'s
+ * `COALESCE(selectionSubmittedAt, createdAt)` ordering, src/lib/galleries.ts).
+ * Clearing it here would drop a gallery the photographer is ACTIVELY
+ * reopening — the single most recently-active gallery in the whole system
+ * at that instant — straight back to its `createdAt` position, vanishing
+ * from the top of the list it just proved itself to belong at. That is the
+ * exact failure #75 was built to eliminate, reintroduced by this task for
+ * the one case #75's own review flagged as the likeliest to trigger it. If
+ * the selection is later resubmitted, the submit route (task #25) stamps a
+ * FRESH `selectionSubmittedAt` on that transition regardless of what this
+ * action ever did — nothing here needs to "reset" it for that to keep
+ * working.
+ *
+ * The unlock is audited on the gallery's own row, not a separate history
+ * table: WHO (`unlockedByEmail` — the acting admin's own session email,
+ * PLAN.md §4's "identity is the email", snapshotted rather than a foreign
+ * key; see schema.ts's comment on that column for why) and WHEN
+ * (`unlockedAt`), plus an OPTIONAL `reason` a photographer can leave for
+ * their own future reference and for the client's — "this is an audit
+ * trail for a money conversation", per this task's own scope note. Only the
+ * MOST RECENT unlock is kept (overwritten by a later one) — the acceptance
+ * criterion is "who did it and when, AT MINIMUM", not a full append-only
+ * log, and that scope cut is deliberate.
+ *
+ * Guarded the same way publishGallery/submit-selection already are: the
+ * UPDATE's own `WHERE status = 'selected'` is the REAL, atomic guard
+ * (`isUnlockable` above only fails fast, before ever writing, with a
+ * clearer message than a generic "no rows updated") — a double-click, or
+ * two admin tabs, can only ever unlock a given gallery once, and only the
+ * winner's `unlockedAt`/`unlockedByEmail`/`unlockReason` survives.
+ *
+ * The client notification is BEST-EFFORT (a Resend outage must never leave
+ * the gallery stuck half-transitioned) but its failure is NOT silently
+ * swallowed the way submit-selection's own admin notification is. That
+ * route can afford to swallow a failed send because `/dashboard/galleries`
+ * already surfaces every `selected` gallery to the one person who needs to
+ * notice it (the admin themselves, task #75). The client has no equivalent
+ * surface here — no "your selection reopened" banner exists anywhere in
+ * this app — so a client whose email never arrives has NO way to discover
+ * the reopen on their own, and "the photographer waits forever" (this
+ * task's own acceptance criterion) is exactly what happens. So a failed
+ * send is reported back to the admin as a DISTINCT, actionable result
+ * (`unlocked_email_failed`) instead of a generic success. The unlock
+ * itself is never rolled back to "fix" an unrelated email failure —
+ * reverting a durably-committed state transition would recreate the exact
+ * half-done-state risk publishGallery's own ordering comment above reasons
+ * about — but the admin learns immediately that they need to tell the
+ * client some other way, the same "the fix is a phone call" stance task
+ * #25 already settled on for the reopen policy itself.
+ */
+export async function unlockSelection(
+  _prevState: UnlockSelectionState,
+  formData: FormData,
+): Promise<UnlockSelectionState> {
+  // Admin-only surface, checked at the data-access path itself — not only by
+  // the page hiding the button once a gallery is no longer `selected`. See
+  // this file's own repeated stance on `isPublishable`/`isUnlockable` above
+  // and the epic's "every route and action is admin-only" rule.
+  const session = await requireAdmin();
+
+  const parsed = unlockSelectionSchema.safeParse({
+    galleryId: formData.get("galleryId"),
+    // `formData.get` on a never-filled optional textarea returns `""`, not
+    // `null` — normalized to `undefined` here so the schema's `.optional()`
+    // actually fires instead of validating an empty string as "a reason".
+    reason: formData.get("reason") || undefined,
+  });
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Galería inválida.",
+    };
+  }
+
+  const [gallery] = await db
+    .select()
+    .from(galleries)
+    .where(eq(galleries.id, parsed.data.galleryId))
+    .limit(1);
+  if (!gallery) {
+    return { status: "error", message: "La galería no existe." };
+  }
+  if (!isUnlockable(gallery.status)) {
+    return {
+      status: "error",
+      message: "Esta galería no tiene una selección enviada para desbloquear.",
+    };
+  }
+
+  const reason = parsed.data.reason ?? null;
+  // `session.user.email` is typed optional by NextAuth's `DefaultSession`,
+  // but `users.email` is NOT NULL in schema.ts and the database session
+  // strategy (src/auth.ts) populates `session.user` straight from that row
+  // on every request — unreachable in practice, same stance as this file's
+  // own "unreachable in practice" client/admin lookups above, but the
+  // fallback keeps the audit trail from silently losing the actor entirely
+  // if it ever did happen.
+  const unlockedByEmail = session.user.email ?? session.user.id;
+  const now = new Date();
+
+  const updated = await db
+    .update(galleries)
+    .set({
+      status: "proofing",
+      unlockedAt: now,
+      unlockedByEmail,
+      unlockReason: reason,
+    })
+    .where(and(eq(galleries.id, gallery.id), eq(galleries.status, "selected")))
+    .returning();
+
+  if (updated.length === 0) {
+    // Lost the race — some other call already moved this gallery out of
+    // `selected` between the read above and this UPDATE (a second unlock
+    // click, or a concurrent admin tab). Same "the CAS is the only source
+    // of truth" stance as the submit route's own losing branch: nothing
+    // more to do, no partial write happened.
+    return {
+      status: "error",
+      message: "Esta galería ya no tiene una selección enviada — puede que ya se haya actualizado.",
+    };
+  }
+  const unlockedGallery = updated[0]!;
+
+  const [client] = await db
+    .select({ name: users.name, email: users.email })
+    .from(users)
+    .where(eq(users.id, unlockedGallery.clientId))
+    .limit(1);
+
+  // Quota AT THE MOMENT OF UNLOCK — since a `selected` gallery's assets
+  // cannot be toggled (`SELECTION_LOCKED_STATUSES` on the sibling PATCH
+  // route, src/app/api/assets/[assetId]/selection/route.ts), this is
+  // exactly what the client had submitted, computed off the gallery's own
+  // frozen snapshot terms — never the live `packages` row (this epic's
+  // central rule, repeated in every sibling that touches quota).
+  const siblings = await db
+    .select({ isSelected: assets.isSelected })
+    .from(assets)
+    .where(eq(assets.galleryId, unlockedGallery.id));
+  const selectedCount = siblings.filter((row) => row.isSelected).length;
+  const quota = computeQuota(selectedCount, {
+    includedPhotosSnapshot: unlockedGallery.includedPhotosSnapshot,
+    extraPhotoPriceCopSnapshot: unlockedGallery.extraPhotoPriceCopSnapshot,
+  });
+
+  let emailFailed = false;
+  if (!client) {
+    // Unreachable in practice — `galleries.clientId` is a NOT NULL FK onto
+    // `users` — but never trusted blindly, same stance as this file's own
+    // `publishGallery`/`createGallery` lookups above.
+    emailFailed = true;
+  } else {
+    try {
+      const { RESEND_API_KEY, EMAIL_FROM } = resendEnv();
+      const { AUTH_URL } = authEnv();
+      await sendUnlockNotificationEmail({
+        apiKey: RESEND_API_KEY,
+        from: EMAIL_FROM,
+        to: client.email,
+        clientName: client.name,
+        clientEmail: client.email,
+        galleryTitle: unlockedGallery.title,
+        // The CLIENT's own gallery URL (`/galleries/[publicSlug]`), not the
+        // admin dashboard URL `sendSubmissionNotificationEmail` builds —
+        // see src/lib/unlock-notification-email.ts's own comment on why.
+        galleryUrl: new URL(`/galleries/${unlockedGallery.publicSlug}`, AUTH_URL).toString(),
+        reason,
+        quota,
+      });
+    } catch {
+      emailFailed = true;
+    }
+  }
+
+  revalidatePath(`/dashboard/galleries/${unlockedGallery.id}`);
+  revalidatePath("/dashboard/galleries");
+
+  if (emailFailed) {
+    return {
+      status: "unlocked_email_failed",
+      message:
+        "Desbloqueamos la selección, pero no pudimos avisarle al cliente por correo. " +
+        "Avisale por otro medio (WhatsApp / llamada).",
+    };
+  }
+  return { status: "unlocked" };
 }

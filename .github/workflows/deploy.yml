@@ -126,7 +126,7 @@ jobs:
             sudo -n -u photoshowcase install -d -m 0755 '$RELEASE_DIR'
             sudo -n -u photoshowcase tar -xzf '$TARBALL' -C '$RELEASE_DIR'
             rm -f '$TARBALL'
-            printf 'GIT_SHA=%s\n' '$GIT_SHA' | sudo -n -u photoshowcase tee '$ENV_FILE' >/dev/null
+            printf 'GIT_SHA=%s\nAPP_ENV=production\n' '$GIT_SHA' | sudo -n -u photoshowcase tee '$ENV_FILE' >/dev/null
             sudo -n -u photoshowcase chmod 0640 '$ENV_FILE'
           "
 

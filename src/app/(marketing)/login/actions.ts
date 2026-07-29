@@ -8,8 +8,11 @@
 
 import { z } from "zod";
 import { AuthError } from "next-auth";
+import { headers } from "next/headers";
 import { signIn } from "@/auth";
 import { clearAuthCallbackUrlCookie } from "@/lib/auth-cookies";
+import { getClientIp } from "@/lib/rate-limit";
+import { emailLimiter, ipLimiter } from "@/lib/login-rate-limiters";
 
 const requestSchema = z.object({
   email: z.email("Ingresá un correo electrónico válido."),
@@ -51,15 +54,44 @@ export async function requestMagicLink(
 
   const startedAt = Date.now();
   try {
-    // Explicit destination — without `redirectTo`, `signIn()`'s own
-    // `redirect: false` short-circuit still falls back to the `Referer`
-    // header (see `next-auth/lib/actions.js`), so the magic link's baked-in
-    // `callbackUrl` would resolve to wherever this action happened to be
-    // called from — `/login` in practice, bouncing a successful login right
-    // back to the entrance instead of landing on the dashboard. Flagged by
-    // #9's round-2 review, fixed here because this is the slice that
-    // introduces the destination.
-    await signIn("resend", { email: parsed.data.email, redirect: false, redirectTo: "/dashboard" });
+    // Both checks always run — never short-circuited with `&&` — so each
+    // bucket's count reflects every attempt regardless of the other
+    // bucket's state. Only whether `signIn` gets called below depends on
+    // the combined result; the response built after this block is
+    // identical either way. Note this is not pure upside: the per-address
+    // limiter, on its own, cannot distinguish an attacker from the
+    // address's real owner, so it stops mail for a targeted known address
+    // just as effectively as it stops mail for an attacker spamming it —
+    // see src/lib/login-rate-limiters.ts's header comment for why that is
+    // accepted here rather than fixed.
+    const normalizedEmail = parsed.data.email.toLowerCase();
+    const clientIp = getClientIp(await headers());
+    const withinEmailLimit = emailLimiter.check(normalizedEmail).allowed;
+    const withinIpLimit = ipLimiter.check(clientIp).allowed;
+
+    if (withinEmailLimit && withinIpLimit) {
+      // Explicit destination — without `redirectTo`, `signIn()`'s own
+      // `redirect: false` short-circuit still falls back to the `Referer`
+      // header (see `next-auth/lib/actions.js`), so the magic link's baked-in
+      // `callbackUrl` would resolve to wherever this action happened to be
+      // called from — `/login` in practice, bouncing a successful login right
+      // back to the entrance instead of landing on the dashboard. Flagged by
+      // #9's round-2 review, fixed here because this is the slice that
+      // introduces the destination.
+      await signIn("resend", {
+        email: parsed.data.email,
+        redirect: false,
+        redirectTo: "/dashboard",
+      });
+    }
+    // else: throttled. Deliberately NOT an early `return` — falling through
+    // to the same `finally` (timing floor + cookie clear) and the same
+    // `return { status: "sent" }` below is what keeps a throttled response
+    // indistinguishable from an accepted one. This limiter runs BEFORE the
+    // Resend call, so a throttled request finishes in a few ms on its own;
+    // an early return here would recreate exactly the timing oracle #9/#43
+    // closed, just with a new trigger (submission count instead of address
+    // existence).
   } catch (error) {
     // The signIn callback in src/auth.ts returns false for an address that
     // doesn't belong to an existing user; Auth.js turns that into an

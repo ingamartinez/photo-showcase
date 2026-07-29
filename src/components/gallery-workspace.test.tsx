@@ -8,7 +8,7 @@
 // (see gallery-workspace.tsx's header comment for why that matters for a
 // ~100-file upload).
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { GalleryWorkspace, type WorkspaceAsset } from "./gallery-workspace";
 
@@ -31,6 +31,7 @@ function assetFor(overrides: Partial<WorkspaceAsset> = {}): WorkspaceAsset {
     isSelected: false,
     sortOrder: 0,
     proofUrl: "https://r2.example.com/a1",
+    hasFinal: false,
     ...overrides,
   };
 }
@@ -125,5 +126,43 @@ describe("GalleryWorkspace", () => {
     await user.click(moveUpButtons[1]!);
 
     await waitFor(() => expect(filenames()).toEqual(["second.jpg", "first.jpg"]));
+  });
+
+  // Task #26's own scope note: "the screen should make the remaining work
+  // obvious — which selected assets still lack a final."
+  it("shows no pending-finals summary when nothing is selected yet", () => {
+    render(
+      <GalleryWorkspace galleryId={GALLERY_ID} initialAssets={[assetFor({ isSelected: false })]} />,
+    );
+
+    expect(screen.queryByText(/finales/)).toBeNull();
+  });
+
+  it("summarizes pending finals for selected assets, and updates it live after an upload", async () => {
+    const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(200, { asset: { id: "a1" } })));
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <GalleryWorkspace
+        galleryId={GALLERY_ID}
+        initialAssets={[
+          assetFor({ id: "a1", isSelected: true, hasFinal: false }),
+          assetFor({ id: "a2", originalFilename: "second.jpg", isSelected: true, hasFinal: false }),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Faltan 2 de 2 finales por subir.")).toBeDefined();
+
+    // Two selected tiles both render their own "Subir final" input; only
+    // the first one's upload response resolves (mocked above) — the fetch
+    // mock does not distinguish which asset it was called for, but that's
+    // fine here: this test is about the SUMMARY updating from ONE upload,
+    // not about which specific tile it was.
+    const file = new File(["edited"], "a1-edit.jpg", { type: "image/jpeg" });
+    const [firstInput] = screen.getAllByLabelText("Subir final") as HTMLInputElement[];
+    fireEvent.change(firstInput!, { target: { files: [file] } });
+
+    await waitFor(() => expect(screen.getByText("Faltan 1 de 2 finales por subir.")).toBeDefined());
   });
 });

@@ -160,6 +160,8 @@ describe("ClientGalleryPage", () => {
             proofHeight: 1067,
             isSelected: false,
             sortOrder: 0,
+            finalKey: null,
+            isEdited: false,
           },
           {
             id: "a2",
@@ -169,6 +171,8 @@ describe("ClientGalleryPage", () => {
             proofHeight: 1067,
             isSelected: false,
             sortOrder: 1,
+            finalKey: null,
+            isEdited: false,
           },
         ],
       }),

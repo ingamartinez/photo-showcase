@@ -19,6 +19,7 @@
     "create:admin": "bun run scripts/create-admin.ts",
     "check:r2": "bun run scripts/check-r2.ts",
     "check:resend": "bun run scripts/check-resend.ts",
+    "measure:final:memory": "bun run scripts/measure-final-memory.ts",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
     "test:e2e": "playwright test",

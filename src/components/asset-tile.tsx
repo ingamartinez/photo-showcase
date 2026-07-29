@@ -1,8 +1,11 @@
 "use client";
 
 // One proof in the admin grid (task #20): the thumbnail itself (with
-// on-demand presigned-URL refresh), plus reorder and delete controls.
-import { useState } from "react";
+// on-demand presigned-URL refresh), plus reorder and delete controls. Task
+// #26 adds a final-upload control, rendered only for SELECTED assets — see
+// its own comment below for why that follows the exact same "most assets
+// never get one" rule the write route itself enforces.
+import { useRef, useState } from "react";
 import type { WorkspaceAsset } from "@/components/gallery-workspace";
 
 export function AssetTile({
@@ -11,17 +14,22 @@ export function AssetTile({
   isLast,
   onDeleted,
   onMoved,
+  onFinalUploaded,
 }: {
   asset: WorkspaceAsset;
   isFirst: boolean;
   isLast: boolean;
   onDeleted: (assetId: string) => void;
   onMoved: (updates: { id: string; sortOrder: number }[]) => void;
+  onFinalUploaded: (assetId: string) => void;
 }) {
   const [src, setSrc] = useState(asset.proofUrl);
   const [refreshedOnce, setRefreshedOnce] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [finalBusy, setFinalBusy] = useState(false);
+  const [finalError, setFinalError] = useState<string | null>(null);
+  const finalInputRef = useRef<HTMLInputElement>(null);
 
   // A presigned proof URL is only good for 5 minutes
   // (`PRESIGNED_URL_TTL_SECONDS`, src/lib/r2.ts). On a gallery page left
@@ -90,6 +98,37 @@ export function AssetTile({
     }
   }
 
+  // Task #26: attaches (or replaces) this asset's final. The route itself
+  // is the real guard (an unselected asset gets refused with 409) — this
+  // control is only ever RENDERED for a selected asset in the first place
+  // (see below), so that refusal should never actually be reachable from
+  // this UI, but the route never trusts this component to have gotten that
+  // right.
+  async function handleFinalFileChosen(file: File) {
+    if (finalBusy) return;
+    setFinalBusy(true);
+    setFinalError(null);
+    try {
+      const formData = new FormData();
+      formData.set("file", file);
+      const response = await fetch(`/api/assets/${asset.id}/final`, {
+        method: "POST",
+        body: formData,
+      });
+      if (!response.ok) {
+        const body = (await response.json().catch(() => ({}))) as { error?: string };
+        setFinalError(body.error ?? `Error ${response.status}`);
+        return;
+      }
+      onFinalUploaded(asset.id);
+    } catch {
+      setFinalError("No se pudo conectar.");
+    } finally {
+      setFinalBusy(false);
+      if (finalInputRef.current) finalInputRef.current.value = "";
+    }
+  }
+
   return (
     <li className="border-line-2 flex flex-col gap-2 rounded-sm border p-2">
       <div
@@ -143,6 +182,38 @@ export function AssetTile({
           Eliminar
         </button>
       </div>
+
+      {/* Task #26: only rendered for a SELECTED asset — most assets never
+          get a final (schema.ts's own comment on `assets.finalKey`), and
+          showing this control on every tile would bury the ones that
+          actually need attention among the ones that never will. This is
+          also the "make the remaining work obvious" acceptance criterion,
+          applied per-tile: `!asset.hasFinal` is visually distinct (the
+          "falta" text below), not merely absent. */}
+      {asset.isSelected && (
+        <div className="border-line-2 flex flex-col gap-1 border-t pt-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className={asset.hasFinal ? "text-accent-2 text-xs" : "text-xs text-[#e0796b]"}>
+              {asset.hasFinal ? "Final subido" : "Falta el final"}
+            </span>
+            <label className="label hover:text-accent-2 cursor-pointer text-xs transition-colors">
+              {finalBusy ? "Subiendo…" : asset.hasFinal ? "Reemplazar" : "Subir final"}
+              <input
+                ref={finalInputRef}
+                type="file"
+                accept="image/*"
+                disabled={finalBusy}
+                className="sr-only"
+                onChange={(event) => {
+                  const file = event.target.files?.[0];
+                  if (file) void handleFinalFileChosen(file);
+                }}
+              />
+            </label>
+          </div>
+          {finalError && <p className="text-xs text-[#e0796b]">{finalError}</p>}
+        </div>
+      )}
     </li>
   );
 }

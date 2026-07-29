@@ -69,6 +69,9 @@ export default async function GalleryDetailPage({
     isSelected: asset.isSelected,
     sortOrder: asset.sortOrder,
     proofUrl: getPresignedUrl(asset.proofKey),
+    // Task #26: a boolean derived from `finalKey`, never the raw key itself
+    // — see <GalleryWorkspace>'s own `WorkspaceAsset.hasFinal` comment.
+    hasFinal: asset.finalKey !== null,
   }));
 
   return (

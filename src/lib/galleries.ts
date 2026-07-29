@@ -173,6 +173,14 @@ export type GalleryDetailAsset = {
   proofHeight: number;
   isSelected: boolean;
   sortOrder: number;
+  // `null` for every asset that has never had a final uploaded — most
+  // assets, since finals exist only for selected ones (schema.ts's comment
+  // on `assets.finalKey`). The admin workspace (task #26) uses this to show
+  // which SELECTED assets still lack a final, not to build a client-facing
+  // download URL — that always goes through the presigned read route
+  // (src/app/api/assets/[assetId]/final/route.ts), never this raw key.
+  finalKey: string | null;
+  isEdited: boolean;
 };
 
 export type GalleryDetail = {
@@ -222,6 +230,8 @@ async function findGalleryDetail(where: ReturnType<typeof eq>): Promise<GalleryD
           proofHeight: true,
           isSelected: true,
           sortOrder: true,
+          finalKey: true,
+          isEdited: true,
         },
       },
     },

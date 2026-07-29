@@ -163,6 +163,8 @@ describe("GalleryDetailPage chrome", () => {
             proofHeight: 1067,
             isSelected: false,
             sortOrder: 0,
+            finalKey: null,
+            isEdited: false,
           },
           {
             id: "a2",
@@ -172,6 +174,8 @@ describe("GalleryDetailPage chrome", () => {
             proofHeight: 1067,
             isSelected: true,
             sortOrder: 1,
+            finalKey: null,
+            isEdited: false,
           },
         ],
       }),

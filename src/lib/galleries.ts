@@ -330,3 +330,50 @@ export async function getGalleriesForClient(clientId: string): Promise<ClientGal
     photoCount: row.assets.length,
   }));
 }
+
+// ---------------------------------------------------------------------------
+// Unlock audit trail (task #73) — read side. See
+// src/app/dashboard/galleries/actions.ts's `unlockSelection` for the write
+// side and the full reasoning behind what is/isn't recorded here.
+// ---------------------------------------------------------------------------
+
+export type GalleryUnlockAudit = {
+  unlockedAt: Date | null;
+  /** The acting admin's own session email, snapshotted at unlock time — see
+   * schema.ts's comment on `galleries.unlockedByEmail` for why this is a
+   * plain column, not a foreign key. `null` means this gallery has never
+   * been unlocked. */
+  unlockedByEmail: string | null;
+  unlockReason: string | null;
+};
+
+/** The unlock audit trail for a single gallery: who last unlocked a
+ * submitted selection back to `proofing`, when, and any note they left.
+ *
+ * A DEDICATED, minimal query — not folded into the shared
+ * `GalleryDetail`/`findGalleryDetail` above — on purpose: this is
+ * ADMIN-ONLY audit detail (the reason especially may record a private note
+ * about a client conversation) that `getGalleryDetailBySlug` must never
+ * hand to the client-facing gallery page. Folding these columns into the
+ * shared type would also force every existing caller of that type
+ * (including the client gallery page and its own tests, well outside this
+ * task's footprint) to grow three fields with no benefit to them.
+ *
+ * Safe to call for a gallery that has never been unlocked: every column is
+ * nullable and `null` is the honest "never happened" state — same "always
+ * populate off the row, `null` means it never happened" stance as
+ * `GalleryDetail.selectionSubmittedAt` above. Returns `null` only when no
+ * gallery with this id exists at all, matching `findGalleryDetail`'s own
+ * "not found" convention. */
+export async function getGalleryUnlockAudit(galleryId: string): Promise<GalleryUnlockAudit | null> {
+  const [row] = await db
+    .select({
+      unlockedAt: galleries.unlockedAt,
+      unlockedByEmail: galleries.unlockedByEmail,
+      unlockReason: galleries.unlockReason,
+    })
+    .from(galleries)
+    .where(eq(galleries.id, galleryId))
+    .limit(1);
+  return row ?? null;
+}

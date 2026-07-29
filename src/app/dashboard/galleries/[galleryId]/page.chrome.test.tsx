@@ -21,8 +21,19 @@ const requireAdminMock = vi.fn<() => Promise<Session>>();
 vi.mock("@/lib/auth-guards", () => ({ requireAdmin: () => requireAdminMock() }));
 
 const getGalleryDetailMock = vi.fn<() => Promise<GalleryDetail | null>>();
+// Task #73's own read — mocked here too (this module is mocked wholesale,
+// not via `importActual`, so leaving this out would resolve to `undefined`
+// and the page's own `await getGalleryUnlockAudit(...)` call would throw).
+const getGalleryUnlockAuditMock = vi.fn<
+  () => Promise<{
+    unlockedAt: Date | null;
+    unlockedByEmail: string | null;
+    unlockReason: string | null;
+  }>
+>();
 vi.mock("@/lib/galleries", () => ({
   getGalleryDetail: () => getGalleryDetailMock(),
+  getGalleryUnlockAudit: () => getGalleryUnlockAuditMock(),
   formatGalleryStatus: (status: string) => {
     const labels: Record<string, string> = {
       draft: "Borrador",
@@ -57,8 +68,12 @@ vi.mock("@/lib/r2", () => ({
 // Mocked wholesale for the same reason as page.test.ts's mock of this
 // module.
 const publishGalleryMock = vi.fn();
+// Same reasoning, same file, for <UnlockSelectionPanel> (task #73): its
+// module imports `unlockSelection` from here too.
+const unlockSelectionMock = vi.fn();
 vi.mock("@/app/dashboard/galleries/actions", () => ({
   publishGallery: (...args: unknown[]) => publishGalleryMock(...args),
+  unlockSelection: (...args: unknown[]) => unlockSelectionMock(...args),
 }));
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
@@ -92,7 +107,14 @@ beforeEach(() => {
     expires: "2099-01-01T00:00:00.000Z",
   } as Session);
   getGalleryDetailMock.mockReset();
+  getGalleryUnlockAuditMock.mockReset();
+  getGalleryUnlockAuditMock.mockResolvedValue({
+    unlockedAt: null,
+    unlockedByEmail: null,
+    unlockReason: null,
+  });
   publishGalleryMock.mockReset();
+  unlockSelectionMock.mockReset();
 });
 
 afterEach(() => {
@@ -203,5 +225,51 @@ describe("GalleryDetailPage chrome", () => {
     render(element);
 
     expect(screen.queryByRole("button", { name: "Publicar galería" })).toBeNull();
+  });
+
+  // Task #73's UI half of the same "hiding is UX only" guard: unlockSelection()
+  // itself re-checks the gallery's real status server-side (isUnlockable()),
+  // but the panel still must be wired to appear only for a `selected` gallery.
+  it("shows the unlock panel for a selected gallery, not for one still in proofing", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "selected" }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByRole("button", { name: "Desbloquear selección" })).toBeDefined();
+  });
+
+  it("hides the unlock panel for a gallery still in proofing", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "proofing" }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.queryByRole("button", { name: "Desbloquear selección" })).toBeNull();
+  });
+
+  it("renders who unlocked the gallery, when, and their note, when it was ever unlocked", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "proofing" }));
+    getGalleryUnlockAuditMock.mockResolvedValue({
+      unlockedAt: new Date("2026-07-28T20:00:00.000Z"),
+      unlockedByEmail: "photographer@example.com",
+      unlockReason: "El cliente pidió agregar dos fotos más.",
+    });
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByText(/Desbloqueada el/)).toBeDefined();
+    expect(screen.getByText(/photographer@example\.com/)).toBeDefined();
+    expect(screen.getByText(/El cliente pidió agregar dos fotos más\./)).toBeDefined();
+  });
+
+  it("renders nothing about the unlock audit for a gallery that was never unlocked", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "proofing" }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.queryByText(/Desbloqueada el/)).toBeNull();
   });
 });

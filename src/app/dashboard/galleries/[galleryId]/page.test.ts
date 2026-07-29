@@ -15,21 +15,29 @@ vi.mock("server-only", () => ({}));
 const authMock = vi.fn();
 vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 
-// The page now renders <PublishGalleryButton>, whose module imports
-// `publishGallery` from here — mocked wholesale (this file never exercises
-// that action) so this test never has to also stand up `@/lib/db` writes or
-// `@/auth`'s `signIn`, same reasoning as gallery-form.test.tsx's mock of
-// this same module.
+// The page now renders <PublishGalleryButton>/<UnlockSelectionPanel>, whose
+// modules import `publishGallery`/`unlockSelection` from here — mocked
+// wholesale (this file never exercises either action) so this test never
+// has to also stand up `@/lib/db` writes or `@/auth`'s `signIn`, same
+// reasoning as gallery-form.test.tsx's mock of this same module.
 vi.mock("@/app/dashboard/galleries/actions", () => ({
   publishGallery: vi.fn(),
+  unlockSelection: vi.fn(),
 }));
 
 const getGalleryDetailMock = vi.fn();
+// Task #73's own read, mocked alongside `getGalleryDetail` for the identical
+// reason: its REAL implementation issues a `db.select(...)` this test file
+// never stands up (unlike `getGalleryDetail` here, `@/lib/db` itself is not
+// mocked anywhere in this suite) — leaving it real via `importActual` would
+// make every test in this file reach for the real, unmocked database.
+const getGalleryUnlockAuditMock = vi.fn();
 vi.mock("@/lib/galleries", async () => {
   const actual = await vi.importActual<typeof import("@/lib/galleries")>("@/lib/galleries");
   return {
     ...actual,
     getGalleryDetail: (...args: unknown[]) => getGalleryDetailMock(...args),
+    getGalleryUnlockAudit: (...args: unknown[]) => getGalleryUnlockAuditMock(...args),
   };
 });
 
@@ -43,6 +51,12 @@ vi.mock("@/lib/r2", () => ({
 beforeEach(() => {
   authMock.mockReset();
   getGalleryDetailMock.mockReset();
+  getGalleryUnlockAuditMock.mockReset();
+  getGalleryUnlockAuditMock.mockResolvedValue({
+    unlockedAt: null,
+    unlockedByEmail: null,
+    unlockReason: null,
+  });
   getPresignedUrlMock.mockReset();
   getPresignedUrlMock.mockReturnValue("https://r2.example.com/presigned-proof-url");
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
@@ -121,6 +135,16 @@ describe("GalleryDetailPage", () => {
     await expect(GalleryDetailPage(paramsFor(GALLERY_ID))).rejects.toMatchObject({
       digest: "NEXT_HTTP_ERROR_FALLBACK;404",
     });
+    expect(getGalleryUnlockAuditMock).not.toHaveBeenCalled();
+  });
+
+  it("looks up the unlock audit trail for the SAME gallery it just resolved", async () => {
+    authMock.mockResolvedValue(sessionFor("admin"));
+    getGalleryDetailMock.mockResolvedValue(galleryDetail());
+
+    await GalleryDetailPage(paramsFor(GALLERY_ID));
+
+    expect(getGalleryUnlockAuditMock).toHaveBeenCalledWith(GALLERY_ID);
   });
 
   it("presigns a proof URL for every asset in the gallery", async () => {

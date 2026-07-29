@@ -1,0 +1,530 @@
+import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { Session } from "next-auth";
+
+// `import "server-only"` (transitively, via src/lib/auth-guards.ts) only
+// resolves inside a real Next.js bundle — see src/lib/auth-guards.test.ts,
+// same stub as this directory's own actions.publish.test.ts.
+vi.mock("server-only", () => ({}));
+
+const authMock = vi.fn();
+vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
+
+// `unlockSelection` lives in the SAME MODULE as `publishGallery`, which
+// imports `AuthError` from "next-auth" at the top of the file — the real
+// package's root index eagerly imports `./lib/env.js` (which imports
+// `next/server`) at module scope, unresolvable under Vitest. Mocked
+// wholesale, same fix as actions.publish.test.ts's own identical mock, even
+// though this suite never exercises the `AuthError` branch itself.
+vi.mock("next-auth", () => ({
+  AuthError: class AuthError extends Error {},
+}));
+
+// `revalidatePath` throws outside a real Next.js request — stubbed so the
+// action's own logic, not Next's internals, is what this suite exercises.
+const revalidatePathMock = vi.fn();
+vi.mock("next/cache", () => ({
+  revalidatePath: (...args: unknown[]) => revalidatePathMock(...args),
+}));
+
+// Mocked at the module boundary, not the network (`fetch`) boundary — same
+// reasoning as actions.publish.test.ts mocking `signIn` rather than
+// Resend's HTTP call, and submit-selection/route.test.ts mocking
+// `sendSubmissionNotificationEmail`: this suite is about `unlockSelection`'s
+// OWN orchestration (who gets emailed, with what, and what the action
+// reports back when the send fails), which
+// src/lib/unlock-notification-email.test.ts already covers at the
+// Resend-call level.
+const sendUnlockNotificationEmailMock = vi.fn();
+vi.mock("@/lib/unlock-notification-email", () => ({
+  sendUnlockNotificationEmail: (...args: unknown[]) => sendUnlockNotificationEmailMock(...args),
+}));
+
+// A minimal, genuinely-behaving double for `@/lib/db` supporting BOTH a
+// plain `eq()` and an `and(eq(), eq())` condition (this action's atomic
+// conditional UPDATE needs the latter) — same `flattenChunks`/`eqConditions`
+// approach as
+// src/app/api/galleries/[galleryId]/submit-selection/route.test.ts's own
+// fake db, reused here rather than re-deriving it, since this action's own
+// UPDATE is guarded the identical way.
+type Row = Record<string, unknown>;
+
+function flattenChunks(node: unknown, out: unknown[]): void {
+  if (node && typeof node === "object" && "queryChunks" in node) {
+    for (const chunk of (node as { queryChunks: unknown[] }).queryChunks) {
+      flattenChunks(chunk, out);
+    }
+    return;
+  }
+  out.push(node);
+}
+
+function eqConditions(condition: unknown): { dbColumnName: string; value: unknown }[] {
+  const flat: unknown[] = [];
+  flattenChunks(condition, flat);
+
+  const dbColumnNames: string[] = [];
+  const values: unknown[] = [];
+  for (const chunk of flat) {
+    if (chunk && typeof chunk === "object") {
+      if ("name" in chunk && "table" in chunk) {
+        dbColumnNames.push((chunk as { name: string }).name);
+      } else if ("value" in chunk && "encoder" in chunk) {
+        values.push((chunk as { value: unknown }).value);
+      }
+    }
+  }
+  if (dbColumnNames.length === 0 || dbColumnNames.length !== values.length) {
+    throw new Error("eqConditions: not a supported eq()/and(eq(), eq()) condition");
+  }
+  return dbColumnNames.map((dbColumnName, i) => ({ dbColumnName, value: values[i] }));
+}
+
+function jsKeyFor(table: Record<string, unknown>, dbColumnName: string): string {
+  const found = Object.entries(table).find(
+    ([, col]) => col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
+  );
+  if (!found) throw new Error(`jsKeyFor: no column named ${dbColumnName} on this table`);
+  return found[0];
+}
+
+function matchesRow(row: Row, table: Record<string, unknown>, condition: unknown): boolean {
+  return eqConditions(condition).every(
+    ({ dbColumnName, value }) => row[jsKeyFor(table, dbColumnName)] === value,
+  );
+}
+
+// Always returns a FRESH copy, never the live row object — a real `SELECT`
+// returns a point-in-time snapshot, not a handle a later, unrelated UPDATE
+// could mutate out from under an already-in-flight caller. Returning the
+// live reference here (as this helper originally did for the no-`columns`
+// case) let a WINNING concurrent call's `Object.assign` corrupt a LOSING
+// call's already-read `gallery` object between its `await` points, which
+// made `isUnlockable(gallery.status)` — a plain, non-atomic pre-flight
+// check — appear to catch the race on its own. That defeated the entire
+// point of the `Promise.all` race test below: removing the real guard
+// (`eq(galleries.status, "selected")`) from the UPDATE's `WHERE` in
+// actions.ts did NOT make that test fail, because the aliasing bug was
+// silently doing the guard's job instead of the UPDATE's own `WHERE` clause.
+function project(row: Row, columns: Record<string, unknown> | undefined): Row {
+  if (!columns) return { ...row };
+  const projected: Row = {};
+  for (const key of Object.keys(columns)) projected[key] = row[key];
+  return projected;
+}
+
+vi.mock("@/lib/db", async () => {
+  const { assets, galleries, users } = await import("@/lib/db/schema");
+
+  const galleryRows: Row[] = [];
+  const assetRows: Row[] = [];
+  const userRows: Row[] = [];
+
+  function rowsFor(table: unknown): Row[] {
+    if (table === galleries) return galleryRows;
+    if (table === assets) return assetRows;
+    if (table === users) return userRows;
+    throw new Error("fake db: unsupported table");
+  }
+
+  function tableShapeFor(table: unknown): Record<string, unknown> {
+    if (table === galleries) return galleries as unknown as Record<string, unknown>;
+    if (table === assets) return assets as unknown as Record<string, unknown>;
+    if (table === users) return users as unknown as Record<string, unknown>;
+    throw new Error("fake db: unsupported table");
+  }
+
+  return {
+    db: {
+      select: (columns?: Record<string, unknown>) => ({
+        from: (table: unknown) => ({
+          where: (condition: unknown) => {
+            const rows = rowsFor(table)
+              .filter((row) => matchesRow(row, tableShapeFor(table), condition))
+              .map((row) => project(row, columns));
+            const resultPromise = Promise.resolve(rows);
+            return {
+              limit: async (n: number) => rows.slice(0, n),
+              then: resultPromise.then.bind(resultPromise),
+              catch: resultPromise.catch.bind(resultPromise),
+            };
+          },
+        }),
+      }),
+      update: (table: unknown) => ({
+        set: (patch: Row) => ({
+          where: (condition: unknown) => {
+            if (table !== galleries) throw new Error("fake db: unsupported table in update()");
+            const matches = galleryRows.filter((row) =>
+              matchesRow(row, galleries as unknown as Record<string, unknown>, condition),
+            );
+            for (const row of matches) Object.assign(row, patch);
+            const snapshot = matches.map((row) => ({ ...row }));
+            const promise = Promise.resolve(snapshot) as Promise<Row[]> & {
+              returning: () => Promise<Row[]>;
+            };
+            promise.returning = async () => snapshot;
+            return promise;
+          },
+        }),
+      }),
+      // Test-only escape hatches, not part of the real `db` shape.
+      __rows: { galleries: galleryRows, assets: assetRows, users: userRows },
+    },
+  };
+});
+
+async function seededDb() {
+  const { db } = (await import("@/lib/db")) as unknown as {
+    db: { __rows: { galleries: Row[]; assets: Row[]; users: Row[] } };
+  };
+  return db;
+}
+
+function adminSession(email = "photographer@example.com"): Session {
+  return {
+    user: { id: "admin-1", role: "admin", email },
+    expires: "2099-01-01T00:00:00.000Z",
+  } as Session;
+}
+
+function clientSession(): Session {
+  return {
+    user: { id: "client-1", role: "client", email: "someone@example.com" },
+    expires: "2099-01-01T00:00:00.000Z",
+  } as Session;
+}
+
+const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
+const CLIENT_ID = "client-a";
+const CLIENT_EMAIL = "ana@example.com";
+const ASSET_1_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+
+function galleryRow(overrides: Row = {}): Row {
+  return {
+    id: GALLERY_ID,
+    clientId: CLIENT_ID,
+    packageId: 1,
+    title: "Boda Ana y Beto",
+    sessionDate: "2026-08-01",
+    status: "selected",
+    publicSlug: "abc123",
+    includedPhotosSnapshot: 13,
+    extraPhotoPriceCopSnapshot: 5_000,
+    createdAt: new Date("2026-07-01"),
+    selectionSubmittedAt: new Date("2026-07-20T10:00:00.000Z"),
+    deliveredAt: null,
+    unlockedAt: null,
+    unlockedByEmail: null,
+    unlockReason: null,
+    ...overrides,
+  };
+}
+
+function formDataWith(fields: Record<string, string | undefined>) {
+  const data = new FormData();
+  for (const [key, value] of Object.entries(fields)) {
+    if (value !== undefined) data.set(key, value);
+  }
+  return data;
+}
+
+beforeEach(async () => {
+  authMock.mockReset();
+  revalidatePathMock.mockReset();
+  sendUnlockNotificationEmailMock.mockReset();
+  sendUnlockNotificationEmailMock.mockResolvedValue(undefined);
+  vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
+  vi.stubEnv("RESEND_API_KEY", "re_test_key");
+  vi.stubEnv("EMAIL_FROM", "no-reply@alejoframes.com");
+  vi.stubEnv("AUTH_SECRET", "test-secret-at-least-32-characters-long");
+  vi.stubEnv("AUTH_URL", "http://localhost:3300");
+
+  const db = await seededDb();
+  db.__rows.galleries.length = 0;
+  db.__rows.assets.length = 0;
+  db.__rows.users.length = 0;
+  db.__rows.galleries.push(galleryRow());
+  db.__rows.users.push({ id: CLIENT_ID, name: "Ana Pérez", email: CLIENT_EMAIL });
+  db.__rows.assets.push({ id: ASSET_1_ID, galleryId: GALLERY_ID, isSelected: true });
+});
+
+describe("unlockSelection authorization", () => {
+  it("refuses a signed-in CLIENT with a 403, without writing or emailing anything", async () => {
+    authMock.mockResolvedValue(clientSession());
+    const { unlockSelection } = await import("./actions");
+
+    await expect(
+      unlockSelection({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID })),
+    ).rejects.toMatchObject({ digest: "NEXT_HTTP_ERROR_FALLBACK;403" });
+
+    expect(sendUnlockNotificationEmailMock).not.toHaveBeenCalled();
+    const db = await seededDb();
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "selected" });
+  });
+
+  it("redirects to /login when there is no session at all", async () => {
+    authMock.mockResolvedValue(null);
+    const { unlockSelection } = await import("./actions");
+
+    await expect(
+      unlockSelection({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID })),
+    ).rejects.toMatchObject({ digest: "NEXT_REDIRECT;replace;/login;307;" });
+
+    expect(sendUnlockNotificationEmailMock).not.toHaveBeenCalled();
+  });
+});
+
+describe("unlockSelection validation and guards", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+  });
+
+  it("rejects a malformed gallery id, before ever querying the database", async () => {
+    const { unlockSelection } = await import("./actions");
+
+    const result = await unlockSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: "not-a-uuid" }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(sendUnlockNotificationEmailMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects a gallery id that does not exist", async () => {
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    const { unlockSelection } = await import("./actions");
+
+    const result = await unlockSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result).toEqual({ status: "error", message: "La galería no existe." });
+  });
+
+  it.each(["draft", "proofing", "delivered", "archived"])(
+    "refuses to unlock a gallery in status %s — only `selected` has anything to unlock",
+    async (status) => {
+      const db = await seededDb();
+      db.__rows.galleries.length = 0;
+      db.__rows.galleries.push(galleryRow({ status }));
+      const { unlockSelection } = await import("./actions");
+
+      const result = await unlockSelection(
+        { status: "idle" },
+        formDataWith({ galleryId: GALLERY_ID }),
+      );
+
+      expect(result.status).toBe("error");
+      expect(sendUnlockNotificationEmailMock).not.toHaveBeenCalled();
+      expect(db.__rows.galleries[0]).toMatchObject({ status });
+    },
+  );
+
+  it("rejects a reason that is unreasonably long, before writing anything", async () => {
+    const { unlockSelection } = await import("./actions");
+
+    const result = await unlockSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID, reason: "x".repeat(1001) }),
+    );
+
+    expect(result.status).toBe("error");
+    const db = await seededDb();
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "selected", unlockedAt: null });
+  });
+});
+
+describe("unlockSelection success", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession("photographer@example.com"));
+  });
+
+  it("flips the gallery from selected to proofing, revalidates both dashboard views, and preserves selectionSubmittedAt", async () => {
+    const { unlockSelection } = await import("./actions");
+    const db = await seededDb();
+    const submittedAt = db.__rows.galleries[0]!.selectionSubmittedAt;
+
+    const result = await unlockSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result).toEqual({ status: "unlocked" });
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+    // The decision this task pins down: PRESERVE selectionSubmittedAt on
+    // unlock — see actions.ts's own header comment for the full reasoning
+    // (task #75 made it the dashboard's sort key).
+    expect(db.__rows.galleries[0]!.selectionSubmittedAt).toBe(submittedAt);
+    expect(revalidatePathMock).toHaveBeenCalledWith(`/dashboard/galleries/${GALLERY_ID}`);
+    expect(revalidatePathMock).toHaveBeenCalledWith("/dashboard/galleries");
+  });
+
+  // Acceptance criterion: "the unlock is visible in the record — who did it
+  // and when, at minimum."
+  it("records who unlocked it (the acting admin's own session email) and when", async () => {
+    const { unlockSelection } = await import("./actions");
+    const db = await seededDb();
+    const before = Date.now();
+
+    await unlockSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID, reason: "Hablamos por WhatsApp." }),
+    );
+
+    const row = db.__rows.galleries[0]!;
+    expect(row.unlockedByEmail).toBe("photographer@example.com");
+    expect(row.unlockReason).toBe("Hablamos por WhatsApp.");
+    expect(row.unlockedAt).toBeInstanceOf(Date);
+    expect((row.unlockedAt as Date).getTime()).toBeGreaterThanOrEqual(before);
+  });
+
+  it("records a null reason when the admin leaves it blank", async () => {
+    const { unlockSelection } = await import("./actions");
+    const db = await seededDb();
+
+    await unlockSelection({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID }));
+
+    expect(db.__rows.galleries[0]!.unlockReason).toBeNull();
+  });
+
+  it("emails the client at their own address, with the CLIENT-facing gallery URL", async () => {
+    const { unlockSelection } = await import("./actions");
+
+    await unlockSelection({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID }));
+
+    expect(sendUnlockNotificationEmailMock).toHaveBeenCalledTimes(1);
+    const call = sendUnlockNotificationEmailMock.mock.calls[0]![0] as {
+      to: string;
+      galleryUrl: string;
+    };
+    expect(call.to).toBe(CLIENT_EMAIL);
+    expect(call.galleryUrl).toBe("http://localhost:3300/galleries/abc123");
+  });
+
+  // The gate this task's own acceptance criterion asks to verify against —
+  // the REAL SELECTION_LOCKED_STATUSES set, not an assumption — imported
+  // directly from the sibling PATCH route rather than duplicated here, so a
+  // future change to that route's own gate is what this test actually
+  // tracks.
+  it("leaves the gallery in a status the real SELECTION_LOCKED_STATUSES gate does NOT refuse", async () => {
+    const { SELECTION_LOCKED_STATUSES } =
+      await import("@/app/api/assets/[assetId]/selection/route");
+    const { unlockSelection } = await import("./actions");
+    const db = await seededDb();
+
+    await unlockSelection({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID }));
+
+    const newStatus = db.__rows.galleries[0]!.status as "proofing";
+    expect(SELECTION_LOCKED_STATUSES.has(newStatus)).toBe(false);
+  });
+});
+
+describe("unlockSelection — client notification failure", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+  });
+
+  // The unlock itself must NEVER be rolled back to "fix" an unrelated email
+  // failure (see actions.ts's own header comment) — but the admin must
+  // learn immediately, since the client has no other way to discover the
+  // reopen on their own.
+  it("still unlocks the gallery, but reports a distinct result, when the client email fails to send", async () => {
+    sendUnlockNotificationEmailMock.mockRejectedValue(new Error("Resend error (500): boom"));
+    const { unlockSelection } = await import("./actions");
+    const db = await seededDb();
+
+    const result = await unlockSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result.status).toBe("unlocked_email_failed");
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+    expect(revalidatePathMock).toHaveBeenCalledWith("/dashboard/galleries");
+  });
+
+  it("also reports the distinct failure result when the gallery's client row is unexpectedly missing", async () => {
+    const db = await seededDb();
+    db.__rows.users.length = 0;
+    const { unlockSelection } = await import("./actions");
+
+    const result = await unlockSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result.status).toBe("unlocked_email_failed");
+    expect(sendUnlockNotificationEmailMock).not.toHaveBeenCalled();
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+  });
+});
+
+describe("unlockSelection — concurrent unlock (the atomic guard)", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+  });
+
+  // A SEQUENTIAL double-unlock (the first call fully resolves before the
+  // second one starts) only exercises the pre-flight `isUnlockable` check at
+  // the top of the action — the second call's own read already sees
+  // `status: "proofing"` and short-circuits before ever reaching the UPDATE.
+  // Real, worth covering on its own, but NOT proof the CAS guard works: this
+  // same assertion would still pass even if the UPDATE's own
+  // `eq(galleries.status, "selected")` half of the `and(...)` were deleted
+  // entirely, because the second call never reaches it.
+  it("the second of two SEQUENTIAL unlocks short-circuits before ever reaching the UPDATE", async () => {
+    const { unlockSelection } = await import("./actions");
+    const db = await seededDb();
+
+    const first = await unlockSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+    const second = await unlockSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(first.status).toBe("unlocked");
+    expect(second.status).toBe("error");
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+    expect(sendUnlockNotificationEmailMock).toHaveBeenCalledTimes(1);
+  });
+
+  // THE actual proof of the atomicity guard (actions.ts's own "the UPDATE's
+  // own `WHERE status = 'selected'` is the REAL, atomic guard" comment): two
+  // unlocks issued via `Promise.all`, so BOTH calls run past every read
+  // (auth, gallery lookup, the `isUnlockable` pre-flight check) and reach
+  // `db.update(...).where(and(eq(id), eq(status, "selected")))` before either
+  // one has mutated anything — genuinely racing the UPDATE itself, not the
+  // pre-flight short-circuit above. The fake `@/lib/db` mutates its rows
+  // SYNCHRONOUSLY inside `.where()` (no extra `await` in between), which is
+  // what makes this a meaningful test at all: JS's single-threaded run-to-
+  // completion between `await` points means whichever of the two
+  // `unlockSelection` calls' turns comes up first at that exact line
+  // completes its match-and-mutate atomically before the other one can
+  // interleave — exactly mirroring how Postgres serializes two concurrent
+  // UPDATEs against the same row. Deleting the `eq(galleries.status,
+  // "selected")` half of the action's `and(...)` (this task's own review
+  // proved it by doing exactly that) makes BOTH calls match and mutate, and
+  // this test catches that: two winners, and a second email, instead of one.
+  it("lets exactly one of two racing unlocks (via Promise.all) win the atomic UPDATE", async () => {
+    const { unlockSelection } = await import("./actions");
+    const db = await seededDb();
+
+    const [first, second] = await Promise.all([
+      unlockSelection({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID })),
+      unlockSelection({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID })),
+    ]);
+
+    // Exactly one winner ("unlocked") and one loser ("error") — never two
+    // winners, which would mean the guard let both through.
+    expect([first.status, second.status].sort()).toEqual(["error", "unlocked"]);
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+    // Only the WINNER's email ever went out.
+    expect(sendUnlockNotificationEmailMock).toHaveBeenCalledTimes(1);
+  });
+});

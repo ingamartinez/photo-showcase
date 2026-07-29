@@ -55,7 +55,26 @@ export default async function GalleriesPage() {
                     </p>
                   </div>
                   <div className="flex flex-col items-end gap-1">
-                    <span className="label text-fg-mute">
+                    {/* `selected` is the one status that means "somebody is
+                    waiting on you" (task #75) — every other status gets the
+                    same muted `text-fg-mute` treatment as before, but this
+                    one gets the studio's single accent colour (see
+                    globals.css's header comment: "a single tungsten-brass
+                    accent used sparingly") plus a dot, so it reads at a
+                    glance without requiring the words to be read. */}
+                    <span
+                      className={
+                        gallery.status === "selected"
+                          ? "label text-accent flex items-center gap-1.5 font-semibold"
+                          : "label text-fg-mute"
+                      }
+                    >
+                      {gallery.status === "selected" && (
+                        <span
+                          className="bg-accent inline-block size-1.5 rounded-full"
+                          aria-hidden="true"
+                        />
+                      )}
                       {formatGalleryStatus(gallery.status)}
                     </span>
                     <span className="text-fg-mute text-sm">{gallery.photoCount} fotos</span>

@@ -2,8 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "next-auth";
 import DashboardPage from "./page";
 
-// `import "server-only"` (transitively, via src/lib/auth-guards.ts) only
-// resolves inside a real Next.js bundle — see src/lib/auth-guards.test.ts.
+// `import "server-only"` (transitively, via src/lib/auth-guards.ts and
+// src/lib/galleries.ts) only resolves inside a real Next.js bundle — see
+// src/lib/auth-guards.test.ts.
 vi.mock("server-only", () => ({}));
 
 // Same boundary as src/lib/auth-guards.test.ts: mock only `@/auth`'s
@@ -15,8 +16,23 @@ vi.mock("@/auth", () => ({
   auth: (...args: unknown[]) => authMock(...args),
 }));
 
+// `getPendingSelectionCount()` (task #75) reads the database — mocked here
+// the same way `dashboard/galleries/page.test.ts` mocks `@/lib/galleries`
+// (importActual + override only what this page calls), so the real
+// `formatPendingSelectionCount()` still runs.
+const getPendingSelectionCountMock = vi.fn<() => Promise<number>>();
+vi.mock("@/lib/galleries", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/galleries")>("@/lib/galleries");
+  return {
+    ...actual,
+    getPendingSelectionCount: () => getPendingSelectionCountMock(),
+  };
+});
+
 beforeEach(() => {
   authMock.mockReset();
+  getPendingSelectionCountMock.mockReset();
+  getPendingSelectionCountMock.mockResolvedValue(0);
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
 });
 
@@ -55,5 +71,12 @@ describe("DashboardPage", () => {
     await expect(DashboardPage()).rejects.toMatchObject({
       digest: "NEXT_REDIRECT;replace;/login;307;",
     });
+  });
+
+  it("never queries the pending-selection count before the admin check passes", async () => {
+    authMock.mockResolvedValue(null);
+
+    await expect(DashboardPage()).rejects.toMatchObject({ digest: expect.any(String) });
+    expect(getPendingSelectionCountMock).not.toHaveBeenCalled();
   });
 });

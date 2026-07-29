@@ -81,6 +81,32 @@ sudo caddy validate --config /etc/caddy/Caddyfile
 sudo systemctl reload caddy
 ```
 
+**The `tee -a` command above is for the first install only.** It appends —
+running it again on a droplet that already has this site block produces a
+_second_ `alejoframes.com` block, and Caddy rejects the merged file with
+`Error: ambiguous site definition`. See the next section for updating an
+already-installed block.
+
+### Updating an already-installed site block
+
+`infra/caddy/Caddyfile` has no `import`, so a change to it (e.g. task #69's
+`trusted_proxies` pinning) does not ship on its own — nothing in CD touches
+Caddy. To land a change to this file on the droplet, replace the existing
+`alejoframes.com` block (and its header comment) in `/etc/caddy/Caddyfile`
+with the new contents of `infra/caddy/Caddyfile`, by hand:
+
+```bash
+sudo cp /etc/caddy/Caddyfile /etc/caddy/Caddyfile.bak
+sudoedit /etc/caddy/Caddyfile   # replace the existing alejoframes.com block
+                                # (and its header comment) with this file's contents
+sudo caddy validate --config /etc/caddy/Caddyfile
+sudo systemctl reload caddy
+```
+
+If `caddy validate` rejects the edit, `/etc/caddy/Caddyfile.bak` is the
+pre-edit copy to restore from; the running Caddy process keeps serving the
+old config until `reload` succeeds, so a bad edit fails safe.
+
 ### 6. Cloudflare origin cert (apex)
 
 The findash cert is scoped to its subdomain and does **not** cover the apex.

@@ -267,12 +267,15 @@ describe("GET /api/assets/[assetId]/final — authorization", () => {
 
   it("lets an admin read a delivered, selected final regardless of gallery ownership", async () => {
     authMock.mockResolvedValue(adminSession());
-    const { GET } = await import("./route");
+    const { GET, buildFinalDownloadFilename } = await import("./route");
 
     const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
 
     expect(response.status).toBe(200);
-    expect(getPresignedUrlMock).toHaveBeenCalledWith(FINAL_KEY);
+    const expectedFilename = buildFinalDownloadFilename("Boda Ana y Beto", "IMG_0001.JPG");
+    expect(getPresignedUrlMock).toHaveBeenCalledWith(FINAL_KEY, {
+      contentDisposition: `attachment; filename="${expectedFilename}"`,
+    });
   });
 });
 
@@ -285,12 +288,15 @@ describe("GET /api/assets/[assetId]/final — the admin preview exception", () =
     const db = await seededDb();
     db.__rows.galleries.length = 0;
     db.__rows.galleries.push(galleryRow({ status: "selected", deliveredAt: null }));
-    const { GET } = await import("./route");
+    const { GET, buildFinalDownloadFilename } = await import("./route");
 
     const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
 
     expect(response.status).toBe(200);
-    expect(getPresignedUrlMock).toHaveBeenCalledWith(FINAL_KEY);
+    const expectedFilename = buildFinalDownloadFilename("Boda Ana y Beto", "IMG_0001.JPG");
+    expect(getPresignedUrlMock).toHaveBeenCalledWith(FINAL_KEY, {
+      contentDisposition: `attachment; filename="${expectedFilename}"`,
+    });
   });
 
   it("still refuses the SAME pre-delivery asset for the owning client", async () => {
@@ -336,7 +342,7 @@ describe("GET /api/assets/[assetId]/final — the admin preview exception", () =
 describe("GET /api/assets/[assetId]/final — the final-specific gate", () => {
   it("serves the final for the owning client when selected + delivered + finalKey all hold", async () => {
     authMock.mockResolvedValue(clientASession());
-    const { GET } = await import("./route");
+    const { GET, buildFinalDownloadFilename } = await import("./route");
 
     const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
 
@@ -344,7 +350,31 @@ describe("GET /api/assets/[assetId]/final — the final-specific gate", () => {
     await expect(response.json()).resolves.toEqual({
       url: "https://r2.example.com/presigned-final-url",
     });
-    expect(getPresignedUrlMock).toHaveBeenCalledWith(FINAL_KEY);
+    const expectedFilename = buildFinalDownloadFilename("Boda Ana y Beto", "IMG_0001.JPG");
+    expect(getPresignedUrlMock).toHaveBeenCalledWith(FINAL_KEY, {
+      contentDisposition: `attachment; filename="${expectedFilename}"`,
+    });
+  });
+
+  // Task #28's own acceptance criterion: "Only assets that were selected AND
+  // edited are downloadable" — checked as an INDEPENDENT condition from
+  // `finalKey`, not inferred from it (see the route's own comment). Proves
+  // the explicit `isEdited` check actually gates something: an asset with a
+  // finalKey but `isEdited: false` (a state that should never occur given
+  // how the POST handler writes both together, but this gate does not lean
+  // on that invariant) must still be refused.
+  it("refuses a selected, delivered, finalKey-present asset when isEdited is false", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(assetRow({ isEdited: false }));
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "final_not_available" });
+    expect(getPresignedUrlMock).not.toHaveBeenCalled();
   });
 
   it("refuses the owning client a final for an asset that was never selected", async () => {
@@ -769,5 +799,46 @@ describe("POST /api/assets/[assetId]/final — success and re-upload", () => {
     expect(processFinalMock).toHaveBeenCalledTimes(1);
     const uploadedBytes = processFinalMock.mock.calls[0]?.[0] as ArrayBuffer;
     expect(Buffer.from(uploadedBytes).toString()).toBe("distinctive-edit-bytes");
+  });
+});
+
+// Task #28's own acceptance criterion: "a sensible download filename" — an
+// asset id or raw R2 key is explicitly called out as NOT sensible. These
+// tests exercise `buildFinalDownloadFilename` directly, independent of the
+// route's own request/response wiring above.
+describe("buildFinalDownloadFilename", () => {
+  it("combines a slugified gallery title with a slugified original filename, always ending in .jpg", async () => {
+    const { buildFinalDownloadFilename } = await import("./route");
+    expect(buildFinalDownloadFilename("Boda Ana y Beto", "IMG_0001.JPG")).toBe(
+      "boda-ana-y-beto-img-0001.jpg",
+    );
+  });
+
+  it("forces a .jpg extension regardless of the original upload's own extension", async () => {
+    const { buildFinalDownloadFilename } = await import("./route");
+    // `processFinal` always outputs JPEG (src/lib/images.ts) — the original
+    // could have been a .png, .heic, whatever the client's camera produced.
+    expect(buildFinalDownloadFilename("Sesion", "foto.png")).toBe("sesion-foto.jpg");
+    expect(buildFinalDownloadFilename("Sesion", "foto.HEIC")).toBe("sesion-foto.jpg");
+  });
+
+  it("strips accents so Spanish gallery titles and filenames stay ASCII-safe", async () => {
+    const { buildFinalDownloadFilename } = await import("./route");
+    expect(buildFinalDownloadFilename("Bautizo de María José", "Sesión_01.jpg")).toBe(
+      "bautizo-de-maria-jose-sesion-01.jpg",
+    );
+  });
+
+  it("never produces a raw asset id or R2 key as the filename", async () => {
+    const { buildFinalDownloadFilename } = await import("./route");
+    const filename = buildFinalDownloadFilename("Boda Ana y Beto", "IMG_0001.JPG");
+    expect(filename).not.toContain(ASSET_A_ID);
+    expect(filename).not.toContain("galleries/");
+    expect(filename).not.toContain("finals/");
+  });
+
+  it("falls back to generic words rather than producing a degenerate filename when an input slugifies to nothing", async () => {
+    const { buildFinalDownloadFilename } = await import("./route");
+    expect(buildFinalDownloadFilename("🎉🎉", "🎉🎉.jpg")).toBe("galeria-foto.jpg");
   });
 });

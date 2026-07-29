@@ -7,6 +7,7 @@
 // unmounting it is what removes the keydown listener, so there is nothing
 // else to gate "is this even open" on.
 import { useEffect, useRef } from "react";
+import { DownloadFinalButton } from "@/components/download-final-button";
 import type { ProofAsset } from "@/components/proof-grid";
 
 export function ProofLightbox({
@@ -19,6 +20,7 @@ export function ProofLightbox({
   onToggleSelection,
   pendingAssetIds,
   isLocked,
+  isDelivered,
 }: {
   assets: ProofAsset[];
   // Keyed by asset id. <ProofGrid> owns this state and shares it with the
@@ -39,6 +41,11 @@ export function ProofLightbox({
   // Task #25: same UX-only mirror of the server-side lock as
   // <ProofTile>'s own `isLocked` — see proof-grid.tsx's header comment.
   isLocked: boolean;
+  // Task #28: <ProofGrid>'s own `initialStatus === "delivered"` — combined
+  // per-render with the CURRENT asset's own `hasFinal` below (not hoisted
+  // into a single boolean prop) because which asset is "current" changes on
+  // every ←/→/swipe navigation within this same mounted component.
+  isDelivered: boolean;
 }) {
   const asset = assets[index];
   const closeButtonRef = useRef<HTMLButtonElement>(null);
@@ -127,6 +134,9 @@ export function ProofLightbox({
           >
             {asset.isSelected ? "✓ Seleccionada" : "Seleccionar"}
           </button>
+          {isDelivered && asset.hasFinal && (
+            <DownloadFinalButton assetId={asset.id} originalFilename={asset.originalFilename} />
+          )}
           <button
             ref={closeButtonRef}
             type="button"

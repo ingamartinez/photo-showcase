@@ -81,6 +81,16 @@ export default async function ClientGalleryPage({
     proofHeight: asset.proofHeight,
     isSelected: asset.isSelected,
     proofUrl: getPresignedUrl(asset.proofKey),
+    // Task #28's own acceptance criterion — "only assets that were selected
+    // AND edited are downloadable" — computed here as a plain boolean, the
+    // SAME allowlist discipline this mapping already follows for every other
+    // field: `asset.finalKey` (the raw R2 key) is deliberately never in this
+    // object at all, only ever this derived flag. `<GET
+    // /api/assets/[assetId]/final>` (src/app/api/assets/[assetId]/final/route.ts)
+    // re-checks all three conditions itself on every request regardless of
+    // what this renders — this is a UI hint for which assets show a download
+    // button, not a substitute for that route's own gate.
+    hasFinal: asset.isSelected && asset.isEdited && asset.finalKey !== null,
   }));
 
   return (

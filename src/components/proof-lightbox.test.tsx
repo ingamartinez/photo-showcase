@@ -13,6 +13,7 @@ function assetsFor(count: number, overrides: Partial<ProofAsset>[] = []): ProofA
     proofHeight: 1067,
     isSelected: false,
     proofUrl: `https://r2.example.com/proof-${index + 1}`,
+    hasFinal: false,
     ...overrides[index],
   }));
 }
@@ -49,6 +50,7 @@ function renderLightbox(overrides: Partial<ComponentProps<typeof ProofLightbox>>
       onToggleSelection={onToggleSelection}
       pendingAssetIds={new Set()}
       isLocked={false}
+      isDelivered={false}
       {...overrides}
     />,
   );
@@ -112,6 +114,7 @@ describe("ProofLightbox", () => {
         onToggleSelection={onToggleSelection}
         pendingAssetIds={new Set()}
         isLocked={false}
+        isDelivered={false}
       />,
     );
 
@@ -129,6 +132,7 @@ describe("ProofLightbox", () => {
         onToggleSelection={onToggleSelection}
         pendingAssetIds={new Set()}
         isLocked={false}
+        isDelivered={false}
       />,
     );
 
@@ -148,6 +152,7 @@ describe("ProofLightbox", () => {
         onToggleSelection={onToggleSelection}
         pendingAssetIds={new Set()}
         isLocked={false}
+        isDelivered={false}
       />,
     );
 
@@ -165,6 +170,7 @@ describe("ProofLightbox", () => {
         onToggleSelection={onToggleSelection}
         pendingAssetIds={new Set()}
         isLocked={false}
+        isDelivered={false}
       />,
     );
 
@@ -242,6 +248,44 @@ describe("ProofLightbox", () => {
 
       const button = screen.getByRole("button", { name: "Seleccionar" }) as HTMLButtonElement;
       expect(button.disabled).toBe(true);
+    });
+  });
+
+  // Task #28: the same delivered-gallery download affordance as the grid
+  // tile behind this lightbox — see proof-grid.test.tsx's own "delivered
+  // gallery downloads" suite for the fuller coverage (fetch wiring, error
+  // state). These only prove the CONDITIONAL rendering here, since the
+  // lightbox re-derives it per-asset on every navigation rather than taking
+  // a single boolean prop.
+  describe("delivered gallery downloads", () => {
+    it("does not render a download button when the gallery isn't delivered, even if the asset has a final", () => {
+      renderLightbox({
+        assets: assetsFor(1, [{ hasFinal: true }]),
+        index: 0,
+        isDelivered: false,
+      });
+
+      expect(screen.queryByRole("button", { name: /Descargar/ })).toBeNull();
+    });
+
+    it("does not render a download button for a delivered gallery's asset with no final", () => {
+      renderLightbox({
+        assets: assetsFor(1, [{ hasFinal: false }]),
+        index: 0,
+        isDelivered: true,
+      });
+
+      expect(screen.queryByRole("button", { name: /Descargar/ })).toBeNull();
+    });
+
+    it("renders a download button for the current asset when the gallery is delivered and it has a final", () => {
+      renderLightbox({
+        assets: assetsFor(1, [{ hasFinal: true }]),
+        index: 0,
+        isDelivered: true,
+      });
+
+      expect(screen.getByRole("button", { name: "Descargar: IMG_0001.JPG" })).toBeDefined();
     });
   });
 

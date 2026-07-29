@@ -12,6 +12,15 @@
 // served for assets that are actually selected AND delivered." Proofs and
 // finals are deliberately different access rules; owning the gallery is
 // necessary for both but only sufficient for the proof.
+//
+// Task #28 adds the client-facing DOWNLOAD half on top of the same GET
+// handler: a sensible filename (`buildFinalDownloadFilename` below) plus a
+// `Content-Disposition: attachment` override on the presigned URL itself
+// (`getPresignedUrl`'s new second argument, src/lib/r2.ts), so a phone
+// browser navigating to the returned URL downloads the file instead of just
+// displaying it. No new route was needed — this GET already returned
+// exactly the presigned URL a download needed, it just never told R2 to
+// answer with a download-flavored response.
 import { forbidden } from "next/navigation";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
@@ -52,6 +61,58 @@ function parseContentLength(value: string | null): number | null {
 
 function errorResponse(error: string, status: number): NextResponse {
   return NextResponse.json({ error }, { status });
+}
+
+/** Strips a filename's extension (the part after its LAST `.`), leaving the
+ * rest untouched. A leading dot (a hidden-file-style name with no real
+ * extension) is deliberately not treated as one — `lastIndexOf` returning 0
+ * for e.g. ".jpg" falls through to the "no extension" branch, same as a
+ * plain "IMG_0001" with no dot at all. */
+function stripExtension(filename: string): string {
+  const dot = filename.lastIndexOf(".");
+  return dot > 0 ? filename.slice(0, dot) : filename;
+}
+
+/** Collapses `value` into a lowercase, filesystem-and-URL-safe slug: strips
+ * accents (common in Spanish client/gallery names — PLAN.md's own client
+ * base), then replaces every run of non `[a-z0-9]` characters with a single
+ * hyphen, trimming leading/trailing hyphens. Deliberately permissive about
+ * INPUT (anything coercible to a string works) and strict about OUTPUT (only
+ * `[a-z0-9-]` ever comes out), since the result is later embedded directly
+ * into a `Content-Disposition` header value — see `buildFinalDownloadFilename`
+ * below for why that makes this the right place to enforce ASCII-only.
+ */
+function slugifyForFilename(value: string): string {
+  return value
+    .normalize("NFKD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+}
+
+/** Builds a sensible, filesystem-safe download filename for a final image —
+ * task #28's own acceptance criterion: "the client is saving these to a
+ * phone; `a3f9-uuid.jpg` is not sensible." Combines the gallery's own title
+ * (so a client with several delivered galleries saved to the same phone
+ * folder can still tell them apart) with the asset's ORIGINAL filename's own
+ * base name (recognizable to the client from their own camera/export, set at
+ * proof-upload time — see `assets.originalFilename` in schema.ts), and always
+ * ends in `.jpg`: `processFinal` (src/lib/images.ts) always outputs JPEG,
+ * regardless of what the original upload's own extension was.
+ *
+ * Both inputs are slugified to plain ASCII `[a-z0-9-]` before being combined
+ * — not because a `Content-Disposition` filename technically requires ASCII
+ * (RFC 6266 has a `filename*` form for UTF-8), but because this app has no
+ * other reason to carry that complexity: a slug is unambiguous everywhere
+ * (URLs, filesystems, every OS this ever gets saved to) and needs no
+ * extended-encoding fallback. Falls back to generic words if either input
+ * slugifies to nothing (e.g. a gallery titled entirely in emoji), so this
+ * never produces a degenerate `-.jpg` filename. */
+export function buildFinalDownloadFilename(galleryTitle: string, originalFilename: string): string {
+  const gallerySlug = slugifyForFilename(galleryTitle) || "galeria";
+  const photoSlug = slugifyForFilename(stripExtension(originalFilename)) || "foto";
+  return `${gallerySlug}-${photoSlug}.jpg`;
 }
 
 export async function GET(
@@ -109,16 +170,33 @@ export async function GET(
   //     delivery of an unselected or pre-delivery asset by itself. Stays
   //     UNCONDITIONAL, admin included — an admin previewing a final still
   //     needs one to actually exist.
+  //   - `asset.isEdited` — task #28's own acceptance criterion, checked
+  //     EXPLICITLY rather than inferred from `finalKey` alone: the POST
+  //     handler below always writes `finalKey` and `isEdited` together in
+  //     the SAME update, so today the two can never disagree — but this gate
+  //     does not lean on that invariant holding forever (the exact "don't
+  //     infer one condition from another" stance the comment above already
+  //     takes for `finalKey` itself). A future write path that could set one
+  //     without the other must not silently unlock downloads.
   const deliveredGateAppliesToThisSession = session.user.role !== "admin";
   if (
     !asset.isSelected ||
+    !asset.isEdited ||
     (deliveredGateAppliesToThisSession && gallery.status !== "delivered") ||
     !asset.finalKey
   ) {
     return errorResponse("final_not_available", 404);
   }
 
-  const url = getPresignedUrl(asset.finalKey);
+  // Sensible download filename (task #28's own acceptance criterion) plus a
+  // `Content-Disposition: attachment` override on the presigned URL itself —
+  // see getPresignedUrl's own comment in src/lib/r2.ts for why this, not any
+  // client-side plumbing, is what makes a phone browser actually download
+  // the file instead of opening it inline.
+  const filename = buildFinalDownloadFilename(gallery.title, asset.originalFilename);
+  const url = getPresignedUrl(asset.finalKey, {
+    contentDisposition: `attachment; filename="${filename}"`,
+  });
   return NextResponse.json({ url });
 }
 

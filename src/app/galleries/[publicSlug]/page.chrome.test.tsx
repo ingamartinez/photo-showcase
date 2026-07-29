@@ -204,4 +204,83 @@ describe("ClientGalleryPage chrome", () => {
       true,
     );
   });
+
+  // Task #28: wired end to end through the real page — `hasFinal` is
+  // computed here (isSelected && isEdited && finalKey !== null), never off
+  // any single one of those columns alone, and the raw `finalKey` itself
+  // never appears anywhere in the rendered output.
+  describe("delivered gallery downloads", () => {
+    function deliveredGalleryWithAsset(assetOverrides: {
+      isSelected: boolean;
+      isEdited: boolean;
+      finalKey: string | null;
+    }) {
+      return galleryDetail({
+        status: "delivered",
+        assets: [
+          {
+            id: "a1",
+            originalFilename: "IMG_0001.JPG",
+            proofKey: "galleries/g1/proofs/a1.webp",
+            proofWidth: 1600,
+            proofHeight: 1067,
+            sortOrder: 0,
+            ...assetOverrides,
+          },
+        ],
+      });
+    }
+
+    it("renders a download button for a delivered gallery's selected, edited asset with a final", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(
+        deliveredGalleryWithAsset({
+          isSelected: true,
+          isEdited: true,
+          finalKey: "galleries/g1/finals/a1.jpg",
+        }),
+      );
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      render(element);
+
+      expect(screen.getByRole("button", { name: "Descargar: IMG_0001.JPG" })).toBeDefined();
+    });
+
+    it("does not render a download button for a delivered gallery's asset that was never selected", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(
+        deliveredGalleryWithAsset({ isSelected: false, isEdited: false, finalKey: null }),
+      );
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      render(element);
+
+      expect(screen.queryByRole("button", { name: /Descargar/ })).toBeNull();
+    });
+
+    it("does not render a download button for a selected-but-not-yet-edited asset, even though it's selected", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(
+        deliveredGalleryWithAsset({ isSelected: true, isEdited: false, finalKey: null }),
+      );
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      render(element);
+
+      expect(screen.queryByRole("button", { name: /Descargar/ })).toBeNull();
+    });
+
+    it("never leaks the raw finalKey into the rendered markup", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(
+        deliveredGalleryWithAsset({
+          isSelected: true,
+          isEdited: true,
+          finalKey: "galleries/g1/finals/a1.jpg",
+        }),
+      );
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      const { container } = render(element);
+
+      expect(container.innerHTML).not.toContain("galleries/g1/finals/a1.jpg");
+    });
+  });
 });

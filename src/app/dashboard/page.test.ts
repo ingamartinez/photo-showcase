@@ -16,16 +16,29 @@ vi.mock("@/auth", () => ({
   auth: (...args: unknown[]) => authMock(...args),
 }));
 
-// `getPendingSelectionCount()` (task #75) reads the database — mocked here
-// the same way `dashboard/galleries/page.test.ts` mocks `@/lib/galleries`
-// (importActual + override only what this page calls), so the real
-// `formatPendingSelectionCount()` still runs.
+// `getPendingSelectionCount()` (task #75) and `getGalleryCount()` (task #88)
+// read the database — mocked here the same way
+// `dashboard/galleries/page.test.ts` mocks `@/lib/galleries` (importActual +
+// override only what this page calls), so the real `formatPendingSelectionCount()`
+// / `formatGalleryCountTotal()` still run.
 const getPendingSelectionCountMock = vi.fn<() => Promise<number>>();
+const getGalleryCountMock = vi.fn<() => Promise<number>>();
 vi.mock("@/lib/galleries", async () => {
   const actual = await vi.importActual<typeof import("@/lib/galleries")>("@/lib/galleries");
   return {
     ...actual,
     getPendingSelectionCount: () => getPendingSelectionCountMock(),
+    getGalleryCount: () => getGalleryCountMock(),
+  };
+});
+
+// `getClientCount()` (task #88) — same treatment.
+const getClientCountMock = vi.fn<() => Promise<number>>();
+vi.mock("@/lib/clients", async () => {
+  const actual = await vi.importActual<typeof import("@/lib/clients")>("@/lib/clients");
+  return {
+    ...actual,
+    getClientCount: () => getClientCountMock(),
   };
 });
 
@@ -33,6 +46,10 @@ beforeEach(() => {
   authMock.mockReset();
   getPendingSelectionCountMock.mockReset();
   getPendingSelectionCountMock.mockResolvedValue(0);
+  getClientCountMock.mockReset();
+  getClientCountMock.mockResolvedValue(0);
+  getGalleryCountMock.mockReset();
+  getGalleryCountMock.mockResolvedValue(0);
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
 });
 
@@ -73,10 +90,28 @@ describe("DashboardPage", () => {
     });
   });
 
-  it("never queries the pending-selection count before the admin check passes", async () => {
+  it("never queries the pending-selection, client or gallery counts before the admin check passes", async () => {
     authMock.mockResolvedValue(null);
 
     await expect(DashboardPage()).rejects.toMatchObject({ digest: expect.any(String) });
     expect(getPendingSelectionCountMock).not.toHaveBeenCalled();
+    expect(getClientCountMock).not.toHaveBeenCalled();
+    expect(getGalleryCountMock).not.toHaveBeenCalled();
+  });
+
+  // Task #88's core acceptance criterion: the page must actually call the
+  // client/gallery count queries, not hardcode them. Asserting the mocks were
+  // invoked catches a page that never queries at all; the chrome test
+  // (page.chrome.test.tsx) is what proves the rendered numbers actually come
+  // from those results rather than a constant baked into the markup.
+  it("queries both the client count and the gallery count for an admin session", async () => {
+    authMock.mockResolvedValue(sessionFor("admin"));
+    getClientCountMock.mockResolvedValue(2);
+    getGalleryCountMock.mockResolvedValue(2);
+
+    await DashboardPage();
+
+    expect(getClientCountMock).toHaveBeenCalledTimes(1);
+    expect(getGalleryCountMock).toHaveBeenCalledTimes(1);
   });
 });

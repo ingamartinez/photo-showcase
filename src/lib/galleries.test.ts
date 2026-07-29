@@ -301,3 +301,52 @@ describe("getGalleryDetail", () => {
     expect(args.with.assets.orderBy).toBeDefined();
   });
 });
+
+describe("getGalleryUnlockAudit", () => {
+  it("returns null when no gallery with this id exists", async () => {
+    const whereMock = vi.fn().mockReturnValue({ limit: async () => [] });
+    selectMock.mockReturnValue({ from: () => ({ where: whereMock }) });
+    const { getGalleryUnlockAudit } = await import("./galleries");
+
+    await expect(getGalleryUnlockAudit("missing")).resolves.toBeNull();
+  });
+
+  // The honest "never unlocked" state — every column is nullable and `null`
+  // across the board is exactly what a gallery that has never been unlocked
+  // looks like, not an absent/optional shape (same stance as
+  // `GalleryDetail.selectionSubmittedAt`).
+  it("reports all-null when the gallery has never been unlocked", async () => {
+    const whereMock = vi.fn().mockReturnValue({
+      limit: async () => [{ unlockedAt: null, unlockedByEmail: null, unlockReason: null }],
+    });
+    selectMock.mockReturnValue({ from: () => ({ where: whereMock }) });
+    const { getGalleryUnlockAudit } = await import("./galleries");
+
+    await expect(getGalleryUnlockAudit("g1")).resolves.toEqual({
+      unlockedAt: null,
+      unlockedByEmail: null,
+      unlockReason: null,
+    });
+  });
+
+  it("maps who unlocked it, when, and the optional reason", async () => {
+    const unlockedAt = new Date("2026-07-28T20:00:00.000Z");
+    const whereMock = vi.fn().mockReturnValue({
+      limit: async () => [
+        {
+          unlockedAt,
+          unlockedByEmail: "photographer@example.com",
+          unlockReason: "El cliente pidió agregar dos fotos más.",
+        },
+      ],
+    });
+    selectMock.mockReturnValue({ from: () => ({ where: whereMock }) });
+    const { getGalleryUnlockAudit } = await import("./galleries");
+
+    await expect(getGalleryUnlockAudit("g1")).resolves.toEqual({
+      unlockedAt,
+      unlockedByEmail: "photographer@example.com",
+      unlockReason: "El cliente pidió agregar dos fotos más.",
+    });
+  });
+});

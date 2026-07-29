@@ -14,7 +14,17 @@ const initialState: LoginActionState = { status: "idle" };
 // src/components/check-email-notice.tsx's CHECK_EMAIL_HEADER for the fix,
 // shared with the standalone /login/check-email page so the two can't drift
 // apart again.
-export function LoginForm() {
+export function LoginForm({
+  authErrorMessage,
+}: {
+  // Rendering error, if any, of Auth.js's own `pages.error` redirect
+  // (`/login?error=...`, see src/auth.ts). Resolved server-side by
+  // src/app/(marketing)/login/page.tsx via getLoginErrorMessage — this
+  // component only displays it, alongside the request form, never in place
+  // of it: whatever went wrong on a previous link, the client can still
+  // request a new one right here.
+  authErrorMessage?: string | null;
+}) {
   const [state, formAction, pending] = useActionState(requestMagicLink, initialState);
 
   if (state.status === "sent") {
@@ -40,6 +50,11 @@ export function LoginForm() {
       />
       <section className="wrap max-w-[440px] pb-[clamp(64px,10vh,120px)]">
         <form action={formAction} className="flex flex-col gap-5" data-reveal>
+          {authErrorMessage && (
+            <p role="alert" className="text-sm text-[#e0796b]">
+              {authErrorMessage}
+            </p>
+          )}
           <div className="flex flex-col gap-2">
             <label htmlFor="email" className="label text-fg-mute">
               Correo electrónico

@@ -94,4 +94,25 @@ describe("LoginForm", () => {
     });
     expect(screen.getByText("Ingresá un correo electrónico válido.")).toBeDefined();
   });
+
+  it("renders the auth error message next to the form when one is passed in", () => {
+    // Comes from Auth.js's `pages.error` redirect via
+    // src/app/(marketing)/login/page.tsx — see auth-error.ts.
+    render(
+      <LoginForm authErrorMessage="Este enlace ya venció o ya se usó. Pedí uno nuevo abajo." />,
+    );
+
+    expect(
+      screen.getByText("Este enlace ya venció o ya se usó. Pedí uno nuevo abajo."),
+    ).toBeDefined();
+    // The form itself must still be usable — an error must never replace the
+    // ability to request a fresh link.
+    expect(screen.getByLabelText("Correo electrónico")).toBeDefined();
+  });
+
+  it("renders no auth error banner when none is passed", () => {
+    render(<LoginForm />);
+
+    expect(screen.queryAllByRole("alert")).toHaveLength(0);
+  });
 });

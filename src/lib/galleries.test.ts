@@ -250,6 +250,8 @@ describe("getGalleryDetail", () => {
         proofHeight: 1067,
         isSelected: false,
         sortOrder: 1,
+        finalKey: null,
+        isEdited: false,
       },
       {
         id: "a1",
@@ -259,6 +261,8 @@ describe("getGalleryDetail", () => {
         proofHeight: 1067,
         isSelected: true,
         sortOrder: 0,
+        finalKey: `galleries/g1/finals/a1.jpg`,
+        isEdited: true,
       },
     ],
   };

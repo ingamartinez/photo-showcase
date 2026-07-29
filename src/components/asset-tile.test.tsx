@@ -22,16 +22,19 @@ function assetFor(overrides: Partial<WorkspaceAsset> = {}): WorkspaceAsset {
     isSelected: false,
     sortOrder: 0,
     proofUrl: "https://r2.example.com/original-presigned",
+    hasFinal: false,
     ...overrides,
   };
 }
 
 let onDeleted: ReturnType<typeof vi.fn<(assetId: string) => void>>;
 let onMoved: ReturnType<typeof vi.fn<(updates: { id: string; sortOrder: number }[]) => void>>;
+let onFinalUploaded: ReturnType<typeof vi.fn<(assetId: string) => void>>;
 
 beforeEach(() => {
   onDeleted = vi.fn();
   onMoved = vi.fn();
+  onFinalUploaded = vi.fn();
 });
 
 afterEach(() => {
@@ -50,6 +53,7 @@ describe("AssetTile", () => {
           isLast={false}
           onDeleted={onDeleted}
           onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
         />
       </ul>,
     );
@@ -68,6 +72,7 @@ describe("AssetTile", () => {
           isLast={true}
           onDeleted={onDeleted}
           onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
         />
       </ul>,
     );
@@ -90,6 +95,7 @@ describe("AssetTile", () => {
           isLast={false}
           onDeleted={onDeleted}
           onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
         />
       </ul>,
     );
@@ -115,6 +121,7 @@ describe("AssetTile", () => {
           isLast={false}
           onDeleted={onDeleted}
           onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
         />
       </ul>,
     );
@@ -139,6 +146,7 @@ describe("AssetTile", () => {
           isLast={false}
           onDeleted={onDeleted}
           onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
         />
       </ul>,
     );
@@ -163,6 +171,7 @@ describe("AssetTile", () => {
           isLast={false}
           onDeleted={onDeleted}
           onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
         />
       </ul>,
     );
@@ -195,6 +204,7 @@ describe("AssetTile", () => {
           isLast={false}
           onDeleted={onDeleted}
           onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
         />
       </ul>,
     );
@@ -212,5 +222,122 @@ describe("AssetTile", () => {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ direction: "up" }),
     });
+  });
+
+  // Task #26: the final-upload control is only ever rendered for a
+  // SELECTED asset — see the component's own comment for why.
+  it("does not render the final-upload control for an unselected asset", () => {
+    render(
+      <ul>
+        <AssetTile
+          asset={assetFor({ isSelected: false })}
+          isFirst={false}
+          isLast={false}
+          onDeleted={onDeleted}
+          onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
+        />
+      </ul>,
+    );
+
+    expect(screen.queryByText("Subir final")).toBeNull();
+    expect(screen.queryByText("Falta el final")).toBeNull();
+  });
+
+  it("shows 'Falta el final' with a 'Subir final' control for a selected asset with no final yet", () => {
+    render(
+      <ul>
+        <AssetTile
+          asset={assetFor({ isSelected: true, hasFinal: false })}
+          isFirst={false}
+          isLast={false}
+          onDeleted={onDeleted}
+          onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
+        />
+      </ul>,
+    );
+
+    expect(screen.getByText("Falta el final")).toBeDefined();
+    expect(screen.getByText("Subir final")).toBeDefined();
+  });
+
+  it("shows 'Final subido' with a 'Reemplazar' control for a selected asset that already has one", () => {
+    render(
+      <ul>
+        <AssetTile
+          asset={assetFor({ isSelected: true, hasFinal: true })}
+          isFirst={false}
+          isLast={false}
+          onDeleted={onDeleted}
+          onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
+        />
+      </ul>,
+    );
+
+    expect(screen.getByText("Final subido")).toBeDefined();
+    expect(screen.getByText("Reemplazar")).toBeDefined();
+  });
+
+  it("uploads a final and reports it via onFinalUploaded on success", async () => {
+    const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
+      void init;
+      return Promise.resolve(jsonResponse(200, { asset: { id: "a1" } }));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ul>
+        <AssetTile
+          asset={assetFor({ isSelected: true, hasFinal: false })}
+          isFirst={false}
+          isLast={false}
+          onDeleted={onDeleted}
+          onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
+        />
+      </ul>,
+    );
+
+    const input = screen.getByLabelText("Subir final") as HTMLInputElement;
+    const file = new File(["edited-bytes"], "IMG_0001-edit.jpg", { type: "image/jpeg" });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() => expect(onFinalUploaded).toHaveBeenCalledWith("a1"));
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/assets/a1/final",
+      expect.objectContaining({ method: "POST" }),
+    );
+    const [, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(requestInit.body).toBeInstanceOf(FormData);
+    expect((requestInit.body as FormData).get("file")).toBe(file);
+  });
+
+  it("shows an inline error and does not call onFinalUploaded when the upload fails", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(jsonResponse(409, { error: "asset_not_selected" })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ul>
+        <AssetTile
+          asset={assetFor({ isSelected: true, hasFinal: false })}
+          isFirst={false}
+          isLast={false}
+          onDeleted={onDeleted}
+          onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
+        />
+      </ul>,
+    );
+
+    const input = screen.getByLabelText("Subir final") as HTMLInputElement;
+    const file = new File(["edited-bytes"], "IMG_0001-edit.jpg", { type: "image/jpeg" });
+    fireEvent.change(input, { target: { files: [file] } });
+
+    await waitFor(() => expect(screen.getByText("asset_not_selected")).toBeDefined());
+    expect(onFinalUploaded).not.toHaveBeenCalled();
   });
 });

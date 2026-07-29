@@ -141,6 +141,9 @@ export function ProofUploader({
           isSelected: false,
           sortOrder: body.asset.sortOrder,
           proofUrl,
+          // A freshly uploaded proof is never selected yet (see the line
+          // above), so it can never already have a final either — task #26.
+          hasFinal: false,
         });
       } catch {
         setItems((prev) => setItemStatus(prev, index, "error", "No se pudo conectar."));

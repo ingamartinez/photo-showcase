@@ -24,6 +24,11 @@ export type WorkspaceAsset = {
   isSelected: boolean;
   sortOrder: number;
   proofUrl: string;
+  // Whether `assets.final_key` is set — task #26. Deliberately a boolean,
+  // not the raw R2 key: this client component never needs the key itself
+  // (uploading and previewing both go through their own routes), and a
+  // private R2 key has no reason to travel to the browser at all.
+  hasFinal: boolean;
 };
 
 export function GalleryWorkspace({
@@ -39,6 +44,18 @@ export function GalleryWorkspace({
   // in order — `handleMoved` below only patches the two changed rows'
   // `sortOrder` values, it does not itself reorder the array.
   const sorted = useMemo(() => [...assets].sort((a, b) => a.sortOrder - b.sortOrder), [assets]);
+
+  // Task #26's own scope note: "the screen should make the remaining work
+  // obvious — which selected assets still lack a final." Derived from this
+  // component's own live `assets` state (not re-read from the server) so it
+  // updates the instant a final finishes uploading, with no
+  // `router.refresh()` — same reasoning as every other mutation in this
+  // component.
+  const selectedCount = useMemo(() => sorted.filter((asset) => asset.isSelected).length, [sorted]);
+  const pendingFinalsCount = useMemo(
+    () => sorted.filter((asset) => asset.isSelected && !asset.hasFinal).length,
+    [sorted],
+  );
 
   const handleUploaded = useCallback((asset: WorkspaceAsset) => {
     setAssets((prev) => [...prev, asset]);
@@ -58,9 +75,23 @@ export function GalleryWorkspace({
     );
   }, []);
 
+  const handleFinalUploaded = useCallback((assetId: string) => {
+    setAssets((prev) =>
+      prev.map((asset) => (asset.id === assetId ? { ...asset, hasFinal: true } : asset)),
+    );
+  }, []);
+
   return (
     <div className="flex flex-col gap-10">
       <ProofUploader galleryId={galleryId} onUploaded={handleUploaded} />
+
+      {selectedCount > 0 && (
+        <p className="text-fg-dim text-sm">
+          {pendingFinalsCount > 0
+            ? `Faltan ${pendingFinalsCount} de ${selectedCount} finales por subir.`
+            : `Los ${selectedCount} finales de la selección ya están subidos.`}
+        </p>
+      )}
 
       {sorted.length === 0 ? (
         <p className="text-fg-dim text-[15px] leading-relaxed">
@@ -76,6 +107,7 @@ export function GalleryWorkspace({
               isLast={index === sorted.length - 1}
               onDeleted={handleDeleted}
               onMoved={handleMoved}
+              onFinalUploaded={handleFinalUploaded}
             />
           ))}
         </ul>

@@ -18,6 +18,7 @@ import type { Session } from "next-auth";
 import { db } from "@/lib/db";
 import { assets, galleries } from "@/lib/db/schema";
 import type { Asset, Gallery } from "@/lib/db/schema";
+import { isGalleryOwner } from "@/lib/gallery-access";
 
 export type AssetLookupResult =
   { ok: true; asset: Asset; gallery: Gallery } | { ok: false; status: 403 | 404; error: string };
@@ -59,8 +60,10 @@ export async function loadOwnedAsset(
     return { ok: false, status: 404, error: "gallery_not_found" };
   }
 
-  const isOwner = session.user.role === "admin" || gallery.clientId === session.user.id;
-  if (!isOwner) {
+  // Task #94: a gallery can now belong to SEVERAL clients — see
+  // src/lib/gallery-access.ts's own header comment for why this single
+  // check, not a rewritten comparison, is the one every route shares.
+  if (!(await isGalleryOwner(gallery.id, session))) {
     return { ok: false, status: 403, error: "forbidden" };
   }
 

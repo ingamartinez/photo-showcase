@@ -13,7 +13,9 @@ import { landingPathForRole } from "@/lib/role-landing";
 // again itself; see `src/lib/auth-guards.ts`'s header comment for why a
 // layout must never be the only check anything relies on. Any signed-in
 // user — client or admin — passes this; per-gallery OWNERSHIP is decided by
-// each page from the gallery row's own `clientId`, never here.
+// each page via src/lib/gallery-access.ts's `isGalleryOwner` (task #94 — a
+// gallery's clients live in the `gallery_clients` join table, not a single
+// `clientId` column on the gallery row), never here.
 //
 // #96: the logo used to be a hardcoded `Link href="/galleries"`. That is
 // correct for a CLIENT (this whole chrome is theirs) but wrong for an ADMIN

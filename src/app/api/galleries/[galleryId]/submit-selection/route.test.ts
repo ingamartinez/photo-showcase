@@ -12,6 +12,18 @@ vi.mock("server-only", () => ({}));
 const authMock = vi.fn();
 vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 
+// Task #94: ownership itself moved to src/lib/gallery-access.ts's
+// `isGalleryOwner`, which has its own dedicated, mutation-tested suite
+// (gallery-access.test.ts). Mocked here with a realistic default (admin, or
+// the session that owns `CLIENT_ID`'s gallery, is an owner — anyone else
+// isn't) rather than re-seeding a second fake `gallery_clients` table, so
+// this suite tests exactly its own job: does this ROUTE call
+// `isGalleryOwner` and honor its result.
+const isGalleryOwnerMock = vi.fn<(galleryId: string, session: Session) => Promise<boolean>>();
+vi.mock("@/lib/gallery-access", () => ({
+  isGalleryOwner: (...args: [string, Session]) => isGalleryOwnerMock(...args),
+}));
+
 // Mocked at the module boundary, not the network (`fetch`) boundary —
 // mirrors how src/app/dashboard/galleries/actions.publish.test.ts mocks
 // `signIn` rather than Resend's HTTP call: this suite is about the ROUTE's
@@ -185,7 +197,6 @@ function adminSession(): Session {
 function galleryRow(overrides: Row = {}): Row {
   return {
     id: GALLERY_ID,
-    clientId: CLIENT_ID,
     packageId: 1,
     title: "Boda Ana y Beto",
     sessionDate: "2026-08-01",
@@ -230,6 +241,10 @@ function paramsFor(galleryId: string) {
 
 beforeEach(async () => {
   authMock.mockReset();
+  isGalleryOwnerMock.mockReset();
+  isGalleryOwnerMock.mockImplementation(
+    async (_galleryId, session) => session.user.role === "admin" || session.user.id === CLIENT_ID,
+  );
   sendSubmissionNotificationEmailMock.mockReset();
   sendSubmissionNotificationEmailMock.mockResolvedValue(undefined);
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
@@ -289,6 +304,23 @@ describe("POST /api/galleries/[galleryId]/submit-selection — authorization", (
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({ error: "forbidden" });
+  });
+
+  // Review finding on task #94: this suite's `isGalleryOwnerMock` above
+  // ignores its OWN first argument (`_galleryId`), so it can never catch a
+  // regression where the route passed a caller-supplied gallery id instead
+  // of the loaded row's own `gallery.id` — exactly the shortcut
+  // src/lib/asset-access.ts's header comment warns never to take. Asserted
+  // here explicitly, the same way src/lib/asset-access.test.ts:166 already
+  // does for `loadOwnedAsset`.
+  it("calls isGalleryOwner with the gallery's OWN id, never anything caller-supplied", async () => {
+    const session = clientSession();
+    authMock.mockResolvedValue(session);
+    const { POST } = await import("./route");
+
+    await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(isGalleryOwnerMock).toHaveBeenCalledWith(GALLERY_ID, session);
   });
 
   it("returns 404 (not 403) for a CLIENT when the gallery is still draft — not yet visible to them at all", async () => {
@@ -387,8 +419,16 @@ describe("POST /api/galleries/[galleryId]/submit-selection — locked statuses",
 });
 
 describe("POST /api/galleries/[galleryId]/submit-selection — success", () => {
-  it("flips proofing -> selected, stamps selectionSubmittedAt, and notifies the single admin with client, gallery, count, extras, and surcharge", async () => {
-    authMock.mockResolvedValue(clientSession());
+  it("flips proofing -> selected, stamps selectionSubmittedAt, and notifies the single admin naming WHO submitted (the session), gallery, count, extras, and surcharge", async () => {
+    // Task #94: `gallery.clientId` is gone — the admin notification now
+    // names whoever's SESSION actually submitted, not a separate DB lookup
+    // by the gallery's (now nonexistent) single client id. A realistic
+    // session (name + the client's own email) exercises that path
+    // meaningfully, rather than `clientSession()`'s bare synthetic email.
+    authMock.mockResolvedValue({
+      user: { id: CLIENT_ID, role: "client", name: "Ana Pérez", email: CLIENT_EMAIL },
+      expires: "2099-01-01T00:00:00.000Z",
+    });
     const db = await seededDb();
     db.__rows.assets.push(assetRow({ id: ASSET_2_ID, isSelected: true, sortOrder: 1 }));
     db.__rows.galleries.length = 0;

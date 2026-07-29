@@ -27,11 +27,26 @@ vi.mock("@/lib/r2", () => ({
   getPresignedUrl: (...args: unknown[]) => getPresignedUrlMock(...args),
 }));
 
+// Task #94: ownership itself moved to src/lib/gallery-access.ts's
+// `isGalleryOwner`, which has its own dedicated, mutation-tested suite
+// (gallery-access.test.ts). Mocked here with a realistic default (admin, or
+// the session that owns `client-a`'s gallery, is an owner — anyone else
+// isn't), so this suite keeps testing exactly its own job: does this PAGE
+// call `isGalleryOwner` and honor its result.
+const isGalleryOwnerMock = vi.fn<(galleryId: string, session: Session) => Promise<boolean>>();
+vi.mock("@/lib/gallery-access", () => ({
+  isGalleryOwner: (...args: [string, Session]) => isGalleryOwnerMock(...args),
+}));
+
 beforeEach(() => {
   authMock.mockReset();
   getGalleryDetailBySlugMock.mockReset();
   getPresignedUrlMock.mockReset();
   getPresignedUrlMock.mockReturnValue("https://r2.example.com/presigned-proof-url");
+  isGalleryOwnerMock.mockReset();
+  isGalleryOwnerMock.mockImplementation(
+    async (_galleryId, session) => session.user.role === "admin" || session.user.id === "client-a",
+  );
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
 });
 
@@ -52,7 +67,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     status: "proofing",
     sessionDate: "2026-08-01",
     createdAt: new Date("2026-07-01"),
-    client: { id: "client-a", name: "Ana Pérez", email: "ana@example.com" },
+    clients: [{ id: "client-a", name: "Ana Pérez", email: "ana@example.com" }],
     package: { id: 1, name: "Estándar" },
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
@@ -75,10 +90,10 @@ describe("ClientGalleryPage", () => {
     expect(getGalleryDetailBySlugMock).toHaveBeenCalledWith(SLUG);
   });
 
-  it("resolves for an admin session regardless of who the gallery's client is", async () => {
+  it("resolves for an admin session regardless of who the gallery's clients are", async () => {
     authMock.mockResolvedValue(sessionFor("admin", "admin-1"));
     getGalleryDetailBySlugMock.mockResolvedValue(
-      galleryDetail({ client: { id: "someone-else", name: null, email: "x@example.com" } }),
+      galleryDetail({ clients: [{ id: "someone-else", name: null, email: "x@example.com" }] }),
     );
 
     await expect(ClientGalleryPage(paramsFor(SLUG))).resolves.toBeTruthy();
@@ -109,12 +124,36 @@ describe("ClientGalleryPage", () => {
   it("403s a signed-in client who does not own this gallery, even though they have its slug", async () => {
     authMock.mockResolvedValue(sessionFor("client", "client-b"));
     getGalleryDetailBySlugMock.mockResolvedValue(
-      galleryDetail({ client: { id: "client-a", name: "Ana Pérez", email: "ana@example.com" } }),
+      galleryDetail({ clients: [{ id: "client-a", name: "Ana Pérez", email: "ana@example.com" }] }),
     );
 
     await expect(ClientGalleryPage(paramsFor(SLUG))).rejects.toMatchObject({
       digest: "NEXT_HTTP_ERROR_FALLBACK;403",
     });
+  });
+
+  // Task #94's core acceptance criterion — "a SECOND client attached to the
+  // same gallery is just as much an owner as the first" — is proven for
+  // REAL against the actual `gallery_clients` query in
+  // src/lib/gallery-access.test.ts ("allows a SECOND client attached to the
+  // same gallery, not just the first"). This page never reads
+  // `gallery.clients` itself (see page.tsx: ownership is decided entirely by
+  // `isGalleryOwner(gallery.id, session)`), so a test here that stubs
+  // `isGalleryOwnerMock` to unconditionally resolve `true` cannot exercise
+  // that acceptance criterion no matter what the `clients` fixture contains
+  // — it would pass identically with `client-b` removed from the array
+  // entirely. What this test CAN prove, and does, is the review's own
+  // finding: that the page calls `isGalleryOwner` with the gallery's OWN id,
+  // never anything the caller supplied — the same shortcut
+  // src/lib/asset-access.ts's header comment warns never to take.
+  it("resolves when isGalleryOwner approves, calling it with the gallery's OWN id and the acting session", async () => {
+    const session = sessionFor("client", "client-b");
+    authMock.mockResolvedValue(session);
+    isGalleryOwnerMock.mockResolvedValue(true);
+    getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail({ id: "g1" }));
+
+    await expect(ClientGalleryPage(paramsFor(SLUG))).resolves.toBeTruthy();
+    expect(isGalleryOwnerMock).toHaveBeenCalledWith("g1", session);
   });
 
   // A draft gallery is still being assembled — must never be visible to a

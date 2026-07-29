@@ -29,6 +29,20 @@ vi.mock("server-only", () => ({}));
 const authMock = vi.fn();
 vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 
+// Task #94: ownership itself moved to src/lib/gallery-access.ts's
+// `isGalleryOwner`, which has its own dedicated, mutation-tested suite
+// (gallery-access.test.ts). Mocked here with a realistic default (admin, or
+// the session that owns `CLIENT_A_ID`'s gallery, is an owner — anyone else
+// isn't), so this suite keeps testing exactly its own job: does this ROUTE
+// call `isGalleryOwner` and honor its result — including the "THE core
+// mutation-tested gate" test below, still valid: it now proves the ROUTE
+// calls through correctly, while gallery-access.test.ts proves the
+// underlying gallery_clients query is itself correct.
+const isGalleryOwnerMock = vi.fn<(galleryId: string, session: Session) => Promise<boolean>>();
+vi.mock("@/lib/gallery-access", () => ({
+  isGalleryOwner: (...args: [string, Session]) => isGalleryOwnerMock(...args),
+}));
+
 // In-memory stand-in for the R2 bucket — same shape as
 // route.download.test.ts's own fake, plus a `.file()` method (this route's
 // only R2 entry point is `getObjectStream`, which calls `.file(key).stream()`
@@ -187,7 +201,6 @@ function adminSession(): Session {
 function galleryRow(overrides: Row = {}): Row {
   return {
     id: GALLERY_ID,
-    clientId: CLIENT_A_ID,
     title: "Boda Ana y Beto",
     status: "delivered",
     ...overrides,
@@ -217,6 +230,10 @@ function paramsFor(galleryId: string) {
 
 beforeEach(async () => {
   authMock.mockReset();
+  isGalleryOwnerMock.mockReset();
+  isGalleryOwnerMock.mockImplementation(
+    async (_galleryId, session) => session.user.role === "admin" || session.user.id === CLIENT_A_ID,
+  );
   store.clear();
   sizeOverrides.clear();
   streamOpenCount = 0;
@@ -285,6 +302,29 @@ describe("GET /api/galleries/[galleryId]/download-all — authorization", () => 
 
     expect(response.status).toBe(403);
     await expect(response.json()).resolves.toEqual({ error: "forbidden" });
+  });
+
+  // Review finding on task #94: this suite's `isGalleryOwnerMock` above
+  // ignores its OWN first argument (`_galleryId`), so it can never catch a
+  // regression where the route passed a caller-supplied gallery id instead
+  // of the loaded row's own `gallery.id` — exactly the shortcut
+  // src/lib/asset-access.ts's header comment warns never to take. Asserted
+  // here explicitly, the same way src/lib/asset-access.test.ts:166 already
+  // does for `loadOwnedAsset`.
+  it("calls isGalleryOwner with the gallery's OWN id, never anything caller-supplied", async () => {
+    const session = clientSession();
+    authMock.mockResolvedValue(session);
+    const db = await seededDb();
+    db.__rows.galleries.push(galleryRow());
+    store.set("finals/some-key.jpg", { data: Buffer.from("bytes") });
+    db.__rows.assets.push(
+      assetRow({ isSelected: true, isEdited: true, finalKey: "finals/some-key.jpg" }),
+    );
+    const { GET } = await import("./route");
+
+    await GET(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(isGalleryOwnerMock).toHaveBeenCalledWith(GALLERY_ID, session);
   });
 
   it("returns 404 (gallery_not_delivered) for the OWNING client when the gallery isn't delivered yet", async () => {

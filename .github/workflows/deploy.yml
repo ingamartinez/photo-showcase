@@ -83,6 +83,12 @@ jobs:
           mkdir -p "$STAGE/scripts" "$STAGE/src/lib/db" "$STAGE/src/content"
           cp scripts/migrate-prod.ts "$STAGE/scripts/migrate-prod.ts"
           cp scripts/seed-prod.ts "$STAGE/scripts/seed-prod.ts"
+          # Phase 2 ops scripts: staged so they reach the box with the release
+          # instead of being scp'd by hand to /tmp. Both use the same relative
+          # imports as seed-prod.ts, resolved against src/lib/db already
+          # overlaid below.
+          cp scripts/seed-packages.ts "$STAGE/scripts/seed-packages.ts"
+          cp scripts/create-admin.ts "$STAGE/scripts/create-admin.ts"
           cp src/lib/db/index.ts "$STAGE/src/lib/db/index.ts"
           cp src/lib/db/schema.ts "$STAGE/src/lib/db/schema.ts"
           cp src/content/portfolio.ts "$STAGE/src/content/portfolio.ts"
@@ -147,6 +153,21 @@ jobs:
             set -eu
             cd '$RELEASE_DIR'
             sudo -n -u photoshowcase /opt/bun/bin/bun scripts/seed-prod.ts
+          "
+
+      - name: Seed session packages
+        env:
+          GIT_SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          set -eu
+          RELEASE_DIR="$APP_ROOT/app/releases/$GIT_SHA"
+          # Idempotent — matches on package name, so re-running only updates
+          # prices/quotas. Safe to run on every deploy; existing galleries keep
+          # their frozen snapshot regardless of what this changes.
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
+            set -eu
+            cd '$RELEASE_DIR'
+            sudo -n -u photoshowcase /opt/bun/bin/bun scripts/seed-packages.ts
           "
 
       - name: Flip symlink + restart photoshowcase

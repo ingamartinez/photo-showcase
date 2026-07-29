@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { redirect } from "next/navigation";
 import { requireSession } from "@/lib/auth-guards";
+import { landingPathForRole } from "@/lib/role-landing";
 
 export const metadata: Metadata = {
   title: "Ingresando…",
@@ -29,7 +30,12 @@ export const metadata: Metadata = {
 // route hit directly, or a stale/consumed link) is sent to `/login` exactly
 // like every other guarded page, never refused with a 403 — there is no
 // role to be wrong about yet.
+//
+// The role-to-destination mapping itself lives in `landingPathForRole()`
+// (`src/lib/role-landing.ts`), not inline here — see that file's header
+// comment for why this is a shared function rather than two copies (task
+// #91, which found the site chrome had silently drifted from this page).
 export default async function LoginRedirectPage() {
   const session = await requireSession();
-  redirect(session.user.role === "admin" ? "/dashboard" : "/galleries");
+  redirect(landingPathForRole(session.user.role));
 }

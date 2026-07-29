@@ -10,13 +10,18 @@ const NAV = [
 ];
 
 type SiteHeaderProps = {
-  /** `/galleries` when signed in, `/login` otherwise — resolved server-side by the layout. */
-  clientAreaHref: string;
-  /** "Mis galerías" when signed in, "Acceso a clientes" otherwise. */
-  clientAreaLabel: string;
+  /**
+   * `/dashboard` for a signed-in admin, `/galleries` for a signed-in
+   * client, `/login` when signed out — resolved server-side by the layout
+   * via `landingPathForRole()` (`src/lib/role-landing.ts`), never rederived
+   * here.
+   */
+  areaHref: string;
+  /** "Panel", "Mis galerías", or "Acceso a clientes" to match `areaHref`. */
+  areaLabel: string;
 };
 
-export function SiteHeader({ clientAreaHref, clientAreaLabel }: SiteHeaderProps) {
+export function SiteHeader({ areaHref, areaLabel }: SiteHeaderProps) {
   const [scrolled, setScrolled] = useState(false);
 
   useEffect(() => {
@@ -48,10 +53,10 @@ export function SiteHeader({ clientAreaHref, clientAreaLabel }: SiteHeaderProps)
           </Link>
         ))}
         <Link
-          href={clientAreaHref}
+          href={areaHref}
           className="text-fg-dim hover:text-fg hidden text-[13px] tracking-[0.08em] uppercase transition-colors sm:inline"
         >
-          {clientAreaLabel}
+          {areaLabel}
         </Link>
         <Link
           href="/contact"

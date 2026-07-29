@@ -387,3 +387,31 @@ export async function getGalleryUnlockAudit(galleryId: string): Promise<GalleryU
     .limit(1);
   return row ?? null;
 }
+
+// ---------------------------------------------------------------------------
+// Studio-wide gallery total (task #88) — read side for the `/dashboard`
+// index, which until this task read exactly one thing from the database
+// (`getPendingSelectionCount` above) and hardcoded everything else,
+// including the empty state, even after #18/#19 gave the studio real
+// clients and galleries. See src/app/dashboard/page.tsx's header comment.
+// ---------------------------------------------------------------------------
+
+/** How many galleries exist, total, across every status. Powers the
+ * "Galerías" summary on `/dashboard` (task #88) — a dedicated `count()`
+ * query, same reasoning as `getPendingSelectionCount` above: the dashboard
+ * index only needs a number, not `getGalleriesWithDetails().length`, which
+ * would pull every gallery's client/package/asset joins just to discard
+ * everything but a count. */
+export async function getGalleryCount(): Promise<number> {
+  const [row] = await db.select({ value: count() }).from(galleries);
+  return row?.value ?? 0;
+}
+
+/** Spanish, pluralized copy for `getGalleryCount`'s result — the total
+ * gallery count on `/dashboard` (task #88). Distinct from `formatGalleryCount`
+ * in src/lib/clients.ts, which describes how many galleries belong to ONE
+ * client, not the studio-wide total. */
+export function formatGalleryCountTotal(galleryCount: number): string {
+  if (galleryCount === 1) return "1 galería";
+  return `${galleryCount} galerías`;
+}

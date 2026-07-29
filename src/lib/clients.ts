@@ -6,7 +6,7 @@
 // a gallery, PLAN.md §6).
 import "server-only";
 
-import { desc, eq } from "drizzle-orm";
+import { count, desc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { users } from "@/lib/db/schema";
 
@@ -59,4 +59,24 @@ export function formatGalleryCount(count: number): string {
   if (count === 0) return "Sin galerías todavía";
   if (count === 1) return "1 galería";
   return `${count} galerías`;
+}
+
+/** How many clients exist, total. Powers the "Clientes" summary on
+ * `/dashboard` (task #88) — a dedicated `count()` query, same reasoning as
+ * `getPendingSelectionCount` in src/lib/galleries.ts: the dashboard index
+ * only needs a number, not `getClientsWithGalleryCount().length`, which
+ * would pull every client row plus its gallery join just to discard
+ * everything but a count. */
+export async function getClientCount(): Promise<number> {
+  const [row] = await db.select({ value: count() }).from(users).where(eq(users.role, "client"));
+  return row?.value ?? 0;
+}
+
+/** Spanish, pluralized copy for `getClientCount`'s result — the total client
+ * count on `/dashboard` (task #88). Distinct from `formatGalleryCount`
+ * above, which describes how many galleries belong to ONE client, not how
+ * many clients exist across the whole studio. */
+export function formatClientCount(clientCount: number): string {
+  if (clientCount === 1) return "1 cliente";
+  return `${clientCount} clientes`;
 }

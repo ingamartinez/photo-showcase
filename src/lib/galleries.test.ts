@@ -354,3 +354,36 @@ describe("getGalleryUnlockAudit", () => {
     });
   });
 });
+
+describe("getGalleryCount", () => {
+  it("counts every gallery via a dedicated count() query, not the full detail query", async () => {
+    const fromMock = vi.fn().mockResolvedValue([{ value: 2 }]);
+    selectMock.mockReturnValue({ from: fromMock });
+    const { galleries } = await import("./db/schema");
+    const { getGalleryCount } = await import("./galleries");
+
+    const result = await getGalleryCount();
+
+    expect(result).toBe(2);
+    expect(fromMock).toHaveBeenCalledWith(galleries);
+    expect(findManyMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 0 when no row comes back", async () => {
+    selectMock.mockReturnValue({ from: () => Promise.resolve([]) });
+    const { getGalleryCount } = await import("./galleries");
+
+    await expect(getGalleryCount()).resolves.toBe(0);
+  });
+});
+
+describe("formatGalleryCountTotal", () => {
+  it.each([
+    [1, "1 galería"],
+    [2, "2 galerías"],
+    [13, "13 galerías"],
+  ])("formats %i as %s", async (galleryCount, expected) => {
+    const { formatGalleryCountTotal } = await import("./galleries");
+    expect(formatGalleryCountTotal(galleryCount)).toBe(expected);
+  });
+});

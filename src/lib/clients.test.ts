@@ -5,9 +5,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 const findManyMock = vi.fn();
+const selectMock = vi.fn();
 
 vi.mock("@/lib/db", () => ({
-  db: { query: { users: { findMany: (...args: unknown[]) => findManyMock(...args) } } },
+  db: {
+    query: { users: { findMany: (...args: unknown[]) => findManyMock(...args) } },
+    select: (...args: unknown[]) => selectMock(...args),
+  },
 }));
 
 // Extracts { column, value } from a drizzle `eq(column, value)` SQL object by
@@ -32,6 +36,7 @@ function eqColumnAndValue(condition: unknown): { column?: string; value?: unknow
 
 beforeEach(() => {
   findManyMock.mockReset();
+  selectMock.mockReset();
 });
 
 describe("getClientsWithGalleryCount", () => {
@@ -126,5 +131,44 @@ describe("formatGalleryCount", () => {
   ])("formats %i as %s", async (count, expected) => {
     const { formatGalleryCount } = await import("./clients");
     expect(formatGalleryCount(count)).toBe(expected);
+  });
+});
+
+describe("getClientCount", () => {
+  it("counts users via a dedicated count() query scoped to role = client, not the full list query", async () => {
+    const whereMock = vi.fn().mockResolvedValue([{ value: 2 }]);
+    const fromMock = vi.fn().mockReturnValue({ where: whereMock });
+    selectMock.mockReturnValue({ from: fromMock });
+    const { eq } = await import("drizzle-orm");
+    const { users } = await import("./db/schema");
+    const { getClientCount } = await import("./clients");
+
+    const result = await getClientCount();
+
+    expect(result).toBe(2);
+    expect(fromMock).toHaveBeenCalledWith(users);
+    // Same reason as galleries.test.ts's getPendingSelectionCount test: the
+    // predicate itself, not just that SOME predicate was passed — an admin
+    // row must never be counted as a client.
+    expect(whereMock).toHaveBeenCalledWith(eq(users.role, "client"));
+    expect(findManyMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 0 when no row comes back", async () => {
+    selectMock.mockReturnValue({ from: () => ({ where: () => Promise.resolve([]) }) });
+    const { getClientCount } = await import("./clients");
+
+    await expect(getClientCount()).resolves.toBe(0);
+  });
+});
+
+describe("formatClientCount", () => {
+  it.each([
+    [1, "1 cliente"],
+    [2, "2 clientes"],
+    [13, "13 clientes"],
+  ])("formats %i as %s", async (clientCount, expected) => {
+    const { formatClientCount } = await import("./clients");
+    expect(formatClientCount(clientCount)).toBe(expected);
   });
 });

@@ -472,4 +472,41 @@ describe("ProofGrid", () => {
       );
     });
   });
+
+  // Task #29: the "download all" link — a UI hint only (see `hasAnyFinal`'s
+  // own comment in proof-grid.tsx), same disclaimer as `hasFinal` above. The
+  // real gate lives entirely server-side in
+  // GET /api/galleries/[galleryId]/download-all's own test suite.
+  describe("download-all link", () => {
+    it("does not render for a non-delivered gallery, even with a hasFinal asset", () => {
+      renderGrid({
+        initialStatus: "selected",
+        initialAssets: assetsFor([{ isSelected: true, hasFinal: true }]),
+      });
+
+      expect(screen.queryByRole("link", { name: "Descargar todo" })).toBeNull();
+    });
+
+    it("does not render for a delivered gallery where no asset has a final", () => {
+      renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([{ isSelected: false, hasFinal: false }]),
+      });
+
+      expect(screen.queryByRole("link", { name: "Descargar todo" })).toBeNull();
+    });
+
+    it("renders, pointing at the gallery's own download-all route, once the gallery is delivered and at least one asset has a final", () => {
+      renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([
+          { isSelected: false, hasFinal: false },
+          { isSelected: true, hasFinal: true },
+        ]),
+      });
+
+      const link = screen.getByRole("link", { name: "Descargar todo" });
+      expect(link.getAttribute("href")).toBe("/api/galleries/g1/download-all");
+    });
+  });
 });

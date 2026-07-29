@@ -53,6 +53,7 @@
 // anything to compute in the first place, not by re-deriving the same maths
 // twice and hoping they stay in sync.
 import { useCallback, useRef, useState } from "react";
+import { DownloadAllButton } from "@/components/download-all-button";
 import { DownloadFinalButton } from "@/components/download-final-button";
 import { ProofLightbox } from "@/components/proof-lightbox";
 import { SelectionCounter } from "@/components/selection-counter";
@@ -289,12 +290,22 @@ export function ProofGrid({
   // contain unselected assets that were never edited and have no final at
   // all.
   const isDelivered = initialStatus === "delivered";
+  // Task #29: the button only makes sense once there is at least one final
+  // to actually zip — same per-asset `hasFinal` truth `showDownload` below
+  // already relies on for the individual buttons, just reduced to "is there
+  // at least one". The route re-derives this exact set itself from the
+  // database on every request (see its own comment); this is a UI hint only,
+  // same disclaimer as `hasFinal`'s own.
+  const hasAnyFinal = isDelivered && initialAssets.some((asset) => asset.hasFinal);
 
   return (
     <>
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
         <SelectionCounter packageName={packageName} quota={quota} />
-        {toggleError && <p className="text-xs text-[#e0796b]">{toggleError}</p>}
+        <div className="flex items-center gap-3">
+          {toggleError && <p className="text-xs text-[#e0796b]">{toggleError}</p>}
+          {hasAnyFinal && <DownloadAllButton galleryId={galleryId} />}
+        </div>
       </div>
 
       <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4">

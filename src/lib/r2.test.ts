@@ -9,11 +9,22 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 const write = vi.fn().mockResolvedValue(0);
 const presign = vi.fn().mockReturnValue("https://example.com/presigned-url");
 const del = vi.fn().mockResolvedValue(undefined);
+// Task #29: `getObjectStream` calls `getClient().file(key).stream()` — the
+// fake's `.file()` returns a stand-in for Bun's `S3File`, minimal enough to
+// exercise ONLY what that function actually touches.
+const fileStream = vi.fn().mockReturnValue("fake-stream");
+const file = vi.fn().mockReturnValue({ stream: fileStream });
+// Task #29 review follow-up: `getObjectSize` calls `getClient().size(key)` —
+// Bun's own HEAD-request-only size lookup (see r2.ts's own comment on why
+// this never reads the object's bytes).
+const size = vi.fn().mockResolvedValue(1024);
 
 class FakeS3Client {
   write = write;
   presign = presign;
   delete = del;
+  file = file;
+  size = size;
 }
 
 // r2Env() validates presence via zod; it doesn't care whether the values are
@@ -38,6 +49,9 @@ beforeEach(() => {
   write.mockClear();
   presign.mockClear();
   del.mockClear();
+  file.mockClear();
+  fileStream.mockClear();
+  size.mockClear();
 });
 
 afterEach(() => {
@@ -175,5 +189,37 @@ describe("deleteObject", () => {
     const { deleteObject } = await import("./r2");
     await deleteObject("galleries/g/proofs/a.webp");
     expect(del).toHaveBeenCalledWith("galleries/g/proofs/a.webp");
+  });
+});
+
+// Task #29 (download-all-as-zip): the ONE function in this module that
+// returns a stream instead of a buffered value or a URL — see its own
+// comment for why, and src/lib/zip-stream.ts for the caller that depends on
+// this never buffering.
+describe("getObjectStream", () => {
+  it("resolves an S3File for the given key and returns its .stream()", async () => {
+    const { getObjectStream } = await import("./r2");
+    const result = getObjectStream("galleries/g/finals/a.jpg");
+    expect(file).toHaveBeenCalledWith("galleries/g/finals/a.jpg");
+    expect(fileStream).toHaveBeenCalledTimes(1);
+    expect(result).toBe("fake-stream");
+  });
+});
+
+// Task #29 review follow-up: the download-all route's pre-flight capacity
+// check needs every entry's byte size WITHOUT reading the object itself —
+// this is the one function in this module that answers that via a HEAD
+// request (`getClient().size(key)`), never `.file(key).stream()`.
+describe("getObjectSize", () => {
+  it("resolves the given key's size via the client's own HEAD-request size lookup, not .file().stream()", async () => {
+    size.mockResolvedValueOnce(20 * 1024 * 1024);
+    const { getObjectSize } = await import("./r2");
+
+    const result = await getObjectSize("galleries/g/finals/a.jpg");
+
+    expect(size).toHaveBeenCalledWith("galleries/g/finals/a.jpg");
+    expect(result).toBe(20 * 1024 * 1024);
+    expect(file).not.toHaveBeenCalled();
+    expect(fileStream).not.toHaveBeenCalled();
   });
 });

@@ -103,6 +103,8 @@ Automatic watermarking is a deliberate choice: the system guarantees protection,
 
 **Serving:** R2 objects are **private**. The app issues **short-lived presigned URLs** after verifying the client's session owns the gallery. Cloudflare fronts R2 → free egress + CDN. The droplet never streams image bytes.
 
+_One documented exception (task #29, §11): `GET /api/galleries/[galleryId]/download-all` streams finals through the droplet to assemble a zip archive, after the same ownership check as every other read path. See that route's own header comment and §11's resolved entry for the full reasoning and the measurement behind it._
+
 **File uploads themselves go through small REST route handlers that hand out presigned upload URLs — NOT through GraphQL** (multipart uploads over GraphQL are painful and not worth it).
 
 ### Why R2 and not the droplet's 80 GB disk
@@ -217,5 +219,27 @@ Email templates, download-all (zip), gallery expiry/archival, favorites, basic a
 
 - Portfolio content source: DB table vs. file-based vs. lightweight CMS (decide in Phase 1).
 - Gallery expiry / archival policy (galleries live forever for now; revisit later).
-- Download-all as zip — build on droplet or via a Cloudflare Worker?
+- ~~Download-all as zip — build on droplet or via a Cloudflare Worker?~~
+  **Decided (task #29): the droplet, as a documented, deliberate exception to
+  §5's "the droplet never streams image bytes."** A Cloudflare Worker would
+  preserve that rule literally, but building one for real needs its own
+  `wrangler.toml`, a re-implementation of (or callback into) this app's
+  session-based ownership check, R2-scoped credentials issued to the Worker,
+  and a second deploy pipeline alongside the existing rsync one
+  (`.github/workflows/deploy.yml`) — none of which exists yet, and none of
+  which "one download-all route" justifies building on its own. What makes
+  the droplet acceptable anyway: the route never buffers — one R2 object is
+  streamed at a time (STORE-only, no re-compression of already-JPEG bytes),
+  so peak memory stays flat regardless of gallery size instead of scaling
+  with total archive size. `scripts/measure-zip-memory.ts` measures this
+  directly: a naive buffer-then-respond implementation scales ~2x archive
+  size (a modest 800 MiB gallery already costs ~1.6 GiB, well past the 768M
+  droplet cap on its own), while the streamed shape this app actually ships
+  added only ~15 MiB across an 8x increase in file count/archive size in the
+  same run. Full reasoning and the caveat on which numbers are authoritative
+  (macOS-measured, not droplet-measured — see kanban #57) live in
+  `src/app/api/galleries/[galleryId]/download-all/route.ts`'s own header
+  comment and that script's own comments. Revisit the Worker path if this
+  app ever needs one for another reason, or if gallery sizes grow enough
+  that wall-clock time (not memory) becomes the droplet's bottleneck here.
 - Watermark design (logo, opacity, tiling) — needs the actual brand asset.

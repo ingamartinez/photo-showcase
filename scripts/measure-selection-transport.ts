@@ -369,17 +369,17 @@ function reportRun(agg: Aggregate): void {
  * something different says so, instead of printing a conclusion the numbers
  * above it no longer support. */
 function reportConclusion(aggregates: Aggregate[]): void {
-  const worstReclaimPct = Math.max(...aggregates.flatMap((a) => a.reclaimedPct));
+  const bestReclaimPct = Math.max(...aggregates.flatMap((a) => a.reclaimedPct));
   const runsObserved = aggregates.length * RUNS_PER_COUNT;
   const peakSseCost = Math.max(...aggregates.map((a) => a.sseDelta));
   const peakPollCost = Math.max(...aggregates.map((a) => a.pollRetained + a.burstPeakDelta));
 
   console.log("THE LINE THAT DECIDES IT is 'reclaimed once they all close'.");
   console.log(
-    worstReclaimPct < 5
-      ? `  Across ${runsObserved} runs, the BEST case gave back ${worstReclaimPct.toFixed(0)}% of what the held\n` +
+    bestReclaimPct < 5
+      ? `  Across ${runsObserved} runs, the BEST case gave back ${bestReclaimPct.toFixed(0)}% of what the held\n` +
           `  connections cost. Effectively none of it comes back.`
-      : `  Across ${runsObserved} runs the reclaimed share reached ${worstReclaimPct.toFixed(0)}% at best — so some of it\n` +
+      : `  Across ${runsObserved} runs the reclaimed share reached ${bestReclaimPct.toFixed(0)}% at best — so some of it\n` +
           `  can come back, but not dependably enough to plan capacity around.`,
   );
   console.log(

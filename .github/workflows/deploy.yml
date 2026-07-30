@@ -80,17 +80,49 @@ jobs:
           cp -r node_modules/drizzle-orm "$STAGE/node_modules/drizzle-orm"
           cp -r node_modules/postgres "$STAGE/node_modules/postgres"
           if [ -d drizzle ]; then cp -r drizzle "$STAGE/drizzle"; fi
-          mkdir -p "$STAGE/scripts" "$STAGE/src/lib/db" "$STAGE/src/content"
-          cp scripts/migrate-prod.ts "$STAGE/scripts/migrate-prod.ts"
-          cp scripts/seed-prod.ts "$STAGE/scripts/seed-prod.ts"
-          # Phase 2 ops scripts: staged so they reach the box with the release
-          # instead of being scp'd by hand to /tmp. Both use the same relative
-          # imports as seed-prod.ts, resolved against src/lib/db already
-          # overlaid below.
-          cp scripts/seed-packages.ts "$STAGE/scripts/seed-packages.ts"
-          cp scripts/create-admin.ts "$STAGE/scripts/create-admin.ts"
-          cp src/lib/db/index.ts "$STAGE/src/lib/db/index.ts"
-          cp src/lib/db/schema.ts "$STAGE/src/lib/db/schema.ts"
+          # Ops scripts (task #104, fixing the class, not the instance): task
+          # #104 found backfill-display-derivatives.ts invisible to this step,
+          # because scripts were staged by an explicit allowlist -- one `cp`
+          # per file -- and a new script needed a new line nobody remembered
+          # to add. Adding that one line would only have fixed THIS script;
+          # the next one dropped into scripts/ hits the identical gap. So:
+          # overlay `scripts/` and `src/lib/` WHOLESALE instead of naming
+          # files one by one. Every script committed under scripts/ now
+          # reaches the droplet by construction, and so does every src/lib/
+          # module it imports -- the same import-graph gap #104 hit
+          # (backfill-display-derivatives.ts pulls in images.ts, r2.ts, and
+          # r2.ts's own env.ts). `*.test.ts` is excluded from both: nothing
+          # under either directory is meant to run in production, and the
+          # test-only devDependencies those files import (vitest, etc.)
+          # aren't in this tarball's node_modules to satisfy them if bun ever
+          # tried.
+          #
+          # A deploy-time check ("does every package.json script referencing
+          # scripts/ have its file in the tarball?") was considered instead
+          # and rejected: it would have caught THIS incident -- the file
+          # existed in git but wasn't packaged -- but it only turns the same
+          # failure loud rather than removing it, and it does nothing for the
+          # import-graph half of the gap (a script file being present says
+          # nothing about whether the src/lib/ modules it imports are).
+          # Wholesale overlay needs no reminder, ever, for either half.
+          cp -r scripts "$STAGE/scripts"
+          find "$STAGE/scripts" -name '*.test.ts' -delete
+          mkdir -p "$STAGE/src"
+          cp -r src/lib "$STAGE/src/lib"
+          find "$STAGE/src/lib" -name '*.test.ts' -delete
+          # r2.ts (pulled in by backfill-display-derivatives.ts) imports
+          # src/lib/env.ts through the `@/` alias, unlike every other
+          # overlaid module here, which uses relative imports. Bun resolves
+          # `@/*` from tsconfig.json's `paths` at runtime the same way it
+          # does under `bun dev` -- verified against this exact staged
+          # layout: an identical `bun run` fails with "Cannot find module
+          # '@/lib/env'" without this file, and resolves correctly with it.
+          # The release dir had no tsconfig.json before now, so this import
+          # would have failed on the droplet at runtime, not here at deploy
+          # time -- the open question task #104 was asked to close before
+          # shipping this script.
+          cp tsconfig.json "$STAGE/tsconfig.json"
+          mkdir -p "$STAGE/src/content"
           cp src/content/portfolio.ts "$STAGE/src/content/portfolio.ts"
           echo "$GIT_SHA" > "$STAGE/GIT_SHA"
           tar -czf release.tar.gz -C "$STAGE" .

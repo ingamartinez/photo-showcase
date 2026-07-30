@@ -155,6 +155,32 @@ Push to `main` (or run the **Deploy** workflow manually). On success:
 curl https://alejoframes.com/api/health   # expect {"ok":true,...,"db":"ok"}
 ```
 
+## Ops scripts (scripts/) — how they reach the droplet, and how to run one
+
+Every file under `scripts/` (and every module it imports from `src/lib/`)
+ships to the droplet inside every release, staged by the CD workflow's
+"Package release tarball" step. This is a **wholesale overlay**, not an
+allowlist: nothing needs to be added to `.github/workflows/deploy.yml` for a
+new script to reach `/srv/photoshowcase/app/current/scripts/`.
+
+**This was not always true.** Task #104: `backfill-display-derivatives.ts`
+(task #89) shipped in `package.json`'s `backfill:display` script but was
+invisible to the droplet, because the packaging step staged ops scripts by an
+explicit allowlist — one `cp` per file — and nobody added a line for the new
+one. `git log` on that step's history is the record of every time this was
+almost repeated; the fix was to stop needing a line at all. If a future
+change reintroduces per-file `cp` lines there, that is a regression — reread
+task #104's reasoning in the step's own comment before doing it.
+
+**The one thing that can still require a manual `deploy.yml` edit**: a script
+that imports an npm package no route in the app already uses (so Next's
+standalone build never traced it into `.next/standalone/node_modules`). The
+step already overlays `drizzle-orm` and `postgres` for exactly this reason —
+`scripts/migrate-prod.ts` is the only caller of `drizzle-orm/postgres-js/
+migrator` anywhere in the codebase. A script that stays within packages the
+app itself already imports (`sharp`, `zod`, the `bun` types, …) needs nothing
+extra.
+
 ## Backups
 
 The `photoshowcase` database — not the R2 media bucket — is the irreplaceable

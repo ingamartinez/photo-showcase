@@ -256,13 +256,23 @@ Email templates, download-all (zip), gallery expiry/archival, favorites, basic a
   polling, with a socket held open on top and a reconnection story to get
   right. The memory was measured rather than asserted, on the same footing as
   #29's zip numbers (bare Bun HTTP server, both socket ends in one process,
-  macOS not the droplet — see kanban #57): 200 held SSE connections cost
-  +68.6 MiB of RSS and, crucially, **RSS did not come back when they closed**,
-  which under a hard 768M cap is a floor that only rises until restart; 200
-  polls' worth of traffic retained +2.3 MiB and settled straight back, at
-  0.11–0.73 ms each. The measurement also surfaced two costs SSE would have
-  had to answer in production instead: Bun kills an idle stream after 10s
-  without a keepalive per viewer, and Caddy has its own idle timeout. A
+  macOS not the droplet — see kanban #57), and re-runnable via
+  `bun run measure:selection:transport`: 200 held SSE connections cost
+  +68.0 MiB of RSS (~348 KiB/viewer as measured, ~277 KiB marginal — halve
+  both for the server's own share, since the harness holds both ends of every
+  socket) and, crucially, **effectively none of that came back when they
+  closed: 0% reclaimed in 9 of 9 repeated runs**, which under a hard 768M cap
+  is a floor only a restart is guaranteed to recover. Stated with the honesty
+  the script itself enforces: an earlier SINGLE-SHOT version of the same
+  measurement did once read ~45% reclaimed at one connection count, which is
+  why the committed script repeats every configuration and prints the spread
+  rather than a sample — do not read "never comes back" as a guarantee, read
+  it as "not dependably enough to plan capacity around". The polling arm
+  retained +2.0 MiB for the same 200 viewers, at 0.09–3.35 ms per request,
+  and its burst peak settled back to where it started in every run. The
+  measurement also surfaced two costs SSE would have had to answer in
+  production instead: Bun kills an idle stream after 10s without a keepalive
+  per viewer, and Caddy has its own idle timeout. A
   third-party realtime service was refused on the same grounds #29 refused the
   Cloudflare Worker — real infrastructure, a second failure domain, and "two
   people picking wedding photos together" does not justify it. The cost paid,
@@ -271,5 +281,7 @@ Email templates, download-all (zip), gallery expiry/archival, favorites, basic a
   `src/app/api/galleries/[galleryId]/selection/route.ts`'s own header comment
   and in `src/components/proof-grid.tsx`'s "LIVE SYNC" section. Revisit if a
   gallery ever routinely has ten-plus simultaneous viewers, or if the interval
-  has to drop below ~2s to feel right.
+  has to drop below ~2s to feel right, and re-run
+  `scripts/measure-selection-transport.ts` on the DROPLET (kanban #57) before
+  treating any of the numbers above as authoritative there.
 - Watermark design (logo, opacity, tiling) — needs the actual brand asset.

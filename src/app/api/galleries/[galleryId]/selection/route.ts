@@ -48,31 +48,42 @@
 //   reconnection story to get right. That is the decisive argument; the
 //   memory is the secondary one.
 //
-//   MEASURED anyway, rather than asserted (bare Bun HTTP server, both ends of
-//   every socket in one process — so each per-viewer figure is roughly twice
-//   the server's own share — with a Next.js route handler's per-request
-//   context on top of it in reality; macOS, not the droplet, same caveat task
-//   #29's zip measurement carries, see kanban #57):
+//   MEASURED anyway, rather than asserted, and RE-RUNNABLE — the script is
+//   `scripts/measure-selection-transport.ts`, `bun run
+//   measure:selection:transport`, alongside task #26's and #29's own
+//   measurement scripts. It is committed precisely so these numbers can be
+//   falsified: they were taken on macOS, on a bare Bun HTTP server holding
+//   both ends of every socket in one process (so each per-viewer figure is
+//   roughly twice the server's own share), with no Next.js per-request
+//   context, no Caddy, and none of the droplet's cgroup accounting. Kanban
+//   #57 is the task that re-runs it there; until then this SUPPORTS the
+//   decision, it does not prove it. Median of 3 runs per configuration:
 //
-//     baseline RSS                            24.0 MiB
-//     200 held SSE connections               +68.6 MiB  (351 KiB/viewer;
-//                                             276 KiB/viewer marginal
+//     200 held SSE connections               +68.0 MiB  (348 KiB/viewer;
+//                                             277 KiB/viewer marginal
 //                                             between 100 and 200)
-//     ...after ALL of them disconnect         92.9 MiB  — it does not come back
-//     200 polls (one tick for 200 viewers)    +2.3 MiB retained,
-//                                             0.11-0.73 ms per request
-//     200 SIMULTANEOUS polls                  +1.1 MiB peak, settles back,
-//                                             28 ms wall
+//     ...reclaimed once they all close        0% / 0% / 0%  (min/median/max
+//                                             across 9 runs)
+//     200 polls (one tick for 200 viewers)    +2.0 MiB retained,
+//                                             0.09-3.35 ms per request
+//     200 SIMULTANEOUS polls                  +1.3 MiB peak, settles back
 //
-//   The line that matters is the third one. Held connections ratchet RSS and
-//   the allocator does not return it to the OS when they close — under a hard
-//   768M cap with `max_memory_restart` (PLAN.md §9) that is a floor that only
-//   ever rises until the process restarts. Polling's peak is transient and
-//   settles back to where it started. Two further costs surfaced in the same
-//   run rather than in production: Bun's own server kills an idle stream
-//   after 10 seconds unless configured otherwise, so SSE needs a keepalive
-//   timer per viewer, and Caddy has its own idle timeout that would have to
-//   be verified rather than assumed.
+//   The line that matters is the second one. Held connections ratchet RSS,
+//   and effectively none of it is handed back to the OS when they close —
+//   under a hard 768M cap with `max_memory_restart` (PLAN.md §9) that is a
+//   floor only a restart is guaranteed to recover, whereas polling's peak is
+//   transient and settles back to where it started in every run. State that
+//   honestly rather than absolutely: an earlier SINGLE-SHOT version of the
+//   same measurement once read ~45% reclaimed at one connection count, which
+//   is exactly why the committed script repeats every configuration and
+//   prints the spread instead of a sample. "Not dependably reclaimed" is the
+//   claim this rests on, not "never reclaimed" — and under a hard cap that is
+//   the same decision.
+//
+//   Two further costs surfaced in the same run rather than in production:
+//   Bun's own server kills an idle stream after 10 seconds unless configured
+//   otherwise, so SSE needs a keepalive timer per viewer, and Caddy has its
+//   own idle timeout that would have to be verified rather than assumed.
 //
 //   A THIRD-PARTY REALTIME SERVICE. Removes the droplet cost entirely, and
 //   adds an API key, a vendor, a second failure domain and a per-message bill

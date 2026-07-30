@@ -1136,6 +1136,107 @@ describe("ProofGrid", () => {
       expect(screen.getByText("Beto")).toBeDefined();
     });
 
+    it("does NOT claim the list is fresh while every snapshot is being dropped for an in-flight toggle", async () => {
+      // The window this closes: a PATCH hanging on a flaky connection keeps
+      // `pendingIdsRef` non-empty, so every snapshot arriving meanwhile is
+      // discarded by condition 1 — while the polls themselves keep succeeding.
+      // Clearing the warning on a successful poll alone would tell the client
+      // the tray is live at exactly the moment it is frozen. Stale-but-honest
+      // beats silently-wrong.
+      let resolveToggle: ((value: unknown) => void) | undefined;
+      let pollFails = true;
+      const fetchMock = vi.fn((url: string) => {
+        if (url.startsWith("/api/galleries/")) {
+          return pollFails
+            ? Promise.reject(new Error("offline"))
+            : Promise.resolve(jsonResponse(200, snapshot({ picks: [] })));
+        }
+        return new Promise((resolve) => {
+          resolveToggle = resolve;
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }]),
+        initialPicks: [pickBy("a1", "client-a", "Ana Pérez")],
+      });
+
+      // Go stale first, the ordinary way.
+      await onePollTick();
+      await onePollTick();
+      expect(screen.getByText(/se perdió la conexión/i)).toBeDefined();
+
+      // Now a toggle hangs, and the connection comes back. Polls succeed —
+      // but their snapshots are all being dropped, so the warning must STAY.
+      await clickAndSettle(
+        screen.getByRole("button", { name: "Quitar de seleccionadas: IMG_0001.JPG" }),
+      );
+      pollFails = false;
+      await onePollTick();
+      await onePollTick();
+
+      expect(screen.getByText(/se perdió la conexión/i)).toBeDefined();
+
+      // Once the toggle lands, snapshots apply again and the warning clears on
+      // the next successful poll — it is a pause, not a latch.
+      await act(async () => {
+        resolveToggle?.(
+          jsonResponse(200, {
+            asset: { id: "a1", isSelected: false, selectedAt: null, pickedBy: null },
+            quota: computeQuota(0, {
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+            }),
+          }),
+        );
+      });
+      await onePollTick();
+
+      expect(screen.queryByText(/se perdió la conexión/i)).toBeNull();
+    });
+
+    it("does not invent a connection warning out of snapshots dropped for an in-flight toggle", async () => {
+      // The other direction: a dropped snapshot is not a FAILURE either. The
+      // network is fine, so nothing may count toward the staleness threshold.
+      let resolveToggle: ((value: unknown) => void) | undefined;
+      const fetchMock = vi.fn((url: string) => {
+        if (url.startsWith("/api/galleries/")) {
+          return Promise.resolve(jsonResponse(200, snapshot({ picks: [] })));
+        }
+        return new Promise((resolve) => {
+          resolveToggle = resolve;
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }]),
+        initialPicks: [pickBy("a1", "client-a", "Ana Pérez")],
+      });
+
+      await clickAndSettle(
+        screen.getByRole("button", { name: "Quitar de seleccionadas: IMG_0001.JPG" }),
+      );
+      await onePollTick();
+      await onePollTick();
+      await onePollTick();
+
+      expect(screen.queryByText(/se perdió la conexión/i)).toBeNull();
+
+      await act(async () => {
+        resolveToggle?.(
+          jsonResponse(200, {
+            asset: { id: "a1", isSelected: false, selectedAt: null, pickedBy: null },
+            quota: computeQuota(0, {
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+            }),
+          }),
+        );
+      });
+    });
+
     it("clears the staleness warning as soon as a poll succeeds again", async () => {
       let failing = true;
       const fetchMock = vi.fn((url: string) => {

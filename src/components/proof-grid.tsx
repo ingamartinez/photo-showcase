@@ -422,8 +422,35 @@ export function ProofGrid({
         return;
       }
       const snapshot = (await response.json()) as SelectionSnapshot;
-      consecutiveFailuresRef.current = 0;
-      setIsStale(false);
+
+      // A poll that SUCCEEDED is not on its own evidence that what the client
+      // is looking at is current — `applySnapshot` may be about to discard it.
+      // Clearing the staleness warning here unconditionally would mean the
+      // tray actively asserts freshness in exactly the window where it is
+      // ignoring every update: a PATCH hanging on a flaky connection keeps
+      // `pendingIdsRef` non-empty, every snapshot arriving meanwhile is
+      // dropped by condition 1, and the client would be told the list is live
+      // while it is frozen. "Stale-but-honest beats silently-wrong" is this
+      // task's own acceptance criterion, and that is the wrong side of it.
+      //
+      // Deliberately mirrors condition 1 ONLY, not condition 2. A snapshot
+      // dropped for being older than a confirmed local write is not staleness
+      // — in that case the client is looking at something the server already
+      // acknowledged, which is FRESHER than the snapshot being discarded, so
+      // clearing the warning is correct there.
+      //
+      // Safe to read `pendingIdsRef` twice (here and inside `applySnapshot`):
+      // there is no `await` between the two reads, so they run in the same
+      // synchronous continuation and cannot disagree.
+      //
+      // The counters are left ALONE rather than incremented when a snapshot is
+      // dropped — nothing failed, the network is fine, and counting this as a
+      // failure would eventually raise a connection warning that is simply not
+      // true.
+      if (pendingIdsRef.current.size === 0) {
+        consecutiveFailuresRef.current = 0;
+        setIsStale(false);
+      }
       applySnapshot(snapshot, issuedAtClock);
     } catch {
       consecutiveFailuresRef.current += 1;

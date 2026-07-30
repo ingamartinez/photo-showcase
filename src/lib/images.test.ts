@@ -90,11 +90,18 @@ function seededRandom(seed: number): () => number {
  * This fixture is FASTER (~1650ms end to end vs ~2520ms), and it is not a
  * trade of rigour for speed — it is strictly the better measurement:
  *
- *   - It is what the assertion is actually about. Noise made the committed
- *     page-weight figures ~30x the photographic ones, so the ratios were
- *     being measured against content no client will ever upload.
- *   - It CLEARS the tighter assertion by more: 2.18x margin versus 1.39x for
- *     the noise fixture it replaces.
+ *   - It is what the assertion is actually about. At identical dimensions
+ *     noise inflates page-weight figures ~2x over photographic content
+ *     (final 2.66x, display 2.08x, proof 1.95x, all measured at 4000x2667
+ *     with the same seed), so the ratios were being measured against
+ *     content no client will ever upload.
+ *   - It makes the assertion STRICTER, not looser. Holding dimensions
+ *     fixed at 4000x2667, noise scores a 2.79x margin and photographic
+ *     2.18x — the content change costs margin. The gain from 1.39x to
+ *     2.18x comes entirely from the SIZE change (3000x2000 -> 4000x2667);
+ *     photographic at the old 3000x2000 scores 1.35x, the same as the
+ *     noise fixture it replaces. Both changes were needed and they pull
+ *     in opposite directions.
  *
  * Sized at LARGE_WIDTH x LARGE_HEIGHT — the same ~4000x2667 the rest of this
  * file uses and the dimensions task #28 measured a real final at. That size

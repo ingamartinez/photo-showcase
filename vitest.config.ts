@@ -28,8 +28,9 @@ export default defineConfig({
     // one. The next person to add a real-bytes test should not have to know
     // this exists.
     //
-    // 30s is chosen against the measured worst case, not by taste: the
-    // slowest test in the suite is ~2.5s locally, so this leaves headroom for
+    // 30s is chosen against the measured worst case, not by taste: after the
+    // fixture fix that landed with this change the slowest test in the suite
+    // is ~1.66s locally (it was ~2.5s before), so this leaves headroom for
     // a runner several times slower again than the one observed. The real
     // backstop for a genuinely hung test remains the CI job's own
     // `timeout-minutes: 10` (.github/workflows/ci.yml) — the cost of this

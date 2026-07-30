@@ -16,7 +16,15 @@ EnvironmentFile=-/srv/photoshowcase/app/current/release.env
 Environment=NODE_ENV=production
 Environment=PORT=3300
 Environment=HOSTNAME=127.0.0.1
-ExecStart=/opt/bun/bin/bun server.js
+# --unhandled-rejections=warn: log-and-continue instead of Bun's default of
+# terminating the process on any unhandled rejection (verified: Bun 1.3 kills
+# the process by default, same as Node without a handler — see #99). Next's
+# own router-server already installs a process-level `unhandledRejection`
+# listener that just logs, which is what has kept this app up so far, but
+# that is an internal implementation detail of the current Next version, not
+# a contract. This flag makes "log, don't die" true at the runtime level
+# regardless of what Next does or stops doing in a future release.
+ExecStart=/opt/bun/bin/bun --unhandled-rejections=warn server.js
 Restart=always
 RestartSec=3
 TimeoutStopSec=10
@@ -34,6 +42,18 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/srv/photoshowcase/logs
+# The release dir under WorkingDirectory is intentionally read-only to this
+# process (ProtectSystem=strict, immutable-release deploy) — only the paths
+# listed here and below are writable. Next's built-in image optimizer wants
+# to write its on-disk cache to <distDir>/cache (.next/cache) at runtime,
+# which lives inside that read-only release tree, so grant a systemd-managed
+# cache dir instead of poking a hole in the release itself. The deploy
+# workflow symlinks each release's .next/cache to this path (see
+# .github/workflows/deploy.yml) so systemd's own writable-path allowlist
+# covers it. Persists across deploys/restarts (systemd does not clear
+# CacheDirectory=), which is fine: the cache is keyed by content hash. See
+# task #99.
+CacheDirectory=photoshowcase
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true

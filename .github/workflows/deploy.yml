@@ -105,6 +105,56 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
+      - name: Verify systemd unit matches droplet
+        run: |
+          set -eu
+          # This pipeline never installs infra/systemd/photoshowcase.service —
+          # that is a documented manual step (infra/README.md) because it
+          # needs `sudo cp` to /etc/systemd/system/ + `daemon-reload`, and the
+          # low-priv deploy user is not granted that (see the follow-up task
+          # filed from #99 about closing this gap for real). Until then, "the
+          # unit file changed in the repo" and "the unit file changed on the
+          # droplet" are two different events, and a release that depends on
+          # a new unit directive (CacheDirectory=, ExecStart flags, etc.)
+          # without checking for that drift fails silently in production
+          # instead of failing loud here. Reading the installed unit needs no
+          # new grant: unit files under /etc/systemd/system are root:root
+          # 644 by default, so a plain (non-sudo) read works for the deploy
+          # user.
+          local_unit=$(cat infra/systemd/photoshowcase.service)
+          # Keep "cannot reach the droplet" distinct from "the unit differs".
+          # The remote `cat` is forced to exit 0 (falling back to a sentinel
+          # when the file is absent), so a non-zero exit from ssh itself can
+          # only mean connectivity or auth failed. Without that split, an SSH
+          # outage yields an empty remote unit and renders as a whole-file
+          # diff — sending whoever is on call to run `sudo cp` against a box
+          # they cannot even reach.
+          if ! remote_unit=$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'cat /etc/systemd/system/photoshowcase.service 2>/dev/null || echo __UNIT_ABSENT__'); then
+            echo "Could not reach $DEPLOY_USER@$DEPLOY_HOST over SSH to read the installed systemd unit."
+            echo "This is a connectivity or auth failure, NOT unit drift — do not run the install commands until the droplet is reachable."
+            exit 1
+          fi
+          if [ "$remote_unit" = "__UNIT_ABSENT__" ]; then
+            echo "photoshowcase.service is not installed at /etc/systemd/system/ on the droplet."
+            echo "Install it, then re-run this deploy:"
+            echo "  sudo cp infra/systemd/photoshowcase.service /etc/systemd/system/"
+            echo "  sudo systemctl daemon-reload"
+            exit 1
+          fi
+          if [ "$local_unit" != "$remote_unit" ]; then
+            echo "photoshowcase.service on the droplet does not match infra/systemd/photoshowcase.service in this repo."
+            echo "This pipeline does not install the unit automatically. Install it by hand first, then re-run this deploy:"
+            echo "  sudo cp infra/systemd/photoshowcase.service /etc/systemd/system/"
+            echo "  sudo systemctl daemon-reload"
+            echo
+            echo "diff (repo vs droplet):"
+            diff <(printf '%s' "$local_unit") <(printf '%s' "$remote_unit") || true
+            exit 1
+          fi
+          echo "photoshowcase.service on the droplet matches the repo."
+
       - name: Upload tarball
         env:
           GIT_SHA: ${{ steps.sha.outputs.sha }}
@@ -128,6 +178,18 @@ jobs:
             rm -f '$TARBALL'
             printf 'GIT_SHA=%s\nAPP_ENV=production\n' '$GIT_SHA' | sudo -n -u photoshowcase tee '$ENV_FILE' >/dev/null
             sudo -n -u photoshowcase chmod 0640 '$ENV_FILE'
+            # Next's image optimizer writes its on-disk cache under
+            # <distDir>/cache (.next/cache) at runtime, but the release dir is
+            # read-only to the running service by design (ProtectSystem=strict
+            # in photoshowcase.service). Point .next/cache at the
+            # systemd-managed CacheDirectory= (/var/cache/photoshowcase, which
+            # IS writable under that hardening) instead of leaving it inside
+            # the immutable release. Done here, at deploy time, because the
+            # deploy user still has a normal writable view of the release dir
+            # -- the sandbox only applies to the running photoshowcase.service
+            # process, not to this extraction step. See task #99.
+            sudo -n -u photoshowcase install -d -m 0755 '$RELEASE_DIR/.next'
+            sudo -n -u photoshowcase ln -sfn /var/cache/photoshowcase '$RELEASE_DIR/.next/cache'
           "
 
       - name: Run migrations

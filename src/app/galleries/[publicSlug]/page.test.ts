@@ -43,8 +43,21 @@ vi.mock("@/lib/gallery-access", () => ({
   isGalleryOwner: (...args: [string, Session]) => isGalleryOwnerMock(...args),
 }));
 
+// Task #95: the collaborative tray's first paint. Mocked for the same reason
+// `@/lib/gallery-access` is — it reaches Postgres, and it has its own
+// dedicated suite (src/lib/gallery-selection.test.ts). What THIS suite cares
+// about is that the page reads it only AFTER the ownership and visibility
+// gates have passed, which the guard tests below prove by asserting it was
+// never called at all on a refused request.
+const getGallerySelectionMock = vi.fn<(galleryId: string) => Promise<unknown[]>>();
+vi.mock("@/lib/gallery-selection", () => ({
+  getGallerySelection: (...args: [string]) => getGallerySelectionMock(...args),
+}));
+
 beforeEach(() => {
   authMock.mockReset();
+  getGallerySelectionMock.mockReset();
+  getGallerySelectionMock.mockResolvedValue([]);
   getGalleryDetailBySlugMock.mockReset();
   getPresignedUrlMock.mockReset();
   getPresignedUrlMock.mockReturnValue("https://r2.example.com/presigned-proof-url");

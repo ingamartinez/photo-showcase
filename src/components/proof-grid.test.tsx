@@ -1,10 +1,12 @@
 // @vitest-environment jsdom
 import type { ComponentProps } from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { ProofGrid } from "./proof-grid";
-import type { ProofAsset } from "./proof-grid";
+import { ProofGrid, SELECTION_POLL_INTERVAL_MS } from "./proof-grid";
+import type { GalleryStatus, ProofAsset } from "./proof-grid";
+import { computeQuota } from "@/lib/quota";
+import type { SelectionPick } from "@/lib/selection-snapshot";
 
 // <ProofGrid> renders <SelectionCounter>, which imports `formatCop` off
 // `@/lib/format` — a plain module with no `server-only`/`@/lib/db` import
@@ -47,6 +49,12 @@ function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
       initialAssets={assetsFor()}
       initialStatus="proofing"
       initialSubmittedAt={null}
+      // Task #95: the collaborative tray's first paint. Most tests here
+      // predate it and are about the grid, so the default is "nobody has
+      // picked anything yet" — the tests that exercise the tray or the live
+      // sync override it.
+      initialPicks={[]}
+      viewerId="client-a"
       packageName="Estándar"
       includedPhotosSnapshot={13}
       extraPhotoPriceCopSnapshot={5_000}
@@ -651,6 +659,462 @@ describe("ProofGrid", () => {
 
       await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
       expect(fetchMock).toHaveBeenCalledWith("/api/assets/a1/proof");
+    });
+  });
+
+  // ==========================================================================
+  // Task #95 — the live, collaborative layer
+  // ==========================================================================
+  //
+  // Everything below drives the REAL polling loop on fake timers at the REAL
+  // cadence (`SELECTION_POLL_INTERVAL_MS`, imported rather than copied), and
+  // asserts on what a SECOND person's session would do to this one's screen.
+  describe("live collaborative sync", () => {
+    beforeEach(() => {
+      vi.useFakeTimers();
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    /** The snapshot shape `GET /api/galleries/[galleryId]/selection` returns. */
+    function snapshot(
+      overrides: Partial<{
+        status: GalleryStatus;
+        submittedAt: string | null;
+        picks: SelectionPick[];
+        selectedCount: number;
+      }> = {},
+    ) {
+      const picks = overrides.picks ?? [];
+      return {
+        status: overrides.status ?? "proofing",
+        submittedAt: overrides.submittedAt ?? null,
+        picks,
+        quota: computeQuota(overrides.selectedCount ?? picks.length, {
+          includedPhotosSnapshot: 13,
+          extraPhotoPriceCopSnapshot: 5_000,
+        }),
+      };
+    }
+
+    function pickBy(assetId: string, id: string, label: string): SelectionPick {
+      return {
+        assetId,
+        selectedAt: "2026-07-30T12:00:00.000Z",
+        pickedBy: { id, label },
+      };
+    }
+
+    /** Advances exactly one poll interval and lets the request settle.
+     * `advanceTimersByTimeAsync` flushes microtasks between timers, which is
+     * what makes the fetch's own `await`s resolve inside this act(). */
+    async function onePollTick() {
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(SELECTION_POLL_INTERVAL_MS);
+      });
+    }
+
+    /** `fireEvent`, not `userEvent`, in this block ONLY: `userEvent` schedules
+     * its own delays on real timers and deadlocks under `vi.useFakeTimers()`
+     * (measured — every test that used it here timed out at 30s). These
+     * assertions are about what a click's RESPONSE does to state, not about
+     * pointer/keyboard fidelity, which the rest of this suite already covers
+     * with `userEvent` on real timers. */
+    async function clickAndSettle(element: HTMLElement) {
+      await act(async () => {
+        fireEvent.click(element);
+      });
+    }
+
+    /** A `fetch` double that answers the poll route from a queue of
+     * snapshots (the last one repeats once the queue drains) and the PATCH
+     * selection route from a callback. */
+    function liveFetch(options: {
+      snapshots?: unknown[];
+      pollFails?: boolean;
+      onSelection?: (assetId: string, selected: boolean) => unknown;
+    }) {
+      const queue = [...(options.snapshots ?? [])];
+      let last: unknown = snapshot();
+      return vi.fn((url: string, init?: { body?: string }) => {
+        if (url.startsWith("/api/galleries/")) {
+          if (options.pollFails) return Promise.reject(new Error("offline"));
+          if (queue.length > 0) last = queue.shift();
+          return Promise.resolve(jsonResponse(200, last));
+        }
+        const assetId = url.split("/")[3]!;
+        const selected = (JSON.parse(init?.body ?? "{}") as { selected: boolean }).selected;
+        return Promise.resolve(
+          jsonResponse(
+            200,
+            options.onSelection?.(assetId, selected) ?? {
+              asset: {
+                id: assetId,
+                isSelected: selected,
+                selectedAt: selected ? "2026-07-30T12:00:00.000Z" : null,
+                pickedBy: selected ? { id: "client-a", label: "Ana Pérez" } : null,
+              },
+              quota: computeQuota(selected ? 1 : 0, {
+                includedPhotosSnapshot: 13,
+                extraPhotoPriceCopSnapshot: 5_000,
+              }),
+            },
+          ),
+        );
+      });
+    }
+
+    it("does not poll on mount — the server render already provided the snapshot", () => {
+      // One wasted request per page load per viewer, forever, is exactly the
+      // kind of cost the transport decision was made to avoid.
+      const fetchMock = liveFetch({});
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("shows a pick made by ANOTHER session in the tray, attributed, without a reload", async () => {
+      const fetchMock = liveFetch({
+        snapshots: [snapshot({ picks: [pickBy("a1", "client-b", "Beto Ruiz")] })],
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({ initialAssets: assetsFor([{}, {}]) });
+      expect(screen.getByText(/todavía no eligieron ninguna foto/i)).toBeDefined();
+
+      await onePollTick();
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
+      expect(screen.getByText("Beto Ruiz")).toBeDefined();
+      // And the grid tile agrees — the tray and the grid are two views of one
+      // fact, never two independently-derived ones.
+      expect(
+        screen.getByRole("button", { name: "Quitar de seleccionadas: IMG_0001.JPG" }),
+      ).toBeDefined();
+    });
+
+    it("removes a pick that ANOTHER session deselected, from the tray and the tile alike", async () => {
+      const fetchMock = liveFetch({ snapshots: [snapshot({ picks: [] })] });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }]),
+        initialPicks: [pickBy("a1", "client-b", "Beto Ruiz")],
+      });
+      expect(screen.getByText("Beto Ruiz")).toBeDefined();
+
+      await onePollTick();
+
+      expect(screen.queryByText("Beto Ruiz")).toBeNull();
+      expect(screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" })).toBeDefined();
+    });
+
+    it("replaces the counter with the SERVER's recomputed quota on every accepted snapshot", async () => {
+      const fetchMock = liveFetch({
+        snapshots: [snapshot({ picks: [pickBy("a1", "client-b", "Beto")], selectedCount: 15 })],
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid();
+
+      await onePollTick();
+
+      expect(screen.getByText(/seleccionadas 15 · extras 2/)).toBeDefined();
+    });
+
+    it("goes read-only the moment ANOTHER session submits — no reload", async () => {
+      // The most damaging failure this screen can have is a collaborator
+      // still picking into a gallery somebody else already closed.
+      const fetchMock = liveFetch({
+        snapshots: [
+          snapshot({
+            status: "selected",
+            submittedAt: "2026-07-30T13:00:00.000Z",
+            picks: [pickBy("a1", "client-b", "Beto")],
+          }),
+        ],
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({ initialAssets: assetsFor([{ isSelected: true }]) });
+      expect(screen.getByRole("button", { name: /enviar selección/i })).toBeDefined();
+
+      await onePollTick();
+
+      expect(screen.queryByRole("button", { name: /enviar selección/i })).toBeNull();
+      expect(
+        screen.getByRole("button", { name: "Quitar de seleccionadas: IMG_0001.JPG" }),
+      ).toHaveProperty("disabled", true);
+      expect(screen.getByText(/la selección ya fue enviada/i)).toBeDefined();
+    });
+
+    it("reopens when an admin unlocks a submitted selection, instead of staying stuck read-only", async () => {
+      // Task #73's unlock used to need a page reload to reach an open tab.
+      // Because the lock tracks the SERVER's status rather than latching, it
+      // converges in both directions.
+      const fetchMock = liveFetch({ snapshots: [snapshot({ status: "proofing" })] });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({ initialStatus: "selected", initialSubmittedAt: "2026-07-30T13:00:00.000Z" });
+      expect(screen.queryByRole("button", { name: /enviar selección/i })).toBeNull();
+
+      await onePollTick();
+
+      expect(screen.getByRole("button", { name: /enviar selección/i })).toBeDefined();
+    });
+
+    it("spends nothing polling a gallery whose selection can no longer change", async () => {
+      // `delivered` and `archived` are terminal — PLAN.md §2's state machine
+      // has no path back out toward the selectable statuses. A client leaving
+      // a delivered gallery open for an hour issues ZERO polls.
+      const fetchMock = liveFetch({});
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({ initialStatus: "delivered", initialSubmittedAt: "2026-07-30T13:00:00.000Z" });
+
+      await onePollTick();
+      await onePollTick();
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("keeps polling a submitted-but-not-delivered gallery, because an admin can still unlock it", async () => {
+      const fetchMock = liveFetch({});
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({ initialStatus: "selected", initialSubmittedAt: "2026-07-30T13:00:00.000Z" });
+
+      await onePollTick();
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
+    });
+
+    it("moves the client's OWN pick into the tray the instant the server confirms it, not a tick later", async () => {
+      const fetchMock = liveFetch({});
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid();
+      await clickAndSettle(screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" }));
+
+      // Attributed as "Vos" — from the id the SERVER reported, not a local
+      // assumption about who is clicking.
+      expect(screen.getByText("Vos")).toBeDefined();
+      expect(fetchMock).not.toHaveBeenCalledWith("/api/galleries/g1/selection");
+    });
+
+    it("takes the pick back out of the tray when the client deselects it themselves", async () => {
+      const fetchMock = liveFetch({});
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }]),
+        initialPicks: [pickBy("a1", "client-a", "Ana Pérez")],
+      });
+      await clickAndSettle(
+        screen.getByRole("button", { name: "Quitar de seleccionadas: IMG_0001.JPG" }),
+      );
+
+      expect(screen.getByText(/todavía no eligieron ninguna foto/i)).toBeDefined();
+    });
+
+    it("does NOT let a snapshot older than a confirmed local write undo that write", async () => {
+      // THE conflict case, from the losing side. A poll is issued, then the
+      // client picks a photo and the server confirms it, and only THEN does
+      // the poll's response — a photograph of the moment before the write —
+      // arrive. Applying it would flip the client's own just-confirmed pick
+      // back for a whole interval before flipping it forward again.
+      let resolvePoll: ((value: unknown) => void) | undefined;
+      const fetchMock = vi.fn((url: string, init?: { body?: string }) => {
+        if (url.startsWith("/api/galleries/")) {
+          return new Promise((resolve) => {
+            resolvePoll = resolve;
+          });
+        }
+        const selected = (JSON.parse(init?.body ?? "{}") as { selected: boolean }).selected;
+        return Promise.resolve(
+          jsonResponse(200, {
+            asset: {
+              id: "a1",
+              isSelected: selected,
+              selectedAt: "2026-07-30T12:00:00.000Z",
+              pickedBy: { id: "client-a", label: "Ana Pérez" },
+            },
+            quota: computeQuota(1, {
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+            }),
+          }),
+        );
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid();
+      await onePollTick(); // poll issued, hangs
+
+      await clickAndSettle(screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" }));
+      expect(screen.getByText("Vos")).toBeDefined();
+
+      // The stale snapshot finally lands, still reporting nothing selected.
+      await act(async () => {
+        resolvePoll?.(jsonResponse(200, snapshot({ picks: [] })));
+      });
+
+      expect(screen.getByText("Vos")).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: "Quitar de seleccionadas: IMG_0001.JPG" }),
+      ).toBeDefined();
+    });
+
+    it("drops a snapshot outright while a toggle of this session's own is still in flight", async () => {
+      // The other half of the conflict rule: the in-flight request's own
+      // response is fresher by construction, and it is about to arrive.
+      let resolveToggle: ((value: unknown) => void) | undefined;
+      const fetchMock = vi.fn((url: string) => {
+        if (url.startsWith("/api/galleries/")) {
+          return Promise.resolve(jsonResponse(200, snapshot({ picks: [] })));
+        }
+        return new Promise((resolve) => {
+          resolveToggle = resolve;
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }]),
+        initialPicks: [pickBy("a1", "client-a", "Ana Pérez")],
+      });
+
+      // Toggle issued and hanging; a poll lands in the middle of it.
+      await clickAndSettle(
+        screen.getByRole("button", { name: "Quitar de seleccionadas: IMG_0001.JPG" }),
+      );
+      await onePollTick();
+
+      // The snapshot said "nothing selected" — but it was dropped, so the tray
+      // still shows what this session last knew rather than half-applying.
+      expect(screen.getByText("Vos")).toBeDefined();
+
+      await act(async () => {
+        resolveToggle?.(
+          jsonResponse(200, {
+            asset: { id: "a1", isSelected: false, selectedAt: null, pickedBy: null },
+            quota: computeQuota(0, {
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+            }),
+          }),
+        );
+      });
+
+      expect(screen.getByText(/todavía no eligieron ninguna foto/i)).toBeDefined();
+    });
+
+    it("stays quiet after a single failed poll — one blip on a phone is not news", async () => {
+      const fetchMock = liveFetch({ pollFails: true });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({ initialPicks: [pickBy("a1", "client-b", "Beto")] });
+
+      await onePollTick();
+
+      expect(screen.queryByText(/se perdió la conexión/i)).toBeNull();
+    });
+
+    it("admits the list may be stale after two failed polls in a row — WITHOUT clearing it", async () => {
+      // Stale-but-honest beats silently-wrong. The picks on screen are the
+      // last thing the server actually said.
+      const fetchMock = liveFetch({ pollFails: true });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({ initialPicks: [pickBy("a1", "client-b", "Beto")] });
+
+      await onePollTick();
+      await onePollTick();
+
+      expect(screen.getByText(/se perdió la conexión/i)).toBeDefined();
+      expect(screen.getByText("Beto")).toBeDefined();
+    });
+
+    it("treats a refused poll exactly like a dropped connection, rather than blanking the tray", async () => {
+      // A 403 here means this session lost access while the tab was open
+      // (removed from the gallery, task #97). This component has no authority
+      // to revoke anything itself, and every route it could still call
+      // re-checks ownership on its own.
+      const fetchMock = vi.fn((url: string) =>
+        Promise.resolve(
+          url.startsWith("/api/galleries/")
+            ? jsonResponse(403, { error: "forbidden" })
+            : jsonResponse(200, {}),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({ initialPicks: [pickBy("a1", "client-b", "Beto")] });
+
+      await onePollTick();
+      await onePollTick();
+
+      expect(screen.getByText(/se perdió la conexión/i)).toBeDefined();
+      expect(screen.getByText("Beto")).toBeDefined();
+    });
+
+    it("clears the staleness warning as soon as a poll succeeds again", async () => {
+      let failing = true;
+      const fetchMock = vi.fn((url: string) => {
+        if (!url.startsWith("/api/galleries/")) return Promise.resolve(jsonResponse(200, {}));
+        return failing
+          ? Promise.reject(new Error("offline"))
+          : Promise.resolve(
+              jsonResponse(200, snapshot({ picks: [pickBy("a1", "client-b", "Beto")] })),
+            );
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid();
+      await onePollTick();
+      await onePollTick();
+      expect(screen.getByText(/se perdió la conexión/i)).toBeDefined();
+
+      failing = false;
+      await onePollTick();
+
+      expect(screen.queryByText(/se perdió la conexión/i)).toBeNull();
+      expect(screen.getByText("Beto")).toBeDefined();
+    });
+
+    it("stops polling when the tab is hidden, and catches up the moment it comes back", async () => {
+      const fetchMock = liveFetch({});
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid();
+
+      const hidden = vi.spyOn(document, "hidden", "get").mockReturnValue(true);
+      await onePollTick();
+      await onePollTick();
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      hidden.mockReturnValue(false);
+      await act(async () => {
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
+    });
+
+    it("stops polling entirely once unmounted", async () => {
+      const fetchMock = liveFetch({});
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { unmount } = renderGrid();
+      unmount();
+
+      await onePollTick();
+
+      expect(fetchMock).not.toHaveBeenCalled();
     });
   });
 });

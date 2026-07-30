@@ -68,6 +68,15 @@ vi.mock("@/lib/gallery-access", () => ({
   isGalleryOwner: (...args: [string, Session]) => isGalleryOwnerMock(...args),
 }));
 
+// Task #95: `@/lib/gallery-selection` is server-only for the same reason —
+// it reaches Postgres — so jsdom cannot resolve it either. Its own query is
+// proven in src/lib/gallery-selection.test.ts; what this file proves is that
+// whatever it returns reaches the collaborative tray's markup.
+const getGallerySelectionMock = vi.fn<(galleryId: string) => Promise<unknown[]>>();
+vi.mock("@/lib/gallery-selection", () => ({
+  getGallerySelection: (...args: [string]) => getGallerySelectionMock(...args),
+}));
+
 const SLUG = "abc123def456";
 
 function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
@@ -99,6 +108,8 @@ beforeEach(() => {
     expires: "2099-01-01T00:00:00.000Z",
   } as Session);
   getGalleryDetailBySlugMock.mockReset();
+  getGallerySelectionMock.mockReset();
+  getGallerySelectionMock.mockResolvedValue([]);
   isGalleryOwnerMock.mockReset();
   isGalleryOwnerMock.mockResolvedValue(true);
   // Only needed by the one negative test below, which reaches `forbidden()`
@@ -128,6 +139,89 @@ describe("ClientGalleryPage chrome", () => {
 
     await expect(ClientGalleryPage(paramsFor(SLUG))).rejects.toMatchObject({
       digest: "NEXT_HTTP_ERROR_FALLBACK;403",
+    });
+    // Task #95: and it never read the selection either. That query returns
+    // the OTHER clients' names, so it must sit behind the ownership gate, not
+    // beside it.
+    expect(getGallerySelectionMock).not.toHaveBeenCalled();
+  });
+
+  // Task #95: the collaborative tray, wired end to end from the page's own
+  // `getGallerySelection` read through to markup.
+  describe("collaborative selection tray", () => {
+    /** The tray only exists inside a gallery that HAS photos — a gallery with
+     * no assets renders <ProofGrid>'s own "your photographer hasn't uploaded
+     * anything yet" state and nothing else, which is the right thing: there is
+     * nothing to pick, so there is nothing to collaborate on. */
+    function withOnePhoto(isSelected = true): GalleryDetail {
+      return galleryDetail({
+        assets: [
+          {
+            id: "a1",
+            originalFilename: "IMG_0001.JPG",
+            proofKey: "galleries/g1/proofs/a1.webp",
+            proofWidth: 1600,
+            proofHeight: 1067,
+            isSelected,
+            sortOrder: 0,
+            finalKey: null,
+            isEdited: false,
+          },
+        ],
+      });
+    }
+
+    it("renders the tray with each pick attributed to whoever chose it", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(withOnePhoto());
+      getGallerySelectionMock.mockResolvedValue([
+        {
+          assetId: "a1",
+          selectedAt: "2026-07-30T12:00:00.000Z",
+          pickedBy: { id: "client-b", label: "Beto Ruiz" },
+        },
+      ]);
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      render(element);
+
+      expect(screen.getByRole("region", { name: "Fotos elegidas" })).toBeDefined();
+      expect(screen.getByText("Beto Ruiz")).toBeDefined();
+    });
+
+    it("renders THIS session's own pick as 'Vos', from the session id the page passes down", async () => {
+      // `requireSessionMock`'s default user is `client-a` — the same id this
+      // pick is attributed to.
+      getGalleryDetailBySlugMock.mockResolvedValue(withOnePhoto());
+      getGallerySelectionMock.mockResolvedValue([
+        {
+          assetId: "a1",
+          selectedAt: "2026-07-30T12:00:00.000Z",
+          pickedBy: { id: "client-a", label: "Ana Pérez" },
+        },
+      ]);
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      render(element);
+
+      expect(screen.getByText("Vos")).toBeDefined();
+    });
+
+    it("renders the tray, with its explanation, before anybody has picked anything", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(withOnePhoto(false));
+      getGallerySelectionMock.mockResolvedValue([]);
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      render(element);
+
+      expect(screen.getByText(/todavía no eligieron ninguna foto/i)).toBeDefined();
+    });
+
+    it("reads the selection with the gallery's OWN id, never the slug from the URL", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(withOnePhoto());
+
+      render(await ClientGalleryPage(paramsFor(SLUG)));
+
+      expect(getGallerySelectionMock).toHaveBeenCalledWith("g1");
     });
   });
 

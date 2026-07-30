@@ -297,6 +297,13 @@ beforeEach(async () => {
   db.__rows.users.push({ ...CLIENT_ROW });
 });
 
+// MUTATION-PROVEN (re-run for task #100, which relaxed this action's input
+// validation and so had to re-establish that the guard, not the schema, is
+// what stops a non-admin). Deleting `await requireAdmin()` from
+// `createGallery` made both tests in this block fail with
+// `promise resolved "{ status: 'created' }" instead of rejecting`: a signed-in
+// CLIENT successfully created a gallery, and so did a request with no session
+// at all. `15 passed | 2 failed`. Restoring it made all 17 pass.
 describe("createGallery authorization", () => {
   it("refuses a signed-in CLIENT with a 403, without inserting anything", async () => {
     authMock.mockResolvedValue(clientSession());
@@ -341,12 +348,45 @@ describe("createGallery validation", () => {
     authMock.mockResolvedValue(adminSession());
   });
 
-  it("rejects a missing client", async () => {
+  // Task #100 REVERSED this. Until #100 the schema carried
+  // `.min(1, "Elegí al menos un cliente.")` and this same test asserted the
+  // refusal; the owner asked for the opposite workflow — the shoot happens,
+  // the files come off the card, and the client record may not exist yet.
+  // Posting no `clientIds` at all is now a valid create.
+  it("ACCEPTS a create with no client at all, and writes zero memberships", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    const result = await createGallery(
+      { status: "idle" },
+      formDataWith({ packageId: "1", title: "Sesión sin cliente", sessionDate: "2026-08-01" }),
+    );
+
+    expect(result).toEqual({ status: "created" });
+    const stored = db.__rows.galleries.find((g) => g.title === "Sesión sin cliente");
+    expect(stored).toBeDefined();
+    expect(db.__rows.galleryClients.filter((gc) => gc.galleryId === stored!.id)).toHaveLength(0);
+    // No `status` written by the action — the column default puts it in
+    // `draft` (schema.ts), the one status where zero clients is legitimate.
+    expect(stored).not.toHaveProperty("status");
+  });
+
+  // An explicitly EMPTY `<select multiple>` posts no entries at all, which is
+  // indistinguishable from the case above; a crafted request could still post
+  // an empty-string id, and that must NOT become a membership row pointing at
+  // nothing. `.min(1)` on each ELEMENT survived #100's removal of `.min(1)`
+  // on the array.
+  it("still rejects a blank client id posted as an element", async () => {
     const { createGallery } = await import("./actions");
 
     const result = await createGallery(
       { status: "idle" },
-      formDataWith({ packageId: "1", title: "Boda", sessionDate: "2026-08-01" }),
+      formDataWith({
+        clientIds: ["  "],
+        packageId: "1",
+        title: "Boda",
+        sessionDate: "2026-08-01",
+      }),
     );
 
     expect(result.status).toBe("error");

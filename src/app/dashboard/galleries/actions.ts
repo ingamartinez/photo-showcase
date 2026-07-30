@@ -16,7 +16,11 @@ import { db } from "@/lib/db";
 import { assets, galleries, galleryClients, packages, users } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 import { requireAdmin } from "@/lib/auth-guards";
-import { getGalleryClients, isGalleryVisibleToClient, requiresActiveClient } from "@/lib/galleries";
+import {
+  activeClientRuleViolation,
+  getGalleryClients,
+  isGalleryVisibleToClient,
+} from "@/lib/galleries";
 import { generateGallerySlug } from "@/lib/slug";
 import { authEnv, resendEnv } from "@/lib/env";
 import { computeQuota } from "@/lib/quota";
@@ -27,11 +31,18 @@ const createGallerySchema = z.object({
   // (src/lib/clients.ts) — a plain presence + shape check here is enough; a
   // value that doesn't actually reference an existing row is caught below,
   // at the insert itself. Task #94: a gallery can now belong to SEVERAL
-  // clients, so this is an ARRAY, not a single id — `.min(1)` is the
-  // APPLICATION-layer half of "a gallery with zero clients is unreachable by
-  // design" (schema.ts's own comment on `galleryClients` explains why the
-  // database can't enforce that lower bound by itself).
-  clientIds: z.array(z.string().trim().min(1)).min(1, "Elegí al menos un cliente."),
+  // clients, so this is an ARRAY, not a single id.
+  //
+  // Task #100 REMOVED the `.min(1, "Elegí al menos un cliente.")` this array
+  // used to carry, on purpose and at the owner's request: the photographer
+  // must be able to set a session up and upload proofs BEFORE the client
+  // record exists. An EMPTY array is now a valid create, and the gallery it
+  // produces sits in `draft` (the column default, schema.ts) — the one
+  // status where zero active clients is legitimate. The lower bound did not
+  // disappear, it moved to where it is actually true: `publishGallery` and
+  // `deliverGallery` refuse to move a clientless gallery past `draft`, both
+  // through `activeClientRuleViolation()` (src/lib/galleries.ts).
+  clientIds: z.array(z.string().trim().min(1)),
   packageId: z
     .string()
     .trim()
@@ -131,11 +142,18 @@ export async function createGallery(
 
   try {
     // The gallery row and its client memberships are inserted together, in
-    // ONE transaction (task #94): a gallery that committed with zero clients
-    // attached would be the exact "unreachable by design" state
-    // schema.ts's comment on `galleryClients` says the app relies on the
-    // FORM to prevent — a partial failure here (gallery inserted, memberships
-    // not) must never leave that state sitting in the database.
+    // ONE transaction. Task #94 wrote this transaction to guarantee "a
+    // gallery never commits with zero clients attached"; task #100 DELETED
+    // that guarantee deliberately — a clientless `draft` gallery is now the
+    // requested workflow, not a corruption to prevent.
+    //
+    // The transaction stays, guaranteeing the weaker (and still valuable)
+    // thing that is actually true: a create is ALL-OR-NOTHING over the
+    // clients the admin chose. Either the gallery and every membership
+    // commit, or neither does. A partial failure that left the gallery
+    // attached to only SOME of the chosen clients would be invisible — the
+    // dashboard would render a plausible-looking client list that silently
+    // omits someone who is supposed to have access.
     await db.transaction(async (tx) => {
       const [gallery] = await tx
         .insert(galleries)
@@ -152,9 +170,15 @@ export async function createGallery(
         })
         .returning({ id: galleries.id });
 
-      await tx
-        .insert(galleryClients)
-        .values(clientIds.map((clientId) => ({ galleryId: gallery!.id, userId: clientId })));
+      // Task #100: skipped entirely for a clientless create. Not an
+      // optimization — drizzle's `.values([])` builds `insert into
+      // gallery_clients ("gallery_id", "user_id") values` with nothing after
+      // it, which Postgres rejects as a syntax error.
+      if (clientIds.length > 0) {
+        await tx
+          .insert(galleryClients)
+          .values(clientIds.map((clientId) => ({ galleryId: gallery!.id, userId: clientId })));
+      }
     });
   } catch (error) {
     if (hasPostgresErrorCode(error, FOREIGN_KEY_VIOLATION)) {
@@ -189,6 +213,14 @@ const publishGallerySchema = z.object({ galleryId: z.uuid() });
 function isPublishable(status: Gallery["status"]): boolean {
   return status === "draft";
 }
+
+// The status a successful publish LANDS the gallery in. Named once so the
+// active-client pre-flight below and the UPDATE that actually performs the
+// transition can never drift apart — the pre-flight asks
+// `activeClientRuleViolation()` about the DESTINATION status, and a literal
+// repeated in two places is exactly how that question quietly starts being
+// asked about the wrong one.
+const PUBLISH_TARGET_STATUS = "proofing" as const satisfies Gallery["status"];
 
 /**
  * draft -> proofing. Ordering, deliberate: the client's magic-link EMAIL is
@@ -275,29 +307,29 @@ export async function publishGallery(
   // Task #94: a gallery can have SEVERAL clients now — `gallery.clientId`
   // is gone entirely (schema.ts), replaced by this join-table read.
   //
-  // DO NOT DELETE THE CHECK BELOW AS DEAD DEFENSIVE CODE. It used to be
-  // genuinely unreachable — creation required at least one client and
-  // nothing could detach one afterwards — and this comment used to say so.
-  // Task #97 added `removeGalleryClient`, which strips the last active
-  // client off a `draft` gallery ON PURPOSE (`requiresActiveClient("draft")`
-  // is false). `isPublishable` is `status === "draft"`, so every gallery
-  // that reaches this line is exactly the kind that can now legitimately
-  // have zero active clients. This refusal is the ENFORCEMENT that stops a
-  // clientless gallery publishing to nobody, not redundancy on top of an
-  // invariant held elsewhere.
+  // DO NOT DELETE THE CHECK BELOW AS DEAD DEFENSIVE CODE. Reaching it with
+  // an empty list is not just possible, it is the ordinary case for a
+  // gallery the photographer set up before the client record existed (task
+  // #100) or stripped back down to zero while still in `draft` (task #97).
+  // `isPublishable` is `status === "draft"`, so EVERY gallery that reaches
+  // this line is exactly the kind that may legitimately have no clients.
+  // This refusal is the enforcement that stops it publishing to nobody.
   //
-  // It is also, today, a second independent statement of the SAME concern
-  // `requiresActiveClient()` (src/lib/galleries.ts) expresses — not the
-  // identical predicate, and the difference is the whole point: this one is
-  // about the status the gallery is about to REACH (`proofing`, which does
-  // require a client), while the gallery sitting here is still `draft`, for
-  // which `requiresActiveClient` returns false. Calling that predicate on
-  // `gallery.status` right here would answer the wrong question and permit
-  // exactly what this line refuses. Task #100 owns collapsing the two, and
-  // must collapse them on the DESTINATION status, not the current one.
+  // Task #100 collapsed the inline `clients.length === 0` that used to live
+  // here into `activeClientRuleViolation()` (src/lib/galleries.ts) — the one
+  // place the rule exists, shared with `deliverGallery` and
+  // `removeGalleryClient`. Note it is asked about PUBLISH_TARGET_STATUS, not
+  // `gallery.status`: the gallery sitting here is `draft`, which does NOT
+  // require a client. Asking about the current status would permit exactly
+  // what this refuses.
   const clients = await getGalleryClients(gallery.id);
-  if (clients.length === 0) {
-    return { status: "error", message: "No encontramos clientes para esta galería." };
+  const activeClientViolation = activeClientRuleViolation({
+    targetStatus: PUBLISH_TARGET_STATUS,
+    activeClientCount: clients.length,
+    action: "publish",
+  });
+  if (activeClientViolation) {
+    return { status: "error", message: activeClientViolation };
   }
 
   const sendResults = await Promise.allSettled(
@@ -340,7 +372,10 @@ export async function publishGallery(
   }
 
   try {
-    await db.update(galleries).set({ status: "proofing" }).where(eq(galleries.id, gallery.id));
+    await db
+      .update(galleries)
+      .set({ status: PUBLISH_TARGET_STATUS })
+      .where(eq(galleries.id, gallery.id));
   } catch {
     return {
       status: "error",
@@ -650,6 +685,12 @@ function isDeliverable(status: Gallery["status"]): boolean {
   return status === "selected";
 }
 
+// The status a successful delivery LANDS the gallery in — same reasoning as
+// `PUBLISH_TARGET_STATUS` above: the active-client pre-flight asks
+// `activeClientRuleViolation()` about the destination, and the CAS UPDATE
+// writes the same constant.
+const DELIVER_TARGET_STATUS = "delivered" as const satisfies Gallery["status"];
+
 /**
  * selected -> delivered. The epic's central rule for this task: **refuse
  * delivery while any selected asset still lacks a final** — half-delivering
@@ -764,10 +805,35 @@ export async function deliverGallery(
     };
   }
 
+  // Task #100: the zero-client REFUSAL, and it has to happen HERE — before
+  // the UPDATE, not next to the post-delivery read further down. This action
+  // already had a `clients.length === 0` branch, but by the time it runs the
+  // `selected -> delivered` transition has committed, so it can only pick a
+  // MESSAGE for something that already happened. A gallery nobody is
+  // attached to cannot be delivered to anybody; delivering it anyway
+  // produces a `delivered` gallery no human can open, which is precisely the
+  // silent no-op the rule exists to prevent.
+  //
+  // Same shared rule, same one function, as `publishGallery` above and
+  // `removeGalleryClient` below — asked about DELIVER_TARGET_STATUS. (Here
+  // the current status, `selected`, would give the same answer; asking about
+  // the destination anyway keeps all three call sites saying the same thing,
+  // which is what stops the publish case's genuine difference from looking
+  // like an anomaly.)
+  const preflightClients = await getGalleryClients(gallery.id);
+  const activeClientViolation = activeClientRuleViolation({
+    targetStatus: DELIVER_TARGET_STATUS,
+    activeClientCount: preflightClients.length,
+    action: "deliver",
+  });
+  if (activeClientViolation) {
+    return { status: "error", message: activeClientViolation };
+  }
+
   const now = new Date();
   const updated = await db
     .update(galleries)
-    .set({ status: "delivered", deliveredAt: now })
+    .set({ status: DELIVER_TARGET_STATUS, deliveredAt: now })
     .where(and(eq(galleries.id, gallery.id), eq(galleries.status, "selected")))
     .returning();
 
@@ -788,20 +854,22 @@ export async function deliverGallery(
   // `deliveredGallery.clientId` is gone entirely (schema.ts), replaced by
   // this join-table read.
   //
-  // AN EMPTY LIST HERE IS RARE BUT NOT IMPOSSIBLE, and this comment used to
-  // claim otherwise ("no removal path yet"). Task #97 added
-  // `removeGalleryClient`. It refuses to strip the LAST active client off a
-  // gallery past `draft`, and `isDeliverable` is `status === "selected"`, so
-  // the ordinary removal path cannot empty a deliverable gallery. What CAN
-  // is the narrow read-then-write race that action documents in its own
-  // header: two concurrent removals both read "2 active" and both commit.
+  // Read FRESH, deliberately, rather than reusing `preflightClients` from
+  // above: the pre-flight ran before the UPDATE and this list decides who
+  // actually gets an email, so it must reflect the state after the
+  // transition committed, not before it.
   //
-  // NOTE WHAT THIS FUNCTION DOES AND DOES NOT DO ABOUT IT. The
-  // `selected -> delivered` UPDATE above has ALREADY COMMITTED by the time
-  // this read runs, so the `clients.length === 0` branch below is a REPORT
-  // ("we delivered, but found nobody to email"), not a refusal. This action
-  // has no zero-client guard at all — adding one, driven by
-  // `requiresActiveClient()` (src/lib/galleries.ts), is task #100's job.
+  // AN EMPTY LIST HERE IS NOW GENUINELY RARE, and the `clients.length === 0`
+  // branch below is what it always was — a REPORT ("we delivered, but found
+  // nobody to email"), never the refusal. Task #100 added the actual refusal
+  // ABOVE, before the UPDATE, so an empty list at this point means the
+  // gallery lost its last active client BETWEEN the pre-flight and this
+  // read. Two documented windows lead there, both narrow: the pre-flight/CAS
+  // gap here, and the read-then-write race `removeGalleryClient` documents
+  // in its own header (two concurrent removals both reading "2 active").
+  // Keep the branch — the delivery has durably committed by now and must not
+  // be rolled back to tidy up an email nobody can receive; the admin needs
+  // to be told so they can reach the client another way.
   const clients = await getGalleryClients(deliveredGallery.id);
 
   // SEVERAL clients, PARTIAL failure named explicitly — same shape as
@@ -1137,21 +1205,22 @@ const removeGalleryClientSchema = z.object({
  * writes `assets` at all.
  *
  * THE LAST-CLIENT GUARD, conditional on status (owner-decided after this
- * task started): `requiresActiveClient()` (src/lib/galleries.ts) answers
- * "does a gallery in THIS status need at least one active client". `draft`
- * does not — this action is what makes a clientless `draft` gallery
- * reachable in the first place. Everything past `draft` does, because a
+ * task started): `activeClientRuleViolation()` (src/lib/galleries.ts) answers
+ * "would this leave a gallery in THAT status with nobody attached". `draft`
+ * would not care — this action is what makes a clientless `draft` gallery
+ * reachable from a populated one, and task #100 made it creatable that way
+ * from the start. Everything past `draft` does care, because a
  * `proofing`/`selected`/`delivered` gallery nobody can open is a dead end.
- * (Creating a gallery still requires at least one client, `createGallery`'s
- * own `.min(1)` above; task #100 owns relaxing that too.)
  *
- * This is the ONLY enforcement of that predicate anywhere in the codebase
- * today. `publishGallery` above does NOT call it — it keeps its own
- * unconditional `clients.length === 0` refusal — and `deliverGallery` has no
- * zero-client refusal at all, only a "we delivered but found nobody to email"
- * report after the fact. Task #100 owns collapsing both into this predicate;
- * until it lands, do not assume the rule is shared. See
- * `requiresActiveClient`'s own docblock for the per-caller state.
+ * The `targetStatus` passed is the gallery's CURRENT status, because removal
+ * moves the gallery nowhere — unlike `publishGallery`/`deliverGallery`, which
+ * pass the status they are transitioning INTO. The count passed is what would
+ * be left AFTER this removal, hence the `- 1`.
+ *
+ * Task #100 made that function the single home of the rule: this action,
+ * `publishGallery` and `deliverGallery` all consult it, and the gallery
+ * detail page mirrors it for hiding affordances. Grep
+ * `activeClientRuleViolation` to see every consumer.
  *
  * Same "the pre-flight check fails fast with a clear message, the UPDATE's
  * own `WHERE` is the real guard" shape as `isPublishable`/`isUnlockable`/
@@ -1212,13 +1281,13 @@ export async function removeGalleryClient(
     };
   }
 
-  if (activeMemberships.length <= 1 && requiresActiveClient(gallery.status)) {
-    return {
-      status: "error",
-      message:
-        "No podés quitar al último cliente activo de una galería que ya no está en borrador — " +
-        "agregá otro cliente antes de quitar este, o la galería queda sin nadie que pueda entrar.",
-    };
+  const activeClientViolation = activeClientRuleViolation({
+    targetStatus: gallery.status,
+    activeClientCount: activeMemberships.length - 1,
+    action: "remove-client",
+  });
+  if (activeClientViolation) {
+    return { status: "error", message: activeClientViolation };
   }
 
   const now = new Date();

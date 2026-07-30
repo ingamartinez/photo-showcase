@@ -353,7 +353,9 @@ describe("removeGalleryClient — the conditional last-active-client invariant",
   });
 
   // Everything PAST draft still needs at least one active client —
-  // `requiresActiveClient()` (src/lib/galleries.ts) is what this consults.
+  // `activeClientRuleViolation()` (src/lib/galleries.ts) is what this
+  // consults, the SAME function `publishGallery` and `deliverGallery` use
+  // since task #100 folded their own copies of the rule into it.
   it.each(["proofing", "selected", "delivered", "archived"])(
     "refuses to remove the LAST active client from a %s gallery",
     async (status) => {
@@ -398,29 +400,38 @@ describe("removeGalleryClient — the conditional last-active-client invariant",
     expect(db.__rows.galleryClients.find((r) => r.userId === CLIENT_B)?.removedAt).toBeNull();
   });
 
-  // MUTATION-TESTED, per this task's own instructions, in BOTH directions of
-  // the `&&` guard in `removeGalleryClient`:
-  //   1. Replacing `requiresActiveClient(gallery.status)` with a literal
-  //      `false` (simulating "no status ever needs an active client") made
-  //      all four `it.each` cases above (proofing/selected/delivered/
-  //      archived) start SUCCEEDING — `result.status` became `"removed"`
-  //      instead of `"error"` in every one, and the row's `removedAt`
-  //      flipped from `null` to a real timestamp. This is the dangerous
-  //      direction: it would let an admin strip a PUBLISHED gallery down to
-  //      zero clients.
-  //   2. Dropping the `requiresActiveClient(...)` clause ENTIRELY (leaving
-  //      only `activeMemberships.length <= 1`, an unconditional refusal) made
-  //      exactly TWO tests start FAILING: THIS one, and "allows removing the
-  //      LAST active client from a DRAFT gallery" further up. In both,
-  //      `result.status` became `"error"` instead of `"removed"`, wrongly
-  //      refusing the "a draft may have zero active clients" case this very
-  //      task introduces. NOT the test immediately above this one ("allows
-  //      removing one of TWO active clients from a non-draft gallery") — it
-  //      seeds two active clients, so `<= 1` is false and the mutation is
-  //      invisible to it. Naming the wrong neighbour is how a mutation claim
-  //      goes stale without anyone noticing.
-  // Restoring the real conjunction made every one of these pass again in
-  // both directions. See this task's final report for the observed output.
+  // MUTATION-TESTED in BOTH directions. Task #97 proved this against its own
+  // inline `activeMemberships.length <= 1 && requiresActiveClient(...)`
+  // conjunction; task #100 replaced that with a call to the shared
+  // `activeClientRuleViolation()`, so both mutations were RE-RUN against the
+  // new shape rather than carried over. Observed, not predicted:
+  //
+  //   1. Mutating the STATUS argument — `targetStatus: "draft"` as a literal,
+  //      simulating "no status ever needs an active client" — made exactly
+  //      the four `it.each` cases above (proofing/selected/delivered/
+  //      archived) FAIL, each with `expected 'removed' to be 'error'`. This
+  //      is the dangerous direction: it would let an admin strip a PUBLISHED
+  //      gallery down to zero clients. `10 passed | 4 failed`.
+  //
+  //   2. Mutating the COUNT argument — `activeClientCount: 0` unconditionally
+  //      (dropping the `- 1`, so the refusal fires whatever the real count) —
+  //      made a DIFFERENT four fail: "sets removedAt instead of deleting the
+  //      row", "revalidates both dashboard views on success", "allows
+  //      removing one of TWO active clients from a non-draft gallery", and
+  //      "has no code path that reads or writes the assets table at all".
+  //      Every one of them removes a client from a gallery that has another,
+  //      and every one turned into a wrongful refusal. `10 passed | 4 failed`.
+  //
+  //      NOTE WHAT MUTATION 2 DOES NOT BREAK, because it is the interesting
+  //      half: neither DRAFT test — "allows removing the LAST active client
+  //      from a DRAFT gallery" nor THIS one — notices it at all. The rule
+  //      short-circuits on `draft` before the count is ever consulted, so a
+  //      broken count is invisible on a draft. Those two tests pin the STATUS
+  //      half of the rule and cannot pin the count half; mutation 1's four
+  //      cases are what cover them. Claiming otherwise is how a mutation note
+  //      goes stale.
+  //
+  // Restoring the real call made all 14 pass again in both directions.
   it("does not refuse removal on a DRAFT gallery even when it is the only client (negative control for the guard above)", async () => {
     const db = await seededDb();
     db.__rows.galleries[0]!.status = "draft";

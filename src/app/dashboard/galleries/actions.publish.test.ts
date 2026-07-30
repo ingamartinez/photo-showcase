@@ -382,6 +382,95 @@ describe("publishGallery validation and guards", () => {
   });
 });
 
+// Task #100's central refusal on this action. Since #100 a gallery can be
+// CREATED with nobody attached, and since #97 a `draft` one can be stripped
+// back down to zero — so an empty client list here is the ordinary case for
+// the workflow the owner asked for, not a corrupt row. Publishing it anyway
+// would flip the status to `proofing` and send exactly zero emails: a
+// gallery "published" to nobody, which is the silent no-op the rule exists
+// to prevent.
+//
+// MUTATION-PROVEN, twice, with the observed output:
+//   1. Deleting the `if (activeClientViolation) return ...` block (keeping
+//      the call, so the mutation lands on the GUARD and not on the shared
+//      predicate) made both refusal tests below fail with
+//      `expected 'published' to be 'error'`. The gallery published to zero
+//      recipients — the exact silent no-op. `19 passed | 2 failed`.
+//   2. Swapping `targetStatus: PUBLISH_TARGET_STATUS` for
+//      `targetStatus: gallery.status` produced the IDENTICAL two failures,
+//      same message. That is the whole reason the call names the
+//      destination: `isPublishable` is `status === "draft"`, and the rule
+//      exempts `draft`, so asking about the current status answers about a
+//      state the transition is leaving and permits everything.
+// Restoring each made all 21 pass again.
+describe("publishGallery — refuses a gallery with no active clients", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+    signInMock.mockResolvedValue(
+      "http://localhost/api/auth/verify-request?provider=gallery-access",
+    );
+  });
+
+  it("refuses to publish a gallery with no active clients, emails nobody, and leaves it in draft", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.length = 0;
+    const { publishGallery } = await import("./actions");
+
+    const result = await publishGallery(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result.status).toBe("error");
+    // The shared rule's own Spanish copy (src/lib/galleries.ts) — it must say
+    // what to DO, not merely that something is missing.
+    expect(result.message).toMatch(/cliente/i);
+    expect(result.message).toMatch(/agregale/i);
+    expect(signInMock).not.toHaveBeenCalled();
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "draft" });
+    expect(revalidatePathMock).not.toHaveBeenCalled();
+  });
+
+  // A soft-removed client (task #97) is not an active client — the row still
+  // exists, so "there is a gallery_clients row" is not the question the guard
+  // asks.
+  it("refuses to publish when every attached client has been REMOVED", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.length = 0;
+    db.__rows.galleryClients.push({
+      galleryId: GALLERY_ID,
+      userId: CLIENT_ID,
+      removedAt: new Date("2026-07-29T12:00:00.000Z"),
+    });
+    const { publishGallery } = await import("./actions");
+
+    const result = await publishGallery(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(signInMock).not.toHaveBeenCalled();
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "draft" });
+  });
+
+  // The negative control the mutation notes above lean on: one active client
+  // is enough, so a mutation that turned the guard into an unconditional
+  // refusal would be caught here rather than looking harmless.
+  it("publishes normally as soon as ONE active client is attached (negative control)", async () => {
+    const db = await seededDb();
+    const { publishGallery } = await import("./actions");
+
+    const result = await publishGallery(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result).toEqual({ status: "published" });
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+  });
+});
+
 describe("publishGallery — send failure never half-publishes the gallery", () => {
   beforeEach(() => {
     authMock.mockResolvedValue(adminSession());

@@ -207,12 +207,11 @@ describe("isGalleryVisibleToClient", () => {
   });
 });
 
-// Task #97: `draft` is the ONE status allowed to have zero active clients,
-// and task #97 is what makes that state reachable — `removeGalleryClient`
-// will strip the last active client off a `draft` gallery. Creation still
-// requires at least one (`createGallery`'s `.min(1)`); task #100 owns
-// letting a gallery be created clientless too. Every other status still
-// needs at least one client attached.
+// Task #97: `draft` is the ONE status allowed to have zero active clients.
+// Two ways to get there, both deliberate — `removeGalleryClient` strips the
+// last active client off a `draft` gallery (#97), and `createGallery` accepts
+// an empty client list outright (#100). Every other status needs at least one
+// client attached.
 describe("requiresActiveClient", () => {
   it.each([
     ["draft", false],
@@ -223,6 +222,87 @@ describe("requiresActiveClient", () => {
   ] as const)("status %s -> requires an active client: %s", async (status, expected) => {
     const { requiresActiveClient } = await import("./galleries");
     expect(requiresActiveClient(status)).toBe(expected);
+  });
+});
+
+// Task #100: the whole rule, in the one place it exists. `publishGallery`,
+// `deliverGallery`, `removeGalleryClient` and the gallery detail page's two
+// UX mirrors all route through THIS function — nobody rebuilds the
+// conjunction. These cases are the contract every one of them inherits.
+describe("activeClientRuleViolation", () => {
+  it("permits a clientless DRAFT — the one status the rule exempts", async () => {
+    const { activeClientRuleViolation } = await import("./galleries");
+
+    expect(
+      activeClientRuleViolation({
+        targetStatus: "draft",
+        activeClientCount: 0,
+        action: "remove-client",
+      }),
+    ).toBeNull();
+  });
+
+  it.each(["proofing", "selected", "delivered", "archived"] as const)(
+    "refuses zero active clients when the target status is %s",
+    async (targetStatus) => {
+      const { activeClientRuleViolation } = await import("./galleries");
+
+      const violation = activeClientRuleViolation({
+        targetStatus,
+        activeClientCount: 0,
+        action: "publish",
+      });
+
+      expect(violation).toBeTruthy();
+    },
+  );
+
+  it.each(["draft", "proofing", "selected", "delivered", "archived"] as const)(
+    "permits status %s as soon as ONE active client remains",
+    async (targetStatus) => {
+      const { activeClientRuleViolation } = await import("./galleries");
+
+      expect(
+        activeClientRuleViolation({ targetStatus, activeClientCount: 1, action: "deliver" }),
+      ).toBeNull();
+    },
+  );
+
+  // The rule is one; only the sentence differs. Each action's message has to
+  // say what to DO about it (the owner's own requirement), so a shared
+  // generic string would be a regression, not a simplification.
+  it("returns a DIFFERENT, action-specific Spanish message for each of the three operations", async () => {
+    const { activeClientRuleViolation } = await import("./galleries");
+
+    const messages = (["publish", "deliver", "remove-client"] as const).map((action) =>
+      activeClientRuleViolation({ targetStatus: "proofing", activeClientCount: 0, action }),
+    );
+
+    expect(new Set(messages).size).toBe(3);
+    expect(messages[0]).toMatch(/publicarla/);
+    expect(messages[1]).toMatch(/entregarla/);
+    expect(messages[2]).toMatch(/quitar/);
+    // Spanish, and actionable — every one names the fix, not just the fault.
+    for (const message of messages) expect(message).toMatch(/agrega|agregá/i);
+  });
+
+  // The publish path is the reason this takes a TARGET status rather than the
+  // gallery's current one: a publishable gallery is always `draft`, which the
+  // rule exempts. Asked about the current status it would permit exactly what
+  // it exists to refuse.
+  it("answers about the DESTINATION status, not a draft origin", async () => {
+    const { activeClientRuleViolation } = await import("./galleries");
+
+    expect(
+      activeClientRuleViolation({
+        targetStatus: "proofing",
+        activeClientCount: 0,
+        action: "publish",
+      }),
+    ).toBeTruthy();
+    expect(
+      activeClientRuleViolation({ targetStatus: "draft", activeClientCount: 0, action: "publish" }),
+    ).toBeNull();
   });
 });
 

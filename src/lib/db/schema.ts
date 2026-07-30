@@ -260,13 +260,29 @@ export const galleries = pgTable(
 // (there is no gallery-delete feature in this app today; this only follows
 // the convention `assets.galleryId` already set, for the day one exists).
 //
-// A gallery with ZERO clients is unreachable BY DESIGN — `gallery-form.tsx`
-// requires picking at least one at creation — but that lower bound is
-// enforced at the APPLICATION layer, not here: Postgres has no built-in "at
-// least one row per gallery_id" constraint short of a trigger, and there is
-// no "remove the last client from a gallery" code path anywhere in this app
-// yet for such a trigger to guard against. Revisit if a client-removal
-// feature is ever added.
+// A gallery with ZERO active clients is allowed ONLY while it is still
+// `draft`. Task #97 (this column) is what first makes that state reachable:
+// `removeGalleryClient` will strip the last active client off a `draft`
+// gallery on purpose. CREATION still requires at least one client
+// (`createGallery`'s own `.min(1)`); task #100 is what will let a gallery be
+// created clientless too, so the photographer can set up a session and
+// upload proofs before the client record exists. Past `draft` the lower
+// bound holds: a `proofing`/`selected`/`delivered` gallery with nobody
+// attached is a dead end nobody can open.
+//
+// The rule — "does THIS status require at least one active client" — is
+// `requiresActiveClient()` in src/lib/galleries.ts. TODAY it has exactly one
+// enforcement site, `removeGalleryClient`, plus the detail page's mirror of
+// it for hiding the button. `publishGallery` still carries its own separate
+// `clients.length === 0` refusal, written inline instead of going through
+// that predicate, and `deliverGallery` carries no zero-client refusal at all
+// (it delivers, then reports it found nobody to email). Folding both in is
+// task #100's work, NOT something already done — see `requiresActiveClient`'s
+// own docblock for the exact state of each caller.
+//
+// Enforced at the APPLICATION layer, not here: Postgres has no built-in "at
+// least one row per gallery_id, conditional on a sibling column" constraint
+// short of a trigger.
 export const galleryClients = pgTable(
   "gallery_clients",
   {
@@ -277,6 +293,47 @@ export const galleryClients = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: "restrict" }),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    // Task #97: removal is SOFT, decided by the owner. NULL means attached;
+    // a value means removed, and records WHEN — same nullable-timestamp
+    // vocabulary as `selectionSubmittedAt`/`deliveredAt`/`selectedAt` above
+    // ("has this happened yet"), not a status enum for a two-state fact that
+    // also wants a date (the owner's own framing).
+    //
+    // A row is NEVER deleted on removal — the composite PK stays the
+    // identity of "this person was ever attached to this gallery", and a
+    // removed row still proves that fact happened, on purpose (the owner:
+    // "sigue constando que en algún momento existió").
+    //
+    // THIS IS THE SAFETY-CRITICAL COLUMN the whole feature rests on: every
+    // query anywhere in this app that reads `gallery_clients` to answer "can
+    // this person see this gallery" MUST also filter `removedAt IS NULL`, or
+    // a removed client keeps every right this table grants — see
+    // src/lib/gallery-access.ts's `isGalleryOwner`, `getGalleryClients` and
+    // `getGalleriesForClient` in src/lib/galleries.ts, and the email
+    // fan-outs in src/app/dashboard/galleries/actions.ts for the reachable
+    // set this task swept for.
+    //
+    // Re-attaching a previously-removed client UPDATEs this same row back to
+    // `NULL` (the composite PK makes a second INSERT for the same pair
+    // impossible) rather than inserting a new one — see
+    // `attachGalleryClients` in src/app/dashboard/galleries/actions.ts.
+    //
+    // NO `removed_by_email` COMPANION COLUMN, decided in task #97 (the ticket
+    // asked for this call explicitly, following `galleries.unlockedByEmail`'s
+    // precedent above). The two look alike and are not: `unlockedByEmail`
+    // exists because an UNLOCK reopens a selection the client already
+    // submitted — it reverses a commercial fact, happens during a money
+    // conversation, and task #73 paired it with an optional `unlockReason`
+    // precisely so the "who and why" of that reversal survives the phone
+    // call. A membership removal has no counterpart: it changes nobody's
+    // surcharge, reverses no client-visible commitment, and `removedAt` alone
+    // already answers the only question anyone has asked of it ("is this
+    // person still attached, and since when did they stop being"). With
+    // exactly one admin (PLAN.md §4), a `removed_by_email` column would
+    // record the same address on every row it ever held. Revisit if a second
+    // admin ever exists — at that point the argument above stops holding and
+    // the column earns itself.
+    removedAt: timestamp("removed_at", { withTimezone: true }),
   },
   (t) => [primaryKey({ columns: [t.galleryId, t.userId] })],
 );

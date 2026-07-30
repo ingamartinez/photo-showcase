@@ -1,0 +1,1 @@
+ALTER TABLE "gallery_clients" ADD COLUMN "removed_at" timestamp with time zone;

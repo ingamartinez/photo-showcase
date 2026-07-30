@@ -8,12 +8,16 @@ import {
   formatSessionDate,
   getGalleryDetail,
   getGalleryUnlockAudit,
+  requiresActiveClient,
 } from "@/lib/galleries";
+import { getClientsForPicker } from "@/lib/clients";
 import { formatCop } from "@/lib/format";
 import { getPresignedUrl } from "@/lib/r2";
 import { GalleryWorkspace } from "@/components/gallery-workspace";
 import { PublishGalleryButton } from "@/components/publish-gallery-button";
 import { UnlockSelectionPanel } from "@/components/unlock-selection-panel";
+import { GalleryClientRow } from "@/components/gallery-client-row";
+import { AttachGalleryClientsForm } from "@/components/attach-gallery-clients-form";
 
 export const metadata: Metadata = {
   title: "Galería",
@@ -40,6 +44,27 @@ export default async function GalleryDetailPage({
 
   const gallery = await getGalleryDetail(galleryIdResult.data);
   if (!gallery) notFound();
+
+  // Task #97: every client NOT currently active on this gallery is a valid
+  // "attach" candidate — this deliberately includes both clients never
+  // attached at all AND previously-removed ones (re-attaching either one
+  // goes through the exact same `attachGalleryClients` action; see that
+  // action's own comment on the three membership cases it handles). A
+  // dedicated query (`getClientsForPicker`, already used by the gallery
+  // LIST page's own creation form) rather than folding this into
+  // `getGalleryDetail` — that function's `GalleryDetail` type has no
+  // business knowing about clients this gallery ISN'T attached to.
+  const allClients = await getClientsForPicker();
+  const activeClientIds = new Set(gallery.clients.map((client) => client.id));
+  const eligibleClients = allClients.filter((client) => !activeClientIds.has(client.id));
+
+  // Task #97: the SAME predicate `removeGalleryClient` itself consults
+  // server-side (src/lib/galleries.ts's `requiresActiveClient`) — hiding the
+  // "Quitar" affordance when removing would leave a past-`draft` gallery
+  // with zero active clients is UX, not the authority; the action re-checks
+  // this regardless of what's rendered here. These two are the predicate's
+  // only call sites today; see its own docblock for what does NOT consult it.
+  const canRemoveAnyClient = !requiresActiveClient(gallery.status) || gallery.clients.length > 1;
 
   // Task #73: the unlock audit trail (who/when/reason) is a SEPARATE, tiny
   // query — see src/lib/galleries.ts's own comment on
@@ -100,13 +125,25 @@ export default async function GalleryDetailPage({
           </h1>
           {/* Task #94: a gallery can have several clients now — one line
               per client so each name/email pair stays legible instead of
-              being crammed onto one. */}
+              being crammed onto one. Task #97: each line is now its own
+              <GalleryClientRow>, adding the "Quitar" affordance. */}
           {gallery.clients.map((client) => (
-            <p key={client.id} className="text-fg-mute mt-2 text-sm">
-              {client.name ?? client.email} · {client.email}
-            </p>
+            <GalleryClientRow
+              key={client.id}
+              galleryId={gallery.id}
+              client={client}
+              status={gallery.status}
+              removable={canRemoveAnyClient}
+            />
           ))}
           <p className="text-fg-mute text-sm">Sesión: {formatSessionDate(gallery.sessionDate)}</p>
+
+          {/* Task #97 — the product's first gallery-editing surface: attach
+              one or more additional clients to a gallery that already
+              exists, from the gallery's own page. */}
+          <div className="border-line-2 mt-4 max-w-sm rounded-sm border p-4">
+            <AttachGalleryClientsForm galleryId={gallery.id} eligibleClients={eligibleClients} />
+          </div>
         </div>
 
         <div className="flex flex-col items-end gap-4">

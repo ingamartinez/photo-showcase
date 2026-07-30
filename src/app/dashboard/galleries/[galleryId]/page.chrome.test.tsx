@@ -48,6 +48,11 @@ vi.mock("@/lib/galleries", () => ({
     const [year, month, day] = sessionDate.split("-");
     return `${day}/${month}/${year}`;
   },
+  // Task #97: a plain re-implementation of the real predicate (`status !==
+  // "draft"`) — this module is mocked wholesale, not via `importActual`, so
+  // every export the page now imports from it needs an entry here, same
+  // "name every export a mock provides" stance as the rest of this mock.
+  requiresActiveClient: (status: string) => status !== "draft",
 }));
 
 // `formatCop` lives in `@/lib/format` (a plain, DB-free module — see that
@@ -55,6 +60,16 @@ vi.mock("@/lib/galleries", () => ({
 // separately here since `@/lib/galleries` is mocked wholesale above.
 vi.mock("@/lib/format", () => ({
   formatCop: (amountCop: number) => `$ ${amountCop.toLocaleString("es-CO")}`,
+}));
+
+// Task #97: the page reads `getClientsForPicker` (`@/lib/clients`) to build
+// the "attach" picker's eligible-client list — its REAL implementation
+// issues a `db.query.users.findMany(...)` this file never stands up
+// (`import "server-only"`, unresolvable under jsdom either), same reasoning
+// as this file's own `@/lib/galleries`/`@/lib/r2` mocks.
+const getClientsForPickerMock = vi.fn();
+vi.mock("@/lib/clients", () => ({
+  getClientsForPicker: () => getClientsForPickerMock(),
 }));
 
 vi.mock("@/lib/r2", () => ({
@@ -74,10 +89,17 @@ const unlockSelectionMock = vi.fn();
 // Same reasoning, same file, for <DeliverGalleryButton> (task #27): its
 // module imports `deliverGallery` from here too.
 const deliverGalleryMock = vi.fn();
+// Same reasoning, same file, for <AttachGalleryClientsForm>/<GalleryClientRow>
+// (task #97): their modules import `attachGalleryClients`/
+// `removeGalleryClient` from here too.
+const attachGalleryClientsMock = vi.fn();
+const removeGalleryClientMock = vi.fn();
 vi.mock("@/app/dashboard/galleries/actions", () => ({
   publishGallery: (...args: unknown[]) => publishGalleryMock(...args),
   unlockSelection: (...args: unknown[]) => unlockSelectionMock(...args),
   deliverGallery: (...args: unknown[]) => deliverGalleryMock(...args),
+  attachGalleryClients: (...args: unknown[]) => attachGalleryClientsMock(...args),
+  removeGalleryClient: (...args: unknown[]) => removeGalleryClientMock(...args),
 }));
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
@@ -120,6 +142,17 @@ beforeEach(() => {
   publishGalleryMock.mockReset();
   unlockSelectionMock.mockReset();
   deliverGalleryMock.mockReset();
+  attachGalleryClientsMock.mockReset();
+  // `useActionState` (React 19) requires its action to resolve to a well-
+  // formed state object — a bare `vi.fn()` resolves to `undefined` by
+  // default, which crashes `<AttachGalleryClientsForm>`/`<GalleryClientRow>`
+  // the instant either form submits, same reasoning as
+  // gallery-form.test.tsx's own default mock resolution.
+  attachGalleryClientsMock.mockResolvedValue({ status: "idle" });
+  removeGalleryClientMock.mockReset();
+  removeGalleryClientMock.mockResolvedValue({ status: "idle" });
+  getClientsForPickerMock.mockReset();
+  getClientsForPickerMock.mockResolvedValue([]);
 });
 
 afterEach(() => {
@@ -395,5 +428,140 @@ describe("GalleryDetailPage chrome", () => {
       "disabled",
       false,
     );
+  });
+});
+
+describe("GalleryDetailPage — attaching and removing clients (task #97)", () => {
+  it("excludes an already-active client from the attach picker's options", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({ clients: [{ id: "u1", name: "Ana Pérez", email: "ana@example.com" }] }),
+    );
+    getClientsForPickerMock.mockResolvedValue([
+      { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+      { id: "u2", name: "Beto Ruiz", email: "beto@example.com" },
+    ]);
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    // Beto (not yet attached) is offered; Ana (already active) is not —
+    // her name still appears once, as the gallery's own client line, but
+    // never as a second, selectable <option>.
+    expect(screen.getByRole("option", { name: "Beto Ruiz" })).toBeDefined();
+    expect(screen.queryByRole("option", { name: "Ana Pérez" })).toBeNull();
+  });
+
+  it("shows a message instead of the picker when every client is already attached", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({ clients: [{ id: "u1", name: "Ana Pérez", email: "ana@example.com" }] }),
+    );
+    getClientsForPickerMock.mockResolvedValue([
+      { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+    ]);
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByText(/Ya agregaste a todos los clientes disponibles/)).toBeDefined();
+  });
+
+  it("shows a Quitar affordance for each active client when there is more than one", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        clients: [
+          { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+          { id: "u2", name: "Beto Ruiz", email: "beto@example.com" },
+        ],
+      }),
+    );
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getAllByRole("button", { name: "Quitar" })).toHaveLength(2);
+  });
+
+  // The last-active-client guard's UI half: hiding "Quitar" is UX only —
+  // removeGalleryClient() itself re-checks requiresActiveClient() server-side
+  // (src/lib/galleries.ts) regardless of what this page ever renders.
+  it("hides the Quitar affordance for the ONLY active client on a non-draft gallery", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        status: "proofing",
+        clients: [{ id: "u1", name: "Ana Pérez", email: "ana@example.com" }],
+      }),
+    );
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.queryByRole("button", { name: "Quitar" })).toBeNull();
+  });
+
+  // Task #97's own reversal of part of the invariant: a DRAFT gallery may
+  // legitimately reach zero active clients — `removeGalleryClient` is what
+  // gets it there — so "Quitar" must NOT be hidden even for the only one.
+  it("shows the Quitar affordance for the ONLY active client on a DRAFT gallery", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        status: "draft",
+        clients: [{ id: "u1", name: "Ana Pérez", email: "ana@example.com" }],
+      }),
+    );
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByRole("button", { name: "Quitar" })).toBeDefined();
+  });
+
+  // The confirmation copy must say WHAT is about to happen, not just ask
+  // "¿estás seguro?" — this task's own explicit requirement, sharpest for a
+  // DELIVERED gallery: removing a client takes away photos they may have
+  // already paid for.
+  it("names what removal costs a client on a DELIVERED gallery before confirming", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        status: "delivered",
+        clients: [
+          { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+          { id: "u2", name: "Beto Ruiz", email: "beto@example.com" },
+        ],
+      }),
+    );
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+    const user = userEvent.setup();
+
+    await user.click(screen.getAllByRole("button", { name: "Quitar" })[0]!);
+
+    expect(
+      screen.getByText(/perder el acceso para ver y descargar las fotos entregadas/),
+    ).toBeDefined();
+    expect(removeGalleryClientMock).not.toHaveBeenCalled();
+    expect(screen.getByRole("button", { name: "Confirmar" })).toBeDefined();
+  });
+
+  it("submits removeGalleryClient only after the confirm step", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        clients: [
+          { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+          { id: "u2", name: "Beto Ruiz", email: "beto@example.com" },
+        ],
+      }),
+    );
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+    const user = userEvent.setup();
+
+    await user.click(screen.getAllByRole("button", { name: "Quitar" })[0]!);
+    await user.click(screen.getByRole("button", { name: "Confirmar" }));
+
+    expect(removeGalleryClientMock).toHaveBeenCalledTimes(1);
   });
 });

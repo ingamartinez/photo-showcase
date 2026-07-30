@@ -431,13 +431,14 @@ export type GalleryClientContact = { id: string; name: string | null; email: str
  * (assets, package, snapshot terms).
  *
  * Returns an EMPTY array, never throws, when a gallery has no clients
- * attached — `gallery-form.tsx` requires picking at least one at creation
- * (see schema.ts's comment on `galleryClients` for why the database itself
- * cannot enforce that lower bound), so an empty result here would mean the
- * requirement was bypassed somehow (a manual DB edit, a bug), not a normal
- * state — every caller must decide what to do with zero clients rather than
- * assuming at least one, which is exactly why this returns a list instead of
- * throwing or returning `null`.
+ * attached. As of task #100, that is the ORDINARY state for a `draft`
+ * gallery — the photographer can create one, and upload proofs to it,
+ * before any client record exists (see schema.ts's comment on
+ * `galleryClients` for the full rule, `activeClientRuleViolation()` in this
+ * file for where it is enforced). Past `draft` an empty result means that
+ * rule has been violated — rare, but callers must still handle it rather
+ * than assuming at least one client, which is exactly why this returns a
+ * list instead of throwing or returning `null`.
  *
  * Task #97: filtered to `removedAt IS NULL` — this is THE query every email
  * fan-out in src/app/dashboard/galleries/actions.ts (publish/unlock/deliver)

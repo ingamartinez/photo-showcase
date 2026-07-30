@@ -76,14 +76,14 @@ the very first install done by hand, before that grant can take effect.
 controls the `ExecStart=` a root-owned unit runs and already holds
 `systemctl restart photoshowcase.service`, so letting it write this one unit
 file lets it run anything as root on the next restart. Scoping the grant to
-one exact source path and one exact destination path bounds *which file*
+one exact source path and one exact destination path bounds _which file_
 gets written, not what a hostile or buggy `deploy` could put in it — it
 protects against `deploy` mistyping a path, not against a compromised or
 malicious `deploy`. The real enforcement boundary is PR review of
 `infra/systemd/photoshowcase.service`, branch protection on `main`, custody
 of the `DEPLOY_SSH_KEY` secret, and who may dispatch the Deploy workflow.
 
-This is also not a *new* escalation on this shared droplet: `deploy` already
+This is also not a _new_ escalation on this shared droplet: `deploy` already
 has an equivalent root-equivalent grant via `findash-redis-provision`
 (installing a unit file as root, plus a redis restart). This adds a second
 instance of a power `deploy` already has, not a fresh one. See
@@ -99,14 +99,14 @@ sudo visudo -c
 
 Until this is applied, every deploy's "Install systemd unit" step fails
 loudly with the commands above, rather than silently skipping the install —
-see that step in `deploy.yml`. That step can still fail *after* the grant is
+see that step in `deploy.yml`. That step can still fail _after_ the grant is
 applied too (e.g. `install` succeeds but `daemon-reload` does not), leaving
 the new unit file on disk but not yet reloaded — the deploy still stops
 before anything is restarted, but do not read "the step failed" as always
 meaning "the sudoers grant is missing."
 
 This step now runs after migrations and seeding, not before them — a missing
-or broken grant fails the deploy *after* the database has already moved
+or broken grant fails the deploy _after_ the database has already moved
 forward for the new release, not before. That's a deliberate trade, not an
 oversight: unit/release skew is persistent host state that outlives the job,
 while "the database is ahead of the currently-running code" is a state this

@@ -491,6 +491,50 @@ describe("PATCH /api/assets/[assetId]/selection — persistence and quota recomp
     expect(db.__rows.assets[0]?.selectedBy).toBeNull();
   });
 
+  // Task #95: the collaborative tray moves a photo the instant the SERVER
+  // confirms the pick, and it needs a name to put under it. Reported back by
+  // the route that just wrote the attribution rather than assembled on the
+  // client — same "never derive a fact the server can hand you" stance the
+  // `quota` field already follows.
+  it("reports back who it recorded as the picker, so the tray never has to guess", async () => {
+    authMock.mockResolvedValue({
+      user: { id: "client-a", role: "client", email: "a@example.com", name: "Ana Pérez" },
+      expires: "2099-01-01T00:00:00.000Z",
+    });
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
+    const body = (await response.json()) as {
+      asset: { pickedBy: { id: string; label: string } | null };
+    };
+
+    expect(body.asset.pickedBy).toEqual({ id: "client-a", label: "Ana Pérez" });
+  });
+
+  it("falls back to the email when the picker has no name, never to a blank label", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
+    const body = (await response.json()) as {
+      asset: { pickedBy: { id: string; label: string } | null };
+    };
+
+    expect(body.asset.pickedBy).toEqual({ id: "client-a", label: "a@example.com" });
+  });
+
+  it("reports a null picker on deselect, in lockstep with the column it just cleared", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.assets[0] = assetRow({ isSelected: true, selectedBy: "client-b" });
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+    const body = (await response.json()) as { asset: { pickedBy: unknown } };
+
+    expect(body.asset.pickedBy).toBeNull();
+  });
+
   // The task's core acceptance criterion: the response's `quota` is a fresh
   // server-side recomputation off the gallery's frozen snapshot, not
   // anything the client could have supplied or incremented itself.

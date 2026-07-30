@@ -242,4 +242,34 @@ Email templates, download-all (zip), gallery expiry/archival, favorites, basic a
   comment and that script's own comments. Revisit the Worker path if this
   app ever needs one for another reason, or if gallery sizes grow enough
   that wall-clock time (not memory) becomes the droplet's bottleneck here.
+- ~~Real-time transport — polling, SSE, or a third-party service?~~
+  **Decided (task #95): short-interval polling of
+  `GET /api/galleries/[galleryId]/selection`, at 5s, only while the gallery is
+  in a status where the shared selection can still change, and only while the
+  tab is visible.** This app had no real-time transport of any kind before
+  #95, so the collaborative selection tray had to introduce one. The decisive
+  argument is not memory, it is that **there is no event bus to feed an SSE
+  endpoint**: one systemd process, no Redis (§9 keeps image work inline
+  precisely to avoid standing one up), so SSE here would either need an
+  in-process `EventEmitter` that silently stops working the day this runs as
+  more than one instance, or it would poll the database internally anyway —
+  polling, with a socket held open on top and a reconnection story to get
+  right. The memory was measured rather than asserted, on the same footing as
+  #29's zip numbers (bare Bun HTTP server, both socket ends in one process,
+  macOS not the droplet — see kanban #57): 200 held SSE connections cost
+  +68.6 MiB of RSS and, crucially, **RSS did not come back when they closed**,
+  which under a hard 768M cap is a floor that only rises until restart; 200
+  polls' worth of traffic retained +2.3 MiB and settled straight back, at
+  0.11–0.73 ms each. The measurement also surfaced two costs SSE would have
+  had to answer in production instead: Bun kills an idle stream after 10s
+  without a keepalive per viewer, and Caddy has its own idle timeout. A
+  third-party realtime service was refused on the same grounds #29 refused the
+  Cloudflare Worker — real infrastructure, a second failure domain, and "two
+  people picking wedding photos together" does not justify it. The cost paid,
+  stated plainly: the tray can be up to 5 seconds stale. Full reasoning, the
+  numbers, the conflict rule and the live submit lock live in
+  `src/app/api/galleries/[galleryId]/selection/route.ts`'s own header comment
+  and in `src/components/proof-grid.tsx`'s "LIVE SYNC" section. Revisit if a
+  gallery ever routinely has ten-plus simultaneous viewers, or if the interval
+  has to drop below ~2s to feel right.
 - Watermark design (logo, opacity, tiling) — needs the actual brand asset.

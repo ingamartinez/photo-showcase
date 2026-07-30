@@ -67,6 +67,48 @@ function eqColumnAndValue(condition: unknown): { column?: string; value?: unknow
   return { column: jsKey, value };
 }
 
+// Task #97: `getGalleryClients` now filters `removedAt IS NULL` alongside
+// `galleryId` — a leaf-condition parser (same shape as
+// src/lib/gallery-access.test.ts's own) that reads each SQL node's chunks
+// LOCALLY, rather than flattening the whole tree, so an `eq()`'s value chunk
+// is never confused with a sibling `isNull()`'s absence of one.
+type LeafCondition =
+  { dbColumnName: string; op: "eq"; value: unknown } | { dbColumnName: string; op: "isNull" };
+
+function parseLeaf(node: unknown): LeafCondition | undefined {
+  const chunks = (node as { queryChunks?: unknown[] } | null)?.queryChunks;
+  if (!chunks) return undefined;
+  let dbColumnName: string | undefined;
+  let value: unknown;
+  let hasValue = false;
+  let isNullText = false;
+  for (const chunk of chunks) {
+    if (chunk && typeof chunk === "object") {
+      if ("name" in chunk && "table" in chunk) dbColumnName = (chunk as { name: string }).name;
+      if ("value" in chunk && "encoder" in chunk) {
+        value = (chunk as { value: unknown }).value;
+        hasValue = true;
+      }
+      if ("value" in chunk && Array.isArray((chunk as { value: unknown }).value)) {
+        if ((chunk as { value: string[] }).value.join("").includes("is null")) isNullText = true;
+      }
+    }
+  }
+  if (!dbColumnName) return undefined;
+  if (isNullText) return { dbColumnName, op: "isNull" };
+  if (hasValue) return { dbColumnName, op: "eq", value };
+  return undefined;
+}
+
+function parseConditions(node: unknown): LeafCondition[] {
+  const leaf = parseLeaf(node);
+  if (leaf) return [leaf];
+  const chunks = (node as { queryChunks?: unknown[] } | null)?.queryChunks ?? [];
+  const results: LeafCondition[] = [];
+  for (const chunk of chunks) results.push(...parseConditions(chunk));
+  return results;
+}
+
 vi.mock("@/lib/db", async () => {
   const { assets, galleries, users } = await import("@/lib/db/schema");
 
@@ -126,15 +168,32 @@ vi.mock("@/lib/db", async () => {
       // the relational API, `db.query.galleryClients.findMany(...)` — this
       // is what publishGallery now calls instead of a `users` lookup by the
       // (now nonexistent) `gallery.clientId`.
+      //
+      // Task #97: also asserts (and applies) the `removedAt IS NULL` half of
+      // that same `where` — this fake THROWS if that filter is ever missing,
+      // so a regression that drops it fails loudly here rather than quietly
+      // re-emailing a removed client.
       query: {
         galleryClients: {
           findMany: async (args: { where: unknown }) => {
-            const { column, value } = eqColumnAndValue(args.where);
-            if (column !== "galleryId") {
+            const conditions = parseConditions(args.where);
+            const galleryIdCond = conditions.find(
+              (c): c is { dbColumnName: string; op: "eq"; value: unknown } =>
+                c.dbColumnName === "gallery_id" && c.op === "eq",
+            );
+            if (!galleryIdCond) {
               throw new Error("fake db: expected a where on galleryClients.galleryId");
             }
+            const hasRemovedAtFilter = conditions.some(
+              (c) => c.dbColumnName === "removed_at" && c.op === "isNull",
+            );
+            if (!hasRemovedAtFilter) {
+              throw new Error(
+                "fake db: expected getGalleryClients to filter removedAt IS NULL (task #97)",
+              );
+            }
             return galleryClientRows
-              .filter((r) => r.galleryId === value)
+              .filter((r) => r.galleryId === galleryIdCond.value && r.removedAt == null)
               .map((r) => ({ user: userRows.find((u) => u.id === r.userId) }));
           },
         },
@@ -418,6 +477,36 @@ describe("publishGallery success", () => {
       expect.objectContaining({ email: CLIENT_EMAIL }),
     );
     expect(signInMock).toHaveBeenCalledWith(
+      "gallery-access",
+      expect.objectContaining({ email: "beto@example.com" }),
+    );
+  });
+
+  // Task #97 acceptance criterion: a REMOVED client must never receive a
+  // gallery-access email again, even though their `gallery_clients` row
+  // still exists (soft delete).
+  it("never emails a client whose membership was REMOVED (removedAt set)", async () => {
+    const db = await seededDb();
+    db.__rows.users.push({ id: "client-2", name: "Beto Ruiz", email: "beto@example.com" });
+    db.__rows.galleryClients.push({
+      galleryId: GALLERY_ID,
+      userId: "client-2",
+      removedAt: new Date("2026-07-29T12:00:00.000Z"),
+    });
+    const { publishGallery } = await import("./actions");
+
+    const result = await publishGallery(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result).toEqual({ status: "published" });
+    expect(signInMock).toHaveBeenCalledTimes(1);
+    expect(signInMock).toHaveBeenCalledWith(
+      "gallery-access",
+      expect.objectContaining({ email: CLIENT_EMAIL }),
+    );
+    expect(signInMock).not.toHaveBeenCalledWith(
       "gallery-access",
       expect.objectContaining({ email: "beto@example.com" }),
     );

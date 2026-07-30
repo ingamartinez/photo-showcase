@@ -27,7 +27,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets } from "@/lib/db/schema";
-import { requireApiSession } from "@/lib/auth-guards";
+import { withApiSession } from "@/lib/auth-guards";
 import { loadOwnedAsset } from "@/lib/asset-access";
 import { canReadFinalDeliverable } from "@/lib/final-access";
 import { processDisplay, processFinal } from "@/lib/images";
@@ -116,19 +116,14 @@ export function buildFinalDownloadFilename(galleryTitle: string, originalFilenam
   return `${gallerySlug}-${photoSlug}.jpg`;
 }
 
-export async function GET(
+// Unauthenticated -> 401 JSON, never a redirect (see auth-guards.ts).
+// `withApiSession()` (task #54) runs that check unconditionally before this
+// handler ever executes — there is no branch here to forget to return.
+export const GET = withApiSession(async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ assetId: string }> },
+  session,
 ): Promise<NextResponse> {
-  // Unauthenticated -> 401 JSON, never a redirect (see auth-guards.ts). This
-  // MUST be an early return on the `instanceof NextResponse` branch — task
-  // #16's carried-over note from the #45 review: `requireApiSession()`
-  // returns a union rather than throwing, and a caller that discards the
-  // result here is silently unguarded.
-  const sessionOrResponse = await requireApiSession();
-  if (sessionOrResponse instanceof NextResponse) return sessionOrResponse;
-  const session = sessionOrResponse;
-
   const { assetId: rawAssetId } = await params;
   const assetIdResult = assetIdSchema.safeParse(rawAssetId);
   if (!assetIdResult.success) {
@@ -163,21 +158,19 @@ export async function GET(
     contentDisposition: `attachment; filename="${filename}"`,
   });
   return NextResponse.json({ url });
-}
+});
 
 // POST — task #26: the admin attaches an edited, full-resolution export to
 // an existing asset. See the file header for the shared ownership check;
 // this handler adds the admin-only + selected-only gates on top of it.
-export async function POST(
+//
+// Unauthenticated -> 401 JSON, never a redirect. Same `withApiSession()`
+// shape as GET above — see its own comment.
+export const POST = withApiSession(async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ assetId: string }> },
+  session,
 ): Promise<NextResponse> {
-  // Unauthenticated -> 401 JSON, never a redirect. Same MUST-early-return
-  // shape as GET above — see its own comment.
-  const sessionOrResponse = await requireApiSession();
-  if (sessionOrResponse instanceof NextResponse) return sessionOrResponse;
-  const session = sessionOrResponse;
-
   // Signed in but not admin -> 403. `forbidden()` (not `requireAdmin()`,
   // which redirects an unauthenticated caller instead of returning 401 JSON)
   // — same pattern as the proofs upload route
@@ -336,4 +329,4 @@ export async function POST(
   return NextResponse.json({
     asset: { id: asset.id, finalKey: key, isEdited: true },
   });
-}
+});

@@ -52,7 +52,7 @@ import { count, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets, galleries } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
-import { requireApiSession } from "@/lib/auth-guards";
+import { withApiSession } from "@/lib/auth-guards";
 import { processProof } from "@/lib/images";
 import { deleteObject, proofKey, putObject } from "@/lib/r2";
 
@@ -89,15 +89,14 @@ function errorResponse(error: string, status: number): NextResponse {
   return NextResponse.json({ error }, { status });
 }
 
-export async function POST(
+// Unauthenticated -> 401 JSON (never a redirect; see auth-guards.ts).
+// `withApiSession()` (task #54) runs that check unconditionally before this
+// handler ever executes — there is no branch here to forget to return.
+export const POST = withApiSession(async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ galleryId: string }> },
+  session,
 ): Promise<NextResponse> {
-  // Unauthenticated -> 401 JSON (never a redirect; see auth-guards.ts).
-  const sessionOrResponse = await requireApiSession();
-  if (sessionOrResponse instanceof NextResponse) return sessionOrResponse;
-  const session = sessionOrResponse;
-
   // Signed in but not admin -> 403, checked on every request per the epic's
   // rule. `forbidden()` (not `requireAdmin()`, which redirects unauthed
   // callers instead of returning 401 JSON) is the documented pattern for a
@@ -219,4 +218,4 @@ export async function POST(
     },
     { status: 201 },
   );
-}
+});

@@ -25,7 +25,7 @@
 // admin workspace previews `draft` galleries constantly, by design.
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { requireApiSession } from "@/lib/auth-guards";
+import { withApiSession } from "@/lib/auth-guards";
 import { loadOwnedAsset } from "@/lib/asset-access";
 import { isGalleryVisibleToClient } from "@/lib/galleries";
 import { getPresignedUrl } from "@/lib/r2";
@@ -38,19 +38,14 @@ function errorResponse(error: string, status: number): NextResponse {
   return NextResponse.json({ error }, { status });
 }
 
-export async function GET(
+// Unauthenticated -> 401 JSON, never a redirect (see auth-guards.ts).
+// `withApiSession()` (task #54) runs that check unconditionally before this
+// handler ever executes — there is no branch here to forget to return.
+export const GET = withApiSession(async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ assetId: string }> },
+  session,
 ): Promise<NextResponse> {
-  // Unauthenticated -> 401 JSON, never a redirect (see auth-guards.ts). This
-  // MUST be an early return on the `instanceof NextResponse` branch — task
-  // #16's carried-over note from the #45 review: `requireApiSession()`
-  // returns a union rather than throwing, and a caller that discards the
-  // result here is silently unguarded.
-  const sessionOrResponse = await requireApiSession();
-  if (sessionOrResponse instanceof NextResponse) return sessionOrResponse;
-  const session = sessionOrResponse;
-
   const { assetId: rawAssetId } = await params;
   const assetIdResult = assetIdSchema.safeParse(rawAssetId);
   if (!assetIdResult.success) {
@@ -77,4 +72,4 @@ export async function GET(
 
   const url = getPresignedUrl(asset.proofKey);
   return NextResponse.json({ url });
-}
+});

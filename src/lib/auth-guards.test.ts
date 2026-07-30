@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "next-auth";
-import { NextResponse } from "next/server";
-import { requireAdmin, requireApiSession, requireSession } from "./auth-guards";
+import { NextResponse, type NextRequest } from "next/server";
+import { requireAdmin, requireApiSession, requireSession, withApiSession } from "./auth-guards";
 
 // `import "server-only"` only resolves inside a real Next.js bundle (webpack
 // aliases it away); Vitest never does, so it must be stubbed for anything
@@ -130,6 +130,75 @@ describe("requireApiSession", () => {
     const result = await requireApiSession();
     expect(result).toBeInstanceOf(NextResponse);
     expect((result as NextResponse).status).toBe(401);
+
+    expect(authMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("withApiSession", () => {
+  // THE fixture task #54 asks for: a handler that would previously have
+  // shipped unguarded. Under the old `requireApiSession()` call-site
+  // convention, three separate real-world shapes discard the check without
+  // TypeScript or ESLint's default config raising anything (see
+  // eslint.config.mjs's own comment on this rule for the three shapes) —
+  // and critically, EVERY real route handler in this codebase only ever
+  // reads `session.user.role` AFTER already narrowing away `NextResponse`,
+  // so none of those three shapes is a type error in practice; TypeScript
+  // never even sees a property access on the un-narrowed union to complain
+  // about. This handler is deliberately written in that exact same
+  // style — it never references its `session` parameter at all — to prove
+  // the point directly: even so, the request is refused. There is no
+  // branch inside the handler for an author to get wrong, because the
+  // check has already run and already returned before this function body
+  // is ever reached.
+  it("returns a 401 JSON response and never invokes the wrapped handler when there is no session", async () => {
+    authMock.mockResolvedValue(null);
+    const handler = vi.fn(async () => NextResponse.json({ ok: true }));
+    const wrapped = withApiSession(handler);
+
+    const response = await wrapped({} as NextRequest, { params: Promise.resolve({}) });
+
+    expect(response.status).toBe(401);
+    // Same JSON-not-redirect contract as requireApiSession() itself — see
+    // that describe block above for why this must never regress (#45
+    // review note, carried into #16 and #54).
+    expect(response.headers.get("Location")).toBeNull();
+    await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
+    expect(handler).not.toHaveBeenCalled();
+  });
+
+  it("passes the resolved Session and the original request/context to the handler, and returns its response unchanged, when signed in", async () => {
+    const session = sessionFor("client");
+    authMock.mockResolvedValue(session);
+    const request = {} as NextRequest;
+    const context = { params: Promise.resolve({ assetId: "asset-1" }) };
+    const handlerResponse = NextResponse.json({ userId: session.user.id });
+    const handler = vi.fn(async () => handlerResponse);
+    const wrapped = withApiSession(handler);
+
+    const response = await wrapped(request, context);
+
+    expect(handler).toHaveBeenCalledWith(request, context, session);
+    expect(response).toBe(handlerResponse);
+  });
+
+  // Same freshness contract as requireSession()/requireApiSession(): a
+  // session row deleted by sign-out between two calls must flip the second
+  // call from "handler runs" to "401, handler does not run", never to a
+  // cached prior answer.
+  it("re-reads auth() on every call instead of caching a prior result", async () => {
+    const session = sessionFor("client");
+    const handler = vi.fn(async () => NextResponse.json({ ok: true }));
+    const wrapped = withApiSession(handler);
+
+    authMock.mockResolvedValueOnce(session);
+    await wrapped({} as NextRequest, {});
+    expect(handler).toHaveBeenCalledTimes(1);
+
+    authMock.mockResolvedValueOnce(null);
+    const response = await wrapped({} as NextRequest, {});
+    expect(response.status).toBe(401);
+    expect(handler).toHaveBeenCalledTimes(1);
 
     expect(authMock).toHaveBeenCalledTimes(2);
   });

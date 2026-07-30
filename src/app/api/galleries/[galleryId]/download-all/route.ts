@@ -54,7 +54,7 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets, galleries } from "@/lib/db/schema";
-import { requireApiSession } from "@/lib/auth-guards";
+import { withApiSession } from "@/lib/auth-guards";
 import { isGalleryOwner } from "@/lib/gallery-access";
 import { getObjectSize, getObjectStream } from "@/lib/r2";
 import {
@@ -128,16 +128,22 @@ export function buildZipEntryFilename(originalFilename: string, used: Set<string
   return candidate;
 }
 
-export async function GET(
+// Unauthenticated -> 401 JSON, never a redirect (see auth-guards.ts).
+// `withApiSession()` (task #54) runs that check unconditionally before this
+// handler ever executes — there is no branch here to forget to return. The
+// response streamed below is still a `new NextResponse(readableStream,
+// init)` — a real `NextResponse` instance, just constructed directly instead
+// of via `NextResponse.json()` — so it fits `withApiSession`'s
+// `Promise<NextResponse>` return type without any widening: `NextResponse`'s
+// constructor accepting a `ReadableStream` body is what makes streaming
+// possible at all here, and that capability lives entirely in the `Response`
+// this route builds, not in anything the wrapper's signature would need to
+// know about.
+export const GET = withApiSession(async function GET(
   _request: NextRequest,
   { params }: { params: Promise<{ galleryId: string }> },
+  session,
 ): Promise<NextResponse> {
-  // Unauthenticated -> 401 JSON, never a redirect — same MUST-early-return
-  // shape every sibling route in this app follows (see auth-guards.ts).
-  const sessionOrResponse = await requireApiSession();
-  if (sessionOrResponse instanceof NextResponse) return sessionOrResponse;
-  const session = sessionOrResponse;
-
   const { galleryId: rawGalleryId } = await params;
   const galleryIdResult = galleryIdSchema.safeParse(rawGalleryId);
   if (!galleryIdResult.success) {
@@ -263,4 +269,4 @@ export async function GET(
       "Content-Disposition": `attachment; filename="${filename}"`,
     },
   });
-}
+});

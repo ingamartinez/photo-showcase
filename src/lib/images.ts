@@ -8,6 +8,15 @@
 // `processProof` — see its own section header further down for the full
 // reasoning and task #26's EXIF-allowlist decision.
 //
+// A THIRD pipeline lives at the bottom of this file: `processDisplay` (task
+// #89), the browsing-sized version of a FINAL. Read its section header
+// before assuming it violates the paragraph above — the short version is
+// that the prohibition protects PROOFS (pre-payment, the photographer's
+// leverage), and `processDisplay`'s input is a final, an artifact that only
+// exists after the commercial event. `processProof` is untouched by it: it
+// does not call `processDisplay`, `processDisplay` does not call it, and
+// neither grew an option to skip anything.
+//
 // Memory story (this droplet's main pressure source — 2 GB shared with
 // findash, `photoshowcase.service` caps at 768 MB). Applies to BOTH pipelines
 // in this file unless a bullet says otherwise:
@@ -16,10 +25,14 @@
 // - `sharp.cache(false)` stops libvips from retaining decoded pixel data
 //   across calls; this process handles unique images once each, so the
 //   cache would only cost memory, never save time.
-// - `runExclusive` below serializes calls to `processProof` AND `processFinal`
-//   process-wide (one shared queue), so even if a future caller (e.g. a
-//   multi-file upload route) fires several calls without awaiting between
-//   them, only one full-size decode is ever resident at a time.
+// - `runExclusive` below serializes calls to `processProof`, `processFinal`
+//   AND `processDisplay` process-wide (one shared queue), so even if a future
+//   caller (e.g. a multi-file upload route) fires several calls without
+//   awaiting between them, only one full-size decode is ever resident at a
+//   time. This is what keeps the final-upload route's now-TWO sharp passes
+//   (`processFinal` then `processDisplay`, task #89) additive-in-sequence
+//   rather than additive-in-peak: the two never overlap, not even with
+//   another request's own pass.
 // - `resize()` is called with explicit dimensions before any pixel op, which
 //   lets libvips shrink-on-load JPEGs (decode at a reduced resolution
 //   instead of full-size then downscale) — the single biggest win for peak
@@ -356,5 +369,125 @@ export async function processFinal(
       .toBuffer();
 
     return { data };
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Display processing pipeline (task #89): the browsing-sized version of a
+// FINAL. A client who has paid and received their gallery should stop seeing
+// the watermark in the grid and the lightbox — not only in the file they
+// download.
+//
+// WHY THIS IS NOT THE THING THIS FILE'S HEADER FORBIDS. That header says
+// there is deliberately no "resize only" helper "so no caller can walk away
+// with downscaled-but-unwatermarked bytes", and this function is, literally,
+// downscale-without-watermark. The distinction is the INPUT, and it is the
+// same one task #26 drew for `processFinal`:
+//   - The prohibition protects PROOFS. A proof is what a client browses
+//     BEFORE paying and BEFORE selecting; the watermark is the photographer's
+//     leverage over exactly those bytes, and the guarantee that protects it
+//     is that `processProof` — the only function that produces proof-shaped
+//     bytes — cannot be talked out of compositing the mark. That is still
+//     true: `processProof` is untouched by this section, has no options
+//     parameter to pass a `watermark: false` through, does not call anything
+//     below, and is not called by anything below.
+//   - `processDisplay`'s input is a FINAL: an artifact that only exists
+//     because the photographer uploaded an edited export for an asset the
+//     client had already selected. The commercial event has happened. There
+//     is nothing left to protect with a watermark on that photo, which is why
+//     `processFinal` (unwatermarked, full-res) was allowed to exist at all —
+//     this is the same artifact at browsing size, not a new class of bytes.
+//   - It is a THIRD named pipeline, not a primitive the other two are
+//     composed from. Deleting it would not change one line of `processProof`
+//     or `processFinal`. #26 faced this same temptation ("just add a flag to
+//     processProof") and correctly wrote a separate path; this follows that
+//     precedent rather than reopening it.
+// The gate that actually keeps these bytes away from an unpaid client is not
+// in this module at all — it is the same gate the download uses (gallery
+// `delivered`, asset selected AND edited, session owns the gallery), shared
+// through src/lib/final-access.ts so the display route and the download route
+// cannot drift apart. See that module and GET
+// /api/assets/[assetId]/display/route.ts.
+//
+// Sizing: the SAME cap as a proof (`PROOF_MAX_LONG_EDGE`, reused rather than
+// re-declared with a different name and an identical value). The watermark
+// was the problem; the proof's dimensions never were. Serving `finalKey`
+// itself in the grid would put ~4000x2667 multi-MB JPEGs on the phone where
+// most clients open this — roughly 100 MB for a twenty-photo gallery. WebP at
+// the same quality as a proof keeps a delivered gallery's page weight in the
+// same class as the proofing view it replaces.
+//
+// Metadata: the same authorship allowlist and ICC handling as `processFinal`
+// — deliberately reusing that decision's constants (`FINAL_EXIF_COPYRIGHT` /
+// `FINAL_EXIF_ARTIST`) rather than inventing a second policy. These bytes are
+// unwatermarked and sit in an <img> a phone can long-press and save, so they
+// are the one place left where authorship is worth carrying; and since the
+// input is a final that already went through that allowlist, this can never
+// re-introduce a field the final itself had already dropped. sharp writes
+// both an EXIF chunk and an ICC chunk into WebP (verified against the actual
+// output bytes, not assumed).
+const DISPLAY_WEBP_QUALITY = WEBP_QUALITY;
+
+export type ProcessedDisplay = {
+  data: Buffer;
+  width: number;
+  height: number;
+};
+
+/** Turns a FINAL's bytes into the browsing-sized, unwatermarked derivative a
+ * delivered gallery shows in its grid and lightbox: downscaled to
+ * `PROOF_MAX_LONG_EDGE`, WebP, authorship EXIF only, ICC kept. Read this
+ * section's header before calling it with anything other than a final —
+ * `processFinal`'s output (or the bytes already stored at `finalKey`) is the
+ * only input this pipeline is for.
+ *
+ * `width`/`height` come back from the actual output bytes for the same
+ * reason `processProof` re-reads its own: a caller must never have to trust
+ * arithmetic done earlier in the pipeline. (Nothing persists them today —
+ * the grid still reserves each tile from `assets.proof_width`/`proof_height`,
+ * see the display route and the client gallery page for why that needs no
+ * new column — but a caller that wants them should not have to re-decode.)
+ *
+ * Shares `processProof`/`processFinal`'s process-wide mutex (`runExclusive`)
+ * rather than getting its own: the final-upload route calls `processFinal`
+ * and then this, so without the shared queue those two passes could overlap
+ * with a THIRD request's own pass under the same 768 MB cap. */
+export async function processDisplay(
+  input: Buffer | ArrayBuffer | Uint8Array,
+): Promise<ProcessedDisplay> {
+  return runExclusive(async () => {
+    const source = Buffer.isBuffer(input)
+      ? input
+      : input instanceof ArrayBuffer
+        ? Buffer.from(input)
+        : Buffer.from(input.buffer, input.byteOffset, input.byteLength);
+
+    const data = await sharp(source, { limitInputPixels: MAX_INPUT_PIXELS })
+      // Same reasoning as both pipelines above. A stored final always comes
+      // out of `processFinal` already baked upright, so this is a no-op on
+      // that path — kept because it costs nothing and this function must not
+      // silently depend on its caller having rotated first.
+      .rotate()
+      // Declared BEFORE any pixel op so libvips can shrink-on-load the JPEG
+      // (decode straight to a reduced resolution instead of decoding the full
+      // frame and then downscaling) — the same trick that keeps
+      // `processProof` cheap, and the reason this second pass costs far less
+      // than `processFinal`'s own full-frame decode. See the memory story at
+      // the top of this file.
+      .resize(PROOF_MAX_LONG_EDGE, PROOF_MAX_LONG_EDGE, {
+        fit: "inside",
+        withoutEnlargement: true,
+      })
+      .withExif({ IFD0: { Copyright: FINAL_EXIF_COPYRIGHT, Artist: FINAL_EXIF_ARTIST } })
+      .keepIccProfile()
+      .webp({ quality: DISPLAY_WEBP_QUALITY })
+      .toBuffer();
+
+    const output = await sharp(data).metadata();
+    if (!output.width || !output.height) {
+      throw new Error("Processed display derivative is missing dimensions");
+    }
+
+    return { data, width: output.width, height: output.height };
   });
 }

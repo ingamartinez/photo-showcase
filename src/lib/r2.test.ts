@@ -18,6 +18,9 @@ const file = vi.fn().mockReturnValue({ stream: fileStream });
 // Bun's own HEAD-request-only size lookup (see r2.ts's own comment on why
 // this never reads the object's bytes).
 const size = vi.fn().mockResolvedValue(1024);
+// Task #89: `objectExists` calls `getClient().exists(key)` — Bun's own
+// HEAD-request-only existence check, the same mechanism `size` above uses.
+const exists = vi.fn().mockResolvedValue(true);
 
 class FakeS3Client {
   write = write;
@@ -25,6 +28,7 @@ class FakeS3Client {
   delete = del;
   file = file;
   size = size;
+  exists = exists;
 }
 
 // r2Env() validates presence via zod; it doesn't care whether the values are
@@ -52,6 +56,8 @@ beforeEach(() => {
   file.mockClear();
   fileStream.mockClear();
   size.mockClear();
+  exists.mockClear();
+  exists.mockResolvedValue(true);
 });
 
 afterEach(() => {
@@ -74,6 +80,40 @@ describe("key builders", () => {
     expect(proofKey("g", "a")).not.toBe(finalKey("g", "a"));
   });
 
+  // Task #89: the browsing-sized, unwatermarked derivative of a final.
+  it("builds the display key under galleries/{galleryId}/display/{assetId}.webp", async () => {
+    const { displayKey } = await import("./r2");
+    expect(displayKey("gallery-1", "asset-1")).toBe("galleries/gallery-1/display/asset-1.webp");
+  });
+
+  it("keeps the display key distinct from BOTH the proof and the final for the same pair", async () => {
+    const { proofKey, finalKey, displayKey } = await import("./r2");
+    expect(displayKey("g", "a")).not.toBe(proofKey("g", "a"));
+    expect(displayKey("g", "a")).not.toBe(finalKey("g", "a"));
+  });
+
+  // The property task #89 rests its "no migration needed" argument on, and
+  // the ticket asks to be CONFIRMED rather than assumed: `displayKey` is a
+  // pure function of (galleryId, assetId), exactly like its two siblings.
+  // Same inputs, same string, every time and in any order — so a display
+  // object's existence is fully implied by facts already on the asset row
+  // (`final_key` set, `is_edited` true) and there is nothing per-row left for
+  // a column to remember.
+  it("is deterministic per (galleryId, assetId), which is why no display_key column exists", async () => {
+    const { proofKey, finalKey, displayKey } = await import("./r2");
+
+    const first = displayKey("g", "a");
+    // Interleave other key builders and another pair, so a hidden counter or
+    // any call-order dependence would show up as a different second result.
+    proofKey("g", "a");
+    finalKey("other-gallery", "other-asset");
+    displayKey("other-gallery", "other-asset");
+
+    expect(displayKey("g", "a")).toBe(first);
+    expect(displayKey("g", "b")).not.toBe(first);
+    expect(displayKey("h", "a")).not.toBe(first);
+  });
+
   it("uses the exact ids given, without normalizing or trimming", async () => {
     const { proofKey } = await import("./r2");
     expect(proofKey("Gallery_1", "Asset-1")).toBe("galleries/Gallery_1/proofs/Asset-1.webp");
@@ -91,6 +131,24 @@ describe("environment namespacing (task #38)", () => {
     vi.stubEnv("APP_ENV", "development");
     const { finalKey } = await import("./r2");
     expect(finalKey("gallery-1", "asset-1")).toBe("dev/galleries/gallery-1/finals/asset-1.jpg");
+  });
+
+  // Task #89's new key builder inherits the namespacing "for free by
+  // construction" the same way its siblings do — it has to call
+  // `namespacedKey` for its path to end up in the bucket at all (see r2.ts's
+  // own comment). Asserted rather than assumed: a dev process writing an
+  // unwatermarked derivative straight into a production prefix is exactly
+  // the accident task #38 exists to prevent.
+  it("prefixes display keys with dev/ outside production, and fails closed when APP_ENV is unset", async () => {
+    vi.stubEnv("APP_ENV", "development");
+    const { displayKey } = await import("./r2");
+    expect(displayKey("g", "a")).toBe("dev/galleries/g/display/a.webp");
+
+    vi.stubEnv("APP_ENV", undefined);
+    expect(displayKey("g", "a")).toBe("dev/galleries/g/display/a.webp");
+
+    vi.stubEnv("APP_ENV", "production");
+    expect(displayKey("g", "a")).toBe("galleries/g/display/a.webp");
   });
 
   it("also prefixes when APP_ENV is set to something other than production, so a non-production process never lands on a bare key", async () => {
@@ -221,5 +279,27 @@ describe("getObjectSize", () => {
     expect(result).toBe(20 * 1024 * 1024);
     expect(file).not.toHaveBeenCalled();
     expect(fileStream).not.toHaveBeenCalled();
+  });
+});
+
+// Task #89: the display route's ONE R2 probe. A final uploaded before that
+// task shipped has no display object until the backfill script runs, and
+// handing back a presigned URL for something absent would render a broken
+// image instead of falling back to the proof.
+describe("objectExists", () => {
+  it("answers via the client's own HEAD-request existence check, never by reading the object", async () => {
+    const { objectExists } = await import("./r2");
+
+    await expect(objectExists("galleries/g/display/a.webp")).resolves.toBe(true);
+
+    expect(exists).toHaveBeenCalledWith("galleries/g/display/a.webp");
+    expect(file).not.toHaveBeenCalled();
+    expect(fileStream).not.toHaveBeenCalled();
+  });
+
+  it("propagates a false answer rather than coercing it", async () => {
+    exists.mockResolvedValueOnce(false);
+    const { objectExists } = await import("./r2");
+    await expect(objectExists("galleries/g/display/missing.webp")).resolves.toBe(false);
   });
 });

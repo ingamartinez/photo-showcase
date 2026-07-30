@@ -29,8 +29,9 @@ import { db } from "@/lib/db";
 import { assets } from "@/lib/db/schema";
 import { requireApiSession } from "@/lib/auth-guards";
 import { loadOwnedAsset } from "@/lib/asset-access";
-import { processFinal } from "@/lib/images";
-import { finalKey, getPresignedUrl, putObject } from "@/lib/r2";
+import { canReadFinalDeliverable } from "@/lib/final-access";
+import { processDisplay, processFinal } from "@/lib/images";
+import { displayKey, finalKey, getPresignedUrl, putObject } from "@/lib/r2";
 
 export const runtime = "nodejs";
 
@@ -140,51 +141,15 @@ export async function GET(
   }
   const { asset, gallery } = lookup;
 
-  // The final-specific gate. Checked as three independent conditions rather
-  // than inferring any one from another:
-  //   - `asset.isSelected` — the client actually picked this photo. An owner
-  //     must not be able to fetch a final for an asset they never selected
-  //     just because the photographer happened to edit and upload one
-  //     anyway (e.g. a mistaken upload, or a future bulk-edit workflow).
-  //   - `gallery.status === "delivered"` — the photographer has finished
-  //     editing and explicitly delivered the gallery (PLAN.md §2's state
-  //     machine). A selected-but-not-yet-delivered asset's final must stay
-  //     unreachable even if it happens to already be sitting in R2, since
-  //     "delivered" is the point the client is meant to be told about.
-  //     ADMIN-ONLY EXCEPTION, decided here (task #26's note inherited from
-  //     #63's review): skipped for admins. Before this file grew a POST
-  //     handler, nothing ever wrote `asset.finalKey`, so this whole branch
-  //     was unreachable and the strict gate cost nothing. Once an admin can
-  //     actually upload a final (below), the SAME strict gate would make
-  //     "preview the edit you just uploaded" impossible until the gallery
-  //     is delivered — which is not what task #16's gate was FOR; it exists
-  //     to stop a CLIENT from seeing a final before delivery, not to blind
-  //     the photographer to their own upload. Task #16's rule for a CLIENT
-  //     is UNCHANGED: still selected AND delivered, no carve-out — this
-  //     loosens only the leg that gated the one caller (`loadOwnedAsset`'s
-  //     "admin sees everything") who could never have been the rule's
-  //     target in the first place.
-  //   - `asset.finalKey` — the R2 object actually exists (set only by the
-  //     admin's final-upload route below). Not treated as sufficient on its
-  //     own for the first two checks: a stray finalKey must never unlock
-  //     delivery of an unselected or pre-delivery asset by itself. Stays
-  //     UNCONDITIONAL, admin included — an admin previewing a final still
-  //     needs one to actually exist.
-  //   - `asset.isEdited` — task #28's own acceptance criterion, checked
-  //     EXPLICITLY rather than inferred from `finalKey` alone: the POST
-  //     handler below always writes `finalKey` and `isEdited` together in
-  //     the SAME update, so today the two can never disagree — but this gate
-  //     does not lean on that invariant holding forever (the exact "don't
-  //     infer one condition from another" stance the comment above already
-  //     takes for `finalKey` itself). A future write path that could set one
-  //     without the other must not silently unlock downloads.
-  const deliveredGateAppliesToThisSession = session.user.role !== "admin";
-  if (
-    !asset.isSelected ||
-    !asset.isEdited ||
-    (deliveredGateAppliesToThisSession && gallery.status !== "delivered") ||
-    !asset.finalKey
-  ) {
+  // The final-specific gate — every condition, the admin carve-out on the
+  // delivered leg, and the reasoning behind each now live in ONE place:
+  // src/lib/final-access.ts's `canReadFinalDeliverable`. It was extracted
+  // there by task #89 so this route and GET /api/assets/[assetId]/display
+  // (which serves the browsing-sized derivative of these exact bytes) cannot
+  // drift apart — "gated exactly like the download" is only true if there is
+  // literally one gate. Read that module for the per-condition reasoning;
+  // nothing about the rule changed when it moved.
+  if (!canReadFinalDeliverable(asset, gallery, session)) {
     return errorResponse("final_not_available", 404);
   }
 
@@ -286,8 +251,26 @@ export async function POST(
   const uploadedBytes = await file.arrayBuffer();
 
   let processed;
+  let display;
   try {
     processed = await processFinal(uploadedBytes);
+    // Task #89: the browsing-sized, unwatermarked derivative a DELIVERED
+    // gallery shows in its grid and lightbox. Derived from the FINAL's own
+    // bytes (`processed.data`), never from `uploadedBytes` — two reasons,
+    // both deliberate:
+    //   - Semantics: `processDisplay` is documented as "the final at
+    //     browsing size" (src/lib/images.ts). Feeding it the raw upload would
+    //     make it a general-purpose downscaler over arbitrary originals,
+    //     which is precisely the "resize only" primitive that module's header
+    //     refuses to provide.
+    //   - Metadata: `processed.data` has already been through
+    //     `processFinal`'s EXIF allowlist, so this derivative cannot possibly
+    //     carry a field (a location leak, task #26) the final itself dropped.
+    // BOTH passes run before either object is written, so a failure in the
+    // second one leaves R2 untouched by this request rather than half
+    // updated. They cannot overlap in memory: both go through the shared
+    // `runExclusive` mutex in src/lib/images.ts.
+    display = await processDisplay(processed.data);
   } catch {
     // Covers a genuinely corrupt/undecodable body and `processFinal`'s own
     // guard (the shared pixel-count bomb check in src/lib/images.ts) —
@@ -300,10 +283,25 @@ export async function POST(
   // the previous object instead of orphaning it: there is only ever one
   // possible key for this asset's final, so writing to it again overwrites
   // in place. No separate "delete the old one" step exists, or is needed.
+  // `displayKey` is deterministic in exactly the same way and for exactly
+  // the same reason — see its own comment for why that determinism is what
+  // makes this whole feature need no new column.
   const key = finalKey(gallery.id, asset.id);
+  const displayObjectKey = displayKey(gallery.id, asset.id);
 
   try {
     await putObject(key, processed.data, { contentType: "image/jpeg" });
+    // Written in the SAME request, and its failure fails the whole upload
+    // (502, same as the final's own). A partial success here would leave the
+    // photographer believing the photo is delivered while the client keeps
+    // seeing a watermark on it — an outcome nobody would notice until the
+    // client mentioned it. Failing loudly costs the photographer one retry;
+    // both keys are deterministic, so that retry is a clean overwrite, not a
+    // cleanup problem. The final is written FIRST so that an interruption
+    // between the two can only ever leave the SMALLER, browsing-sized copy
+    // stale relative to the full-resolution one the client downloads — never
+    // the reverse.
+    await putObject(displayObjectKey, display.data, { contentType: "image/webp" });
   } catch {
     return errorResponse("upload_failed", 502);
   }

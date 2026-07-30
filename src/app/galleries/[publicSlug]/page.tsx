@@ -8,7 +8,7 @@ import {
   isGalleryVisibleToClient,
 } from "@/lib/galleries";
 import { isGalleryOwner } from "@/lib/gallery-access";
-import { getPresignedUrl } from "@/lib/r2";
+import { displayKey, getPresignedUrl } from "@/lib/r2";
 import { ProofGrid } from "@/components/proof-grid";
 
 export const metadata: Metadata = {
@@ -77,13 +77,23 @@ export default async function ClientGalleryPage({
   // src/components/proof-grid.tsx's header comment for the full write-up of
   // how a page left open past that TTL recovers without a hard reload —
   // this task's own acceptance criterion.
-  const initialAssets = gallery.assets.map((asset) => ({
-    id: asset.id,
-    originalFilename: asset.originalFilename,
-    proofWidth: asset.proofWidth,
-    proofHeight: asset.proofHeight,
-    isSelected: asset.isSelected,
-    proofUrl: getPresignedUrl(asset.proofKey),
+  //
+  // Task #89: a DELIVERED gallery shows the unwatermarked, browsing-sized
+  // derivative instead of the proof — the client paid, so the watermark
+  // should be gone from what they look at, not only from what they download.
+  // Decided here, once, at the gallery level, because a gallery's status is
+  // the same for every asset in it.
+  //
+  // No admin carve-out on this one, deliberately, and it is the ONE place
+  // this page's rule is narrower than `GET /api/assets/[assetId]/display`'s
+  // own (which keeps the download gate's admin preview verbatim — see
+  // src/lib/final-access.ts). This page renders the CLIENT'S view of the
+  // gallery; an admin opening it is previewing exactly that, and a preview
+  // that silently drops the watermark would show the photographer something
+  // no client of theirs can see. The admin's own preview of an
+  // undelivered final lives in the dashboard workspace, not here.
+  const showsDeliveredPhotos = gallery.status === "delivered";
+  const initialAssets = gallery.assets.map((asset) => {
     // Task #28's own acceptance criterion — "only assets that were selected
     // AND edited are downloadable" — computed here as a plain boolean, the
     // SAME allowlist discipline this mapping already follows for every other
@@ -93,8 +103,36 @@ export default async function ClientGalleryPage({
     // re-checks all three conditions itself on every request regardless of
     // what this renders — this is a UI hint for which assets show a download
     // button, not a substitute for that route's own gate.
-    hasFinal: asset.isSelected && asset.isEdited && asset.finalKey !== null,
-  }));
+    const hasFinal = asset.isSelected && asset.isEdited && asset.finalKey !== null;
+
+    return {
+      id: asset.id,
+      originalFilename: asset.originalFilename,
+      proofWidth: asset.proofWidth,
+      proofHeight: asset.proofHeight,
+      isSelected: asset.isSelected,
+      proofUrl: getPresignedUrl(asset.proofKey),
+      hasFinal,
+      // Task #89. Presigned from `displayKey` — a pure function of
+      // (galleryId, assetId), which is exactly why this needs no new column
+      // (see src/lib/r2.ts's own comment on it). Per-asset, not per-gallery:
+      // a delivered gallery routinely contains photos the client never
+      // selected and the photographer never edited, and those keep showing
+      // their watermarked proof. A MIXED gallery is the normal case, not an
+      // edge case — `null` here is what makes those tiles fall back cleanly
+      // rather than look broken.
+      //
+      // Optimistic: nothing is probed in R2 to confirm the object is really
+      // there (that would be one round trip per asset per page load, forever,
+      // for a question that is permanently "yes" once the backfill has run —
+      // see `objectExists`'s own comment). If it genuinely is not there, the
+      // <img> fails, <ProofGrid>'s refresh path asks
+      // `GET /api/assets/[assetId]/display`, and THAT route's HEAD check
+      // answers 404 so the grid falls back to the proof.
+      displayUrl:
+        showsDeliveredPhotos && hasFinal ? getPresignedUrl(displayKey(gallery.id, asset.id)) : null,
+    };
+  });
 
   return (
     <>

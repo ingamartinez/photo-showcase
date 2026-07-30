@@ -19,6 +19,7 @@
     "create:admin": "bun run scripts/create-admin.ts",
     "check:r2": "bun run scripts/check-r2.ts",
     "check:resend": "bun run scripts/check-resend.ts",
+    "backfill:display": "bun run scripts/backfill-display-derivatives.ts",
     "measure:final:memory": "bun run scripts/measure-final-memory.ts",
     "measure:zip:memory": "bun run scripts/measure-zip-memory.ts",
     "test": "vitest run --passWithNoTests",

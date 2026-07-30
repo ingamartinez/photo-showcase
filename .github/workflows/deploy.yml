@@ -179,18 +179,48 @@ jobs:
           # to reach the droplet" (task #104's acceptance criterion) true.
           #
           # For every package.json script whose command touches `scripts/`,
-          # resolve its FULL import graph against the STAGED tarball (never
-          # this job's own node_modules, which is a superset of what actually
-          # ships) using `bun build`. `bun build` performs the same module
-          # resolution `bun run` would without executing a single line of the
-          # script's top-level code -- several of these scripts do real work
-          # (DB writes, R2 writes, seeding) the instant they are imported, so
-          # actually running them here is not an option.
+          # resolve its FULL import graph using `bun build`. `bun build`
+          # performs the same module resolution `bun run` would without
+          # executing a single line of the script's top-level code --
+          # several of these scripts do real work (DB writes, R2 writes,
+          # seeding) the instant they are imported, so actually running them
+          # here is not an option.
+          #
+          # Resolved against an EXTRACTION of release.tar.gz in a mktemp dir
+          # OUTSIDE $GITHUB_WORKSPACE, not against `$STAGE` in place -- round
+          # 2 review, blocker 2: `$STAGE` (release-stage/) lives inside this
+          # job's own checkout, right next to the `node_modules` that
+          # `bun install` populated two steps ago (a FULL install, superset
+          # of what the tarball ships). Bun's module resolution walks
+          # upward from wherever `bun build` runs, so `cd release-stage &&
+          # bun build ...` climbs past release-stage/node_modules (missing
+          # zod, say) straight into the checkout's own node_modules (has
+          # zod) and reports success -- mutation-proved: deleting zod from
+          # $STAGE alone and re-running the OLD (in-place) form of this
+          # check still printed "resolve cleanly" and exited 0. The literal
+          # bug this step exists to catch, undetected by the step meant to
+          # catch it, for the identical "a real node_modules is reachable
+          # by walking up from where bun resolves" reason as round 1's
+          # `zod` gap itself and round 2's first (contaminated) local
+          # simulation of this very check. Extracting the actual tarball
+          # into a directory with no ancestor `node_modules` removes that
+          # escape hatch, and has the added benefit of verifying what
+          # actually SHIPS (the tarball), not what was staged before
+          # tar'ing it up.
+          #
+          # NOT covered by this or any static check: a script that reaches
+          # a bare package only through a runtime-conditional
+          # `require()`/dynamic `import()` rather than a static import --
+          # `bun build`'s resolution is static. Nothing under scripts/ does
+          # that today; if one ever does, this step's silence on that one
+          # import is a known, accepted gap, not a guarantee.
           mapfile -t ops_scripts < <(jq -r '.scripts[]' package.json | grep -oE 'scripts/[A-Za-z0-9_.-]+\.ts' | sort -u)
           if [ "${#ops_scripts[@]}" -eq 0 ]; then
             echo "No package.json script references scripts/*.ts -- this check would have nothing to verify, which is itself a surprise worth failing loudly on rather than silently passing."
             exit 1
           fi
+          resolve_root="$(mktemp -d)"
+          tar -xzf release.tar.gz -C "$resolve_root"
           resolve_out="$(mktemp -d)"
           failed=0
           for rel in "${ops_scripts[@]}"; do
@@ -200,7 +230,7 @@ jobs:
               continue
             fi
             echo "resolving $rel ..."
-            if ! (cd "$STAGE" && bun build "$rel" --target=bun --outdir="$resolve_out"); then
+            if ! (cd "$resolve_root" && bun build "$rel" --target=bun --outdir="$resolve_out"); then
               echo "IMPORT GRAPH BROKEN: $rel would fail to even import on the droplet -- see the bun build error above. Overlay the missing package's node_modules folder in the 'Package release tarball' step."
               failed=1
             fi
@@ -208,7 +238,7 @@ jobs:
           if [ "$failed" -ne 0 ]; then
             exit 1
           fi
-          echo "All ops scripts referenced by package.json resolve cleanly against the staged tarball."
+          echo "All ops scripts referenced by package.json resolve cleanly against the extracted release tarball."
 
       - name: Setup SSH
         run: |

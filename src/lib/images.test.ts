@@ -62,6 +62,78 @@ async function assertHasWatermarkInk(
   expect(inkedPixels).toBeGreaterThan(0);
 }
 
+/** Deterministic PRNG (mulberry32). `Math.random()` has no place in a fixture
+ * a test asserts size RATIOS against: the margin would differ run to run, and
+ * a thin one would flake in CI on a schedule nobody could reproduce. Fixed
+ * seed, so the numbers below are the same on every machine and every run. */
+function seededRandom(seed: number): () => number {
+  return () => {
+    seed |= 0;
+    seed = (seed + 0x6d2b79f5) | 0;
+    let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** A PHOTOGRAPHIC full-resolution fixture: low-frequency colour structure
+ * (built small and upscaled by sharp, i.e. in C++ rather than in a JS loop)
+ * with film-like grain composited over it.
+ *
+ * Why not per-pixel random noise, which is the obvious way to build a
+ * "detailed" fixture and is what this test used first: noise is the
+ * pathological worst case for any DCT/VP8 encoder — maximum entropy, nothing
+ * to predict — and `processFinal` encodes with `mozjpeg: true`, whose trellis
+ * quantization then explores the whole search space. Measured on the same
+ * machine, that one call took 1829ms of the test's 2521ms total, and at ~5x
+ * on `ubuntu-latest` it blew the (then 5000ms) timeout and turned CI red.
+ * This fixture is FASTER (~1650ms end to end vs ~2520ms), and it is not a
+ * trade of rigour for speed — it is strictly the better measurement:
+ *
+ *   - It is what the assertion is actually about. Noise made the committed
+ *     page-weight figures ~30x the photographic ones, so the ratios were
+ *     being measured against content no client will ever upload.
+ *   - It CLEARS the tighter assertion by more: 2.18x margin versus 1.39x for
+ *     the noise fixture it replaces.
+ *
+ * Sized at LARGE_WIDTH x LARGE_HEIGHT — the same ~4000x2667 the rest of this
+ * file uses and the dimensions task #28 measured a real final at. That size
+ * is load-bearing, not cosmetic: `processDisplay` caps at
+ * PROOF_MAX_LONG_EDGE, so a source anywhere near that cap would barely
+ * downscale and `display < final / 4` would stop proving anything. */
+async function makePhotographicFixture(): Promise<Buffer> {
+  const random = seededRandom(20260729);
+
+  const smallWidth = 240;
+  const smallHeight = Math.round((smallWidth * LARGE_HEIGHT) / LARGE_WIDTH);
+  const seedField = Buffer.alloc(smallWidth * smallHeight * 3);
+  for (let i = 0; i < seedField.length; i++) seedField[i] = Math.floor(random() * 256);
+
+  const base = await sharp(seedField, {
+    raw: { width: smallWidth, height: smallHeight, channels: 3 },
+  })
+    .resize(LARGE_WIDTH, LARGE_HEIGHT, { kernel: "cubic" })
+    .blur(4)
+    .raw()
+    .toBuffer();
+
+  // Grain over the smooth base: a real photo has high-frequency detail, and
+  // without it this would compress like a gradient and understate every size.
+  const grain = Buffer.alloc(LARGE_WIDTH * LARGE_HEIGHT * 3);
+  for (let i = 0; i < grain.length; i++) grain[i] = 110 + Math.floor(random() * 36);
+
+  return sharp(base, { raw: { width: LARGE_WIDTH, height: LARGE_HEIGHT, channels: 3 } })
+    .composite([
+      {
+        input: grain,
+        raw: { width: LARGE_WIDTH, height: LARGE_HEIGHT, channels: 3 },
+        blend: "overlay",
+      },
+    ])
+    .jpeg({ quality: 92 })
+    .toBuffer();
+}
+
 /** Counts how many sampled pixels differ from `background` — the same ink
  * assay `assertHasWatermarkInk` above and processFinal's own no-ink test
  * perform, extracted so task #89's display tests can assert BOTH directions
@@ -661,13 +733,7 @@ describe("processDisplay", () => {
   // Asserted as a ratio rather than an absolute byte count so it stays
   // meaningful if sharp's encoder output shifts between versions.
   it("produces bytes in the proof's size class, not the full-resolution final's", async () => {
-    // Random noise, not a flat fill — a solid colour compresses to almost
-    // nothing at every size and would make this comparison vacuous.
-    const noise = Buffer.alloc(3000 * 2000 * 3);
-    for (let i = 0; i < noise.length; i++) noise[i] = Math.floor(Math.random() * 256);
-    const original = await sharp(noise, { raw: { width: 3000, height: 2000, channels: 3 } })
-      .jpeg({ quality: 92 })
-      .toBuffer();
+    const original = await makePhotographicFixture();
 
     const final = await processFinal(original);
     const display = await processDisplay(final.data);

@@ -172,14 +172,25 @@ almost repeated; the fix was to stop needing a line at all. If a future
 change reintroduces per-file `cp` lines there, that is a regression — reread
 task #104's reasoning in the step's own comment before doing it.
 
-**The one thing that can still require a manual `deploy.yml` edit**: a script
-that imports an npm package no route in the app already uses (so Next's
-standalone build never traced it into `.next/standalone/node_modules`). The
-step already overlays `drizzle-orm` and `postgres` for exactly this reason —
-`scripts/migrate-prod.ts` is the only caller of `drizzle-orm/postgres-js/
-migrator` anywhere in the codebase. A script that stays within packages the
-app itself already imports (`sharp`, `zod`, the `bun` types, …) needs nothing
-extra.
+**The one thing that can still require a manual `deploy.yml` edit — and it is
+a CHECK now, not a vibe.** File presence (the overlay above) says nothing
+about whether a script's bare npm imports can actually be resolved once it's
+staged: Next's standalone tracing only emits a `node_modules/<pkg>` directory
+for packages reachable from an app **route** — anything imported only by a
+script (or by an `src/lib/` module a script pulls in) needs its package
+hand-overlaid in the same step, or the script dies on `import` with "Cannot
+find package '\<name\>'" the moment it actually runs on the droplet, which is
+exactly what happened in task #104's first review round: `zod` (imported by
+`src/lib/env.ts`) is used by several routes too, but only through Next's
+bundler, which inlines it away — nothing ever left a real, `require`-able
+`zod` package behind for a raw script to find. **Hand-overlaid today:
+`drizzle-orm`, `postgres`, `zod`.** The "Verify ops script import graphs
+resolve in the staged tarball" CI step (right after packaging) is the actual
+enforcement: it runs `bun build` against every `package.json` script that
+points at `scripts/`, statically resolving its whole import graph against
+the staged tarball without executing any of it, and fails the deploy loud if
+anything doesn't resolve. Trust that step's pass, not this paragraph's list —
+the list is why the step exists, and the step is what makes it true.
 
 ### Running `bun run backfill:display` (task #89's required post-deploy step)
 

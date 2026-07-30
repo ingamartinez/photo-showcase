@@ -52,6 +52,25 @@ describe("getClientsWithGalleryCount", () => {
     expect(eqColumnAndValue(args.where)).toEqual({ column: "role", value: "client" });
   });
 
+  // Task #97: a removed membership must not inflate this count — the query
+  // itself asks the relational API to filter the `galleryClients` relation
+  // to `removedAt IS NULL`, not a post-fetch `.filter()` (same shape as
+  // galleries.test.ts's own `orderBy` shape assertion).
+  it("asks the DB to filter the joined galleryClients relation to removedAt IS NULL", async () => {
+    findManyMock.mockResolvedValue([]);
+    const { isNull } = await import("drizzle-orm");
+    const { galleryClients } = await import("./db/schema");
+    const { getClientsWithGalleryCount } = await import("./clients");
+
+    await getClientsWithGalleryCount();
+
+    expect(findManyMock).toHaveBeenCalledTimes(1);
+    const args = findManyMock.mock.calls[0]?.[0] as {
+      with: { galleryClients: { where: unknown } };
+    };
+    expect(args.with.galleryClients.where).toEqual(isNull(galleryClients.removedAt));
+  });
+
   it("derives galleryCount from the joined galleryClients membership rows, never a stored count", async () => {
     findManyMock.mockResolvedValue([
       {

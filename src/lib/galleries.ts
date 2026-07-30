@@ -9,7 +9,7 @@
 // epic's central rule).
 import "server-only";
 
-import { and, count, desc, eq, inArray, sql } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { galleries, galleryClients } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
@@ -75,7 +75,17 @@ export async function getGalleriesWithDetails(): Promise<GalleryWithDetails[]> {
       // `clientId` FK) became `galleryClients` (a join table, `many()`) —
       // each row here carries the joined `user` alongside it, mapped below
       // into the plural `clients` list this function now returns.
-      galleryClients: { with: { user: { columns: { id: true, name: true, email: true } } } },
+      //
+      // Task #97: `where: isNull(galleryClients.removedAt)` — this is the
+      // ADMIN GALLERY LIST, and a removed client is no longer one of this
+      // gallery's clients for display purposes here, the same way they no
+      // longer own it per src/lib/gallery-access.ts's `isGalleryOwner`. A
+      // removed row still exists in the database (soft delete, schema.ts's
+      // own comment), it just never surfaces through this read.
+      galleryClients: {
+        where: isNull(galleryClients.removedAt),
+        with: { user: { columns: { id: true, name: true, email: true } } },
+      },
       package: { columns: { id: true, name: true } },
       // Only the id is needed to count — pulling full asset rows here would
       // be wasted work for a list that only ever shows a number (same
@@ -152,6 +162,48 @@ const CLIENT_VISIBLE_STATUSES = new Set<Gallery["status"]>(["proofing", "selecte
  * reasoning behind exactly which statuses are included. */
 export function isGalleryVisibleToClient(status: Gallery["status"]): boolean {
   return CLIENT_VISIBLE_STATUSES.has(status);
+}
+
+/** Whether a gallery in this status must have at least one ACTIVE client
+ * attached (task #97). `draft` is the one exception: a `draft` gallery is
+ * still being set up, while a `proofing`/`selected`/`delivered` gallery
+ * nobody is attached to is a dead end nobody can ever open.
+ *
+ * WHAT ACTUALLY CONSULTS THIS TODAY — two call sites, both introduced by
+ * task #97, and together they cover exactly one operation:
+ *   - `removeGalleryClient` (src/app/dashboard/galleries/actions.ts) refuses
+ *     to strip a gallery down to zero active clients. This is the authority.
+ *   - the gallery detail page (src/app/dashboard/galleries/[galleryId]/
+ *     page.tsx) hides the "Quitar" affordance under the same condition. UX
+ *     only — the action re-checks regardless of what was rendered.
+ *
+ * WHAT DOES NOT CONSULT IT, AND IS TASK #100's JOB TO WIRE UP. Read this
+ * before assuming the rule is already shared, because right now it is not:
+ *   - `publishGallery` DUPLICATES it. That action refuses on a bare
+ *     `clients.length === 0`, written out inline and never routed through
+ *     this predicate — a second, independent implementation of the same rule
+ *     living in that function today. (It happens to agree with this
+ *     predicate, since `isPublishable` restricts it to `draft` galleries and
+ *     the refusal is stricter than `requiresActiveClient("draft")` asks for;
+ *     agreeing by coincidence is precisely the shape that drifts.) #100 owns
+ *     collapsing it into this predicate.
+ *   - `deliverGallery` has NO zero-client refusal whatsoever. It commits the
+ *     `selected -> delivered` transition and then returns
+ *     `delivered_email_failed` ("no encontramos clientes a quién avisar")
+ *     — it reports the emptiness, it does not refuse it. #100 owns adding
+ *     the guard.
+ *
+ * Collapsing those two into this one predicate is the whole point of the
+ * predicate existing — two copies of one rule is the bug shape this project
+ * keeps shipping (kanban #86/#87/#88/#91). It just has not happened yet.
+ *
+ * Also still true today, and also #100's to change: `createGallery` requires
+ * at least one client at creation (`.min(1, "Elegí al menos un cliente.")`,
+ * src/app/dashboard/galleries/actions.ts). A gallery cannot yet be CREATED
+ * clientless; task #97 only made a `draft` one able to BECOME clientless
+ * afterwards. */
+export function requiresActiveClient(status: Gallery["status"]): boolean {
+  return status !== "draft";
 }
 
 /** Spanish copy for a gallery's workflow state (PLAN.md §2). */
@@ -235,9 +287,16 @@ async function findGalleryDetail(where: ReturnType<typeof eq>): Promise<GalleryD
   const row = await db.query.galleries.findFirst({
     where,
     with: {
-      // Task #94: see `getGalleriesWithDetails`'s own comment on the
-      // identical `galleryClients` shape above.
-      galleryClients: { with: { user: { columns: { id: true, name: true, email: true } } } },
+      // Task #94/#97: see `getGalleriesWithDetails`'s own comment on the
+      // identical `galleryClients` shape (including the `removedAt` filter)
+      // above — this powers both the admin detail page AND the client-facing
+      // `/galleries/[publicSlug]` page (via `getGalleryDetailBySlug` below),
+      // neither of which should ever list a removed client as one of the
+      // gallery's own.
+      galleryClients: {
+        where: isNull(galleryClients.removedAt),
+        with: { user: { columns: { id: true, name: true, email: true } } },
+      },
       package: { columns: { id: true, name: true } },
       assets: {
         orderBy: (assetsTable, { asc: assetAsc }) => [assetAsc(assetsTable.sortOrder)],
@@ -327,10 +386,18 @@ export type GalleryClientContact = { id: string; name: string | null; email: str
  * requirement was bypassed somehow (a manual DB edit, a bug), not a normal
  * state — every caller must decide what to do with zero clients rather than
  * assuming at least one, which is exactly why this returns a list instead of
- * throwing or returning `null`. */
+ * throwing or returning `null`.
+ *
+ * Task #97: filtered to `removedAt IS NULL` — this is THE query every email
+ * fan-out in src/app/dashboard/galleries/actions.ts (publish/unlock/deliver)
+ * calls to decide who to notify. A removed client must never receive a
+ * gallery-access email again; without this filter, removal would revoke
+ * authorization (once `isGalleryOwner` is also fixed) while this function
+ * kept mailing them a working magic link regardless — the exact "a soft row
+ * is still a row" trap the task exists to close. */
 export async function getGalleryClients(galleryId: string): Promise<GalleryClientContact[]> {
   const rows = await db.query.galleryClients.findMany({
-    where: eq(galleryClients.galleryId, galleryId),
+    where: and(eq(galleryClients.galleryId, galleryId), isNull(galleryClients.removedAt)),
     with: { user: { columns: { id: true, name: true, email: true } } },
   });
   return rows.map((row) => ({ id: row.user.id, name: row.user.name, email: row.user.email }));
@@ -379,39 +446,48 @@ export type ClientGalleryListItem = {
  * not a post-fetch `.filter()`, for the same pagination-safety reason
  * `getGalleriesWithDetails`'s header comment gives for its `orderBy`: once
  * this list is paginated, filtering in JS after the DB has already picked a
- * page would silently return the wrong rows. */
+ * page would silently return the wrong rows.
+ *
+ * Task #98 fixed a production 500 here: this used to be a raw `sql`
+ * template subquery (`` sql`${galleries.id} in (select ... where ...)` ``).
+ * Inside `db.query.*` (the relational query builder), a raw `sql` template
+ * silently inherits the ROOT table's own alias for EVERY column reference in
+ * it, whatever table those columns actually belong to — so
+ * `galleryClients.galleryId`/`galleryClients.userId` rendered as
+ * `"galleries"."gallery_id"`/`"galleries"."user_id"` instead of
+ * `"gallery_clients"."..."`, columns that don't exist on `galleries` at all.
+ * Replaced with `inArray(galleries.id, db.select(...).from(galleryClients)
+ * .where(...))` — a genuine subquery with its OWN `FROM gallery_clients`, so
+ * its column references carry their own correct alias regardless of what
+ * table this whole query is rooted at. Task #97 (this task) adds
+ * `isNull(galleryClients.removedAt)` to that SAME subquery's own `where` —
+ * a removed client must not see this gallery in their own list, same "a
+ * soft row is still a row" guard as every other reader of `gallery_clients`.
+ * NOTE for future readers: `removedAt` belongs to `gallery_clients`, not
+ * `galleries` — it MUST live inside the subquery's `where`, never as a
+ * sibling condition in the outer `and(...)` below, or it would filter a
+ * column that doesn't exist on the outer query's own table.
+ *
+ * AND THE GENERAL RULE, worth more than this one query's fix: any raw `sql`
+ * template that references a table OTHER than the relational query's root
+ * table is this same trap waiting to fire. It applies to every `db.query.*`
+ * call in this codebase, not just this one.
+ *
+ * Verified with `.toSQL()` against the REAL relational query (not a
+ * `where`-object deep-equal, and not a `sql` template rendered in
+ * isolation) — in src/lib/galleries.query-rendering.test.ts, which mocks
+ * nothing, NOT in galleries.test.ts, which mocks `db.query.*` away. See that
+ * file's own header comment for why the distinction is what would actually
+ * have caught the bug above. */
 export async function getGalleriesForClient(clientId: string): Promise<ClientGalleryListItem[]> {
   const rows = await db.query.galleries.findMany({
     where: and(
-      // Task #98 (production incident): this used to be a raw `sql`
-      // template — `sql`${galleries.id} in (select ${galleryClients.galleryId}
-      // from ${galleryClients} where ...)`` — on the stated theory that a
-      // single plain SQL expression built out of `eq`/`inArray`/`sql` alone,
-      // with no second query-builder chain buried inside it, would be easier
-      // to reason about than a nested `db.select(...)`. That theory is
-      // false for THIS query, and broke `/galleries` in production: inside
-      // `db.query.galleries.findMany`, Drizzle's relational query builder
-      // aliases the root table as `"galleries"`, and column references
-      // embedded in a raw `sql` template inherit THAT alias instead of
-      // their own table's — so `${galleryClients.galleryId}` and
-      // `${galleryClients.userId}` above both rendered as
-      // `"galleries"."gallery_id"` / `"galleries"."user_id"`, columns that
-      // don't exist. The query-builder subquery below has no such problem:
-      // `db.select(...).from(...).where(...)` qualifies its own columns
-      // against ITS OWN `from`, independent of whatever alias the outer
-      // relational query happens to use. Any raw `sql` template that
-      // references a table OTHER than the relational query's root table is
-      // this same trap waiting to fire — see
-      // galleries.query-rendering.test.ts, which asserts on the SQL the
-      // real relational query builder actually renders rather than the
-      // expression in isolation, precisely because that isolation is what
-      // let this ship.
       inArray(
         galleries.id,
         db
           .select({ id: galleryClients.galleryId })
           .from(galleryClients)
-          .where(eq(galleryClients.userId, clientId)),
+          .where(and(eq(galleryClients.userId, clientId), isNull(galleryClients.removedAt))),
       ),
       inArray(galleries.status, [...CLIENT_VISIBLE_STATUSES]),
     ),

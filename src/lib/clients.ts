@@ -6,9 +6,9 @@
 // a gallery, PLAN.md §6).
 import "server-only";
 
-import { count, desc, eq } from "drizzle-orm";
+import { count, desc, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { users } from "@/lib/db/schema";
+import { galleryClients, users } from "@/lib/db/schema";
 
 export type ClientWithGalleryCount = {
   id: string;
@@ -32,7 +32,15 @@ export async function getClientsWithGalleryCount(): Promise<ClientWithGalleryCou
     // them still answers the same "how many galleries" question. Only the
     // id is needed to count — pulling full rows here would be wasted work
     // for a list that only ever shows a number.
-    with: { galleryClients: { columns: { galleryId: true } } },
+    //
+    // Task #97: `where: isNull(galleryClients.removedAt)` — a removed
+    // membership is no longer one of this client's CURRENT galleries for
+    // display purposes on this list, the same "removed means gone from every
+    // read that matters" rule every other `gallery_clients` reader now
+    // follows (src/lib/gallery-access.ts, src/lib/galleries.ts).
+    with: {
+      galleryClients: { where: isNull(galleryClients.removedAt), columns: { galleryId: true } },
+    },
   });
 
   return rows.map((row) => ({

@@ -44,6 +44,15 @@ vi.mock("@/lib/galleries", async () => {
   };
 });
 
+// Task #97: the page now also reads `getClientsForPicker` (`@/lib/clients`)
+// to build the "attach" picker's eligible-client list — its REAL
+// implementation issues a `db.query.users.findMany(...)` this test file
+// never stands up, same reasoning as `getGalleryDetail`'s own mock above.
+const getClientsForPickerMock = vi.fn();
+vi.mock("@/lib/clients", () => ({
+  getClientsForPicker: (...args: unknown[]) => getClientsForPickerMock(...args),
+}));
+
 // Real R2 is never touched here — `getPresignedUrl` is a local signature,
 // its own behavior is proven in src/lib/r2.test.ts.
 const getPresignedUrlMock = vi.fn();
@@ -60,6 +69,8 @@ beforeEach(() => {
     unlockedByEmail: null,
     unlockReason: null,
   });
+  getClientsForPickerMock.mockReset();
+  getClientsForPickerMock.mockResolvedValue([]);
   getPresignedUrlMock.mockReset();
   getPresignedUrlMock.mockReturnValue("https://r2.example.com/presigned-proof-url");
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
@@ -185,5 +196,50 @@ describe("GalleryDetailPage", () => {
 
     expect(getPresignedUrlMock).toHaveBeenCalledWith("galleries/g1/proofs/a1.webp");
     expect(getPresignedUrlMock).toHaveBeenCalledWith("galleries/g1/proofs/a2.webp");
+  });
+
+  // Task #97: the page reads the attach picker's candidate list from
+  // `getClientsForPicker()` ONCE per render, and derives the eligible subset
+  // in memory (full list minus `gallery.clients`'s own ids, page.tsx) —
+  // never one query per attached client.
+  //
+  // THE FIXTURE SEEDS THREE ATTACHED CLIENTS ON PURPOSE. Do not trim it back
+  // to one "because the assertion only counts calls": with a single attached
+  // client, "once" and "once per attached client" are the SAME number, and
+  // `toHaveBeenCalledTimes(1)` cannot tell an N+1 fan-out apart from the
+  // correct shape. A reviewer proved exactly that by replacing page.tsx's
+  // `getClientsForPicker()` with
+  // `Promise.all(gallery.clients.map(() => getClientsForPicker()))` and
+  // watching the old one-client version of this test stay green. Three
+  // attached clients is what gives the number its discriminating power.
+  //
+  // RENAMED after an earlier review: this used to be called "excludes
+  // already-active clients from the attach picker's eligible list", which it
+  // never checked — it only awaits the page and counts the mock's calls, and
+  // this suite renders nothing (it asserts on the RSC's data access, not its
+  // markup). The exclusion itself IS covered, against real rendered
+  // <option>s, by page.chrome.test.tsx's "excludes an already-active client
+  // from the attach picker's options". Kept rather than deleted because the
+  // call count is a fact that test does not assert.
+  it("reads the attach picker's candidate list exactly once, not once per attached client", async () => {
+    authMock.mockResolvedValue(sessionFor("admin"));
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        clients: [
+          { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+          { id: "u2", name: "Beto Ruiz", email: "beto@example.com" },
+          { id: "u3", name: "Carla Díaz", email: "carla@example.com" },
+        ],
+      }),
+    );
+    getClientsForPickerMock.mockResolvedValue([
+      { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+      { id: "u2", name: "Beto Ruiz", email: "beto@example.com" },
+      { id: "u3", name: "Carla Díaz", email: "carla@example.com" },
+      { id: "u4", name: "Dani Soto", email: "dani@example.com" },
+    ]);
+
+    await expect(GalleryDetailPage(paramsFor(GALLERY_ID))).resolves.toBeTruthy();
+    expect(getClientsForPickerMock).toHaveBeenCalledTimes(1);
   });
 });

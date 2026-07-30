@@ -5,51 +5,66 @@ import type { Session } from "next-auth";
 // src/lib/auth-guards.test.ts for the same stub, needed here transitively.
 vi.mock("server-only", () => ({}));
 
-// Same fake-db approach as src/lib/asset-access.test.ts — a minimal `eq()`
-// interpreter over an in-memory row list, duplicated per this codebase's own
-// per-file test-double convention rather than shared.
+// Same fake-db approach as src/lib/asset-access.test.ts — a minimal
+// `eq()`/`isNull()` interpreter over an in-memory row list, duplicated per
+// this codebase's own per-file test-double convention rather than shared.
 type Row = Record<string, unknown>;
 
-function eqColumnAndValue(condition: unknown): { column?: string; value?: unknown } {
-  const chunks = (condition as { queryChunks?: unknown[] }).queryChunks ?? [];
+// A single leaf comparison this fake understands: either `eq(column, value)`
+// or `isNull(column)`. Drizzle renders both as a SQL node whose OWN
+// `queryChunks` carry the column reference directly (a chunk with `name` +
+// `table`) — `eq` additionally carries a `value`+`encoder` chunk, `isNull`
+// instead carries a plain string chunk whose text is " is null". Read this
+// node's chunks LOCALLY (not flattened into the whole tree) so the two shapes
+// are never confused with each other.
+type LeafCondition =
+  { column: string; op: "eq"; value: unknown } | { column: string; op: "isNull" };
+
+function parseLeaf(node: unknown): LeafCondition | undefined {
+  const chunks = (node as { queryChunks?: unknown[] } | null)?.queryChunks;
+  if (!chunks) return undefined;
+
   let dbColumnName: string | undefined;
   let table: unknown;
   let value: unknown;
+  let hasValue = false;
+  let isNullText = false;
   for (const chunk of chunks) {
     if (chunk && typeof chunk === "object") {
       if ("name" in chunk && "table" in chunk) {
         dbColumnName = (chunk as { name: string }).name;
         table = (chunk as { table: unknown }).table;
       }
-      if ("value" in chunk && "encoder" in chunk) value = (chunk as { value: unknown }).value;
+      if ("value" in chunk && "encoder" in chunk) {
+        value = (chunk as { value: unknown }).value;
+        hasValue = true;
+      }
+      if ("value" in chunk && Array.isArray((chunk as { value: unknown }).value)) {
+        if ((chunk as { value: string[] }).value.join("").includes("is null")) isNullText = true;
+      }
     }
   }
-  if (!dbColumnName || !table) return { column: undefined, value };
+  if (!dbColumnName || !table) return undefined;
   const jsKey = Object.entries(table as Record<string, unknown>).find(
     ([, col]) => col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
   )?.[0];
-  return { column: jsKey, value };
+  if (!jsKey) return undefined;
+  if (isNullText) return { column: jsKey, op: "isNull" };
+  if (hasValue) return { column: jsKey, op: "eq", value };
+  return undefined;
 }
 
-// `and(eq1, eq2)` nests its two operands inside an EXTRA wrapper SQL node
+// `and(a, b, c, ...)` nests its operands inside an EXTRA wrapper SQL node
 // (drizzle groups them with parens and joins with " and " one level deeper
-// than a flat `queryChunks` array), so this walks the WHOLE tree looking for
-// every node `eqColumnAndValue` can resolve, rather than assuming the two
-// `eq()`s sit as direct siblings.
-function andConditions(condition: unknown): { column?: string; value?: unknown }[] {
-  const results: { column?: string; value?: unknown }[] = [];
-  function walk(node: unknown) {
-    if (!node || typeof node !== "object") return;
-    const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
-    if (!chunks) return;
-    const { column, value } = eqColumnAndValue(node);
-    if (column) {
-      results.push({ column, value });
-      return;
-    }
-    for (const chunk of chunks) walk(chunk);
-  }
-  walk(condition);
+// than a flat `queryChunks` array) — this walks the WHOLE tree, but treats
+// any node `parseLeaf` can resolve as a LEAF and never recurses INTO it, so
+// an `eq()`'s own value chunk is never mistaken for a sibling condition.
+function andConditions(condition: unknown): LeafCondition[] {
+  const leaf = parseLeaf(condition);
+  if (leaf) return [leaf];
+  const chunks = (condition as { queryChunks?: unknown[] } | null)?.queryChunks ?? [];
+  const results: LeafCondition[] = [];
+  for (const chunk of chunks) results.push(...andConditions(chunk));
   return results;
 }
 
@@ -68,7 +83,9 @@ vi.mock("@/lib/db", async () => {
             }
             const conditions = andConditions(condition);
             const rows = galleryClientRows.filter((row) =>
-              conditions.every(({ column, value }) => column && row[column] === value),
+              conditions.every((c) =>
+                c.op === "isNull" ? row[c.column] == null : row[c.column] === c.value,
+              ),
             );
             return { limit: async (n: number) => rows.slice(0, n) };
           },
@@ -163,6 +180,82 @@ describe("isGalleryOwner", () => {
   });
 
   it("allows an admin through even when the gallery has no clients at all", async () => {
+    const { isGalleryOwner } = await import("./gallery-access");
+
+    await expect(isGalleryOwner(GALLERY_ID, adminSession())).resolves.toBe(true);
+  });
+
+  // THE safety-critical guard task #97 rests on: a removed row is SOFT
+  // deleted (`removedAt` set, never actually removed — schema.ts's own
+  // comment on `galleryClients`), and a removed client must lose access
+  // immediately. Mutation-proven per this task's own instructions: dropping
+  // `isNull(galleryClients.removedAt)` from `isGalleryOwner`'s own `where`
+  // makes THIS test fail — the removed client would be let back in. See this
+  // task's final report for the observed failure output with the guard
+  // removed, and the observed pass with it restored.
+  it("refuses a client whose gallery_clients row has been REMOVED (removedAt set)", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.push({
+      galleryId: GALLERY_ID,
+      userId: "client-a",
+      removedAt: new Date("2026-07-29T12:00:00.000Z"),
+    });
+    const { isGalleryOwner } = await import("./gallery-access");
+
+    await expect(isGalleryOwner(GALLERY_ID, clientSession("client-a"))).resolves.toBe(false);
+  });
+
+  it("allows a client whose row is active (removedAt still null) even when a DIFFERENT client on the same gallery was removed", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.push(
+      { galleryId: GALLERY_ID, userId: "client-a", removedAt: null },
+      {
+        galleryId: GALLERY_ID,
+        userId: "client-b",
+        removedAt: new Date("2026-07-29T12:00:00.000Z"),
+      },
+    );
+    const { isGalleryOwner } = await import("./gallery-access");
+
+    await expect(isGalleryOwner(GALLERY_ID, clientSession("client-a"))).resolves.toBe(true);
+    await expect(isGalleryOwner(GALLERY_ID, clientSession("client-b"))).resolves.toBe(false);
+  });
+
+  // Models the TRANSITION, not just its end state. Seeding a row that was
+  // never removed and asserting `true` would be byte-identical to the
+  // "allows an attached client" test above and would prove nothing about
+  // re-attachment — the name would promise a state change the fixture never
+  // built. So: push the membership as REMOVED, confirm access is refused,
+  // then clear `removedAt` in place the way `attachGalleryClients`'
+  // re-attach path does (an UPDATE, never a second INSERT — the composite
+  // PK on `(gallery_id, user_id)` would reject a duplicate row, so
+  // `attachGalleryClients` partitions its input into never-attached ids it
+  // INSERTs and previously-removed ids it UPDATEs), and confirm access
+  // comes back.
+  it("allows a client who was removed and then RE-ATTACHED (removedAt cleared back to null)", async () => {
+    const db = await seededDb();
+    const membership: { galleryId: string; userId: string; removedAt: Date | null } = {
+      galleryId: GALLERY_ID,
+      userId: "client-a",
+      removedAt: new Date("2026-07-29T12:00:00.000Z"),
+    };
+    db.__rows.galleryClients.push(membership);
+    const { isGalleryOwner } = await import("./gallery-access");
+
+    await expect(isGalleryOwner(GALLERY_ID, clientSession("client-a"))).resolves.toBe(false);
+
+    membership.removedAt = null;
+
+    await expect(isGalleryOwner(GALLERY_ID, clientSession("client-a"))).resolves.toBe(true);
+  });
+
+  it("still allows an admin through even when the gallery's only client row is removed", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.push({
+      galleryId: GALLERY_ID,
+      userId: "client-a",
+      removedAt: new Date("2026-07-29T12:00:00.000Z"),
+    });
     const { isGalleryOwner } = await import("./gallery-access");
 
     await expect(isGalleryOwner(GALLERY_ID, adminSession())).resolves.toBe(true);

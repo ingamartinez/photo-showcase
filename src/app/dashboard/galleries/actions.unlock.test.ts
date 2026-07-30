@@ -48,35 +48,55 @@ vi.mock("@/lib/unlock-notification-email", () => ({
 // UPDATE is guarded the identical way.
 type Row = Record<string, unknown>;
 
-function flattenChunks(node: unknown, out: unknown[]): void {
-  if (node && typeof node === "object" && "queryChunks" in node) {
-    for (const chunk of (node as { queryChunks: unknown[] }).queryChunks) {
-      flattenChunks(chunk, out);
-    }
-    return;
-  }
-  out.push(node);
-}
+// Task #97: upgraded from a pure `eq()`-chain flattener to a LEAF-aware
+// parser (same shape as src/lib/gallery-access.test.ts's own) so it also
+// understands `isNull()` — `getGalleryClients` now filters `removedAt IS
+// NULL` alongside `galleryId`. Reads each SQL node's own chunks locally
+// (never flattening across node boundaries), so an `eq()`'s value chunk can
+// never be mistaken for a sibling `isNull()`'s absence of one.
+type LeafCondition =
+  { dbColumnName: string; op: "eq"; value: unknown } | { dbColumnName: string; op: "isNull" };
 
-function eqConditions(condition: unknown): { dbColumnName: string; value: unknown }[] {
-  const flat: unknown[] = [];
-  flattenChunks(condition, flat);
-
-  const dbColumnNames: string[] = [];
-  const values: unknown[] = [];
-  for (const chunk of flat) {
+function parseLeaf(node: unknown): LeafCondition | undefined {
+  const chunks = (node as { queryChunks?: unknown[] } | null)?.queryChunks;
+  if (!chunks) return undefined;
+  let dbColumnName: string | undefined;
+  let value: unknown;
+  let hasValue = false;
+  let isNullText = false;
+  for (const chunk of chunks) {
     if (chunk && typeof chunk === "object") {
-      if ("name" in chunk && "table" in chunk) {
-        dbColumnNames.push((chunk as { name: string }).name);
-      } else if ("value" in chunk && "encoder" in chunk) {
-        values.push((chunk as { value: unknown }).value);
+      if ("name" in chunk && "table" in chunk) dbColumnName = (chunk as { name: string }).name;
+      if ("value" in chunk && "encoder" in chunk) {
+        value = (chunk as { value: unknown }).value;
+        hasValue = true;
+      }
+      if ("value" in chunk && Array.isArray((chunk as { value: unknown }).value)) {
+        if ((chunk as { value: string[] }).value.join("").includes("is null")) isNullText = true;
       }
     }
   }
-  if (dbColumnNames.length === 0 || dbColumnNames.length !== values.length) {
-    throw new Error("eqConditions: not a supported eq()/and(eq(), eq()) condition");
+  if (!dbColumnName) return undefined;
+  if (isNullText) return { dbColumnName, op: "isNull" };
+  if (hasValue) return { dbColumnName, op: "eq", value };
+  return undefined;
+}
+
+function walkConditions(node: unknown): LeafCondition[] {
+  const leaf = parseLeaf(node);
+  if (leaf) return [leaf];
+  const chunks = (node as { queryChunks?: unknown[] } | null)?.queryChunks ?? [];
+  const results: LeafCondition[] = [];
+  for (const chunk of chunks) results.push(...walkConditions(chunk));
+  return results;
+}
+
+function eqConditions(condition: unknown): LeafCondition[] {
+  const results = walkConditions(condition);
+  if (results.length === 0) {
+    throw new Error("eqConditions: not a supported eq()/isNull()/and(...) condition");
   }
-  return dbColumnNames.map((dbColumnName, i) => ({ dbColumnName, value: values[i] }));
+  return results;
 }
 
 function jsKeyFor(table: Record<string, unknown>, dbColumnName: string): string {
@@ -88,9 +108,10 @@ function jsKeyFor(table: Record<string, unknown>, dbColumnName: string): string 
 }
 
 function matchesRow(row: Row, table: Record<string, unknown>, condition: unknown): boolean {
-  return eqConditions(condition).every(
-    ({ dbColumnName, value }) => row[jsKeyFor(table, dbColumnName)] === value,
-  );
+  return eqConditions(condition).every((c) => {
+    const jsKey = jsKeyFor(table, c.dbColumnName);
+    return c.op === "isNull" ? row[jsKey] == null : row[jsKey] === c.value;
+  });
 }
 
 // Always returns a FRESH copy, never the live row object — a real `SELECT`
@@ -173,15 +194,32 @@ vi.mock("@/lib/db", async () => {
       // the relational API, `db.query.galleryClients.findMany(...)` — this
       // is what unlockSelection now calls instead of a `users` lookup by
       // the (now nonexistent) `gallery.clientId`.
+      //
+      // Task #97: also asserts (and applies) the `removedAt IS NULL` half of
+      // that same `where` — throws if that filter is ever missing, so a
+      // regression that drops it fails loudly here rather than quietly
+      // re-emailing a removed client.
       query: {
         galleryClients: {
           findMany: async (args: { where: unknown }) => {
-            const { dbColumnName, value } = eqConditions(args.where)[0]!;
-            if (dbColumnName !== "gallery_id") {
+            const conditions = eqConditions(args.where);
+            const galleryIdCond = conditions.find(
+              (c): c is { dbColumnName: string; op: "eq"; value: unknown } =>
+                c.dbColumnName === "gallery_id" && c.op === "eq",
+            );
+            if (!galleryIdCond) {
               throw new Error("fake db: expected a where on galleryClients.galleryId");
             }
+            const hasRemovedAtFilter = conditions.some(
+              (c) => c.dbColumnName === "removed_at" && c.op === "isNull",
+            );
+            if (!hasRemovedAtFilter) {
+              throw new Error(
+                "fake db: expected getGalleryClients to filter removedAt IS NULL (task #97)",
+              );
+            }
             return galleryClientRows
-              .filter((r) => r.galleryId === value)
+              .filter((r) => r.galleryId === galleryIdCond.value && r.removedAt == null)
               .map((r) => ({ user: userRows.find((u) => u.id === r.userId) }));
           },
         },
@@ -450,6 +488,32 @@ describe("unlockSelection success", () => {
       (call) => (call[0] as { to: string }).to,
     );
     expect(recipients.sort()).toEqual(["beto@example.com", CLIENT_EMAIL].sort());
+  });
+
+  // Task #97 acceptance criterion: a REMOVED client must never receive an
+  // unlock notification either, even though their `gallery_clients` row
+  // still exists (soft delete).
+  it("never notifies a client whose membership was REMOVED (removedAt set)", async () => {
+    const db = await seededDb();
+    db.__rows.users.push({ id: "client-b", name: "Beto Ruiz", email: "beto@example.com" });
+    db.__rows.galleryClients.push({
+      galleryId: GALLERY_ID,
+      userId: "client-b",
+      removedAt: new Date("2026-07-29T12:00:00.000Z"),
+    });
+    const { unlockSelection } = await import("./actions");
+
+    const result = await unlockSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result).toEqual({ status: "unlocked" });
+    expect(sendUnlockNotificationEmailMock).toHaveBeenCalledTimes(1);
+    const recipients = sendUnlockNotificationEmailMock.mock.calls.map(
+      (call) => (call[0] as { to: string }).to,
+    );
+    expect(recipients).toEqual([CLIENT_EMAIL]);
   });
 
   // The gate this task's own acceptance criterion asks to verify against —

@@ -22,7 +22,7 @@
 // attached — never a bypass onto every gallery in the system.
 import "server-only";
 
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import type { Session } from "next-auth";
 import { db } from "@/lib/db";
 import { galleryClients } from "@/lib/db/schema";
@@ -41,10 +41,25 @@ import { galleryClients } from "@/lib/db/schema";
 export async function isGalleryOwner(galleryId: string, session: Session): Promise<boolean> {
   if (session.user.role === "admin") return true;
 
+  // Task #97 — THE safety-critical filter the whole removal feature rests
+  // on: a removed client's row is a SOFT delete (`removedAt` set, never
+  // deleted — schema.ts's own comment on `galleryClients`), and this is the
+  // ONE ownership check every route/resolver in the app shares (this
+  // module's own header comment). Without `isNull(galleryClients.removedAt)`
+  // here, removing a client would revoke NOTHING at all — the row would
+  // still match this `where`, and every caller of `isGalleryOwner` would
+  // keep letting them in. Mutation-proven in gallery-access.test.ts: dropping
+  // this condition makes a removed client pass again.
   const [row] = await db
     .select({ userId: galleryClients.userId })
     .from(galleryClients)
-    .where(and(eq(galleryClients.galleryId, galleryId), eq(galleryClients.userId, session.user.id)))
+    .where(
+      and(
+        eq(galleryClients.galleryId, galleryId),
+        eq(galleryClients.userId, session.user.id),
+        isNull(galleryClients.removedAt),
+      ),
+    )
     .limit(1);
 
   return row !== undefined;

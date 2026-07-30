@@ -9,14 +9,14 @@
 import { z } from "zod";
 import postgres from "postgres";
 import { revalidatePath } from "next/cache";
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, inArray, isNull } from "drizzle-orm";
 import { AuthError } from "next-auth";
 import { signIn } from "@/auth";
 import { db } from "@/lib/db";
-import { assets, galleries, galleryClients, packages } from "@/lib/db/schema";
+import { assets, galleries, galleryClients, packages, users } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 import { requireAdmin } from "@/lib/auth-guards";
-import { getGalleryClients } from "@/lib/galleries";
+import { getGalleryClients, isGalleryVisibleToClient, requiresActiveClient } from "@/lib/galleries";
 import { generateGallerySlug } from "@/lib/slug";
 import { authEnv, resendEnv } from "@/lib/env";
 import { computeQuota } from "@/lib/quota";
@@ -273,12 +273,28 @@ export async function publishGallery(
   }
 
   // Task #94: a gallery can have SEVERAL clients now — `gallery.clientId`
-  // is gone entirely (schema.ts), replaced by this join-table read. An
-  // empty list is unreachable BY DESIGN (gallery-form.tsx requires at least
-  // one at creation, and there is no client-removal path yet to strip the
-  // last one afterward) but this action never trusts that invariant
-  // blindly, same stance as createGallery's own defense-in-depth checks
-  // above.
+  // is gone entirely (schema.ts), replaced by this join-table read.
+  //
+  // DO NOT DELETE THE CHECK BELOW AS DEAD DEFENSIVE CODE. It used to be
+  // genuinely unreachable — creation required at least one client and
+  // nothing could detach one afterwards — and this comment used to say so.
+  // Task #97 added `removeGalleryClient`, which strips the last active
+  // client off a `draft` gallery ON PURPOSE (`requiresActiveClient("draft")`
+  // is false). `isPublishable` is `status === "draft"`, so every gallery
+  // that reaches this line is exactly the kind that can now legitimately
+  // have zero active clients. This refusal is the ENFORCEMENT that stops a
+  // clientless gallery publishing to nobody, not redundancy on top of an
+  // invariant held elsewhere.
+  //
+  // It is also, today, a second independent statement of the SAME concern
+  // `requiresActiveClient()` (src/lib/galleries.ts) expresses — not the
+  // identical predicate, and the difference is the whole point: this one is
+  // about the status the gallery is about to REACH (`proofing`, which does
+  // require a client), while the gallery sitting here is still `draft`, for
+  // which `requiresActiveClient` returns false. Calling that predicate on
+  // `gallery.status` right here would answer the wrong question and permit
+  // exactly what this line refuses. Task #100 owns collapsing the two, and
+  // must collapse them on the DESTINATION status, not the current one.
   const clients = await getGalleryClients(gallery.id);
   if (clients.length === 0) {
     return { status: "error", message: "No encontramos clientes para esta galería." };
@@ -770,10 +786,22 @@ export async function deliverGallery(
 
   // Task #94: a gallery can have SEVERAL clients now —
   // `deliveredGallery.clientId` is gone entirely (schema.ts), replaced by
-  // this join-table read. An empty list is unreachable BY DESIGN
-  // (gallery-form.tsx requires at least one client at creation, and there is
-  // no removal path yet), but never trusted blindly, same stance as this
-  // file's own `publishGallery`/`unlockSelection` lookups above.
+  // this join-table read.
+  //
+  // AN EMPTY LIST HERE IS RARE BUT NOT IMPOSSIBLE, and this comment used to
+  // claim otherwise ("no removal path yet"). Task #97 added
+  // `removeGalleryClient`. It refuses to strip the LAST active client off a
+  // gallery past `draft`, and `isDeliverable` is `status === "selected"`, so
+  // the ordinary removal path cannot empty a deliverable gallery. What CAN
+  // is the narrow read-then-write race that action documents in its own
+  // header: two concurrent removals both read "2 active" and both commit.
+  //
+  // NOTE WHAT THIS FUNCTION DOES AND DOES NOT DO ABOUT IT. The
+  // `selected -> delivered` UPDATE above has ALREADY COMMITTED by the time
+  // this read runs, so the `clients.length === 0` branch below is a REPORT
+  // ("we delivered, but found nobody to email"), not a refusal. This action
+  // has no zero-client guard at all — adding one, driven by
+  // `requiresActiveClient()` (src/lib/galleries.ts), is task #100's job.
   const clients = await getGalleryClients(deliveredGallery.id);
 
   // SEVERAL clients, PARTIAL failure named explicitly — same shape as
@@ -827,4 +855,395 @@ export async function deliverGallery(
     };
   }
   return { status: "delivered" };
+}
+
+// ---------------------------------------------------------------------------
+// Attach clients to an EXISTING gallery (task #97) — the product's first
+// gallery-editing surface (see this file's own top-of-task framing in the
+// kanban body: before this, a gallery's client list was fixed at creation).
+//
+// THE TRAP this whole action exists to avoid: `gallery_clients` grants
+// AUTHORIZATION, not a way IN. The only door into a gallery is the magic
+// link `signIn("gallery-access", ...)` sends (the SAME provider
+// `publishGallery`/`deliverGallery` above already use — never a second
+// door). A client attached after the gallery was published would be
+// authorized for a gallery they have no link to and no reason to log in
+// for, unless this action sends them one itself.
+//
+// WHAT GETS SENT, DECIDED PER STATUS — reusing `isGalleryVisibleToClient`
+// (src/lib/galleries.ts), the SAME predicate that decides whether a client
+// may view `/galleries/[publicSlug]` at all, rather than inventing a second
+// status set that could drift from it:
+//   - `draft`    — NOTHING is sent. There is nothing to view yet (PLAN.md
+//     §2: proof upload starts in draft, before the client even knows the
+//     gallery exists) — the eventual `publishGallery` call sends every
+//     attached client (including this one) their first link when the
+//     gallery actually opens.
+//   - `proofing`/`selected`/`delivered` — the SAME `gallery-access` magic
+//     link every other client already received. The existing copy
+//     (`src/lib/gallery-access-email.ts`) is deliberately generic ("tus
+//     fotos ya están listas para ver") — it already does double duty for
+//     two materially different real states (proofing: browse and pick;
+//     delivered: browse and download) without ever claiming the selection
+//     is still open, so reusing it a third time for `selected` (browse
+//     only, since #94's rule is that the FIRST submit closes selection for
+//     EVERYONE) introduces no new misrepresentation.
+//   - `archived` — also nothing (falls out of `isGalleryVisibleToClient`
+//     being `false`), matching the same "no defined client behavior for
+//     this status" stance `isGalleryVisibleToClient`'s own comment takes.
+//
+// EMAIL IS SENT TO EVERY REQUESTED ID, UNCONDITIONALLY (never attached, or
+// attached-and-removed, or already-active) — not classified case by case.
+//
+// The honest reason, stated plainly after a review caught this comment
+// justifying itself with a scenario the UI forbids: this action cannot tell
+// "already active AND already notified" apart from "already active because
+// an EARLIER attach half-succeeded" (row written, email failed — the
+// `attached_email_failed` branch below commits the membership either way).
+// The `gallery_clients` row records no notification state at all, and
+// deliberately so: it is a membership table, not a delivery log. Given that
+// ambiguity, sending is the safer default of the two, because
+// `publishGallery`'s own header comment already established that a
+// redundant resend is "mildly redundant, never incorrect" — every magic
+// link is single-use — whereas a skipped send leaves a client with
+// authorization and no way in, which is the exact trap this whole action
+// exists to close.
+//
+// KNOWN GAP, filed as task #101 ("Resend a gallery-access email to an
+// already-attached client"), NOT solved here: there is no resend
+// affordance anywhere in the UI, so the "admin retries the failed address"
+// path this behavior would most obviously serve is currently UNREACHABLE.
+// After a partial failure the action still calls `revalidatePath` below, and
+// the detail page recomputes `eligibleClients = allClients − activeClientIds`
+// (page.tsx) — the client whose send just failed is now active, so the
+// attach picker drops them and the admin cannot select them again. Do not
+// cite that retry as the reason for the unconditional send until the
+// affordance exists.
+export type AttachGalleryClientsState = {
+  status: "idle" | "error" | "attached" | "attached_email_failed";
+  message?: string;
+};
+
+const attachGalleryClientsSchema = z.object({
+  galleryId: z.uuid(),
+  // Mirrors createGallery's own `clientIds` schema — see that schema's
+  // comment for why this is an array, `.min(1)`-guarded at the application
+  // layer.
+  clientIds: z.array(z.string().trim().min(1)).min(1, "Elegí al menos un cliente."),
+});
+
+export async function attachGalleryClients(
+  _prevState: AttachGalleryClientsState,
+  formData: FormData,
+): Promise<AttachGalleryClientsState> {
+  // Admin-only surface, checked at the data-access path itself — not only by
+  // the page above it, per src/lib/auth-guards.ts's header comment and the
+  // epic's "every route and action is admin-only" rule.
+  await requireAdmin();
+
+  const parsed = attachGalleryClientsSchema.safeParse({
+    galleryId: formData.get("galleryId"),
+    clientIds: formData.getAll("clientIds"),
+  });
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Revisá los datos del formulario.",
+    };
+  }
+
+  const [gallery] = await db
+    .select()
+    .from(galleries)
+    .where(eq(galleries.id, parsed.data.galleryId))
+    .limit(1);
+  if (!gallery) {
+    return { status: "error", message: "La galería no existe." };
+  }
+
+  // Deduped defensively before touching the database — same reasoning as
+  // createGallery's own dedupe: a native `<select multiple>` cannot post the
+  // same option twice, but a crafted request could.
+  const clientIds = [...new Set(parsed.data.clientIds)];
+
+  // Resolves name/email for the access email below AND doubles as
+  // client-id validation — an id that doesn't match a real `users` row
+  // fails this length check instead of ever reaching a write. This is a
+  // read-based equivalent of createGallery's own reliance on the
+  // `gallery_clients` FK raising `23503` for a bad id: since this action
+  // needs every requested id's email regardless (for the access email), the
+  // validation comes for free from that same read rather than needing a
+  // SEPARATE round trip just to catch a bad id via a constraint violation.
+  const requestedUsers = await db
+    .select({ id: users.id, name: users.name, email: users.email })
+    .from(users)
+    .where(inArray(users.id, clientIds));
+  if (requestedUsers.length !== clientIds.length) {
+    return { status: "error", message: "Elegí clientes válidos." };
+  }
+
+  // Three cases, all handled WITHOUT ever risking a `gallery_clients`
+  // composite-PK collision (23505) — read first, then insert only the ids
+  // that have no row yet, and UPDATE (clear `removedAt`) only the ones that
+  // do. This is a read-then-write, not an atomic upsert — a genuine
+  // concurrent double-attach of the SAME id could still race between the
+  // read and the write below and raise a 23505 this function has no catch
+  // for. Accepted, not closed here: admin-only, single-admin, sequential
+  // usage in practice — the same class of narrow, documented race this
+  // codebase already tolerates elsewhere (e.g. submit-selection's own
+  // pre-flight checks) rather than reaching for `ON CONFLICT DO UPDATE`
+  // machinery this slice's acceptance criterion doesn't ask for. What this
+  // read-first shape DOES guarantee, unconditionally: `public_slug` is never
+  // touched by this action at all, so there is no ambiguous 23505 to
+  // mis-catch here in the first place — the exact mistake #94's review
+  // caught once already.
+  const existingMemberships = await db
+    .select({ userId: galleryClients.userId, removedAt: galleryClients.removedAt })
+    .from(galleryClients)
+    .where(
+      and(eq(galleryClients.galleryId, gallery.id), inArray(galleryClients.userId, clientIds)),
+    );
+  const existingIds = new Set(existingMemberships.map((row) => row.userId));
+  const neverAttachedIds = clientIds.filter((id) => !existingIds.has(id));
+  const removedIds = existingMemberships
+    .filter((row) => row.removedAt !== null)
+    .map((row) => row.userId);
+
+  // BOTH writes in ONE transaction, for the same reason `createGallery`
+  // above wraps its own pair: a single admin action that half-applies is a
+  // state nobody asked for. Attaching three clients where one is brand new
+  // and two were previously removed is ONE decision by the admin; a failure
+  // between the INSERT and the UPDATE would attach the new client, leave the
+  // two removed ones removed, and report neither — and the emails sent below
+  // would then invite people who are still locked out. The two statements
+  // cannot be merged (one inserts rows, the other clears `removedAt` on rows
+  // that already exist), so the transaction is what makes them one unit.
+  //
+  // This does NOT fight the email-after-write structure: the transaction
+  // closes BEFORE any `signIn` call, so no magic link is ever sent from
+  // inside an open transaction, and a send failure still leaves the (already
+  // committed) attach in place — the same "the state change committed,
+  // notification is best-effort" stance `publishGallery`/`deliverGallery`
+  // take. What it does NOT close is the read-then-write race described
+  // above: the reads happen before this block, so a concurrent attach can
+  // still make `neverAttachedIds` stale. Atomicity of the two writes and
+  // isolation from a concurrent reader are different problems; only the
+  // first one is solved here.
+  if (neverAttachedIds.length > 0 || removedIds.length > 0) {
+    await db.transaction(async (tx) => {
+      if (neverAttachedIds.length > 0) {
+        await tx
+          .insert(galleryClients)
+          .values(neverAttachedIds.map((userId) => ({ galleryId: gallery.id, userId })));
+      }
+      if (removedIds.length > 0) {
+        await tx
+          .update(galleryClients)
+          .set({ removedAt: null })
+          .where(
+            and(
+              eq(galleryClients.galleryId, gallery.id),
+              inArray(galleryClients.userId, removedIds),
+            ),
+          );
+      }
+    });
+  }
+
+  revalidatePath(`/dashboard/galleries/${gallery.id}`);
+  revalidatePath("/dashboard/galleries");
+
+  // `draft`/`archived` — see this action's own header comment for why
+  // nothing is sent in either case.
+  if (!isGalleryVisibleToClient(gallery.status)) {
+    return {
+      status: "attached",
+      message:
+        gallery.status === "draft"
+          ? "Cliente agregado. Va a recibir el enlace de acceso cuando publiques la galería."
+          : "Cliente agregado.",
+    };
+  }
+
+  // Reuses the EXACT SAME provider call `publishGallery`/`deliverGallery`
+  // already make — never a second door into the gallery (this action's own
+  // header comment). Sent to EVERY requested client, not just the newly
+  // attached ones — see the header comment above for why.
+  const sendResults = await Promise.allSettled(
+    requestedUsers.map((user) =>
+      signIn("gallery-access", {
+        email: user.email,
+        redirect: false,
+        redirectTo: `/galleries/${gallery.publicSlug}`,
+      }),
+    ),
+  );
+
+  // An unexpected, non-`AuthError` rejection is a genuine bug/outage — same
+  // "let it crash rather than silently pretend" stance publishGallery's own
+  // send loop takes.
+  const unexpected = sendResults.find(
+    (result): result is PromiseRejectedResult =>
+      result.status === "rejected" && !(result.reason instanceof AuthError),
+  );
+  if (unexpected) throw unexpected.reason;
+
+  const failedEmails = requestedUsers
+    .filter((_, index) => sendResults[index]!.status === "rejected")
+    .map((user) => user.email);
+  if (failedEmails.length > 0) {
+    return {
+      status: "attached_email_failed",
+      message:
+        `Agregamos al cliente, pero no pudimos enviarle el correo de acceso a: ${failedEmails.join(", ")}. ` +
+        "Avisale por otro medio (WhatsApp / llamada).",
+    };
+  }
+
+  return {
+    status: "attached",
+    message:
+      requestedUsers.length === 1
+        ? "Cliente agregado y le mandamos el enlace para entrar a la galería."
+        : "Clientes agregados y les mandamos el enlace para entrar a la galería.",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Remove a client from a gallery (task #97) — SOFT delete, per the owner's
+// own decision recorded on the kanban task: never a `DELETE`, only
+// `removedAt` stamped. A removed row still proves the client was once
+// attached (schema.ts's own comment on `galleryClients`); this action only
+// ever writes that timestamp, never removes the row.
+// ---------------------------------------------------------------------------
+
+export type RemoveGalleryClientState = {
+  status: "idle" | "error" | "removed";
+  message?: string;
+};
+
+const removeGalleryClientSchema = z.object({
+  galleryId: z.uuid(),
+  clientId: z.string().trim().min(1, "Cliente inválido."),
+});
+
+/**
+ * Sets `gallery_clients.removedAt` for exactly one (gallery, client) pair.
+ *
+ * Never touches `assets.selectedBy` — a removed client's picks stay
+ * attributed to them, the same "historical fact of who chose what"
+ * reasoning task #94 already established for that column (schema.ts's own
+ * comment on `selectedBy`). This action has no code path that reads or
+ * writes `assets` at all.
+ *
+ * THE LAST-CLIENT GUARD, conditional on status (owner-decided after this
+ * task started): `requiresActiveClient()` (src/lib/galleries.ts) answers
+ * "does a gallery in THIS status need at least one active client". `draft`
+ * does not — this action is what makes a clientless `draft` gallery
+ * reachable in the first place. Everything past `draft` does, because a
+ * `proofing`/`selected`/`delivered` gallery nobody can open is a dead end.
+ * (Creating a gallery still requires at least one client, `createGallery`'s
+ * own `.min(1)` above; task #100 owns relaxing that too.)
+ *
+ * This is the ONLY enforcement of that predicate anywhere in the codebase
+ * today. `publishGallery` above does NOT call it — it keeps its own
+ * unconditional `clients.length === 0` refusal — and `deliverGallery` has no
+ * zero-client refusal at all, only a "we delivered but found nobody to email"
+ * report after the fact. Task #100 owns collapsing both into this predicate;
+ * until it lands, do not assume the rule is shared. See
+ * `requiresActiveClient`'s own docblock for the per-caller state.
+ *
+ * Same "the pre-flight check fails fast with a clear message, the UPDATE's
+ * own `WHERE` is the real guard" shape as `isPublishable`/`isUnlockable`/
+ * `isDeliverable` above: the pre-flight read below only decides WHICH error
+ * message to show, and does not by itself close the race between two
+ * concurrent removals of the gallery's last two active clients (a narrow
+ * window: both could read "2 active" before either commits its own removal).
+ * Accepted, not closed with a `SELECT ... FOR UPDATE` lock across every
+ * active row — admin-only, single-admin, sequential usage in practice, the
+ * same class of small race `submit-selection`'s own pre-flight checks and
+ * `deliverGallery`'s own missing-finals read already tolerate for the same
+ * reason.
+ */
+export async function removeGalleryClient(
+  _prevState: RemoveGalleryClientState,
+  formData: FormData,
+): Promise<RemoveGalleryClientState> {
+  // Admin-only surface, checked at the data-access path itself — not only by
+  // the page hiding the button once removal would violate the invariant.
+  // See this file's repeated stance on `isPublishable`/`isUnlockable`/
+  // `isDeliverable` above and the epic's "every route and action is
+  // admin-only" rule.
+  await requireAdmin();
+
+  const parsed = removeGalleryClientSchema.safeParse({
+    galleryId: formData.get("galleryId"),
+    clientId: formData.get("clientId"),
+  });
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Datos inválidos.",
+    };
+  }
+
+  const [gallery] = await db
+    .select()
+    .from(galleries)
+    .where(eq(galleries.id, parsed.data.galleryId))
+    .limit(1);
+  if (!gallery) {
+    return { status: "error", message: "La galería no existe." };
+  }
+
+  const activeMemberships = await db
+    .select({ userId: galleryClients.userId })
+    .from(galleryClients)
+    .where(and(eq(galleryClients.galleryId, gallery.id), isNull(galleryClients.removedAt)));
+
+  const isActive = activeMemberships.some((row) => row.userId === parsed.data.clientId);
+  if (!isActive) {
+    // Either never attached, or already removed — a calm, non-alarming
+    // result rather than a scary error, same "reflects reality" stance
+    // submit-selection's own idempotent-double-submit branch takes.
+    return {
+      status: "error",
+      message: "Ese cliente ya no está activo en esta galería.",
+    };
+  }
+
+  if (activeMemberships.length <= 1 && requiresActiveClient(gallery.status)) {
+    return {
+      status: "error",
+      message:
+        "No podés quitar al último cliente activo de una galería que ya no está en borrador — " +
+        "agregá otro cliente antes de quitar este, o la galería queda sin nadie que pueda entrar.",
+    };
+  }
+
+  const now = new Date();
+  const updated = await db
+    .update(galleryClients)
+    .set({ removedAt: now })
+    .where(
+      and(
+        eq(galleryClients.galleryId, gallery.id),
+        eq(galleryClients.userId, parsed.data.clientId),
+        isNull(galleryClients.removedAt),
+      ),
+    )
+    .returning();
+
+  if (updated.length === 0) {
+    // Lost a narrow race — see this function's own header comment on the
+    // accepted window between the pre-flight read above and this UPDATE.
+    return {
+      status: "error",
+      message: "Ese cliente ya no está activo en esta galería — puede que ya se haya actualizado.",
+    };
+  }
+
+  revalidatePath(`/dashboard/galleries/${gallery.id}`);
+  revalidatePath("/dashboard/galleries");
+  return { status: "removed" };
 }

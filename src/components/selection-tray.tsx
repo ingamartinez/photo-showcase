@@ -47,6 +47,7 @@ export function SelectionTray({
   isLocked,
   isStale,
   onOpenAsset,
+  onImageError,
 }: {
   /** The shared selection, oldest pick first — exactly what the server last
    * said, never a locally-derived list. */
@@ -72,6 +73,22 @@ export function SelectionTray({
    * silently-wrong, task #95's own acceptance criterion. */
   isStale: boolean;
   onOpenAsset: (assetId: string) => void;
+  /** `<ProofGrid>`'s own `refreshUrl` — the SAME one-shot re-sign the grid
+   * tiles and the lightbox already use, sharing the same `refreshedAssetIds`
+   * dedupe, so an asset is still only ever refreshed once no matter which of
+   * the three surfaces notices it went stale first.
+   *
+   * NOT optional, and not a convenience: presigned URLs expire after
+   * `PRESIGNED_URL_TTL_SECONDS` (5 minutes, src/lib/r2.ts), and this feature
+   * exists for a group spending twenty minutes arguing about photos. A pick
+   * arriving from another session at minute six, whose grid tile is below the
+   * fold — `loading="lazy"`, so never fetched, so never errored, so never
+   * refreshed by the grid — would otherwise render here as a broken
+   * thumbnail. That is this feature's PRIMARY scenario, not an edge case, and
+   * <ProofGrid>'s own header comment already states the rule it would break:
+   * "a page that only ever trusted its initial batch of URLs would start
+   * showing broken images partway through a normal session." */
+  onImageError: (assetId: string) => void;
 }) {
   return (
     <section
@@ -116,6 +133,7 @@ export function SelectionTray({
               originalFilename={filenamesByAssetId[pick.assetId]}
               viewerId={viewerId}
               onOpen={() => onOpenAsset(pick.assetId)}
+              onError={() => onImageError(pick.assetId)}
             />
           ))}
         </ul>
@@ -130,6 +148,7 @@ function TrayItem({
   originalFilename,
   viewerId,
   onOpen,
+  onError,
 }: {
   pick: SelectionPick;
   /** `undefined` when this pick's asset was not in the page's initial render
@@ -138,6 +157,7 @@ function TrayItem({
   originalFilename: string | undefined;
   viewerId: string | null;
   onOpen: () => void;
+  onError: () => void;
 }) {
   const label = pickerLabelFor(pick.pickedBy, viewerId);
   const filename = originalFilename ?? "una foto";
@@ -163,8 +183,20 @@ function TrayItem({
             // Plain <img>, not next/image — same reasoning as the grid's own
             // tiles: these are short-lived, private, presigned R2 URLs whose
             // query string is never stable between two loads.
+            //
+            // `onError` is the SAME one-shot re-sign the grid tile and the
+            // lightbox already wire up, and it matters more here than on
+            // either of them — see this file's `onImageError` prop comment for
+            // why a below-the-fold pick arriving from another session is the
+            // case that would otherwise break.
             // eslint-disable-next-line @next/next/no-img-element
-            <img src={src} alt="" loading="lazy" className="h-full w-full object-cover" />
+            <img
+              src={src}
+              alt=""
+              onError={onError}
+              loading="lazy"
+              className="h-full w-full object-cover"
+            />
           )}
         </div>
         <p

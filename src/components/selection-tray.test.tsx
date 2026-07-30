@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { SelectionTray } from "./selection-tray";
 import type { SelectionPick } from "@/lib/selection-snapshot";
@@ -25,6 +25,7 @@ function renderTray(overrides: Partial<ComponentProps<typeof SelectionTray>> = {
       isLocked={false}
       isStale={false}
       onOpenAsset={() => {}}
+      onImageError={() => {}}
       {...overrides}
     />,
   );
@@ -55,6 +56,21 @@ describe("SelectionTray", () => {
     const images = container.querySelectorAll("img");
     expect(images).toHaveLength(1);
     expect(images[0]?.getAttribute("src")).toBe("https://r2.example.com/a1");
+  });
+
+  it("asks for a fresh presigned URL when a thumbnail fails to load", () => {
+    // Presigned URLs live 5 minutes; this feature exists for a group spending
+    // twenty arguing about photos. A pick arriving from another session at
+    // minute six, whose grid tile is below the fold, has never been fetched by
+    // the grid and so has never errored there — the tray is the FIRST surface
+    // to notice it is stale, and without this it would just show a broken
+    // thumbnail for the rest of the session.
+    const onImageError = vi.fn();
+    const { container } = renderTray({ picks: [pick({ assetId: "a1" })], onImageError });
+
+    fireEvent.error(container.querySelector("img") as HTMLImageElement);
+
+    expect(onImageError).toHaveBeenCalledWith("a1");
   });
 
   it("attributes another client's pick by name", () => {

@@ -684,6 +684,10 @@ export function ProofGrid({
         isLocked={isLocked}
         isStale={isStale}
         onOpenAsset={openAssetInLightbox}
+        // The SAME `refreshUrl` the grid tiles and the lightbox use, sharing
+        // the same `refreshedAssetIds` dedupe — see <SelectionTray>'s own
+        // `onImageError` comment for why the tray needs it MORE than they do.
+        onImageError={(assetId) => void refreshUrl(assetId)}
       />
 
       <div className="mb-4 flex flex-wrap items-center justify-between gap-2">

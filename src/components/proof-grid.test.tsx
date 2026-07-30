@@ -166,6 +166,80 @@ describe("ProofGrid", () => {
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
   });
 
+  it("re-signs a stale URL noticed by the TRAY, and the grid tile heals from the same shared map", async () => {
+    // Task #95: the tray is the surface most likely to notice a stale URL
+    // first. Its picks arrive from other sessions during a long argument about
+    // photos, and the corresponding grid tile is routinely below the fold —
+    // `loading="lazy"`, so never fetched, so never errored there. Without the
+    // tray's own `onError` the client would look at a broken thumbnail for the
+    // rest of the session.
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(jsonResponse(200, { url: "https://r2.example.com/refreshed-1" })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderGrid({
+      initialAssets: assetsFor([{ isSelected: true }]),
+      initialPicks: [
+        {
+          assetId: "a1",
+          selectedAt: "2026-07-30T12:00:00.000Z",
+          pickedBy: { id: "client-b", label: "Beto Ruiz" },
+        },
+      ],
+    });
+
+    const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+    fireEvent.error(tray.querySelector("img") as HTMLImageElement);
+
+    // Waits on the rendered SRC, not merely on the request having been issued
+    // — the point of the fix is that the thumbnail actually heals.
+    await vi.waitFor(() =>
+      expect((tray.querySelector("img") as HTMLImageElement).src).toBe(
+        "https://r2.example.com/refreshed-1",
+      ),
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/assets/a1/proof");
+    // Both surfaces heal, because `urls` is ONE map shared by all three —
+    // the refresh is not duplicated per surface.
+    expect(
+      (
+        screen
+          .getByRole("button", { name: "Ver IMG_0001.JPG" })
+          .querySelector("img") as HTMLImageElement | null
+      )?.src,
+    ).toBe("https://r2.example.com/refreshed-1");
+  });
+
+  it("never re-signs the same asset twice, no matter which surface noticed it first", async () => {
+    // `refreshedAssetIds` is shared, so the tray erroring and then the grid
+    // tile erroring for the same asset is still exactly one request.
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(jsonResponse(200, { url: "https://r2.example.com/refreshed-1" })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const { container } = renderGrid({
+      initialAssets: assetsFor([{ isSelected: true }]),
+      initialPicks: [
+        {
+          assetId: "a1",
+          selectedAt: "2026-07-30T12:00:00.000Z",
+          pickedBy: { id: "client-b", label: "Beto Ruiz" },
+        },
+      ],
+    });
+
+    const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+    fireEvent.error(tray.querySelector("img") as HTMLImageElement);
+    // The grid's own tile for the same asset — the second <img> in the DOM,
+    // since the tray renders above the grid.
+    fireEvent.error(container.querySelectorAll("img")[1] as HTMLImageElement);
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+  });
+
   describe("live quota counter", () => {
     it("renders the initial counter computed from the assets' own isSelected flags and the snapshot terms", () => {
       renderGrid({

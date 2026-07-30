@@ -181,6 +181,38 @@ migrator` anywhere in the codebase. A script that stays within packages the
 app itself already imports (`sharp`, `zod`, the `bun` types, …) needs nothing
 extra.
 
+### Running `bun run backfill:display` (task #89's required post-deploy step)
+
+This backfills the unwatermarked, browsing-sized `display` derivative (task
+#89) for finals uploaded before that feature shipped. Idempotent and
+resumable — safe to re-run, and it skips any asset whose derivative already
+exists.
+
+**It refuses to run if `APP_ENV` is unset**, on purpose (task #81, task
+#104): a script invoked by hand over SSH inherits none of systemd's
+`EnvironmentFile`s, and `src/lib/r2.ts`'s `namespacedKey()` silently prefixes
+every key with `dev/` when `APP_ENV` is unset — this script would otherwise
+write every display derivative into the dev namespace, print success, and
+leave production's real objects untouched. Source both env files explicitly
+first:
+
+```bash
+ssh deploy@<droplet-host>
+cd /srv/photoshowcase/app/current
+set -a
+. /srv/photoshowcase/env/photoshowcase.env      # R2_*, PGDATABASE, ...
+. release.env                                   # APP_ENV=production, GIT_SHA
+set +a
+sudo -n -u photoshowcase /opt/bun/bin/bun run backfill:display -- --dry  # report only
+sudo -n -u photoshowcase /opt/bun/bin/bun run backfill:display           # writes to R2
+```
+
+Run the `--dry` pass first and read its output — it lists every asset it
+would touch and why (already present vs. would write) before anything is
+written. Prove a write landed in the **production** namespace, not `dev/`,
+by listing the resulting key (e.g. via `check-r2.ts`'s pattern or the R2
+dashboard) rather than trusting the script's own "written" count alone.
+
 ## Backups
 
 The `photoshowcase` database — not the R2 media bucket — is the irreplaceable

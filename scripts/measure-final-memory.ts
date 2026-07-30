@@ -1,8 +1,21 @@
-// One-off memory measurement for `processFinal` (src/lib/images.ts, task
-// #26) — that task's own acceptance criterion is "full-resolution files do
-// not blow the memory cap... report the peak observed", and explicitly
-// warns against estimating instead of measuring. Run manually:
+// One-off memory measurement for a final upload's sharp work
+// (src/lib/images.ts) — task #26's acceptance criterion is "full-resolution
+// files do not blow the memory cap... report the peak observed", and
+// explicitly warns against estimating instead of measuring. Run manually:
 //   bun run measure:final:memory
+//
+// Task #89 extended what "a final upload's sharp work" MEANS: the route
+// (POST /api/assets/[assetId]/final) now runs `processFinal` and then
+// `processDisplay` over the final's own output, so measuring `processFinal`
+// alone would no longer describe the request. This script measures each pass
+// separately AND the combined peak across both, in the order the route runs
+// them. Both go through the shared `runExclusive` mutex in
+// src/lib/images.ts, so the combined figure is the real per-request ceiling
+// — the two never overlap, not even with a third request\'s own pass.
+//
+// It also reports the DISPLAY derivative's byte size, which is what task
+// #89\'s "page weight for a 20-photo delivered gallery" criterion is
+// measured from: twenty of those is the whole grid.
 //
 // Not wired into any route, build step, or CI job — this is a verification
 // tool for a human to re-run whenever the pipeline's quality setting or
@@ -26,7 +39,7 @@
 // are attached to the fixture too, so this run also exercises the same
 // decode/re-encode path a real final upload would.
 import sharp from "sharp";
-import { processFinal } from "../src/lib/images";
+import { processDisplay, processFinal, processProof } from "../src/lib/images";
 
 const WIDTH = 6000;
 const HEIGHT = 4000;
@@ -54,10 +67,21 @@ async function main(): Promise<void> {
   const fixture = await buildFixture();
   console.log(`Fixture size: ${bytesToMiB(fixture.length)} MiB\n`);
 
-  const before = process.resourceUsage().maxRSS;
+  const beforeFinal = process.resourceUsage().maxRSS;
   const result = await processFinal(fixture);
-  const after = process.resourceUsage().maxRSS;
-  const delta = after - before;
+  const afterFinal = process.resourceUsage().maxRSS;
+
+  // Task #89: the SECOND pass the route now runs, on the final's own output
+  // bytes. Measured from its own "before" reading so the two passes can be
+  // attributed separately, and against `beforeFinal` for the combined
+  // per-request peak.
+  const beforeDisplay = process.resourceUsage().maxRSS;
+  const display = await processDisplay(result.data);
+  const afterDisplay = process.resourceUsage().maxRSS;
+
+  const delta = afterFinal - beforeFinal;
+  const displayDelta = afterDisplay - beforeDisplay;
+  const combinedDelta = afterDisplay - beforeFinal;
 
   // Bun's `maxRSS` mirrors the OS's raw `ru_maxrss`, whose UNIT differs by
   // platform: bytes on Darwin/macOS, kilobytes on Linux (the droplet this
@@ -67,13 +91,32 @@ async function main(): Promise<void> {
   // macOS dev machines so far; re-run it on the droplet before trusting an
   // absolute number against that cap.
   const unit = process.platform === "darwin" ? "bytes" : "KB (per Linux getrusage)";
-  console.log(`maxRSS before: ${before} ${unit}`);
-  console.log(`maxRSS after:  ${after} ${unit}`);
-  console.log(`delta:         ${delta} ${unit}`);
+  console.log(`unit: ${unit}`);
+  console.log(`processFinal   delta: ${delta}`);
+  console.log(`processDisplay delta: ${displayDelta}`);
+  console.log(`COMBINED       delta: ${combinedDelta}   <- the real per-request cost`);
   if (process.platform === "darwin") {
-    console.log(`delta (MiB):   ${bytesToMiB(delta)}`);
+    console.log(`\nprocessFinal   delta (MiB): ${bytesToMiB(delta)}`);
+    console.log(`processDisplay delta (MiB): ${bytesToMiB(displayDelta)}`);
+    console.log(`COMBINED       delta (MiB): ${bytesToMiB(combinedDelta)}`);
   }
-  console.log(`\nOutput final size: ${bytesToMiB(result.data.length)} MiB`);
+
+  console.log(`\nOutput final size:   ${bytesToMiB(result.data.length)} MiB`);
+  console.log(
+    `Output display size: ${(display.data.length / 1024).toFixed(0)} KiB ` +
+      `(${display.width}x${display.height})`,
+  );
+
+  // The comparison task #89's page-weight criterion actually asks for: is a
+  // delivered gallery's grid in the PROOFING view's size class, or in the
+  // full-resolution finals' one? Run over the same fixture so the three
+  // numbers are directly comparable.
+  const proof = await processProof(fixture);
+  const twenty = (bytes: number) => `${((bytes * 20) / (1024 * 1024)).toFixed(1)} MiB`;
+  console.log(`\nPage weight for a 20-photo gallery, same fixture:`);
+  console.log(`  proofing view (20 x proof):    ${twenty(proof.data.length)}`);
+  console.log(`  delivered view (20 x display): ${twenty(display.data.length)}`);
+  console.log(`  the WRONG implementation (20 x final): ${twenty(result.data.length)}`);
 }
 
 main().catch((error: unknown) => {

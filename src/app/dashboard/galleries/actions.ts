@@ -531,10 +531,17 @@ export async function unlockSelection(
   // `session.user.email` is typed optional by NextAuth's `DefaultSession`,
   // but `users.email` is NOT NULL in schema.ts and the database session
   // strategy (src/auth.ts) populates `session.user` straight from that row
-  // on every request — unreachable in practice, same stance as this file's
-  // own "unreachable in practice" client/admin lookups above, but the
-  // fallback keeps the audit trail from silently losing the actor entirely
-  // if it ever did happen.
+  // on every request — unreachable in practice, but the fallback keeps the
+  // audit trail from silently losing the actor entirely if it ever did
+  // happen.
+  //
+  // This used to cite "this file's own 'unreachable in practice'
+  // client/admin lookups above" as precedent. Those lookups no longer claim
+  // any such thing — #94, #97 and #100 each made one of them genuinely
+  // reachable — so the cross-reference is gone and this stands on its own
+  // NOT NULL column. Note the difference in KIND, which is why this one
+  // survives: `users.email` is a database constraint, whereas the client
+  // lookups rested on a form's validation.
   const unlockedByEmail = session.user.email ?? session.user.id;
   const now = new Date();
 
@@ -564,10 +571,30 @@ export async function unlockSelection(
 
   // Task #94: a gallery can have SEVERAL clients now — `unlockedGallery.
   // clientId` is gone entirely (schema.ts), replaced by this join-table
-  // read. An empty list is unreachable BY DESIGN (gallery-form.tsx requires
-  // at least one client at creation, and there is no removal path yet), but
-  // never trusted blindly, same stance as this file's own
-  // `publishGallery`/`createGallery` lookups above.
+  // read.
+  //
+  // AN EMPTY LIST HERE IS RARE BUT NOT IMPOSSIBLE. This comment used to say
+  // "unreachable BY DESIGN (gallery-form.tsx requires at least one client at
+  // creation, and there is no removal path yet)". Both halves of that are
+  // now false: #97 added `removeGalleryClient`, and #100 removed the
+  // creation-time requirement outright. Believing that sentence is exactly
+  // what let `deliverGallery` ship with no zero-client guard at all for a
+  // whole slice, so it is spelled out here rather than trimmed.
+  //
+  // What actually remains reachable: `isUnlockable` is
+  // `status === "selected"`, and the rule requires an active client for
+  // `selected`, so `removeGalleryClient` refuses to strip the last one off a
+  // gallery that could reach this line. The only route to zero is the narrow
+  // read-then-write race that action documents in its own header — two
+  // concurrent removals both reading "2 active" and both committing.
+  //
+  // AND DO NOT ADD A PRE-FLIGHT REFUSAL HERE the way `deliverGallery` has
+  // one. Deliver's guard exists because delivering to nobody CREATES a dead
+  // end. Unlock moves `selected -> proofing`, and the rule already required
+  // an active client for BOTH — a clientless gallery reaching this line is
+  // already in a violating state that the unlock neither causes nor worsens.
+  // Refusing here would only strand it further. The report below is the
+  // right response.
   const clients = await getGalleryClients(unlockedGallery.id);
 
   // Quota AT THE MOMENT OF UNLOCK — since a `selected` gallery's assets
@@ -598,9 +625,10 @@ export async function unlockSelection(
   // REPORTS, not what it does.
   let failedEmails: string[] = [];
   if (clients.length === 0) {
-    // Unreachable BY DESIGN (see the lookup above) — treated the same as
-    // every client's send failing, since there is nobody to notify either
-    // way.
+    // Reachable only through the removal race named at the lookup above —
+    // treated the same as every client's send failing, since there is nobody
+    // to notify either way. (This branch also said "unreachable BY DESIGN"
+    // until task #100; it never was, once #97 shipped removal.)
     failedEmails = [];
   } else {
     try {

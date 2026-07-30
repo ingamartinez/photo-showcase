@@ -189,7 +189,10 @@ describe("GalleriesPage chrome", () => {
     expect(screen.getByText(/Armá la primera galería con el formulario/)).toBeDefined();
   });
 
-  it("renders the gallery form when there is at least one client", async () => {
+  // Since task #100 the form renders regardless of how many clients exist —
+  // the sibling test below covers the zero case. This one is the ordinary
+  // path, kept distinct so a regression in either is attributable.
+  it("renders the gallery form when clients exist", async () => {
     getGalleriesWithDetailsMock.mockResolvedValue([]);
 
     const element = await GalleriesPage();

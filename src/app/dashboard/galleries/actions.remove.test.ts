@@ -327,10 +327,11 @@ describe("removeGalleryClient — the conditional last-active-client invariant",
   });
 
   // Task #97's own reversal of part of #94's invariant: a DRAFT gallery may
-  // legitimately have zero ACTIVE clients, and this action is exactly what
-  // makes that state reachable. (Task #100 owns the OTHER half — letting a
-  // gallery be CREATED clientless; `createGallery`'s `.min(1)` still stands
-  // today.) Removing the last one here must succeed.
+  // legitimately have zero ACTIVE clients, and this action is one of the two
+  // ways to get there. Task #100 added the other — `createGallery` now
+  // accepts an empty client list outright, so a draft can be born clientless
+  // rather than only stripped down to it. Removing the last one here must
+  // succeed either way.
   it("allows removing the LAST active client from a DRAFT gallery", async () => {
     const db = await seededDb();
     db.__rows.galleries[0]!.status = "draft";

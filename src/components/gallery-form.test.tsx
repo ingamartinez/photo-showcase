@@ -66,11 +66,20 @@ describe("GalleryForm", () => {
   // panel). The field explains itself instead, and still points at the place
   // to create one.
   it("renders the form with guidance, not a dead select, when there are no clients at all", () => {
-    render(<GalleryForm clients={[]} packages={PACKAGES} />);
+    const { container } = render(<GalleryForm clients={[]} packages={PACKAGES} />);
 
     expect(screen.queryByLabelText("Clientes (opcional)")).toBeNull();
     expect(screen.getByText(/Todavía no cargaste ningún cliente/)).toBeDefined();
     expect(screen.getByRole("link", { name: "Ir a clientes" })).toBeDefined();
+
+    // Review finding: the heading used to be a `<label htmlFor="clientIds">`
+    // rendered unconditionally, so in THIS branch it pointed at an id that
+    // does not exist — an association a screen reader follows to nothing.
+    // Every label in the form must resolve to a real control.
+    for (const label of container.querySelectorAll("label[for]")) {
+      const targetId = label.getAttribute("for")!;
+      expect(container.querySelector(`#${targetId}`)).not.toBeNull();
+    }
     // The gallery can still be created — that is the whole request.
     expect(screen.getByRole("button", { name: "Crear galería" })).toHaveProperty("disabled", false);
   });

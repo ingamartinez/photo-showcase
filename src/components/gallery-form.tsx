@@ -28,9 +28,6 @@ export function GalleryForm({
       <span className="label text-fg-mute">Nueva galería</span>
 
       <div className="flex flex-col gap-2">
-        <label htmlFor="clientIds" className="label text-fg-mute">
-          Clientes (opcional)
-        </label>
         {/* Task #94: a gallery can belong to several clients at once — a
             couple's own separate logins, a family, two businesses sharing a
             shoot. Hold Cmd/Ctrl (or Shift for a range) to pick more than one.
@@ -43,18 +40,30 @@ export function GalleryForm({
             until it has someone to publish to. The server action
             (createGallery) accepts an empty selection, and publishing is what
             refuses it; same "the UI is not the authority" stance as every
-            other guard in this app. */}
+            other guard in this app.
+
+            The heading below is a <label htmlFor> ONLY in the branch that
+            actually renders a `#clientIds` control. In the empty branch there
+            is no form control to label — a `<label htmlFor>` pointing at an
+            id that does not exist is a broken association a screen reader
+            will follow to nothing, so that branch uses a plain <span>. */}
         {clients.length === 0 ? (
-          <p className="text-fg-dim text-sm leading-relaxed">
-            Todavía no cargaste ningún cliente. Podés crear la galería igual y agregarle el cliente
-            cuando exista — hasta entonces queda en borrador.{" "}
-            <Link href="/dashboard/clients" className="text-accent-2 underline">
-              Ir a clientes
-            </Link>
-            .
-          </p>
+          <>
+            <span className="label text-fg-mute">Clientes (opcional)</span>
+            <p className="text-fg-dim text-sm leading-relaxed">
+              Todavía no cargaste ningún cliente. Podés crear la galería igual y agregarle el
+              cliente cuando exista — hasta entonces queda en borrador.{" "}
+              <Link href="/dashboard/clients" className="text-accent-2 underline">
+                Ir a clientes
+              </Link>
+              .
+            </p>
+          </>
         ) : (
           <>
+            <label htmlFor="clientIds" className="label text-fg-mute">
+              Clientes (opcional)
+            </label>
             <select
               id="clientIds"
               name="clientIds"

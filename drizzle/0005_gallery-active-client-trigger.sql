@@ -29,13 +29,33 @@
 -- each table; neither is a substitute for the other.
 --
 -- WHY DEFERRABLE INITIALLY DEFERRED: both checks read the OTHER table, so a
--- legitimate multi-statement transaction is momentarily inconsistent by
--- construction. `createGallery` inserts the gallery row and only then its
--- memberships; an operator publishing by hand may well flip the status and
--- attach a client in either order. A row-level AFTER trigger firing
--- immediately would reject those on statement ORDER rather than on the final
--- state. Deferring to COMMIT checks what the transaction actually leaves
--- behind, which is the only thing the invariant is about.
+-- legitimate multi-statement transaction can be momentarily inconsistent
+-- while ending in a perfectly valid state. A non-deferrable row trigger would
+-- reject those on the ORDER the statements happen to be written in.
+--
+-- Two real cases, both VERIFIED by installing a non-deferrable copy of these
+-- triggers on Postgres 17.9 and replaying each transaction:
+--
+--   1. Publishing a clientless draft by hand — `UPDATE galleries SET
+--      status='proofing'` and then attaching the client. REJECTED
+--      non-deferrably. Writing the same two statements in the other order
+--      commits. Same final state, opposite outcome.
+--   2. Swapping a client on a `proofing` gallery — soft-remove the old one,
+--      attach the new one. REJECTED non-deferrably, and this is the sharper
+--      case: remove-then-attach is the natural way to write a swap, and the
+--      gallery is never meant to be clientless at any point a human cares
+--      about. Attach-then-remove commits.
+--
+-- NOT a reason, despite looking like the obvious one: `createGallery`
+-- inserting the gallery row before its memberships. That was this comment's
+-- original justification and it is FALSE — `createGallery` inserts at
+-- `draft`, so the check hits the `draft` early exit below and returns before
+-- counting anything. Replayed against a non-deferrable trigger, it commits
+-- cleanly. Recorded here because it is the first explanation anyone reaches
+-- for, and it does not hold.
+--
+-- Deferring to COMMIT checks what the transaction actually leaves behind,
+-- which is the only thing the invariant is about.
 --
 -- THE MESSAGE IS DIAGNOSTIC ON PURPOSE, NOT POLITE. Nobody reaching it is a
 -- client; they are someone doing something the application refuses. It names

@@ -107,6 +107,33 @@ export function finalKey(galleryId: string, assetId: string): string {
   return namespacedKey(`galleries/${galleryId}/finals/${assetId}.jpg`);
 }
 
+/** Browsing-sized, no watermark — the derivative a DELIVERED gallery shows in
+ * its grid and lightbox (task #89). Derived from the final, never from the
+ * original: see `processDisplay`'s own section header in src/lib/images.ts.
+ *
+ * NO NEW COLUMN, and this is why. Like `proofKey` and `finalKey` above, this
+ * is a pure function of `(galleryId, assetId)` (plus `APP_ENV`, which is
+ * fixed for a given running process) — the same pair always yields the same
+ * string, so there is nothing per-row left to remember. A display object's
+ * EXISTENCE is therefore implied by exactly the same facts that imply a
+ * final's: `assets.final_key` is set and `assets.is_edited` is true, because
+ * the one route that writes a final (POST
+ * /api/assets/[assetId]/final/route.ts) writes this derivative in the same
+ * request, and scripts/backfill-display-derivatives.ts closes the gap for
+ * finals uploaded before task #89 shipped. A `display_key` column would hold
+ * a value the app can already compute, and would then have to be kept in
+ * sync with a key builder that cannot change without a data migration
+ * anyway. Same reasoning schema.ts's `proof_key` predates — it stores a key
+ * because it was written before this determinism was established; nothing new
+ * should follow that shape.
+ *
+ * Distinct extension from the final (`.webp` vs `.jpg`) as well as a distinct
+ * prefix, so the two can never collide even if a future refactor got the
+ * folder wrong. */
+export function displayKey(galleryId: string, assetId: string): string {
+  return namespacedKey(`galleries/${galleryId}/display/${assetId}.webp`);
+}
+
 /** Whatever Bun's S3Client accepts as a write body: buffers, blobs, streams, ... */
 export type PutObjectBody = Parameters<S3Client["write"]>[1];
 
@@ -187,4 +214,24 @@ export function getObjectStream(key: string): ReadableStream<Uint8Array> {
  * module: this has no notion of ownership, callers must have checked it. */
 export async function getObjectSize(key: string): Promise<number> {
   return getClient().size(key);
+}
+
+/** Whether an object exists at `key`, via R2 HEAD request — no object bytes
+ * are read (Bun's `S3Client.exists()`, the same HEAD-only mechanism
+ * `getObjectSize` above uses).
+ *
+ * Task #89's ONE caller: GET /api/assets/[assetId]/display. Because
+ * `displayKey` (above) is deterministic, nothing in the database records
+ * whether a given asset's display derivative has actually been written yet —
+ * and for a final uploaded BEFORE task #89 shipped, it has not been, until
+ * scripts/backfill-display-derivatives.ts runs. That route uses this to turn
+ * "the object isn't there" into a clean 404 the client falls back to the
+ * (watermarked) proof on, instead of a broken thumbnail.
+ *
+ * Deliberately NOT called from the gallery page's render path: that would be
+ * one R2 round trip per asset per page load, forever, to answer a question
+ * that is permanently "yes" once the backfill has run. This lives on the
+ * error path only. */
+export async function objectExists(key: string): Promise<boolean> {
+  return getClient().exists(key);
 }

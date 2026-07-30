@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
 import sharp from "sharp";
+import * as imagesModule from "./images";
 import {
   FINAL_EXIF_ARTIST,
   FINAL_EXIF_COPYRIGHT,
   PROOF_MAX_LONG_EDGE,
   assertTileHasInk,
+  processDisplay,
   processFinal,
   processProof,
 } from "./images";
@@ -58,6 +60,44 @@ async function assertHasWatermarkInk(
   }
 
   expect(inkedPixels).toBeGreaterThan(0);
+}
+
+/** Counts how many sampled pixels differ from `background` — the same ink
+ * assay `assertHasWatermarkInk` above and processFinal's own no-ink test
+ * perform, extracted so task #89's display tests can assert BOTH directions
+ * with one instrument. Sampling every 8th pixel across a 6x6 grid of cells
+ * is exactly the existing tests' stride; a return of 0 means nothing painted
+ * onto a flat frame, a positive return means something did. */
+async function countInkedSamples(
+  bytes: Buffer,
+  background: { r: number; g: number; b: number },
+): Promise<number> {
+  const { data: raw, info } = await sharp(bytes).raw().toBuffer({ resolveWithObject: true });
+  const { width, height, channels } = info;
+  const threshold = 10;
+  const gridSize = 6;
+  const cellWidth = Math.floor(width / gridSize);
+  const cellHeight = Math.floor(height / gridSize);
+  let inked = 0;
+
+  for (let row = 0; row < gridSize; row++) {
+    for (let col = 0; col < gridSize; col++) {
+      for (let sy = 0; sy < cellHeight; sy += 8) {
+        for (let sx = 0; sx < cellWidth; sx += 8) {
+          const offset = ((row * cellHeight + sy) * width + (col * cellWidth + sx)) * channels;
+          if (
+            Math.abs(raw[offset] - background.r) > threshold ||
+            Math.abs(raw[offset + 1] - background.g) > threshold ||
+            Math.abs(raw[offset + 2] - background.b) > threshold
+          ) {
+            inked++;
+          }
+        }
+      }
+    }
+  }
+
+  return inked;
 }
 
 /** Rewrites a JPEG's declared SOF0 width/height without touching its actual
@@ -512,6 +552,250 @@ describe("limitInputPixels guard", () => {
     const bomb = patchJpegDimensions(tiny, 20000, 20000);
 
     await expect(processFinal(bomb)).rejects.toThrow(/exceeds pixel limit/i);
+  });
+});
+
+// Task #89's third pipeline: the browsing-sized, UNWATERMARKED derivative a
+// delivered gallery shows. Fixtures here deliberately go through
+// `processFinal` first where the point is "derived from the final" — that is
+// the input this pipeline exists for, and running the real one keeps these
+// tests honest about what the route actually hands it.
+describe("processDisplay", () => {
+  it("downscales a full-resolution final to the display cap and outputs WebP", async () => {
+    const final = await processFinal(await makeLargeFinalFixture());
+
+    const result = await processDisplay(final.data);
+
+    const outputMeta = await sharp(result.data).metadata();
+    expect(outputMeta.format).toBe("webp");
+    expect(Math.max(outputMeta.width!, outputMeta.height!)).toBeLessThanOrEqual(
+      PROOF_MAX_LONG_EDGE,
+    );
+    // The fixture is landscape and far above the cap, so the long edge lands
+    // exactly ON it, not merely under it — this is what would break if the
+    // resize were ever dropped and the full-resolution final served instead
+    // (the exact mistake task #89 exists to avoid).
+    expect(outputMeta.width).toBe(PROOF_MAX_LONG_EDGE);
+    expect(outputMeta.width).toBeLessThan(LARGE_WIDTH);
+
+    // Reported dimensions must match the actual bytes — re-decoded
+    // independently, same discipline as processProof's own accounting test.
+    expect(result.width).toBe(outputMeta.width);
+    expect(result.height).toBe(outputMeta.height);
+  });
+
+  // THE acceptance criterion, asserted the way #14 and #26 assert theirs: on
+  // the real output pixels, not on the absence of a `composite()` call. A
+  // flat-background final must come out flat — any pixel that differs from
+  // the background is ink something painted onto it, and the only thing in
+  // this module that paints is the watermark.
+  it("paints NO watermark ink — the output pixels match the flat background it started from", async () => {
+    const flatFinal = await processFinal(
+      await sharp({
+        create: { width: LARGE_WIDTH, height: LARGE_HEIGHT, channels: 3, background: BACKGROUND },
+      })
+        .jpeg()
+        .toBuffer(),
+    );
+
+    const result = await processDisplay(flatFinal.data);
+
+    expect(await countInkedSamples(result.data, BACKGROUND)).toBe(0);
+  });
+
+  // The inverse control for the test above: it must be capable of DETECTING
+  // ink at this size and quality setting, or "0 inked samples" would be
+  // evidence of nothing. Same fixture dimensions, same WebP quality, run
+  // through `processProof` instead — that one does composite the mark, and
+  // the assay finds it.
+  it("and the same assay DOES find ink when the very same picture goes through processProof", async () => {
+    const watermarked = await processProof(
+      await sharp({
+        create: { width: LARGE_WIDTH, height: LARGE_HEIGHT, channels: 3, background: BACKGROUND },
+      })
+        .jpeg()
+        .toBuffer(),
+    );
+
+    expect(await countInkedSamples(watermarked.data, BACKGROUND)).toBeGreaterThan(0);
+  });
+
+  it("keeps the same authorship EXIF allowlist and ICC profile as the final it came from", async () => {
+    const final = await processFinal(await makeLargeFinalFixture());
+    // Sanity-check the input: the final really does still carry these, so the
+    // assertions below prove propagation rather than coincidence.
+    expect(final.data.includes(FINAL_EXIF_COPYRIGHT)).toBe(true);
+    expect((await sharp(final.data).metadata()).icc).toBeDefined();
+
+    const result = await processDisplay(final.data);
+
+    const outputMeta = await sharp(result.data).metadata();
+    expect(outputMeta.exif).toBeDefined();
+    expect(outputMeta.icc).toBeDefined();
+    expect(result.data.includes(FINAL_EXIF_COPYRIGHT)).toBe(true);
+    expect(result.data.includes(FINAL_EXIF_ARTIST)).toBe(true);
+
+    // And nothing the final itself had already dropped comes back — these
+    // bytes are unwatermarked and sit in an <img> a phone can long-press and
+    // save, so a location leak here would travel exactly as far as one in the
+    // final would (task #26's own threat model).
+    expect(result.data.includes(LOCATION_LEAK_MARKER)).toBe(false);
+    expect(result.data.includes(ORIGINAL_COPYRIGHT_MARKER)).toBe(false);
+  });
+
+  it("does not upscale a final that is already smaller than the display cap", async () => {
+    const small = await processFinal(
+      await sharp({ create: { width: 400, height: 300, channels: 3, background: BACKGROUND } })
+        .jpeg()
+        .toBuffer(),
+    );
+
+    const result = await processDisplay(small.data);
+
+    expect(result.width).toBe(400);
+    expect(result.height).toBe(300);
+  });
+
+  // The page weight claim task #89 asks to be stated with a number: a
+  // display derivative must be in the PROOF's size class, not the final's.
+  // Asserted as a ratio rather than an absolute byte count so it stays
+  // meaningful if sharp's encoder output shifts between versions.
+  it("produces bytes in the proof's size class, not the full-resolution final's", async () => {
+    // Random noise, not a flat fill — a solid colour compresses to almost
+    // nothing at every size and would make this comparison vacuous.
+    const noise = Buffer.alloc(3000 * 2000 * 3);
+    for (let i = 0; i < noise.length; i++) noise[i] = Math.floor(Math.random() * 256);
+    const original = await sharp(noise, { raw: { width: 3000, height: 2000, channels: 3 } })
+      .jpeg({ quality: 92 })
+      .toBuffer();
+
+    const final = await processFinal(original);
+    const display = await processDisplay(final.data);
+    const proof = await processProof(original);
+
+    expect(display.data.length).toBeLessThan(final.data.length / 4);
+    expect(display.data.length).toBeLessThan(proof.data.length * 3);
+  });
+
+  it("does not leak an unhandled rejection when a queued call fails, and still serves the next call", async () => {
+    const unhandledRejections: unknown[] = [];
+    const onUnhandledRejection = (reason: unknown) => {
+      unhandledRejections.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandledRejection);
+
+    try {
+      const garbage = Buffer.from("not an image, just garbage bytes");
+      await expect(processDisplay(garbage)).rejects.toThrow();
+
+      const validFixture = await sharp({
+        create: { width: 400, height: 300, channels: 3, background: BACKGROUND },
+      })
+        .jpeg()
+        .toBuffer();
+      const result = await processDisplay(validFixture);
+      expect(result.width).toBe(400);
+
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(unhandledRejections).toHaveLength(0);
+    } finally {
+      process.off("unhandledRejection", onUnhandledRejection);
+    }
+  });
+
+  // The shared mutex is what keeps the final-upload route's now-TWO sharp
+  // passes from ever being resident at the same time as a third request's
+  // own pass, under the same 768 MB cap. `runExclusive` is module-private, so
+  // this proves membership behaviourally: interleave calls to all three
+  // pipelines and check every one still returns its own correct answer,
+  // which a broken queue (shared state leaking between calls) would not.
+  it("shares the process-wide mutex with processProof and processFinal", async () => {
+    const landscape = await sharp({
+      create: { width: 2000, height: 1000, channels: 3, background: BACKGROUND },
+    })
+      .jpeg()
+      .toBuffer();
+    const portrait = await sharp({
+      create: { width: 1000, height: 2000, channels: 3, background: BACKGROUND },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const [proof, final, displayA, displayB] = await Promise.all([
+      processProof(landscape),
+      processFinal(portrait),
+      processDisplay(landscape),
+      processDisplay(portrait),
+    ]);
+
+    expect(proof.width).toBe(PROOF_MAX_LONG_EDGE);
+    expect((await sharp(final.data).metadata()).height).toBe(2000);
+    expect(displayA.width).toBe(PROOF_MAX_LONG_EDGE);
+    expect(displayA.height).toBe(800);
+    expect(displayB.height).toBe(PROOF_MAX_LONG_EDGE);
+    expect(displayB.width).toBe(800);
+  });
+});
+
+// Task #89's second acceptance criterion, stated as a standing guarantee
+// rather than a one-off review note: "processProof is unchanged and still
+// cannot emit unwatermarked bytes. Prove it."
+//
+// The behavioural half of that proof is the existing watermark-ink tests
+// above — remove `.composite()` and they go red. What those tests CANNOT
+// catch is the specific regression task #89 warns about: someone adding an
+// OPTION to `processProof` so a caller can ask it to skip the mark. The
+// ink tests would keep passing, because they never pass such an option. The
+// three tests here close exactly that gap.
+describe("processProof's no-unwatermarked-bytes guarantee (task #89)", () => {
+  // `Function.length` counts declared parameters before the first default or
+  // rest. Adding an `options` parameter — the exact temptation task #89 and
+  // task #26 both forbid — makes this 2 and turns this test red on the same
+  // commit that introduces it.
+  it("takes exactly one parameter, so there is no options object to smuggle a bypass through", () => {
+    expect(processProof.length).toBe(1);
+  });
+
+  // Belt to that braces, from the caller's side: even handed the shapes a
+  // bypass would most plausibly take, it watermarks anyway. This is what
+  // stays true no matter how the signature is written.
+  it("still watermarks when called with an extra argument shaped like a bypass", async () => {
+    const fixture = await sharp({
+      create: { width: 800, height: 600, channels: 3, background: BACKGROUND },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const asIfOptions = processProof as unknown as (
+      input: Buffer,
+      options?: unknown,
+    ) => Promise<ProcessedProof>;
+
+    for (const bypass of [{ watermark: false }, { skipWatermark: true }, false]) {
+      const result = await asIfOptions(fixture, bypass);
+      await assertHasWatermarkInk(result, BACKGROUND);
+    }
+  });
+
+  // The module's exported SURFACE is itself part of the guarantee (#14's
+  // review called this out: no default export, no `sharp` re-export,
+  // `buildWatermarkTile` module-private). Pinning it to an exact list means
+  // any new export — including a "just a small resize helper" someone adds
+  // for convenience — cannot land without a deliberate edit here, which is
+  // the moment to ask whether it hands out downscaled-unwatermarked PROOF
+  // bytes.
+  it("exports exactly the known surface — a new byte-emitting helper cannot appear unnoticed", () => {
+    expect(Object.keys(imagesModule).sort()).toEqual([
+      "FINAL_EXIF_ARTIST",
+      "FINAL_EXIF_COPYRIGHT",
+      "PROOF_MAX_LONG_EDGE",
+      "WATERMARK_TEXT",
+      "assertTileHasInk",
+      "processDisplay",
+      "processFinal",
+      "processProof",
+    ]);
   });
 });
 

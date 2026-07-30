@@ -164,6 +164,48 @@ export function isGalleryVisibleToClient(status: Gallery["status"]): boolean {
   return CLIENT_VISIBLE_STATUSES.has(status);
 }
 
+/** Whether a gallery in this status must have at least one ACTIVE client
+ * attached (task #97). `draft` is the one exception: a `draft` gallery is
+ * still being set up, while a `proofing`/`selected`/`delivered` gallery
+ * nobody is attached to is a dead end nobody can ever open.
+ *
+ * WHAT ACTUALLY CONSULTS THIS TODAY — two call sites, both introduced by
+ * task #97, and together they cover exactly one operation:
+ *   - `removeGalleryClient` (src/app/dashboard/galleries/actions.ts) refuses
+ *     to strip a gallery down to zero active clients. This is the authority.
+ *   - the gallery detail page (src/app/dashboard/galleries/[galleryId]/
+ *     page.tsx) hides the "Quitar" affordance under the same condition. UX
+ *     only — the action re-checks regardless of what was rendered.
+ *
+ * WHAT DOES NOT CONSULT IT, AND IS TASK #100's JOB TO WIRE UP. Read this
+ * before assuming the rule is already shared, because right now it is not:
+ *   - `publishGallery` DUPLICATES it. That action refuses on a bare
+ *     `clients.length === 0`, written out inline and never routed through
+ *     this predicate — a second, independent implementation of the same rule
+ *     living in that function today. (It happens to agree with this
+ *     predicate, since `isPublishable` restricts it to `draft` galleries and
+ *     the refusal is stricter than `requiresActiveClient("draft")` asks for;
+ *     agreeing by coincidence is precisely the shape that drifts.) #100 owns
+ *     collapsing it into this predicate.
+ *   - `deliverGallery` has NO zero-client refusal whatsoever. It commits the
+ *     `selected -> delivered` transition and then returns
+ *     `delivered_email_failed` ("no encontramos clientes a quién avisar")
+ *     — it reports the emptiness, it does not refuse it. #100 owns adding
+ *     the guard.
+ *
+ * Collapsing those two into this one predicate is the whole point of the
+ * predicate existing — two copies of one rule is the bug shape this project
+ * keeps shipping (kanban #86/#87/#88/#91). It just has not happened yet.
+ *
+ * Also still true today, and also #100's to change: `createGallery` requires
+ * at least one client at creation (`.min(1, "Elegí al menos un cliente.")`,
+ * src/app/dashboard/galleries/actions.ts). A gallery cannot yet be CREATED
+ * clientless; task #97 only made a `draft` one able to BECOME clientless
+ * afterwards. */
+export function requiresActiveClient(status: Gallery["status"]): boolean {
+  return status !== "draft";
+}
+
 /** Spanish copy for a gallery's workflow state (PLAN.md §2). */
 export function formatGalleryStatus(status: Gallery["status"]): string {
   switch (status) {

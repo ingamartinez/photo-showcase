@@ -207,6 +207,25 @@ describe("isGalleryVisibleToClient", () => {
   });
 });
 
+// Task #97: `draft` is the ONE status allowed to have zero active clients,
+// and task #97 is what makes that state reachable — `removeGalleryClient`
+// will strip the last active client off a `draft` gallery. Creation still
+// requires at least one (`createGallery`'s `.min(1)`); task #100 owns
+// letting a gallery be created clientless too. Every other status still
+// needs at least one client attached.
+describe("requiresActiveClient", () => {
+  it.each([
+    ["draft", false],
+    ["proofing", true],
+    ["selected", true],
+    ["delivered", true],
+    ["archived", true],
+  ] as const)("status %s -> requires an active client: %s", async (status, expected) => {
+    const { requiresActiveClient } = await import("./galleries");
+    expect(requiresActiveClient(status)).toBe(expected);
+  });
+});
+
 describe("formatGalleryStatus", () => {
   it.each([
     ["draft", "Borrador"],

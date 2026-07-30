@@ -68,6 +68,14 @@ sudo systemctl daemon-reload
 sudo systemctl enable photoshowcase.service   # starts after first CD deploy
 ```
 
+The unit declares `CacheDirectory=photoshowcase` — unlike `/srv/photoshowcase`
+above, `/var/cache/photoshowcase` needs no manual `mkdir`/`chown`; systemd
+creates it (owned by `photoshowcase:photoshowcase`) on every service start and
+leaves it in place across restarts and deploys. The CD workflow symlinks each
+release's `.next/cache` to it, since Next's image optimizer cache has to live
+somewhere writable and the release tree itself is read-only to the running
+process by design (`ProtectSystem=strict`). See task #99.
+
 ### 5. Caddy site block
 
 Caddy already fronts findash on this droplet as a single `/etc/caddy/Caddyfile`

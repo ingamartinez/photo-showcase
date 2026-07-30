@@ -204,25 +204,52 @@ exists.
 `EnvironmentFile`s, and `src/lib/r2.ts`'s `namespacedKey()` silently prefixes
 every key with `dev/` when `APP_ENV` is unset — this script would otherwise
 write every display derivative into the dev namespace, print success, and
-leave production's real objects untouched. Source both env files explicitly
-first:
+leave production's real objects untouched.
+
+**Source both env files INSIDE the `sudo -u photoshowcase` shell, not
+before it.** Both env files are `0640 photoshowcase:photoshowcase` — the
+`deploy` user (and anyone SSHing in as it) cannot read either one directly,
+so sourcing them before `sudo` fails outright. And even granted a way to read
+them first, `sudo` would drop the exported vars anyway: this droplet's sudo
+runs with `env_reset` (`/etc/sudoers`), which clears the environment for the
+command it invokes unless a variable is explicitly allowlisted with
+`env_keep`. Neither `APP_ENV` nor any `R2_*` var is allowlisted, so a child
+process started that way sees none of them regardless of what the parent
+shell had. The env files have to be sourced by the `photoshowcase` user
+itself, inside the `sudo`'d shell that will run the script — verified working
+on the real droplet (a `--dry` run inside this exact shape reported all
+three of `APP_ENV`, `R2_ACCOUNT_ID` and `PGDATABASE` present):
 
 ```bash
 ssh deploy@<droplet-host>
-cd /srv/photoshowcase/app/current
-set -a
-. /srv/photoshowcase/env/photoshowcase.env      # R2_*, PGDATABASE, ...
-. release.env                                   # APP_ENV=production, GIT_SHA
-set +a
-sudo -n -u photoshowcase /opt/bun/bin/bun run backfill:display -- --dry  # report only
-sudo -n -u photoshowcase /opt/bun/bin/bun run backfill:display           # writes to R2
+sudo -n -u photoshowcase /bin/sh -c '
+  set -a
+  . /srv/photoshowcase/env/photoshowcase.env
+  . /srv/photoshowcase/app/current/release.env
+  set +a
+  cd /srv/photoshowcase/app/current
+  exec /opt/bun/bin/bun run backfill:display -- --dry'   # report only, writes nothing
+
+# once the --dry output looks right, drop --dry to actually write:
+sudo -n -u photoshowcase /bin/sh -c '
+  set -a
+  . /srv/photoshowcase/env/photoshowcase.env
+  . /srv/photoshowcase/app/current/release.env
+  set +a
+  cd /srv/photoshowcase/app/current
+  exec /opt/bun/bin/bun run backfill:display'
 ```
 
 Run the `--dry` pass first and read its output — it lists every asset it
 would touch and why (already present vs. would write) before anything is
-written. Prove a write landed in the **production** namespace, not `dev/`,
-by listing the resulting key (e.g. via `check-r2.ts`'s pattern or the R2
-dashboard) rather than trusting the script's own "written" count alone.
+written. Prove a write landed in the **production** namespace, not `dev/`, by
+reading the key the write log itself prints for each asset (it includes the
+full resolved R2 key, `dev/`-prefixed or not, not just dimensions/size) —
+don't trust the script's own "written" count alone, and don't assume
+`APP_ENV=production` was actually what got sourced: a typo'd value
+(`prod`, `Production`, a stray trailing space from a bad copy-paste) passes
+the unset-check just as easily and still lands every write in `dev/`, so
+read the printed key, not just the summary line.
 
 ## Backups
 

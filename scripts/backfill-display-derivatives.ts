@@ -160,7 +160,17 @@ async function main(): Promise<void> {
 
       counts.written++;
       const kib = (display.data.length / 1024).toFixed(0);
-      console.log(`write  ${label} -> ${display.width}x${display.height}, ${kib} KiB`);
+      // `target` (the resolved R2 key, `dev/`-prefixed or not depending on
+      // APP_ENV) is printed here, not just dimensions/size, for the same
+      // reason the dry-run branch above already prints it: AC2 asks an
+      // operator to PROVE a write landed in the production namespace by
+      // listing the resulting key, and `assertAppEnvIsSet` only checks that
+      // APP_ENV is set, not that it is spelled correctly -- a typo'd value
+      // ("prod", "Production", a trailing space) passes that check and still
+      // silently writes under dev/ (namespacedKey requires an exact
+      // "production" match). Printing the summary alone would make that
+      // typo indistinguishable from a real production write.
+      console.log(`write  ${label} -> ${target} (${display.width}x${display.height}, ${kib} KiB)`);
     } catch (error: unknown) {
       // One bad asset must not abandon the rest — a missing or corrupt final
       // in R2 is exactly the kind of thing a backfill exists to surface, and

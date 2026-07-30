@@ -1,21 +1,43 @@
 # photoshowcase.service unit install -- deploy user, root context.
 #
 # Lets CD install infra/systemd/photoshowcase.service and reload the systemd
-# manager on every deploy, instead of a human running `sudo cp` +
+# manager on every deploy, instead of a human running `sudo install` +
 # `daemon-reload` by hand (previously the case -- see infra/README.md history
 # and task #102).
 #
-# Narrow, not blanket, on purpose: a malicious or buggy unit file is closer to
-# root-equivalent than a bad release tarball (arbitrary ExecStart=, arbitrary
-# User=, capability grants, disabling the sandboxing directives already on
-# this unit, etc.). This grants exactly the one file this pipeline writes to
-# /tmp and nothing else under /etc/systemd/system/. It does NOT grant
-# `systemctl start|enable|edit`, writing any other unit, or a generic
-# `cp`/`install` into /etc -- only these two exact command lines.
+# BE PLAIN ABOUT WHAT THIS GRANT IS: it is root-equivalent for `deploy`, full
+# stop. `deploy` already controls the ExecStart= a root-owned unit runs, and
+# `deploy` already holds `systemctl restart photoshowcase.service` (see
+# photoshowcase-deploy in this same directory) -- so letting it write this
+# one unit file lets it run anything as root on the next restart. The
+# literal source/destination paths below bound WHICH file gets written, not
+# what a hostile or buggy `deploy` could put in it; they do not shrink the
+# blast radius of a compromised or mistaken `deploy`, only of a `deploy` that
+# mistypes a path. The actual enforcement boundary is PR review of
+# infra/systemd/photoshowcase.service, branch protection on `main`, custody
+# of the DEPLOY_SSH_KEY secret, and who may dispatch the Deploy workflow --
+# not sudoers narrowness.
 #
-# /tmp/photoshowcase.service is written by the "Install systemd unit" step in
-# .github/workflows/deploy.yml via a plain (non-sudo) scp as the deploy user,
-# so no sudo grant is needed for that half.
+# NOT a new escalation on this droplet, either: findash-redis-provision (also
+# in this directory) already grants `deploy` an equivalent root-equivalent
+# pattern -- installing a unit file as root -- plus a redis restart. This
+# file is a second instance of a power `deploy` already has on this box, not
+# a fresh one. (That existing grant has the identical /tmp staging flaw this
+# file avoids; it belongs to another service with another owner and is
+# tracked separately as task #108 -- do not touch it here.)
+#
+# Staged via $UNIT_STAGING_DIR (/home/deploy/staging, 0700, created by the
+# pipeline under deploy's own 0750 home) rather than /tmp: /tmp is
+# world-writable (the sticky bit only blocks unlink/rename by non-owners,
+# not pre-creating a file or symlink another principal owns), and this
+# droplet has other local principals with a real, non-PrivateTmp view of it
+# (findash, postgres, cron backup jobs). A fixed, deploy-only-writable
+# staging path closes that.
+#
+# /home/deploy/staging/photoshowcase.service is written by the "Install
+# systemd unit" / "Rollback on failure" steps in
+# .github/workflows/deploy.yml via a plain (non-sudo) scp as the deploy
+# user, so no sudo grant is needed for that half.
 #
 # PROPOSED -- not yet applied to the droplet. This is a sudoers policy
 # decision on a droplet shared with findash, and it belongs to the droplet
@@ -24,8 +46,9 @@
 #   sudo chmod 0440 /etc/sudoers.d/photoshowcase-unit-install
 #   sudo visudo -c
 #
-# /bin is a symlink to /usr/bin on this droplet (Ubuntu 24.04 usrmerge), so
-# /usr/bin/cp and /usr/bin/systemctl below are the same binaries the sibling
-# *-deploy sudoers files reference as /bin/cp and /bin/systemctl.
-deploy ALL=(root) NOPASSWD: /usr/bin/cp /tmp/photoshowcase.service /etc/systemd/system/photoshowcase.service
+# /usr/bin/install and /usr/bin/systemctl below are the same binaries the
+# sibling *-deploy sudoers files reference as /bin/install and
+# /bin/systemctl (/bin is a symlink to /usr/bin on this droplet, Ubuntu
+# 24.04 usrmerge).
+deploy ALL=(root) NOPASSWD: /usr/bin/install -m 0644 -o root -g root /home/deploy/staging/photoshowcase.service /etc/systemd/system/photoshowcase.service
 deploy ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload

@@ -65,15 +65,31 @@ sudo chmod 0640 /srv/photoshowcase/env/photoshowcase.env
 
 Ongoing changes to `infra/systemd/photoshowcase.service` ship through CD, not
 by hand — the "Install systemd unit" step in `.github/workflows/deploy.yml`
-`scp`s the file and runs `cp` + `daemon-reload` on every deploy. That needs a
+(now positioned right before "Flip symlink + restart", so the unit and the
+release flip together) stages the file into a `deploy`-only-writable
+directory and runs `install` + `daemon-reload` on every deploy. That needs a
 one-time sudoers grant on the droplet first; a brand-new droplet also needs
 the very first install done by hand, before that grant can take effect.
 
-**4a. One-time sudoers grant (root).** Narrowly scoped to exactly this one
-file plus `daemon-reload` — never a blanket `NOPASSWD: ALL` for systemd/etc,
-because a malicious or buggy unit file is closer to root-equivalent than a
-bad release tarball. See `infra/sudoers/photoshowcase-unit-install` for the
-rule and the full reasoning.
+**4a. One-time sudoers grant (root).** Read this plainly before applying it:
+**this grant is root-equivalent for `deploy`, full stop.** `deploy` already
+controls the `ExecStart=` a root-owned unit runs and already holds
+`systemctl restart photoshowcase.service`, so letting it write this one unit
+file lets it run anything as root on the next restart. Scoping the grant to
+one exact source path and one exact destination path bounds *which file*
+gets written, not what a hostile or buggy `deploy` could put in it — it
+protects against `deploy` mistyping a path, not against a compromised or
+malicious `deploy`. The real enforcement boundary is PR review of
+`infra/systemd/photoshowcase.service`, branch protection on `main`, custody
+of the `DEPLOY_SSH_KEY` secret, and who may dispatch the Deploy workflow.
+
+This is also not a *new* escalation on this shared droplet: `deploy` already
+has an equivalent root-equivalent grant via `findash-redis-provision`
+(installing a unit file as root, plus a redis restart). This adds a second
+instance of a power `deploy` already has, not a fresh one. See
+`infra/sudoers/photoshowcase-unit-install` for the rule itself and the full
+reasoning, including why it stages into `/home/deploy/staging` rather than
+world-writable `/tmp`.
 
 ```bash
 sudo cp infra/sudoers/photoshowcase-unit-install /etc/sudoers.d/photoshowcase-unit-install
@@ -83,9 +99,11 @@ sudo visudo -c
 
 Until this is applied, every deploy's "Install systemd unit" step fails
 loudly with the commands above, rather than silently skipping the install —
-see that step in `deploy.yml`. There is no half-applied unit change: the
-step either installs the unit and reloads systemd, or the deploy stops
-before anything is restarted.
+see that step in `deploy.yml`. That step can still fail *after* the grant is
+applied too (e.g. `install` succeeds but `daemon-reload` does not), leaving
+the new unit file on disk but not yet reloaded — the deploy still stops
+before anything is restarted, but do not read "the step failed" as always
+meaning "the sudoers grant is missing."
 
 **4b. First install (bootstrap only, root).** Before 4a exists, no deploy can
 install the unit itself:
@@ -96,13 +114,24 @@ sudo systemctl daemon-reload
 sudo systemctl enable photoshowcase.service   # starts after first CD deploy
 ```
 
+Once 4a is applied, the `cp` and `daemon-reload` above become redundant —
+every deploy repeats them automatically from then on. The one line that
+stays genuinely manual is `systemctl enable`: `deploy` has no `enable` grant,
+so a brand-new droplet still needs this run once by hand before the first
+CD deploy.
+
 After 4a and 4b, do not hand-edit
 `/etc/systemd/system/photoshowcase.service` — edit
-`infra/systemd/photoshowcase.service` and deploy instead. If it is hand-edited
-during an incident anyway, the deploy pipeline's "Verify installed unit
-matches repo" step (its second line of defense, kept deliberately for this
-case — task #102) catches the drift on the next deploy and fails loudly
-rather than restarting the service on a unit nobody reviewed.
+`infra/systemd/photoshowcase.service` and deploy instead. **A hand-edit does
+not survive the next deploy and nothing warns you when it is lost:** the
+deploy pipeline's "Install systemd unit" step overwrites whatever is
+installed with the repo's copy, and the follow-up "Verify installed unit
+matches repo" step then compares repo against repo — it cannot detect a
+hand-edit that the install step already erased, it can only confirm the
+install itself took effect byte-for-byte. If a unit change is made directly
+on the droplet during an incident, port it back into
+`infra/systemd/photoshowcase.service` before the next deploy, or expect it to
+disappear silently.
 
 The unit declares `CacheDirectory=photoshowcase` — unlike `/srv/photoshowcase`
 above, `/var/cache/photoshowcase` needs no manual `mkdir`/`chown`; systemd

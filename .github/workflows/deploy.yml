@@ -30,6 +30,11 @@ jobs:
       DEPLOY_HOST: ${{ secrets.DEPLOY_HOST }}
       DEPLOY_USER: ${{ secrets.DEPLOY_USER }}
       APP_ROOT: /srv/photoshowcase
+      # Only `deploy` can write here (0700 under deploy's own 0750 home) --
+      # unlike world-writable /tmp, no other local principal on this shared
+      # droplet can pre-create or symlink this path out from under us. See
+      # the "Install systemd unit" step.
+      UNIT_STAGING_DIR: /home/deploy/staging
 
     steps:
       - name: Resolve target ref
@@ -249,56 +254,6 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Verify systemd unit matches droplet
-        run: |
-          set -eu
-          # This pipeline never installs infra/systemd/photoshowcase.service —
-          # that is a documented manual step (infra/README.md) because it
-          # needs `sudo cp` to /etc/systemd/system/ + `daemon-reload`, and the
-          # low-priv deploy user is not granted that (see the follow-up task
-          # filed from #99 about closing this gap for real). Until then, "the
-          # unit file changed in the repo" and "the unit file changed on the
-          # droplet" are two different events, and a release that depends on
-          # a new unit directive (CacheDirectory=, ExecStart flags, etc.)
-          # without checking for that drift fails silently in production
-          # instead of failing loud here. Reading the installed unit needs no
-          # new grant: unit files under /etc/systemd/system are root:root
-          # 644 by default, so a plain (non-sudo) read works for the deploy
-          # user.
-          local_unit=$(cat infra/systemd/photoshowcase.service)
-          # Keep "cannot reach the droplet" distinct from "the unit differs".
-          # The remote `cat` is forced to exit 0 (falling back to a sentinel
-          # when the file is absent), so a non-zero exit from ssh itself can
-          # only mean connectivity or auth failed. Without that split, an SSH
-          # outage yields an empty remote unit and renders as a whole-file
-          # diff — sending whoever is on call to run `sudo cp` against a box
-          # they cannot even reach.
-          if ! remote_unit=$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
-            "$DEPLOY_USER@$DEPLOY_HOST" \
-            'cat /etc/systemd/system/photoshowcase.service 2>/dev/null || echo __UNIT_ABSENT__'); then
-            echo "Could not reach $DEPLOY_USER@$DEPLOY_HOST over SSH to read the installed systemd unit."
-            echo "This is a connectivity or auth failure, NOT unit drift — do not run the install commands until the droplet is reachable."
-            exit 1
-          fi
-          if [ "$remote_unit" = "__UNIT_ABSENT__" ]; then
-            echo "photoshowcase.service is not installed at /etc/systemd/system/ on the droplet."
-            echo "Install it, then re-run this deploy:"
-            echo "  sudo cp infra/systemd/photoshowcase.service /etc/systemd/system/"
-            echo "  sudo systemctl daemon-reload"
-            exit 1
-          fi
-          if [ "$local_unit" != "$remote_unit" ]; then
-            echo "photoshowcase.service on the droplet does not match infra/systemd/photoshowcase.service in this repo."
-            echo "This pipeline does not install the unit automatically. Install it by hand first, then re-run this deploy:"
-            echo "  sudo cp infra/systemd/photoshowcase.service /etc/systemd/system/"
-            echo "  sudo systemctl daemon-reload"
-            echo
-            echo "diff (repo vs droplet):"
-            diff <(printf '%s' "$local_unit") <(printf '%s' "$remote_unit") || true
-            exit 1
-          fi
-          echo "photoshowcase.service on the droplet matches the repo."
-
       - name: Upload tarball
         env:
           GIT_SHA: ${{ steps.sha.outputs.sha }}
@@ -376,6 +331,139 @@ jobs:
             sudo -n -u photoshowcase /opt/bun/bin/bun scripts/seed-packages.ts
           "
 
+      - name: Install systemd unit
+        run: |
+          set -eu
+          # Ships infra/systemd/photoshowcase.service + daemon-reload on every
+          # deploy instead of leaving that a documented manual SSH step
+          # (infra/README.md previously said so). That gap meant a unit-level
+          # fix (e.g. #99's CacheDirectory=) shipped inert until a human ran
+          # `sudo install` + `daemon-reload` by hand. See task #102.
+          #
+          # This needs a sudoers grant the pipeline does not apply itself --
+          # infra/sudoers/photoshowcase-unit-install. Be plain about what
+          # that grant is: `deploy` already controls the ExecStart= a
+          # root-owned unit runs and already holds `systemctl restart
+          # photoshowcase.service`, so letting it write this one unit file
+          # is root-equivalent for `deploy`, full stop. The literal
+          # destination path bounds WHICH file gets written, not what a
+          # hostile or buggy `deploy` could put in it -- narrow scoping does
+          # not shrink the blast radius of a compromised or mistaken
+          # `deploy`, only of a `deploy` that mistypes a path. The real
+          # enforcement boundary is PR review of
+          # infra/systemd/photoshowcase.service, branch protection on
+          # `main`, custody of the DEPLOY_SSH_KEY secret, and who may
+          # dispatch this workflow. It is also not a NEW escalation on this
+          # shared droplet: findash-redis-provision already grants `deploy`
+          # an equivalent root-equivalent pattern (installing a unit file as
+          # root) plus a redis restart. See
+          # infra/sudoers/photoshowcase-unit-install for the rule itself.
+          #
+          # Runs right before "Flip symlink + restart" (not immediately
+          # after SSH setup, as an earlier version of this step did) so the
+          # unit and the release flip together in the same narrow window,
+          # and so a rollback can restore both -- see "Rollback on failure"
+          # below. Deliberate trade, not an oversight: this now fails AFTER
+          # migrations and seeding have already run against the new release,
+          # not before. Unit/release skew is persistent host state that
+          # outlives this job, whereas "the database is ahead of the
+          # currently-running code" is a state this pipeline already reaches
+          # at several earlier, pre-existing failure points (a failed seed
+          # step, a failed health probe) with no dedicated rollback for the
+          # data itself -- so this is not a new risk class, just this step
+          # moving to join it.
+          #
+          # Staged into a directory only `deploy` can write
+          # ($UNIT_STAGING_DIR, under deploy's own 0750-with-empty-group
+          # home) rather than world-writable /tmp: an earlier version staged
+          # into /tmp, which other local principals on this shared box have
+          # a real (non-sandboxed) view of -- specifically the cron backup
+          # jobs (running as findash, photoshowcase, zyeth; cron does not
+          # apply PrivateTmp=) and an interactive shell as any of those
+          # users. (The findash/photoshowcase/zyeth *services* themselves do
+          # set PrivateTmp=true and were never the exposure.) They could
+          # pre-create or symlink /tmp/photoshowcase.service and have their
+          # bytes installed as root. See task #102 review.
+          ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" "install -d -m 0700 '$UNIT_STAGING_DIR'"
+          # Snapshot what is currently installed before overwriting it, so a
+          # later rollback can restore it: daemon-reload below makes the NEW
+          # unit definition active for any future restart -- including a
+          # rollback's -- unless the old one is put back first. Plain
+          # (non-sudo) read: unit files under /etc/systemd/system are
+          # root:root 644 by default. Sentinel covers the first-ever install
+          # (nothing to snapshot yet).
+          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" \
+            'cat /etc/systemd/system/photoshowcase.service 2>/dev/null || echo __UNIT_ABSENT__' \
+            > prev-unit-snapshot.txt
+          # A transport failure on this scp is a plain, self-explanatory
+          # error -- the remediation text below is specifically about the
+          # sudoers grant the *next* command needs, so it isn't repeated
+          # here.
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            infra/systemd/photoshowcase.service \
+            "$DEPLOY_USER@$DEPLOY_HOST:$UNIT_STAGING_DIR/photoshowcase.service"
+          if ! ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
+            set -eu
+            sudo -n install -m 0644 -o root -g root '$UNIT_STAGING_DIR/photoshowcase.service' /etc/systemd/system/photoshowcase.service
+            rm -f '$UNIT_STAGING_DIR/photoshowcase.service'
+            sudo -n systemctl daemon-reload
+          "; then
+            echo "Failed to install the systemd unit on the droplet."
+            echo "Most likely cause: the deploy user does not have the sudoers grant this step needs."
+            echo "The droplet owner must apply it once (see infra/sudoers/photoshowcase-unit-install):"
+            echo "  sudo cp infra/sudoers/photoshowcase-unit-install /etc/sudoers.d/photoshowcase-unit-install"
+            echo "  sudo chmod 0440 /etc/sudoers.d/photoshowcase-unit-install"
+            echo "  sudo visudo -c"
+            echo "This can also fail after the grant is applied, e.g. if 'install'"
+            echo "succeeds but 'rm' or 'daemon-reload' does not -- that leaves the new"
+            echo "unit file on disk but not yet reloaded. Re-run this deploy once the"
+            echo "underlying failure is fixed; do not assume it is always sudoers."
+            exit 1
+          fi
+
+      - name: Verify installed unit matches repo
+        run: |
+          set -eu
+          # This does NOT catch a unit hand-edited on the droplet during an
+          # incident -- the previous step's install just overwrote any such
+          # edit, so this step then compares repo against repo and always
+          # passes. A hand-edited unit is silently reverted here, mid-
+          # incident, with a restart to follow it, and nothing in this log
+          # distinguishes that from an ordinary deploy (see infra/README.md
+          # for the explicit warning to operators).
+          #
+          # What this DOES verify: that the previous step's `install` +
+          # `daemon-reload` actually took effect and that the bytes that
+          # landed on the droplet match the repo exactly -- catching
+          # transport corruption (e.g. line-ending mangling) that a
+          # successful exit code from the previous step would not. See task
+          # #102 acceptance criterion 3.
+          local_unit=$(cat infra/systemd/photoshowcase.service)
+          # Keep "cannot reach the droplet" distinct from "the unit differs",
+          # same reasoning as #99: a non-zero ssh exit means connectivity or
+          # auth failed, not drift.
+          if ! remote_unit=$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            "$DEPLOY_USER@$DEPLOY_HOST" \
+            'cat /etc/systemd/system/photoshowcase.service 2>/dev/null || echo __UNIT_ABSENT__'); then
+            echo "Could not reach $DEPLOY_USER@$DEPLOY_HOST over SSH to verify the installed systemd unit."
+            echo "This is a connectivity or auth failure, NOT unit drift."
+            exit 1
+          fi
+          if [ "$remote_unit" = "__UNIT_ABSENT__" ]; then
+            echo "photoshowcase.service is missing at /etc/systemd/system/ immediately after the install step -- that step did not actually take effect."
+            exit 1
+          fi
+          if [ "$local_unit" != "$remote_unit" ]; then
+            echo "photoshowcase.service on the droplet does not match infra/systemd/photoshowcase.service right after installing it."
+            echo "This should not happen from this pipeline alone -- investigate before this deploy restarts the service."
+            echo
+            echo "diff (repo vs droplet):"
+            diff <(printf '%s' "$local_unit") <(printf '%s' "$remote_unit") || true
+            exit 1
+          fi
+          echo "photoshowcase.service on the droplet matches the repo."
+
       - name: Flip symlink + restart photoshowcase
         id: flip
         env:
@@ -418,6 +506,44 @@ jobs:
         run: |
           set -eu
           echo "rolling back to $PREV"
+          # "Install systemd unit" already ran `daemon-reload` for the NEW
+          # unit, which makes it the active definition for any future
+          # restart -- including this rollback's -- regardless of which
+          # release directory `current` points at. Restarting the OLD
+          # release under the NEW unit is not a rollback if the unit change
+          # is what broke this deploy (the most likely reason a
+          # unit-touching deploy fails at all), and with `Restart=always`
+          # that is a crash loop. Put the previous unit back first, using
+          # the snapshot "Install systemd unit" took before it overwrote
+          # anything. No new sudoers grant needed: same staging path, same
+          # granted `install` + `daemon-reload` commands, just older file
+          # contents. See task #102 review.
+          # Best-effort, not fatal: the release rollback below must always
+          # run even if this restore doesn't. Restarting the old release
+          # under the new unit is worse than not restoring the unit, but
+          # NOT restoring the release symlink at all -- because a `set -eu`
+          # abort here happened to exit before the line that has always
+          # done the restore -- is worse still: it would leave `current`
+          # pointed at the broken new release, which is strictly worse than
+          # the behaviour this replaced. See task #102 review.
+          restore_ok=1
+          if [ -s prev-unit-snapshot.txt ] && ! grep -q '^__UNIT_ABSENT__$' prev-unit-snapshot.txt; then
+            scp -i ~/.ssh/deploy_key prev-unit-snapshot.txt \
+              "$DEPLOY_USER@$DEPLOY_HOST:$UNIT_STAGING_DIR/photoshowcase.service" || restore_ok=0
+            if [ "$restore_ok" = "1" ]; then
+              ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
+                set -eu
+                sudo -n install -m 0644 -o root -g root '$UNIT_STAGING_DIR/photoshowcase.service' /etc/systemd/system/photoshowcase.service
+                rm -f '$UNIT_STAGING_DIR/photoshowcase.service'
+                sudo -n systemctl daemon-reload
+              " || restore_ok=0
+            fi
+          else
+            echo "No previous unit snapshot to restore (first-ever install on this droplet) -- rolling back the release only."
+          fi
+          if [ "$restore_ok" = "0" ]; then
+            echo "WARNING: could not restore the previous unit; continuing with the release rollback, which will restart under the NEW unit"
+          fi
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
             set -eu
             sudo -n -u photoshowcase ln -sfn '$PREV' '$APP_ROOT/app/current'

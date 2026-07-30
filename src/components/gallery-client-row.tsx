@@ -10,7 +10,7 @@
 // and that must be said plainly before the admin confirms. `removable` hides
 // the affordance entirely when the SERVER would refuse it anyway (the last
 // active client on a gallery past `draft` — `removeGalleryClient`'s own
-// `requiresActiveClient()` guard, src/lib/galleries.ts) — same "hiding is UX,
+// `activeClientRuleViolation()` guard, src/lib/galleries.ts) — "hiding is UX,
 // not authority" stance as every other guard in this app: the action itself
 // re-checks this regardless of what `removable` is computed as here.
 import { useActionState, useState } from "react";

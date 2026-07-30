@@ -994,9 +994,13 @@ export type AttachGalleryClientsState = {
 
 const attachGalleryClientsSchema = z.object({
   galleryId: z.uuid(),
-  // Mirrors createGallery's own `clientIds` schema — see that schema's
-  // comment for why this is an array, `.min(1)`-guarded at the application
-  // layer.
+  // An ARRAY for the same reason `createGallery`'s is (task #94: a gallery
+  // holds several clients), but the `.min(1)` DELIBERATELY DIVERGES from it
+  // since task #100. `createGallery` dropped its lower bound because a
+  // clientless gallery is a real, requested thing; "attach nobody to this
+  // gallery" is not a thing at all — it is an empty request, and answering it
+  // with a cheerful "clientes agregados" would be a silent no-op. Do not
+  // "restore consistency" by deleting this.
   clientIds: z.array(z.string().trim().min(1)).min(1, "Elegí al menos un cliente."),
 });
 

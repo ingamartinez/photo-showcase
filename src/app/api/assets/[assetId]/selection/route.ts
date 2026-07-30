@@ -173,8 +173,31 @@ export const PATCH = withApiSession(async function PATCH(
     extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
   });
 
+  // `pickedBy` (task #95) is the attribution this route JUST wrote, handed
+  // straight back rather than left for the collaborative tray to infer. The
+  // tray must show the client's own pick the instant it lands — waiting up to
+  // one poll interval for their OWN action to appear would read as the app
+  // being broken — and the only honest way to do that is for the server to
+  // say who it recorded, in the same response that confirms the toggle. Same
+  // stance as `quota` above: this component never derives a fact it can be
+  // handed. The label is the `name ?? email` fallback every other surface in
+  // this app uses for a person; `<SelectionTray>` renders the viewer's own
+  // picks as "Vos" regardless (see `pickerLabelFor`), so this label is only
+  // ever actually READ by another session, after the next poll re-reads it
+  // from the database anyway.
+  //
+  // `null` on deselect, in lockstep with `selectedBy` — schema.ts's own rule.
+  const pickedBy = isSelected
+    ? { id: session.user.id, label: session.user.name ?? session.user.email ?? session.user.id }
+    : null;
+
   return NextResponse.json({
-    asset: { id: asset.id, isSelected, selectedAt: selectedAt ? selectedAt.toISOString() : null },
+    asset: {
+      id: asset.id,
+      isSelected,
+      selectedAt: selectedAt ? selectedAt.toISOString() : null,
+      pickedBy,
+    },
     quota,
   });
 });

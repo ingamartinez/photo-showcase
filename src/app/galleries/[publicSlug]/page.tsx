@@ -8,6 +8,7 @@ import {
   isGalleryVisibleToClient,
 } from "@/lib/galleries";
 import { isGalleryOwner } from "@/lib/gallery-access";
+import { getGallerySelection } from "@/lib/gallery-selection";
 import { displayKey, getPresignedUrl } from "@/lib/r2";
 import { ProofGrid } from "@/components/proof-grid";
 
@@ -134,6 +135,14 @@ export default async function ClientGalleryPage({
     };
   });
 
+  // Task #95: the FIRST paint of the collaborative tray, from the SAME
+  // function `GET /api/galleries/[galleryId]/selection` calls for every live
+  // refresh afterwards — one query shape, so "what the server said at page
+  // load" and "what the server says now" cannot drift into two different
+  // answers. Read AFTER the ownership and visibility gates above, never
+  // before: it returns other clients' names.
+  const initialPicks = await getGallerySelection(gallery.id);
+
   return (
     <>
       <div className="mb-10">
@@ -153,6 +162,11 @@ export default async function ClientGalleryPage({
         initialSubmittedAt={
           gallery.selectionSubmittedAt ? gallery.selectionSubmittedAt.toISOString() : null
         }
+        initialPicks={initialPicks}
+        // Display only — the tray renders this session's own picks as "Vos".
+        // Nothing is authorized by it: every route <ProofGrid> calls resolves
+        // the acting session server-side.
+        viewerId={session.user.id}
         packageName={gallery.package.name}
         includedPhotosSnapshot={gallery.includedPhotosSnapshot}
         extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}

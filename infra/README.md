@@ -105,6 +105,14 @@ the new unit file on disk but not yet reloaded — the deploy still stops
 before anything is restarted, but do not read "the step failed" as always
 meaning "the sudoers grant is missing."
 
+This step now runs after migrations and seeding, not before them — a missing
+or broken grant fails the deploy *after* the database has already moved
+forward for the new release, not before. That's a deliberate trade, not an
+oversight: unit/release skew is persistent host state that outlives the job,
+while "the database is ahead of the currently-running code" is a state this
+pipeline already reaches at several earlier failure points (a failed seed
+step, a failed health probe) with no dedicated data rollback either.
+
 **4b. First install (bootstrap only, root).** Before 4a exists, no deploy can
 install the unit itself:
 

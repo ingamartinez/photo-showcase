@@ -363,15 +363,27 @@ jobs:
           # after SSH setup, as an earlier version of this step did) so the
           # unit and the release flip together in the same narrow window,
           # and so a rollback can restore both -- see "Rollback on failure"
-          # below.
+          # below. Deliberate trade, not an oversight: this now fails AFTER
+          # migrations and seeding have already run against the new release,
+          # not before. Unit/release skew is persistent host state that
+          # outlives this job, whereas "the database is ahead of the
+          # currently-running code" is a state this pipeline already reaches
+          # at several earlier, pre-existing failure points (a failed seed
+          # step, a failed health probe) with no dedicated rollback for the
+          # data itself -- so this is not a new risk class, just this step
+          # moving to join it.
           #
           # Staged into a directory only `deploy` can write
-          # ($UNIT_STAGING_DIR, under deploy's own 0750 home) rather than
-          # world-writable /tmp: an earlier version staged into /tmp, which
-          # any other local principal on this shared box (findash, postgres,
-          # the cron backup jobs, none of which run under PrivateTmp) could
-          # pre-create or symlink, letting them rewrite the bytes root was
-          # about to install as photoshowcase.service. See task #102 review.
+          # ($UNIT_STAGING_DIR, under deploy's own 0750-with-empty-group
+          # home) rather than world-writable /tmp: an earlier version staged
+          # into /tmp, which other local principals on this shared box have
+          # a real (non-sandboxed) view of -- specifically the cron backup
+          # jobs (running as findash, photoshowcase, zyeth; cron does not
+          # apply PrivateTmp=) and an interactive shell as any of those
+          # users. (The findash/photoshowcase/zyeth *services* themselves do
+          # set PrivateTmp=true and were never the exposure.) They could
+          # pre-create or symlink /tmp/photoshowcase.service and have their
+          # bytes installed as root. See task #102 review.
           ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
             "$DEPLOY_USER@$DEPLOY_HOST" "install -d -m 0700 '$UNIT_STAGING_DIR'"
           # Snapshot what is currently installed before overwriting it, so a
@@ -506,17 +518,31 @@ jobs:
           # anything. No new sudoers grant needed: same staging path, same
           # granted `install` + `daemon-reload` commands, just older file
           # contents. See task #102 review.
+          # Best-effort, not fatal: the release rollback below must always
+          # run even if this restore doesn't. Restarting the old release
+          # under the new unit is worse than not restoring the unit, but
+          # NOT restoring the release symlink at all -- because a `set -eu`
+          # abort here happened to exit before the line that has always
+          # done the restore -- is worse still: it would leave `current`
+          # pointed at the broken new release, which is strictly worse than
+          # the behaviour this replaced. See task #102 review.
+          restore_ok=1
           if [ -s prev-unit-snapshot.txt ] && ! grep -q '^__UNIT_ABSENT__$' prev-unit-snapshot.txt; then
             scp -i ~/.ssh/deploy_key prev-unit-snapshot.txt \
-              "$DEPLOY_USER@$DEPLOY_HOST:$UNIT_STAGING_DIR/photoshowcase.service"
-            ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
-              set -eu
-              sudo -n install -m 0644 -o root -g root '$UNIT_STAGING_DIR/photoshowcase.service' /etc/systemd/system/photoshowcase.service
-              rm -f '$UNIT_STAGING_DIR/photoshowcase.service'
-              sudo -n systemctl daemon-reload
-            "
+              "$DEPLOY_USER@$DEPLOY_HOST:$UNIT_STAGING_DIR/photoshowcase.service" || restore_ok=0
+            if [ "$restore_ok" = "1" ]; then
+              ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
+                set -eu
+                sudo -n install -m 0644 -o root -g root '$UNIT_STAGING_DIR/photoshowcase.service' /etc/systemd/system/photoshowcase.service
+                rm -f '$UNIT_STAGING_DIR/photoshowcase.service'
+                sudo -n systemctl daemon-reload
+              " || restore_ok=0
+            fi
           else
             echo "No previous unit snapshot to restore (first-ever install on this droplet) -- rolling back the release only."
+          fi
+          if [ "$restore_ok" = "0" ]; then
+            echo "WARNING: could not restore the previous unit; continuing with the release rollback, which will restart under the NEW unit"
           fi
           ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
             set -eu

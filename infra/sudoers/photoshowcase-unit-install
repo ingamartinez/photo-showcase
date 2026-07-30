@@ -2,8 +2,8 @@
 #
 # Lets CD install infra/systemd/photoshowcase.service and reload the systemd
 # manager on every deploy, instead of a human running `sudo install` +
-# `daemon-reload` by hand (previously the case -- see infra/README.md history
-# and task #102).
+# `daemon-reload` by hand. See infra/README.md section 4 for what this
+# unblocks and task #102 for the history.
 #
 # BE PLAIN ABOUT WHAT THIS GRANT IS: it is root-equivalent for `deploy`, full
 # stop. `deploy` already controls the ExecStart= a root-owned unit runs, and
@@ -22,33 +22,32 @@
 # in this directory) already grants `deploy` an equivalent root-equivalent
 # pattern -- installing a unit file as root -- plus a redis restart. This
 # file is a second instance of a power `deploy` already has on this box, not
-# a fresh one. (That existing grant has the identical /tmp staging flaw this
-# file avoids; it belongs to another service with another owner and is
-# tracked separately as task #108 -- do not touch it here.)
+# a fresh one. (That existing grant has the /tmp staging flaw this file
+# avoids -- see below; it belongs to another service with another owner and
+# is tracked separately as task #108 -- do not touch it here.)
 #
-# Staged via $UNIT_STAGING_DIR (/home/deploy/staging, 0700, created by the
-# pipeline under deploy's own 0750 home) rather than /tmp: /tmp is
-# world-writable (the sticky bit only blocks unlink/rename by non-owners,
-# not pre-creating a file or symlink another principal owns), and this
-# droplet has other local principals with a real, non-PrivateTmp view of it
-# (findash, postgres, cron backup jobs). A fixed, deploy-only-writable
-# staging path closes that.
+# Source path is $UNIT_STAGING_DIR (/home/deploy/staging, 0700, created by
+# the pipeline under deploy's own 0750-with-empty-group home), not /tmp:
+# /tmp is world-writable, and this droplet has other local principals with a
+# real /tmp view outside any PrivateTmp sandbox -- the cron backup jobs
+# (running as findash, photoshowcase, zyeth; cron does not apply
+# PrivateTmp=) and an interactive shell as any of those users. (The
+# `findash`/`photoshowcase`/`zyeth` *services themselves* do set
+# PrivateTmp=true and were never the exposure -- their cron-run backup
+# scripts and any interactive login were.) /home/deploy is 0750 with an
+# empty `deploy` group, so only `deploy` and root can even traverse it,
+# which is what actually excludes those principals -- not the /tmp sticky
+# bit, which only blocks unlink/rename by non-owners, not pre-creating a
+# file or symlink they own.
 #
 # /home/deploy/staging/photoshowcase.service is written by the "Install
 # systemd unit" / "Rollback on failure" steps in
 # .github/workflows/deploy.yml via a plain (non-sudo) scp as the deploy
 # user, so no sudo grant is needed for that half.
 #
-# PROPOSED -- not yet applied to the droplet. This is a sudoers policy
-# decision on a droplet shared with findash, and it belongs to the droplet
-# owner, not to this deploy-pipeline PR (task #102). To apply:
-#   sudo cp infra/sudoers/photoshowcase-unit-install /etc/sudoers.d/photoshowcase-unit-install
-#   sudo chmod 0440 /etc/sudoers.d/photoshowcase-unit-install
-#   sudo visudo -c
-#
-# /usr/bin/install and /usr/bin/systemctl below are the same binaries the
-# sibling *-deploy sudoers files reference as /bin/install and
-# /bin/systemctl (/bin is a symlink to /usr/bin on this droplet, Ubuntu
-# 24.04 usrmerge).
+# /usr/bin/systemctl below is the same binary the sibling *-deploy sudoers
+# files reference as /bin/systemctl (/bin is a symlink to /usr/bin on this
+# droplet, Ubuntu 24.04 usrmerge). No sibling file references `install` in
+# any form; that binary is used here directly, not by analogy.
 deploy ALL=(root) NOPASSWD: /usr/bin/install -m 0644 -o root -g root /home/deploy/staging/photoshowcase.service /etc/systemd/system/photoshowcase.service
 deploy ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload

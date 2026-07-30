@@ -31,6 +31,12 @@ vi.mock("@/lib/r2", () => ({
   // re-upload, not the real `dev/` prefix this suite never stubs `APP_ENV`
   // for.
   finalKey: (galleryId: string, assetId: string) => `galleries/${galleryId}/finals/${assetId}.jpg`,
+  // Task #89: the same deterministic-fake treatment as `finalKey` above.
+  // POST now writes TWO objects per upload — the full-resolution final AND
+  // its browsing-sized, unwatermarked derivative — and several tests below
+  // assert on which key received which body.
+  displayKey: (galleryId: string, assetId: string) =>
+    `galleries/${galleryId}/display/${assetId}.webp`,
   putObject: (...args: unknown[]) => putObjectMock(...args),
   deleteObject: (...args: unknown[]) => deleteObjectMock(...args),
 }));
@@ -40,8 +46,17 @@ vi.mock("@/lib/r2", () => ({
 // src/lib/images.test.ts) — same boundary-mocking philosophy as the proofs
 // route's own test file.
 const processFinalMock = vi.fn();
+// Task #89: the route runs a SECOND sharp pass over the final's own output
+// bytes to produce the browsing-sized derivative. Mocked at the same
+// boundary and for the same reason as `processFinal` — the pipeline itself
+// (no watermark, capped long edge, real bytes) is proven in
+// src/lib/images.test.ts; what this suite owns is that the route calls it,
+// feeds it the FINAL's bytes rather than the raw upload, and stores the
+// result under the display key.
+const processDisplayMock = vi.fn();
 vi.mock("@/lib/images", () => ({
   processFinal: (...args: unknown[]) => processFinalMock(...args),
+  processDisplay: (...args: unknown[]) => processDisplayMock(...args),
 }));
 
 type Row = Record<string, unknown>;
@@ -201,6 +216,17 @@ function galleryRow(overrides: Partial<Row> = {}): Row {
 }
 
 const FINAL_KEY = `galleries/${GALLERY_A_ID}/finals/${ASSET_A_ID}.jpg`;
+// Task #89: the second object every successful POST now writes.
+const DISPLAY_KEY = `galleries/${GALLERY_A_ID}/display/${ASSET_A_ID}.webp`;
+
+/** Every `putObject` call that targeted `key`. One upload writes two objects
+ * since task #89 (the final and its browsing-sized derivative), so a bare
+ * `toHaveBeenCalledTimes` on `putObjectMock` no longer says anything about
+ * either one specifically — the assertions that care about "the final's key
+ * was written exactly once" filter through this instead. */
+function writesTo(key: string): unknown[][] {
+  return putObjectMock.mock.calls.filter((call) => call[0] === key);
+}
 
 function assetRow(overrides: Partial<Row> = {}): Row {
   return {
@@ -254,6 +280,12 @@ beforeEach(async () => {
   deleteObjectMock.mockReset();
   processFinalMock.mockReset();
   processFinalMock.mockResolvedValue({ data: Buffer.from("fake-final-jpeg-bytes") });
+  processDisplayMock.mockReset();
+  processDisplayMock.mockResolvedValue({
+    data: Buffer.from("fake-display-webp-bytes"),
+    width: 1600,
+    height: 1067,
+  });
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
 
   const db = await seededDb();
@@ -725,7 +757,13 @@ describe("POST /api/assets/[assetId]/final — DB update failure (no compensatin
     // return the same 500/update_failed shape while silently destroying a
     // previously-delivered final on a re-upload's failure.
     expect(deleteObjectMock).not.toHaveBeenCalled();
-    expect(putObjectMock).toHaveBeenCalledTimes(1);
+    // Counted per KEY, not in total: task #89 made one upload write TWO
+    // objects (the final plus its browsing-sized derivative), so a bare
+    // call count here would now say "2" for reasons that have nothing to do
+    // with what this test is about. Filtering by key keeps the assertion
+    // saying exactly what it always meant — the final's own key was written
+    // once and never cleaned up.
+    expect(writesTo(FINAL_KEY)).toHaveLength(1);
 
     const [rowAfterFailure] = db.__rows.assets;
     expect(rowAfterFailure?.finalKey).toBeNull();
@@ -743,13 +781,13 @@ describe("POST /api/assets/[assetId]/final — DB update failure (no compensatin
     await expect(retryResponse.json()).resolves.toEqual({
       asset: { id: ASSET_A_ID, finalKey: FINAL_KEY, isEdited: true },
     });
-    expect(putObjectMock).toHaveBeenCalledTimes(2);
-    expect(putObjectMock).toHaveBeenNthCalledWith(
-      2,
+    const finalWrites = writesTo(FINAL_KEY);
+    expect(finalWrites).toHaveLength(2);
+    expect(finalWrites[1]).toEqual([
       FINAL_KEY,
       expect.anything(),
       expect.objectContaining({ contentType: "image/jpeg" }),
-    );
+    ]);
     expect(deleteObjectMock).not.toHaveBeenCalled();
 
     const [rowAfterRetry] = db.__rows.assets;
@@ -804,7 +842,8 @@ describe("POST /api/assets/[assetId]/final — success and re-upload", () => {
     );
 
     expect(response.status).toBe(200);
-    expect(putObjectMock).toHaveBeenCalledTimes(1);
+    // Per-key count, see the DB-update-failure test above for why.
+    expect(writesTo(firstKeyCall)).toHaveLength(1);
     expect(putObjectMock).toHaveBeenCalledWith(firstKeyCall, expect.anything(), expect.anything());
 
     const db = await seededDb();
@@ -827,6 +866,151 @@ describe("POST /api/assets/[assetId]/final — success and re-upload", () => {
     expect(processFinalMock).toHaveBeenCalledTimes(1);
     const uploadedBytes = processFinalMock.mock.calls[0]?.[0] as ArrayBuffer;
     expect(Buffer.from(uploadedBytes).toString()).toBe("distinctive-edit-bytes");
+  });
+});
+
+// Task #89: a delivered gallery must show the client the UNWATERMARKED photo
+// at browsing size, which means the final upload has to produce a second
+// object. These tests own the route's half of that: that it happens at all,
+// what it is derived FROM, where it lands, and what happens when it fails.
+describe("POST /api/assets/[assetId]/final — the display derivative (task #89)", () => {
+  it("writes a second object under the display key, as WebP", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(assetRow({ isSelected: true, finalKey: null, isEdited: false }));
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(imageFile())),
+      paramsFor(ASSET_A_ID),
+    );
+
+    expect(response.status).toBe(200);
+    expect(writesTo(DISPLAY_KEY)).toHaveLength(1);
+    expect(putObjectMock).toHaveBeenCalledWith(
+      DISPLAY_KEY,
+      Buffer.from("fake-display-webp-bytes"),
+      expect.objectContaining({ contentType: "image/webp" }),
+    );
+  });
+
+  // The distinction task #89 turns on: `processDisplay` is "the final at
+  // browsing size", NOT a general-purpose downscaler pointed at whatever the
+  // photographer uploaded. Feeding it the raw upload would make it exactly
+  // the "resize only" primitive src/lib/images.ts's header refuses to
+  // provide, and would let it re-introduce EXIF the final's own allowlist had
+  // already dropped. This asserts the actual bytes handed over, not just that
+  // the call happened.
+  it("derives the display bytes from processFinal's OUTPUT, not from the raw upload", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(assetRow({ isSelected: true, finalKey: null, isEdited: false }));
+    processFinalMock.mockResolvedValue({ data: Buffer.from("processed-final-output") });
+    const { POST } = await import("./route");
+
+    await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(imageFile("raw-lightroom-export-bytes"))),
+      paramsFor(ASSET_A_ID),
+    );
+
+    expect(processDisplayMock).toHaveBeenCalledTimes(1);
+    const displayInput = processDisplayMock.mock.calls[0]?.[0] as Buffer;
+    expect(Buffer.from(displayInput).toString()).toBe("processed-final-output");
+    expect(Buffer.from(displayInput).toString()).not.toBe("raw-lightroom-export-bytes");
+  });
+
+  // Both sharp passes run BEFORE either object is written, so a failure in
+  // the second one leaves R2 untouched by this request instead of half
+  // updated — and the database keeps saying "no final", which is what makes
+  // the photographer's UI still show "Falta el final" and prompt a retry.
+  it("fails the whole upload with 422 and writes NOTHING when the display pass throws", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(assetRow({ isSelected: true, finalKey: null, isEdited: false }));
+    processDisplayMock.mockRejectedValue(new Error("display pass exploded"));
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(imageFile())),
+      paramsFor(ASSET_A_ID),
+    );
+
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toEqual({ error: "processing_failed" });
+    expect(putObjectMock).not.toHaveBeenCalled();
+
+    const [row] = db.__rows.assets;
+    expect(row?.finalKey).toBeNull();
+    expect(row?.isEdited).toBe(false);
+  });
+
+  // A final in R2 with no display object beside it is the state the whole
+  // fallback path exists to cope with — but it must not be a state a
+  // SUCCESSFUL upload can produce, or the client silently keeps seeing a
+  // watermark on a photo the photographer believes was delivered.
+  it("fails with 502 and never marks the asset edited when the display upload fails", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(assetRow({ isSelected: true, finalKey: null, isEdited: false }));
+    putObjectMock.mockImplementation(async (key: string) => {
+      if (key === DISPLAY_KEY) throw new Error("R2 refused the display write");
+    });
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(imageFile())),
+      paramsFor(ASSET_A_ID),
+    );
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({ error: "upload_failed" });
+
+    const [row] = db.__rows.assets;
+    expect(row?.finalKey).toBeNull();
+    expect(row?.isEdited).toBe(false);
+  });
+
+  // Deterministic keys are what let a retry be a clean overwrite rather than
+  // a cleanup problem — proven here for the display key specifically, the
+  // same property `finalKey` already has its own test for above.
+  it("reuses the same deterministic display key on a re-upload", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const { POST } = await import("./route");
+
+    await POST(postRequestFor(ASSET_A_ID, formDataWith(imageFile())), paramsFor(ASSET_A_ID));
+    await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(imageFile("second-edit", "IMG_0001-v2.jpg"))),
+      paramsFor(ASSET_A_ID),
+    );
+
+    const displayWrites = writesTo(DISPLAY_KEY);
+    expect(displayWrites).toHaveLength(2);
+    expect(displayWrites[0]?.[0]).toBe(displayWrites[1]?.[0]);
+  });
+
+  // Every refusal above the processing step must still short-circuit before
+  // the SECOND sharp pass too, not just the first — cheap to get wrong when
+  // adding a pass, and the consequence would be a decode/encode running for
+  // a request that was about to be refused anyway.
+  it("never runs the display pass for an unselected asset", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(assetRow({ isSelected: false, finalKey: null, isEdited: false }));
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(imageFile())),
+      paramsFor(ASSET_A_ID),
+    );
+
+    expect(response.status).toBe(409);
+    expect(processDisplayMock).not.toHaveBeenCalled();
+    expect(putObjectMock).not.toHaveBeenCalled();
   });
 });
 

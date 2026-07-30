@@ -34,7 +34,7 @@ import { and, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets, galleries, users } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
-import { requireApiSession } from "@/lib/auth-guards";
+import { withApiSession } from "@/lib/auth-guards";
 import { isGalleryVisibleToClient } from "@/lib/galleries";
 import { isGalleryOwner } from "@/lib/gallery-access";
 import { authEnv, resendEnv } from "@/lib/env";
@@ -79,15 +79,14 @@ async function idempotentResponse(gallery: Gallery): Promise<NextResponse> {
   });
 }
 
-export async function POST(
+// Unauthenticated -> 401 JSON, never a redirect (see auth-guards.ts).
+// `withApiSession()` (task #54) runs that check unconditionally before this
+// handler ever executes — there is no branch here to forget to return.
+export const POST = withApiSession(async function POST(
   request: NextRequest,
   { params }: { params: Promise<{ galleryId: string }> },
+  session,
 ): Promise<NextResponse> {
-  // Unauthenticated -> 401 JSON, never a redirect (see auth-guards.ts).
-  const sessionOrResponse = await requireApiSession();
-  if (sessionOrResponse instanceof NextResponse) return sessionOrResponse;
-  const session = sessionOrResponse;
-
   const { galleryId: rawGalleryId } = await params;
   const galleryIdResult = galleryIdSchema.safeParse(rawGalleryId);
   if (!galleryIdResult.success) {
@@ -270,7 +269,8 @@ export async function POST(
     // name, not an arbitrary member of the gallery's client list. This also
     // needs no extra query and can never be "missing" the way a lookup by id
     // could — `session` is already a verified, authenticated session by the
-    // time this line runs (see `requireApiSession` above). An admin
+    // time this line runs (`withApiSession` only invokes this handler once
+    // the check has passed, so `session` cannot be a NextResponse). An admin
     // submitting on a client's behalf (gate 1 allows it, same as every
     // sibling route) is named honestly here too: the admin, not a client —
     // that IS who acted.
@@ -329,4 +329,4 @@ export async function POST(
     quota,
     submittedAt: now.toISOString(),
   });
-}
+});

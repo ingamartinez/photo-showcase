@@ -55,7 +55,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
-import { requireApiSession } from "@/lib/auth-guards";
+import { withApiSession } from "@/lib/auth-guards";
 import { loadOwnedAsset } from "@/lib/asset-access";
 import { isGalleryVisibleToClient } from "@/lib/galleries";
 import { computeQuota } from "@/lib/quota";
@@ -93,17 +93,14 @@ function errorResponse(error: string, status: number): NextResponse {
   return NextResponse.json({ error }, { status });
 }
 
-export async function PATCH(
+// Unauthenticated -> 401 JSON, never a redirect (see auth-guards.ts).
+// `withApiSession()` (task #54) runs that check unconditionally before this
+// handler ever executes — there is no branch here to forget to return.
+export const PATCH = withApiSession(async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ assetId: string }> },
+  session,
 ): Promise<NextResponse> {
-  // Unauthenticated -> 401 JSON, never a redirect (see auth-guards.ts). This
-  // MUST be an early return on the `instanceof NextResponse` branch — the
-  // same trap task #16's review caught once already.
-  const sessionOrResponse = await requireApiSession();
-  if (sessionOrResponse instanceof NextResponse) return sessionOrResponse;
-  const session = sessionOrResponse;
-
   const { assetId: rawAssetId } = await params;
   const assetIdResult = assetIdSchema.safeParse(rawAssetId);
   if (!assetIdResult.success) {
@@ -180,4 +177,4 @@ export async function PATCH(
     asset: { id: asset.id, isSelected, selectedAt: selectedAt ? selectedAt.toISOString() : null },
     quota,
   });
-}
+});

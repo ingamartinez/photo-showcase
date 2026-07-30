@@ -4,7 +4,46 @@
 //
 // Route Handlers are a deliberate exception to that claim: see "Route
 // Handlers need a different unauthenticated response" below, and use
-// `requireApiSession()` there instead of `requireSession()`.
+// `withApiSession()` there instead of `requireSession()`.
+//
+// Route Handlers must use `withApiSession()`, not `requireApiSession()`
+// directly (task #54):
+//
+//   `requireApiSession()` returns `Session | NextResponse` rather than
+//   throwing (see below for why), and that union is a footgun a caller can
+//   get wrong in three different ways that TypeScript's `strict: true` does
+//   NOT catch, because none of them is a type error under this codebase's
+//   real usage — every real route handler that reads a session only checks
+//   `session.user.role`, and does so AFTER already narrowing away
+//   `NextResponse`, so TypeScript never even sees a property access on the
+//   un-narrowed union to complain about:
+//
+//     // Shape A — bare discard. Compiles. Protects nothing.
+//     await requireApiSession();
+//
+//     // Shape B — captured, never checked. `tsconfig.json` does not set
+//     // `noUnusedLocals`, so this is silent at typecheck time; ESLint's
+//     // `@typescript-eslint/no-unused-vars` only "warn"s (see
+//     // eslint.config.mjs), so `bun run lint` exits 0. Ships.
+//     const sessionOrResponse = await requireApiSession();
+//     return NextResponse.json({ ok: true });
+//
+//     // Shape C — captured, narrowed, but the branch forgets to `return`.
+//     // No error, no warning, nothing. Completely invisible in review.
+//     const sessionOrResponse = await requireApiSession();
+//     if (sessionOrResponse instanceof NextResponse) { /* forgot: return */ }
+//     return NextResponse.json({ ok: true });
+//
+//   `withApiSession(handler)` makes all three shapes unrepresentable rather
+//   than relying on every future route handler remembering the correct
+//   early-return incantation: the check runs unconditionally before the
+//   wrapped handler is ever invoked, and the handler receives a plain
+//   `Session` — there is no union, no branch, and no return statement for a
+//   caller to omit. `requireApiSession()` itself is still exported below,
+//   used internally by `withApiSession()` and directly by this module's own
+//   tests, but a Route Handler reaching for it directly is exactly the
+//   mistake `eslint.config.mjs`'s `no-restricted-imports` override for
+//   `src/app/api/**/route.ts` exists to block.
 //
 // Why guards here, and not middleware:
 //
@@ -71,7 +110,7 @@
 import "server-only";
 
 import { forbidden, redirect } from "next/navigation";
-import { NextResponse } from "next/server";
+import { NextResponse, type NextRequest } from "next/server";
 import type { Session } from "next-auth";
 import { auth } from "@/auth";
 
@@ -94,30 +133,27 @@ export async function requireSession(): Promise<Session> {
 }
 
 /**
- * Route-handler variant of `requireSession()`. Use this, never
- * `requireSession()`, inside `route.ts` — a JSON API has no HTML form to
- * follow a `redirect("/login")` to.
+ * Route-handler variant of `requireSession()`. Prefer `withApiSession()`
+ * below for an actual `route.ts` — see the file header (task #54) for why a
+ * Route Handler calling this directly, and handling the union itself, is a
+ * footgun `eslint.config.mjs` now blocks by file path. This function stays
+ * exported for `withApiSession()`'s own implementation and for this module's
+ * unit tests, which assert the 401 response's exact shape.
  *
  * Returns the `Session` when signed in. When signed out, does NOT redirect
  * and does NOT throw: it returns a `NextResponse` (401, `{ "error":
- * "unauthorized" }`, no `Location` header) that the caller must return
- * immediately —
- *
- * ```ts
- * const sessionOrResponse = await requireApiSession();
- * if (sessionOrResponse instanceof NextResponse) return sessionOrResponse;
- * const session = sessionOrResponse;
- * ```
+ * "unauthorized" }`, no `Location` header).
  *
  * Same freshness guarantee as `requireSession()`: `auth()` is called fresh
  * every time, never cached, so a session row deleted by sign-out stops
  * granting access on the very next call.
  *
  * Wrong-role (signed in, not admin) is a separate concern from this
- * function: call `requireAdmin()` — or check `session.user.role` and call
- * `forbidden()` directly — after getting a `Session` back from here.
- * `forbidden()` already produces a real 403 in a Route Handler with no
- * variant needed, unlike the unauthenticated case this function exists for.
+ * function: check `session.user.role` and call `forbidden()` directly —
+ * inside the handler passed to `withApiSession()` — after getting a
+ * `Session`. `forbidden()` already produces a real 403 in a Route Handler
+ * with no variant needed, unlike the unauthenticated case this function
+ * exists for.
  */
 export async function requireApiSession(): Promise<Session | NextResponse> {
   const session = await auth();
@@ -125,6 +161,47 @@ export async function requireApiSession(): Promise<Session | NextResponse> {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
   return session;
+}
+
+/**
+ * The required way for a Route Handler to gate on a signed-in session
+ * (task #54). Wraps a handler that receives a plain `Session` as its third
+ * argument — never a `Session | NextResponse` union — and guarantees the
+ * handler is not invoked at all unless `requireApiSession()` resolved a real
+ * session on this exact request.
+ *
+ * ```ts
+ * export const GET = withApiSession(async (request, { params }, session) => {
+ *   // `session` is a plain Session here. No branch, no early return, no
+ *   // union to mishandle — the 401 path already happened, above, before
+ *   // this function body could ever run.
+ *   ...
+ * });
+ * ```
+ *
+ * This is what makes the guard "unskippable" rather than merely
+ * conventionally correct: the previous shape (call `requireApiSession()`,
+ * early-return on `instanceof NextResponse`) put the correctness of every
+ * Route Handler on every future author remembering three separate things —
+ * capture the result, check it, and return the checked branch — and gave
+ * TypeScript nothing to say if any one of those was skipped (see the file
+ * header for the three concrete ways that went silently wrong). Here there
+ * is nothing to skip: `Context` is whatever the wrapped handler's own second
+ * parameter needs (typically `{ params: Promise<{ assetId: string }> }`),
+ * inferred from the handler passed in, so the returned function has the
+ * exact `(request, context) => Promise<NextResponse>` shape Next.js expects
+ * to find exported as `GET`/`POST`/`PATCH`/`DELETE`.
+ */
+export function withApiSession<Context>(
+  handler: (request: NextRequest, context: Context, session: Session) => Promise<NextResponse>,
+): (request: NextRequest, context: Context) => Promise<NextResponse> {
+  return async (request, context) => {
+    const sessionOrResponse = await requireApiSession();
+    if (sessionOrResponse instanceof NextResponse) {
+      return sessionOrResponse;
+    }
+    return handler(request, context, sessionOrResponse);
+  };
 }
 
 /**

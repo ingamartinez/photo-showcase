@@ -31,7 +31,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
-import { requireApiSession } from "@/lib/auth-guards";
+import { withApiSession } from "@/lib/auth-guards";
 import { loadOwnedAsset } from "@/lib/asset-access";
 import { deleteObject } from "@/lib/r2";
 
@@ -61,17 +61,14 @@ function errorResponse(error: string, status: number): NextResponse {
   return NextResponse.json({ error }, { status });
 }
 
-export async function DELETE(
+// Unauthenticated -> 401 JSON, never a redirect (see auth-guards.ts).
+// `withApiSession()` (task #54) runs that check unconditionally before this
+// handler ever executes — there is no branch here to forget to return.
+export const DELETE = withApiSession(async function DELETE(
   _request: NextRequest,
   { params }: { params: Promise<{ assetId: string }> },
+  session,
 ): Promise<NextResponse> {
-  // Unauthenticated -> 401 JSON, never a redirect (see auth-guards.ts). This
-  // MUST be an early return on the `instanceof NextResponse` branch — the
-  // same trap task #16's review caught once already.
-  const sessionOrResponse = await requireApiSession();
-  if (sessionOrResponse instanceof NextResponse) return sessionOrResponse;
-  const session = sessionOrResponse;
-
   // Deleting is an admin-only action. This is stricter than
   // `loadOwnedAsset()`'s own "admin OR the gallery's own client" rule, which
   // is correct for the READ-only proof/final routes but wrong here: a client
@@ -114,4 +111,4 @@ export async function DELETE(
   }
 
   return NextResponse.json({ ok: true });
-}
+});

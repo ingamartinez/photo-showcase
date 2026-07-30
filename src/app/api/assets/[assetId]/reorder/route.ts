@@ -22,7 +22,7 @@ import { asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
-import { requireApiSession } from "@/lib/auth-guards";
+import { withApiSession } from "@/lib/auth-guards";
 import { loadOwnedAsset } from "@/lib/asset-access";
 
 export const runtime = "nodejs";
@@ -45,17 +45,14 @@ function errorResponse(error: string, status: number): NextResponse {
   return NextResponse.json({ error }, { status });
 }
 
-export async function PATCH(
+// Unauthenticated -> 401 JSON, never a redirect (see auth-guards.ts).
+// `withApiSession()` (task #54) runs that check unconditionally before this
+// handler ever executes — there is no branch here to forget to return.
+export const PATCH = withApiSession(async function PATCH(
   request: NextRequest,
   { params }: { params: Promise<{ assetId: string }> },
+  session,
 ): Promise<NextResponse> {
-  // Unauthenticated -> 401 JSON, never a redirect (see auth-guards.ts). This
-  // MUST be an early return on the `instanceof NextResponse` branch — the
-  // same trap task #16's review caught once already.
-  const sessionOrResponse = await requireApiSession();
-  if (sessionOrResponse instanceof NextResponse) return sessionOrResponse;
-  const session = sessionOrResponse;
-
   // Reordering is an admin-only action, same reasoning as the DELETE route
   // right next to this one: stricter than loadOwnedAsset()'s "admin OR
   // owning client" rule, which is correct only for read-only routes.
@@ -131,4 +128,4 @@ export async function PATCH(
       { id: neighbor.id, sortOrder: current.sortOrder },
     ],
   });
-}
+});

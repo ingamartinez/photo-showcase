@@ -1,0 +1,31 @@
+# photoshowcase.service unit install -- deploy user, root context.
+#
+# Lets CD install infra/systemd/photoshowcase.service and reload the systemd
+# manager on every deploy, instead of a human running `sudo cp` +
+# `daemon-reload` by hand (previously the case -- see infra/README.md history
+# and task #102).
+#
+# Narrow, not blanket, on purpose: a malicious or buggy unit file is closer to
+# root-equivalent than a bad release tarball (arbitrary ExecStart=, arbitrary
+# User=, capability grants, disabling the sandboxing directives already on
+# this unit, etc.). This grants exactly the one file this pipeline writes to
+# /tmp and nothing else under /etc/systemd/system/. It does NOT grant
+# `systemctl start|enable|edit`, writing any other unit, or a generic
+# `cp`/`install` into /etc -- only these two exact command lines.
+#
+# /tmp/photoshowcase.service is written by the "Install systemd unit" step in
+# .github/workflows/deploy.yml via a plain (non-sudo) scp as the deploy user,
+# so no sudo grant is needed for that half.
+#
+# PROPOSED -- not yet applied to the droplet. This is a sudoers policy
+# decision on a droplet shared with findash, and it belongs to the droplet
+# owner, not to this deploy-pipeline PR (task #102). To apply:
+#   sudo cp infra/sudoers/photoshowcase-unit-install /etc/sudoers.d/photoshowcase-unit-install
+#   sudo chmod 0440 /etc/sudoers.d/photoshowcase-unit-install
+#   sudo visudo -c
+#
+# /bin is a symlink to /usr/bin on this droplet (Ubuntu 24.04 usrmerge), so
+# /usr/bin/cp and /usr/bin/systemctl below are the same binaries the sibling
+# *-deploy sudoers files reference as /bin/cp and /bin/systemctl.
+deploy ALL=(root) NOPASSWD: /usr/bin/cp /tmp/photoshowcase.service /etc/systemd/system/photoshowcase.service
+deploy ALL=(root) NOPASSWD: /usr/bin/systemctl daemon-reload

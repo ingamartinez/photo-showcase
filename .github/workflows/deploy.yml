@@ -249,49 +249,72 @@ jobs:
           chmod 600 ~/.ssh/deploy_key
           ssh-keyscan -H "$DEPLOY_HOST" >> ~/.ssh/known_hosts 2>/dev/null || true
 
-      - name: Verify systemd unit matches droplet
+      - name: Install systemd unit
         run: |
           set -eu
-          # This pipeline never installs infra/systemd/photoshowcase.service —
-          # that is a documented manual step (infra/README.md) because it
-          # needs `sudo cp` to /etc/systemd/system/ + `daemon-reload`, and the
-          # low-priv deploy user is not granted that (see the follow-up task
-          # filed from #99 about closing this gap for real). Until then, "the
-          # unit file changed in the repo" and "the unit file changed on the
-          # droplet" are two different events, and a release that depends on
-          # a new unit directive (CacheDirectory=, ExecStart flags, etc.)
-          # without checking for that drift fails silently in production
-          # instead of failing loud here. Reading the installed unit needs no
-          # new grant: unit files under /etc/systemd/system are root:root
-          # 644 by default, so a plain (non-sudo) read works for the deploy
-          # user.
+          # Ships infra/systemd/photoshowcase.service + daemon-reload on every
+          # deploy instead of leaving that a documented manual SSH step
+          # (infra/README.md previously said so). That gap meant a unit-level
+          # fix (e.g. #99's CacheDirectory=) shipped inert until a human ran
+          # `sudo cp` + `daemon-reload` by hand. See task #102.
+          #
+          # This needs a narrow sudoers grant on the droplet, scoped to
+          # exactly this one file + daemon-reload -- never a blanket NOPASSWD
+          # on systemd/etc, because a malicious or buggy unit file is closer
+          # to root-equivalent than a bad release tarball. See
+          # infra/sudoers/photoshowcase-unit-install for the proposed rule;
+          # applying it to the droplet is the owner's call, not this
+          # pipeline's (task #102 acceptance criterion 1).
+          scp -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
+            infra/systemd/photoshowcase.service \
+            "$DEPLOY_USER@$DEPLOY_HOST:/tmp/photoshowcase.service"
+          if ! ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" '
+            set -eu
+            sudo -n cp /tmp/photoshowcase.service /etc/systemd/system/photoshowcase.service
+            rm -f /tmp/photoshowcase.service
+            sudo -n systemctl daemon-reload
+          '; then
+            echo "Failed to install the systemd unit on the droplet."
+            echo "Most likely cause: the deploy user does not have the sudoers grant this step needs."
+            echo "The droplet owner must apply it once (see infra/sudoers/photoshowcase-unit-install):"
+            echo "  sudo cp infra/sudoers/photoshowcase-unit-install /etc/sudoers.d/photoshowcase-unit-install"
+            echo "  sudo chmod 0440 /etc/sudoers.d/photoshowcase-unit-install"
+            echo "  sudo visudo -c"
+            echo "Refusing to continue: never restart the service against a unit that may not have installed."
+            exit 1
+          fi
+
+      - name: Verify installed unit matches repo
+        run: |
+          set -eu
+          # Second line of defense, not the primary gate anymore -- the
+          # previous step just installed this unit, so this should always
+          # match. Kept because the droplet is shared with findash and a
+          # human could still hand-edit
+          # /etc/systemd/system/photoshowcase.service directly during an
+          # incident, bypassing this pipeline entirely; catching that before
+          # the NEXT deploy restarts the service on a unit nobody reviewed is
+          # worth one extra SSH round trip. Also catches transport corruption
+          # (e.g. line-ending mangling) that a successful `cp` exit code
+          # would not. See task #102 acceptance criterion 3.
           local_unit=$(cat infra/systemd/photoshowcase.service)
-          # Keep "cannot reach the droplet" distinct from "the unit differs".
-          # The remote `cat` is forced to exit 0 (falling back to a sentinel
-          # when the file is absent), so a non-zero exit from ssh itself can
-          # only mean connectivity or auth failed. Without that split, an SSH
-          # outage yields an empty remote unit and renders as a whole-file
-          # diff — sending whoever is on call to run `sudo cp` against a box
-          # they cannot even reach.
+          # Keep "cannot reach the droplet" distinct from "the unit differs",
+          # same reasoning as #99: a non-zero ssh exit means connectivity or
+          # auth failed, not drift.
           if ! remote_unit=$(ssh -i ~/.ssh/deploy_key -o StrictHostKeyChecking=accept-new \
             "$DEPLOY_USER@$DEPLOY_HOST" \
             'cat /etc/systemd/system/photoshowcase.service 2>/dev/null || echo __UNIT_ABSENT__'); then
-            echo "Could not reach $DEPLOY_USER@$DEPLOY_HOST over SSH to read the installed systemd unit."
-            echo "This is a connectivity or auth failure, NOT unit drift — do not run the install commands until the droplet is reachable."
+            echo "Could not reach $DEPLOY_USER@$DEPLOY_HOST over SSH to verify the installed systemd unit."
+            echo "This is a connectivity or auth failure, NOT unit drift."
             exit 1
           fi
           if [ "$remote_unit" = "__UNIT_ABSENT__" ]; then
-            echo "photoshowcase.service is not installed at /etc/systemd/system/ on the droplet."
-            echo "Install it, then re-run this deploy:"
-            echo "  sudo cp infra/systemd/photoshowcase.service /etc/systemd/system/"
-            echo "  sudo systemctl daemon-reload"
+            echo "photoshowcase.service is missing at /etc/systemd/system/ immediately after the install step -- that step did not actually take effect."
             exit 1
           fi
           if [ "$local_unit" != "$remote_unit" ]; then
-            echo "photoshowcase.service on the droplet does not match infra/systemd/photoshowcase.service in this repo."
-            echo "This pipeline does not install the unit automatically. Install it by hand first, then re-run this deploy:"
-            echo "  sudo cp infra/systemd/photoshowcase.service /etc/systemd/system/"
-            echo "  sudo systemctl daemon-reload"
+            echo "photoshowcase.service on the droplet does not match infra/systemd/photoshowcase.service right after installing it."
+            echo "This should not happen from this pipeline alone -- investigate before this deploy restarts the service."
             echo
             echo "diff (repo vs droplet):"
             diff <(printf '%s' "$local_unit") <(printf '%s' "$remote_unit") || true

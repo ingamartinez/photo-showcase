@@ -7,12 +7,13 @@ this README is one-time host setup **you run by SSH**.
 
 ## Files
 
-| Path                             | Purpose                                                                                   |
-| -------------------------------- | ----------------------------------------------------------------------------------------- |
-| `systemd/photoshowcase.service`  | systemd unit for the Next.js standalone process (port 3300).                              |
-| `caddy/Caddyfile`                | Reverse-proxy block for `alejoframes.com` (apex) + `www` redirect.                        |
-| `cron/photoshowcase-backup.sh`   | Daily `pg_dump` + daily R2 off-site sync of the `photoshowcase` DB. See `cron/README.md`. |
-| `cron/photoshowcase-backup.cron` | `/etc/cron.d` schedule for the backup script.                                             |
+| Path                                 | Purpose                                                                                                   |
+| ------------------------------------ | --------------------------------------------------------------------------------------------------------- |
+| `systemd/photoshowcase.service`      | systemd unit for the Next.js standalone process (port 3300).                                              |
+| `sudoers/photoshowcase-unit-install` | Proposed sudoers rule letting CD install the unit above + `daemon-reload`. Not yet applied — see step 4a. |
+| `caddy/Caddyfile`                    | Reverse-proxy block for `alejoframes.com` (apex) + `www` redirect.                                        |
+| `cron/photoshowcase-backup.sh`       | Daily `pg_dump` + daily R2 off-site sync of the `photoshowcase` DB. See `cron/README.md`.                 |
+| `cron/photoshowcase-backup.cron`     | `/etc/cron.d` schedule for the backup script.                                                             |
 
 ## One-time droplet bring-up
 
@@ -62,11 +63,46 @@ sudo chmod 0640 /srv/photoshowcase/env/photoshowcase.env
 
 ### 4. systemd unit
 
+Ongoing changes to `infra/systemd/photoshowcase.service` ship through CD, not
+by hand — the "Install systemd unit" step in `.github/workflows/deploy.yml`
+`scp`s the file and runs `cp` + `daemon-reload` on every deploy. That needs a
+one-time sudoers grant on the droplet first; a brand-new droplet also needs
+the very first install done by hand, before that grant can take effect.
+
+**4a. One-time sudoers grant (root).** Narrowly scoped to exactly this one
+file plus `daemon-reload` — never a blanket `NOPASSWD: ALL` for systemd/etc,
+because a malicious or buggy unit file is closer to root-equivalent than a
+bad release tarball. See `infra/sudoers/photoshowcase-unit-install` for the
+rule and the full reasoning.
+
+```bash
+sudo cp infra/sudoers/photoshowcase-unit-install /etc/sudoers.d/photoshowcase-unit-install
+sudo chmod 0440 /etc/sudoers.d/photoshowcase-unit-install
+sudo visudo -c
+```
+
+Until this is applied, every deploy's "Install systemd unit" step fails
+loudly with the commands above, rather than silently skipping the install —
+see that step in `deploy.yml`. There is no half-applied unit change: the
+step either installs the unit and reloads systemd, or the deploy stops
+before anything is restarted.
+
+**4b. First install (bootstrap only, root).** Before 4a exists, no deploy can
+install the unit itself:
+
 ```bash
 sudo cp infra/systemd/photoshowcase.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable photoshowcase.service   # starts after first CD deploy
 ```
+
+After 4a and 4b, do not hand-edit
+`/etc/systemd/system/photoshowcase.service` — edit
+`infra/systemd/photoshowcase.service` and deploy instead. If it is hand-edited
+during an incident anyway, the deploy pipeline's "Verify installed unit
+matches repo" step (its second line of defense, kept deliberately for this
+case — task #102) catches the drift on the next deploy and fails loudly
+rather than restarting the service on a unit nobody reviewed.
 
 The unit declares `CacheDirectory=photoshowcase` — unlike `/srv/photoshowcase`
 above, `/var/cache/photoshowcase` needs no manual `mkdir`/`chown`; systemd

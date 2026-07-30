@@ -585,10 +585,17 @@ describe("unlockSelection — client notification failure", () => {
 
   it("also reports the distinct failure result when the gallery has no clients attached at all", async () => {
     const db = await seededDb();
-    // Task #94: unreachable BY DESIGN (gallery-form.tsx requires at least
-    // one client at creation) but proven here anyway, same "never trust the
-    // invariant blindly" stance as this file's own header comment on the
-    // action.
+    // This comment claimed "unreachable BY DESIGN (gallery-form.tsx requires
+    // at least one client at creation)" until task #100 made that false — #97
+    // added a removal path, and #100 removed the creation-time requirement.
+    // Reachable, narrowly: `isUnlockable` is `status === "selected"`, which
+    // the rule protects, so `removeGalleryClient` refuses to strip the last
+    // client off a gallery that could get here. The only route is the
+    // read-then-write race that action documents in its own header.
+    //
+    // And unlockSelection deliberately does NOT refuse this, unlike
+    // deliverGallery — see its own comment at the client lookup for why
+    // (unlock neither causes nor worsens the violating state).
     db.__rows.galleryClients.length = 0;
     const { unlockSelection } = await import("./actions");
 

@@ -169,41 +169,92 @@ export function isGalleryVisibleToClient(status: Gallery["status"]): boolean {
  * still being set up, while a `proofing`/`selected`/`delivered` gallery
  * nobody is attached to is a dead end nobody can ever open.
  *
- * WHAT ACTUALLY CONSULTS THIS TODAY — two call sites, both introduced by
- * task #97, and together they cover exactly one operation:
- *   - `removeGalleryClient` (src/app/dashboard/galleries/actions.ts) refuses
- *     to strip a gallery down to zero active clients. This is the authority.
- *   - the gallery detail page (src/app/dashboard/galleries/[galleryId]/
- *     page.tsx) hides the "Quitar" affordance under the same condition. UX
- *     only — the action re-checks regardless of what was rendered.
- *
- * WHAT DOES NOT CONSULT IT, AND IS TASK #100's JOB TO WIRE UP. Read this
- * before assuming the rule is already shared, because right now it is not:
- *   - `publishGallery` DUPLICATES it. That action refuses on a bare
- *     `clients.length === 0`, written out inline and never routed through
- *     this predicate — a second, independent implementation of the same rule
- *     living in that function today. (It happens to agree with this
- *     predicate, since `isPublishable` restricts it to `draft` galleries and
- *     the refusal is stricter than `requiresActiveClient("draft")` asks for;
- *     agreeing by coincidence is precisely the shape that drifts.) #100 owns
- *     collapsing it into this predicate.
- *   - `deliverGallery` has NO zero-client refusal whatsoever. It commits the
- *     `selected -> delivered` transition and then returns
- *     `delivered_email_failed` ("no encontramos clientes a quién avisar")
- *     — it reports the emptiness, it does not refuse it. #100 owns adding
- *     the guard.
- *
- * Collapsing those two into this one predicate is the whole point of the
- * predicate existing — two copies of one rule is the bug shape this project
- * keeps shipping (kanban #86/#87/#88/#91). It just has not happened yet.
- *
- * Also still true today, and also #100's to change: `createGallery` requires
- * at least one client at creation (`.min(1, "Elegí al menos un cliente.")`,
- * src/app/dashboard/galleries/actions.ts). A gallery cannot yet be CREATED
- * clientless; task #97 only made a `draft` one able to BECOME clientless
- * afterwards. */
+ * This is HALF of the rule — the status half. It says which statuses care,
+ * not whether a given gallery satisfies it. Nothing enforces anything with
+ * this function alone: `activeClientRuleViolation()` right below is the ONE
+ * place the two halves (status + active-client count) are put together, and
+ * it is the only runtime consumer of this function in the codebase. Kept
+ * exported because it is the crisp, table-testable statement of exactly
+ * which statuses are involved (see galleries.test.ts) — NOT so that a caller
+ * can rebuild the conjunction itself. If you are about to write
+ * `requiresActiveClient(x) && someCount === 0`, you are writing the second
+ * copy of a rule that already exists; call `activeClientRuleViolation()`
+ * instead. Two copies of one rule is the bug shape this project keeps
+ * shipping (kanban #86/#87/#88/#91/#96). */
 export function requiresActiveClient(status: Gallery["status"]): boolean {
   return status !== "draft";
+}
+
+/** The operation being attempted, used only to pick which Spanish sentence
+ * `activeClientRuleViolation()` returns. The RULE is identical for all
+ * three; what differs is what the admin should do about it. */
+export type ActiveClientRuleAction = "publish" | "deliver" | "remove-client";
+
+const ACTIVE_CLIENT_RULE_MESSAGES: Record<ActiveClientRuleAction, string> = {
+  publish:
+    "Esta galería todavía no tiene ningún cliente activo. Agregale al menos uno antes de " +
+    "publicarla — si no, el correo con el enlace no le llega a nadie.",
+  deliver:
+    "Esta galería no tiene ningún cliente activo. Agregale al menos uno antes de entregarla — " +
+    "si no, nadie recibe el aviso ni puede abrir las fotos.",
+  // Task #97's own wording, kept verbatim when its inline guard was folded
+  // into this function by task #100 — the operation's copy did not change,
+  // only where the condition lives.
+  "remove-client":
+    "No podés quitar al último cliente activo de una galería que ya no está en borrador — " +
+    "agregá otro cliente antes de quitar este, o la galería queda sin nadie que pueda entrar.",
+};
+
+/**
+ * THE rule, in the one place it exists (task #100): **a gallery past `draft`
+ * has at least one active client.**
+ *
+ * Returns the Spanish refusal to show the admin, or `null` when the rule
+ * holds. Callers never re-derive the condition — they ask this function and
+ * surface whatever string it hands back.
+ *
+ * `activeClientCount` is the count the operation would LEAVE BEHIND, and
+ * `targetStatus` is the status the gallery would BE IN afterwards. Both are
+ * about the destination, not the present, which is what makes one function
+ * able to serve three different operations:
+ *   - `publishGallery`  — target `proofing`, count unchanged. A `draft`
+ *     gallery may legitimately sit at zero clients (task #97 made that
+ *     reachable, task #100 made it creatable); `proofing` may not. Asking
+ *     about the CURRENT status here would answer the wrong question and
+ *     permit exactly what this refuses.
+ *   - `deliverGallery`  — target `delivered`, count unchanged.
+ *   - `removeGalleryClient` — target = the gallery's current status (removal
+ *     moves nothing), count = active memberships MINUS the one being removed.
+ *
+ * WHO CONSULTS IT (grep `activeClientRuleViolation` — this list is checkable,
+ * not a promise):
+ *   - the three server actions above, in src/app/dashboard/galleries/
+ *     actions.ts. These are the AUTHORITY.
+ *   - the gallery detail page (src/app/dashboard/galleries/[galleryId]/
+ *     page.tsx), twice: to hide "Quitar" and to replace the publish button
+ *     with the reason it cannot be used. UX only — every action re-checks
+ *     regardless of what was rendered, the same stance `isDeliverable` and
+ *     friends already take.
+ *
+ * A Postgres trigger pair (drizzle/0005_gallery-active-client-trigger.sql)
+ * enforces the same invariant as a BACKSTOP, for hand-written SQL against
+ * production. It is deliberately NOT the primary check: the application must
+ * know the answer before it writes, so the admin gets this sentence instead
+ * of a stack trace. Never restructure a caller to rely on catching that
+ * exception.
+ */
+export function activeClientRuleViolation({
+  targetStatus,
+  activeClientCount,
+  action,
+}: {
+  targetStatus: Gallery["status"];
+  activeClientCount: number;
+  action: ActiveClientRuleAction;
+}): string | null {
+  if (activeClientCount > 0) return null;
+  if (!requiresActiveClient(targetStatus)) return null;
+  return ACTIVE_CLIENT_RULE_MESSAGES[action];
 }
 
 /** Spanish copy for a gallery's workflow state (PLAN.md §2). */
@@ -380,13 +431,14 @@ export type GalleryClientContact = { id: string; name: string | null; email: str
  * (assets, package, snapshot terms).
  *
  * Returns an EMPTY array, never throws, when a gallery has no clients
- * attached — `gallery-form.tsx` requires picking at least one at creation
- * (see schema.ts's comment on `galleryClients` for why the database itself
- * cannot enforce that lower bound), so an empty result here would mean the
- * requirement was bypassed somehow (a manual DB edit, a bug), not a normal
- * state — every caller must decide what to do with zero clients rather than
- * assuming at least one, which is exactly why this returns a list instead of
- * throwing or returning `null`.
+ * attached. As of task #100, that is the ORDINARY state for a `draft`
+ * gallery — the photographer can create one, and upload proofs to it,
+ * before any client record exists (see schema.ts's comment on
+ * `galleryClients` for the full rule, `activeClientRuleViolation()` in this
+ * file for where it is enforced). Past `draft` an empty result means that
+ * rule has been violated — rare, but callers must still handle it rather
+ * than assuming at least one client, which is exactly why this returns a
+ * list instead of throwing or returning `null`.
  *
  * Task #97: filtered to `removedAt IS NULL` — this is THE query every email
  * fan-out in src/app/dashboard/galleries/actions.ts (publish/unlock/deliver)

@@ -37,15 +37,51 @@ describe("GalleryForm", () => {
   it("renders clients (multi-select), package, title and session-date fields", () => {
     render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
 
-    // Task #94: a gallery can have several clients now — "Clientes"
-    // (plural), a `<select multiple>`.
-    const clientsSelect = screen.getByLabelText("Clientes");
+    // Task #94: a gallery can have several clients now — a
+    // `<select multiple>`. Task #100 made it optional, and the label says so.
+    const clientsSelect = screen.getByLabelText("Clientes (opcional)");
     expect(clientsSelect).toBeDefined();
     expect(clientsSelect).toHaveProperty("multiple", true);
     expect(screen.getByLabelText("Paquete")).toBeDefined();
     expect(screen.getByLabelText("Título")).toBeDefined();
     expect(screen.getByLabelText("Fecha de la sesión")).toBeDefined();
     expect(screen.getByRole("button", { name: "Crear galería" })).toBeDefined();
+  });
+
+  // Task #100: the browser's own `required` used to be the first line of the
+  // zero-clients invariant. Removing it is the point of this slice — a
+  // gallery must be creatable before its client record exists.
+  it("does NOT require the client select, and says what leaving it empty means", () => {
+    render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
+
+    expect(screen.getByLabelText("Clientes (opcional)")).toHaveProperty("required", false);
+    // An optional field with no explanation reads as a bug — the copy has to
+    // name the consequence (no publishing), in Spanish.
+    expect(screen.getByText(/Podés dejarlo vacío y agregar el cliente después/)).toBeDefined();
+    expect(screen.getByText(/sin cliente no vas a poder publicar la galería/i)).toBeDefined();
+  });
+
+  // Task #100: the studio having NO clients at all no longer blocks the form
+  // (the galleries page used to replace it with a "cargá un cliente primero"
+  // panel). The field explains itself instead, and still points at the place
+  // to create one.
+  it("renders the form with guidance, not a dead select, when there are no clients at all", () => {
+    const { container } = render(<GalleryForm clients={[]} packages={PACKAGES} />);
+
+    expect(screen.queryByLabelText("Clientes (opcional)")).toBeNull();
+    expect(screen.getByText(/Todavía no cargaste ningún cliente/)).toBeDefined();
+    expect(screen.getByRole("link", { name: "Ir a clientes" })).toBeDefined();
+
+    // Review finding: the heading used to be a `<label htmlFor="clientIds">`
+    // rendered unconditionally, so in THIS branch it pointed at an id that
+    // does not exist — an association a screen reader follows to nothing.
+    // Every label in the form must resolve to a real control.
+    for (const label of container.querySelectorAll("label[for]")) {
+      const targetId = label.getAttribute("for")!;
+      expect(container.querySelector(`#${targetId}`)).not.toBeNull();
+    }
+    // The gallery can still be created — that is the whole request.
+    expect(screen.getByRole("button", { name: "Crear galería" })).toHaveProperty("disabled", false);
   });
 
   it("falls back to the client's email when they have no name", () => {
@@ -61,7 +97,7 @@ describe("GalleryForm", () => {
 
     // Task #94: selecting BOTH options on the multi-select — the action
     // must receive both, not just the first.
-    await user.selectOptions(screen.getByLabelText("Clientes"), ["u1", "u2"]);
+    await user.selectOptions(screen.getByLabelText("Clientes (opcional)"), ["u1", "u2"]);
     await user.selectOptions(screen.getByLabelText("Paquete"), "1");
     await user.type(screen.getByLabelText("Título"), "Boda Ana y Beto");
     await user.type(screen.getByLabelText("Fecha de la sesión"), "2026-08-01");
@@ -83,7 +119,7 @@ describe("GalleryForm", () => {
     const user = userEvent.setup();
     render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
 
-    await user.selectOptions(screen.getByLabelText("Clientes"), "u1");
+    await user.selectOptions(screen.getByLabelText("Clientes (opcional)"), "u1");
     await user.selectOptions(screen.getByLabelText("Paquete"), "1");
     await user.type(screen.getByLabelText("Título"), "Boda");
     await user.type(screen.getByLabelText("Fecha de la sesión"), "2026-08-01");

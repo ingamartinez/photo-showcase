@@ -282,6 +282,10 @@ function formDataWith(fields: Record<string, string | undefined>) {
 }
 
 beforeEach(async () => {
+  // One test below spies on `db.update` to simulate a client vanishing
+  // mid-action — without this, that spy would leak into every test defined
+  // after it and quietly empty the membership rows there too.
+  vi.restoreAllMocks();
   authMock.mockReset();
   signInMock.mockReset();
   revalidatePathMock.mockReset();
@@ -572,6 +576,119 @@ describe("deliverGallery success", () => {
   });
 });
 
+// Task #100 ADDED this refusal; before it, `deliverGallery` had no
+// zero-client guard of any kind. What it had looked like one — a
+// `clients.length === 0` branch — but that branch runs AFTER the
+// `selected -> delivered` UPDATE has committed, so it could only ever pick a
+// message for a transition that already happened. The guard therefore had to
+// move BEFORE the write, which is what these tests pin down.
+//
+// MUTATION-PROVEN, and the mutation that matters is the ORDERING one.
+// Observed output, not predicted:
+//   1. Deleting the `if (activeClientViolation) return ...` block made all
+//      three refusal tests below fail with
+//      `expected 'delivered_email_failed' to be 'error'` — i.e. the action
+//      fell straight back to the pre-#100 behavior of delivering to nobody
+//      and then reporting it. `22 passed | 3 failed`.
+//   2. MOVING the same block to AFTER the UPDATE (keeping the call, keeping
+//      the message, changing only WHEN it runs) also failed all three, but
+//      differently and far more informatively: `result.status` was "error" in
+//      every one, so the status assertion PASSED, and what caught it instead
+//      was `expected "update" to not be called at all, but actually been
+//      called 1 times` plus `expected { …(14) } to match object
+//      { status: 'selected', … }`. The gallery had already been delivered and
+//      stamped while the caller was told it was refused. That is precisely
+//      the trap #97 documented in this action, and it is those two
+//      assertions — not the returned string — that make this a refusal rather
+//      than a report. `22 passed | 3 failed`.
+// Restoring the block in its original position made all 25 pass again.
+describe("deliverGallery — refuses a gallery with no active clients", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+    signInMock.mockResolvedValue(
+      "http://localhost/api/auth/verify-request?provider=gallery-access",
+    );
+  });
+
+  it("refuses to deliver a gallery with no active clients, and does not write anything", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.length = 0;
+    const { deliverGallery } = await import("./actions");
+
+    const result = await deliverGallery(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.message).toMatch(/cliente/i);
+    expect(result.message).toMatch(/agregale/i);
+    // NOT delivered, and no `deliveredAt` stamp — the difference between a
+    // refusal and the report branch this action used to have.
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "selected", deliveredAt: null });
+    expect(signInMock).not.toHaveBeenCalled();
+    expect(revalidatePathMock).not.toHaveBeenCalled();
+  });
+
+  // THE acceptance criterion the owner spelled out for the three-layer
+  // design: "the application refuses FIRST — a test proves the app returns
+  // its own Spanish error WITHOUT the trigger ever firing". The database
+  // backstop (drizzle/0005) can only fire on a write; proving no write is
+  // attempted proves the app answered on its own.
+  it("never reaches the UPDATE at all, so the database backstop never fires", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.length = 0;
+    const { db: liveDb } = await import("@/lib/db");
+    const updateSpy = vi.spyOn(liveDb, "update");
+    const { deliverGallery } = await import("./actions");
+
+    const result = await deliverGallery(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(updateSpy).not.toHaveBeenCalled();
+  });
+
+  // A soft-removed client (task #97) is not an active client — the row still
+  // exists, and the guard must not be fooled by its presence.
+  it("refuses when the only attached client has been REMOVED", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.length = 0;
+    db.__rows.galleryClients.push({
+      galleryId: GALLERY_ID,
+      userId: CLIENT_ID,
+      removedAt: new Date("2026-07-29T12:00:00.000Z"),
+    });
+    const { deliverGallery } = await import("./actions");
+
+    const result = await deliverGallery(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "selected", deliveredAt: null });
+  });
+
+  // Negative control for the mutation notes above: one active client is
+  // enough, so a mutation that made the guard unconditional would be caught
+  // here instead of looking harmless.
+  it("delivers normally with ONE active client attached (negative control)", async () => {
+    const db = await seededDb();
+    const { deliverGallery } = await import("./actions");
+
+    const result = await deliverGallery(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result).toEqual({ status: "delivered" });
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "delivered" });
+  });
+});
+
 describe("deliverGallery — client notification failure", () => {
   beforeEach(() => {
     authMock.mockResolvedValue(adminSession());
@@ -597,13 +714,23 @@ describe("deliverGallery — client notification failure", () => {
     expect(revalidatePathMock).toHaveBeenCalledWith("/dashboard/galleries");
   });
 
-  it("also reports the distinct failure result when the gallery has no clients attached at all", async () => {
+  // The `clients.length === 0` REPORT branch (as opposed to task #100's
+  // refusal, which lives before the UPDATE and is tested in its own block
+  // below) survives only for the race it was always about: the gallery lost
+  // its last active client BETWEEN the pre-flight read and the CAS UPDATE.
+  //
+  // Simulated exactly there, by emptying the membership rows from inside the
+  // `db.update` call itself — the one instant in this action that sits
+  // between the two reads. Without this, that branch would be unreachable
+  // and would look like dead code to the next reader.
+  it("still REPORTS (does not roll back) when the last client vanishes between the pre-flight and the UPDATE", async () => {
     const db = await seededDb();
-    // Task #94: unreachable BY DESIGN (gallery-form.tsx requires at least
-    // one client at creation) but proven here anyway, same "never trust the
-    // invariant blindly" stance as this file's own header comment on the
-    // action.
-    db.__rows.galleryClients.length = 0;
+    const { db: liveDb } = await import("@/lib/db");
+    const realUpdate = liveDb.update.bind(liveDb);
+    vi.spyOn(liveDb, "update").mockImplementation((table: Parameters<typeof liveDb.update>[0]) => {
+      db.__rows.galleryClients.length = 0;
+      return realUpdate(table);
+    });
     const { deliverGallery } = await import("./actions");
 
     const result = await deliverGallery(
@@ -613,6 +740,8 @@ describe("deliverGallery — client notification failure", () => {
 
     expect(result.status).toBe("delivered_email_failed");
     expect(signInMock).not.toHaveBeenCalled();
+    // The delivery COMMITTED and stays committed — an email nobody can
+    // receive is never a reason to un-deliver a gallery.
     expect(db.__rows.galleries[0]).toMatchObject({ status: "delivered" });
   });
 

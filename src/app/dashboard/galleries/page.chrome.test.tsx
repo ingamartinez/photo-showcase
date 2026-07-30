@@ -189,7 +189,10 @@ describe("GalleriesPage chrome", () => {
     expect(screen.getByText(/Armá la primera galería con el formulario/)).toBeDefined();
   });
 
-  it("renders the gallery form when there is at least one client", async () => {
+  // Since task #100 the form renders regardless of how many clients exist —
+  // the sibling test below covers the zero case. This one is the ordinary
+  // path, kept distinct so a regression in either is attributable.
+  it("renders the gallery form when clients exist", async () => {
     getGalleriesWithDetailsMock.mockResolvedValue([]);
 
     const element = await GalleriesPage();
@@ -198,19 +201,52 @@ describe("GalleriesPage chrome", () => {
     expect(screen.getByRole("button", { name: "Crear galería" })).toBeDefined();
   });
 
-  // A gallery can't be built before there is at least one client to bind it
-  // to — this proves the page steers the photographer to create one first
-  // instead of rendering a form with an empty client picker.
+  // Task #100 REVERSED this. The page used to replace the whole form with
+  // "Cargá un cliente antes de armar una galería" — the exact ordering the
+  // owner asked to undo. It now always renders the form; <GalleryForm> puts
+  // the guidance (and the link) inside the client field itself, where it
+  // explains the field rather than blocking the page.
   // (The "only active packages appear in the picker" criterion is NOT covered
   // here; it lives in packages.test.ts and actions.test.ts.)
-  it("guides to /dashboard/clients instead of the form when there are no clients yet", async () => {
+  it("still renders the creation form, with guidance, when there are no clients yet", async () => {
     getGalleriesWithDetailsMock.mockResolvedValue([]);
     getClientsForPickerMock.mockResolvedValue([]);
 
     const element = await GalleriesPage();
     render(element);
 
-    expect(screen.getByText(/Cargá un cliente antes de armar una galería/)).toBeDefined();
-    expect(screen.queryByRole("button", { name: "Crear galería" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Crear galería" })).toBeDefined();
+    expect(screen.getByText(/Todavía no cargaste ningún cliente/)).toBeDefined();
+    expect(screen.getByRole("link", { name: "Ir a clientes" })).toBeDefined();
+    expect(screen.queryByText(/Cargá un cliente antes de armar una galería/)).toBeNull();
+  });
+
+  // Task #100: a gallery with nobody attached is legitimate while it is a
+  // draft, and the list must SAY so. Joining an empty array would render
+  // " · Estándar" — a separator floating over nothing, which reads as missing
+  // data rather than as a deliberate state.
+  it("renders 'Todavía sin cliente' for a gallery with no clients, not blank space", async () => {
+    getGalleriesWithDetailsMock.mockResolvedValue([
+      {
+        id: "g1",
+        title: "Sesión sin cliente",
+        publicSlug: "abc123",
+        status: "draft",
+        sessionDate: "2026-08-01",
+        createdAt: new Date("2026-07-01"),
+        selectionSubmittedAt: null,
+        clients: [],
+        package: { id: 1, name: "Estándar" },
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+        photoCount: 24,
+      },
+    ]);
+
+    const element = await GalleriesPage();
+    render(element);
+
+    const listItem = screen.getByText("Sesión sin cliente").closest("li")!;
+    expect(within(listItem).getByText(/Todavía sin cliente · Estándar/)).toBeDefined();
   });
 });

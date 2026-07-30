@@ -528,6 +528,36 @@ describe("POST /api/galleries/[galleryId]/proofs — happy path", () => {
     expect(JSON.stringify(body)).not.toContain("bytes");
   });
 
+  // Task #100's own acceptance criterion, stated rather than inferred: a
+  // gallery created BEFORE its client record exists must still take proofs —
+  // that is the entire point of allowing a clientless draft (set the session
+  // up, get the files off the card, decide who it belongs to later).
+  //
+  // Structurally this route cannot behave otherwise: it gates on
+  // PROOF_ACCEPTING_STATUSES alone and never reads `gallery_clients` at all.
+  // The fake `db` above has no such table and its `select().from()` throws on
+  // any table it does not know, so a future change that started consulting
+  // membership here would fail this test loudly instead of quietly locking
+  // the photographer out of their own draft.
+  it("accepts an upload into a DRAFT gallery with NO clients attached (task #100)", async () => {
+    authMock.mockResolvedValue(adminSession());
+    processProofMock.mockResolvedValue({
+      data: Buffer.from("fake-webp-bytes"),
+      width: 1600,
+      height: 1067,
+    });
+    const db = await seededDb();
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      requestFor(GALLERY_ID, formDataWith(imageFile("bytes", "IMG_0001.JPG"))),
+      paramsFor(GALLERY_ID),
+    );
+
+    expect(response.status).toBe(201);
+    expect(db.__rows.assets).toHaveLength(1);
+  });
+
   it("appends new uploads after existing assets instead of overwriting sort_order", async () => {
     authMock.mockResolvedValue(adminSession());
     const db = await seededDb();

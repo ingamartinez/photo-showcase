@@ -1,6 +1,7 @@
 "use client";
 
 import { useActionState } from "react";
+import Link from "next/link";
 import { createGallery, type CreateGalleryState } from "@/app/dashboard/galleries/actions";
 import type { ClientForPicker } from "@/lib/clients";
 import type { PackageForPicker } from "@/lib/packages";
@@ -27,33 +28,63 @@ export function GalleryForm({
       <span className="label text-fg-mute">Nueva galería</span>
 
       <div className="flex flex-col gap-2">
-        <label htmlFor="clientIds" className="label text-fg-mute">
-          Clientes
-        </label>
-        {/* Task #94: a gallery can now belong to several clients at once —
-            a couple's own separate logins, a family, two businesses sharing
-            a shoot. `multiple` + `required` means the browser itself refuses
-            to submit with zero options selected; the server action
-            (createGallery) re-checks this regardless, same "hiding/blocking
-            in the UI is not the authority" stance as every other guard in
-            this app. Hold Cmd/Ctrl (or Shift for a range) to pick more than
-            one. */}
-        <select
-          id="clientIds"
-          name="clientIds"
-          multiple
-          required
-          size={Math.min(6, Math.max(3, clients.length))}
-          aria-invalid={state.status === "error"}
-          aria-describedby={state.status === "error" ? "gallery-form-error" : undefined}
-          className={inputClass}
-        >
-          {clients.map((client) => (
-            <option key={client.id} value={client.id}>
-              {client.name ?? client.email}
-            </option>
-          ))}
-        </select>
+        {/* Task #94: a gallery can belong to several clients at once — a
+            couple's own separate logins, a family, two businesses sharing a
+            shoot. Hold Cmd/Ctrl (or Shift for a range) to pick more than one.
+
+            Task #100 dropped this select's `required`: the shoot happens
+            before the paperwork, and the photographer must be able to set the
+            session up and upload proofs before the client record exists. An
+            unexplained optional field reads as a bug, so the note below says
+            what picking nobody actually means — the gallery stays a draft
+            until it has someone to publish to. The server action
+            (createGallery) accepts an empty selection, and publishing is what
+            refuses it; same "the UI is not the authority" stance as every
+            other guard in this app.
+
+            The heading below is a <label htmlFor> ONLY in the branch that
+            actually renders a `#clientIds` control. In the empty branch there
+            is no form control to label — a `<label htmlFor>` pointing at an
+            id that does not exist is a broken association a screen reader
+            will follow to nothing, so that branch uses a plain <span>. */}
+        {clients.length === 0 ? (
+          <>
+            <span className="label text-fg-mute">Clientes (opcional)</span>
+            <p className="text-fg-dim text-sm leading-relaxed">
+              Todavía no cargaste ningún cliente. Podés crear la galería igual y agregarle el
+              cliente cuando exista — hasta entonces queda en borrador.{" "}
+              <Link href="/dashboard/clients" className="text-accent-2 underline">
+                Ir a clientes
+              </Link>
+              .
+            </p>
+          </>
+        ) : (
+          <>
+            <label htmlFor="clientIds" className="label text-fg-mute">
+              Clientes (opcional)
+            </label>
+            <select
+              id="clientIds"
+              name="clientIds"
+              multiple
+              size={Math.min(6, Math.max(3, clients.length))}
+              aria-invalid={state.status === "error"}
+              aria-describedby={state.status === "error" ? "gallery-form-error" : undefined}
+              className={inputClass}
+            >
+              {clients.map((client) => (
+                <option key={client.id} value={client.id}>
+                  {client.name ?? client.email}
+                </option>
+              ))}
+            </select>
+            <p className="text-fg-dim text-sm leading-relaxed">
+              Podés dejarlo vacío y agregar el cliente después — sin cliente no vas a poder publicar
+              la galería.
+            </p>
+          </>
+        )}
       </div>
 
       <div className="flex flex-col gap-2">

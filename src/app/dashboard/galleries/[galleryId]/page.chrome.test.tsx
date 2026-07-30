@@ -48,11 +48,25 @@ vi.mock("@/lib/galleries", () => ({
     const [year, month, day] = sessionDate.split("-");
     return `${day}/${month}/${year}`;
   },
-  // Task #97: a plain re-implementation of the real predicate (`status !==
-  // "draft"`) — this module is mocked wholesale, not via `importActual`, so
-  // every export the page now imports from it needs an entry here, same
-  // "name every export a mock provides" stance as the rest of this mock.
-  requiresActiveClient: (status: string) => status !== "draft",
+  // Task #100: a plain re-implementation of the real rule (a gallery past
+  // `draft` needs at least one active client) — this module is mocked
+  // wholesale, not via `importActual`, so every export the page imports from
+  // it needs an entry here, same "name every export a mock provides" stance
+  // as the rest of this mock. The real function and its Spanish copy are
+  // covered directly in src/lib/galleries.test.ts; what this file proves is
+  // that the page ASKS it and renders the answer.
+  activeClientRuleViolation: ({
+    targetStatus,
+    activeClientCount,
+    action,
+  }: {
+    targetStatus: string;
+    activeClientCount: number;
+    action: string;
+  }) =>
+    activeClientCount > 0 || targetStatus === "draft"
+      ? null
+      : `no-active-client-violation:${action}`,
 }));
 
 // `formatCop` lives in `@/lib/format` (a plain, DB-free module — see that
@@ -299,6 +313,36 @@ describe("GalleryDetailPage chrome", () => {
     expect(screen.queryByRole("button", { name: "Publicar galería" })).toBeNull();
   });
 
+  // Task #100's UI layer, and note the question the page asks: it does not
+  // check `clients.length` itself, it calls the SAME
+  // `activeClientRuleViolation` the server action calls, about the same
+  // destination status, and renders whatever string comes back. Hiding the
+  // button is UX; `publishGallery` refuses regardless.
+  it("replaces the publish button with the reason when a draft gallery has no clients", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "draft", clients: [] }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.queryByRole("button", { name: "Publicar galería" })).toBeNull();
+    // The mock's stand-in string, proving the rendered reason is the rule's
+    // own message for the PUBLISH action and not copy invented by the page.
+    expect(screen.getByText("no-active-client-violation:publish")).toBeDefined();
+  });
+
+  // Zero clients is a legitimate draft state since task #100 — it must read
+  // as a deliberate state and point at the next action (attaching someone),
+  // because it is what is blocking publication.
+  it("renders 'Todavía sin cliente' as a deliberate state, not blank space", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "draft", clients: [] }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByText(/Todavía sin cliente/)).toBeDefined();
+    expect(screen.getByText(/agregá uno acá abajo para poder publicar la galería/)).toBeDefined();
+  });
+
   // Task #73's UI half of the same "hiding is UX only" guard: unlockSelection()
   // itself re-checks the gallery's real status server-side (isUnlockable()),
   // but the panel still must be wired to appear only for a `selected` gallery.
@@ -482,8 +526,8 @@ describe("GalleryDetailPage — attaching and removing clients (task #97)", () =
   });
 
   // The last-active-client guard's UI half: hiding "Quitar" is UX only —
-  // removeGalleryClient() itself re-checks requiresActiveClient() server-side
-  // (src/lib/galleries.ts) regardless of what this page ever renders.
+  // removeGalleryClient() itself re-checks activeClientRuleViolation()
+  // server-side (src/lib/galleries.ts) regardless of what this page renders.
   it("hides the Quitar affordance for the ONLY active client on a non-draft gallery", async () => {
     getGalleryDetailMock.mockResolvedValue(
       galleryDetail({

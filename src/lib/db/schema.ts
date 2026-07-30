@@ -261,28 +261,28 @@ export const galleries = pgTable(
 // the convention `assets.galleryId` already set, for the day one exists).
 //
 // A gallery with ZERO active clients is allowed ONLY while it is still
-// `draft`. Task #97 (this column) is what first makes that state reachable:
-// `removeGalleryClient` will strip the last active client off a `draft`
-// gallery on purpose. CREATION still requires at least one client
-// (`createGallery`'s own `.min(1)`); task #100 is what will let a gallery be
-// created clientless too, so the photographer can set up a session and
-// upload proofs before the client record exists. Past `draft` the lower
-// bound holds: a `proofing`/`selected`/`delivered` gallery with nobody
-// attached is a dead end nobody can open.
+// `draft`. Two ways to get there, both deliberate: task #97's
+// `removeGalleryClient` strips the last active client off a `draft` gallery
+// on purpose, and task #100 made a gallery CREATABLE with no clients at all,
+// so the photographer can set the session up and upload proofs before the
+// client record exists. Past `draft` the lower bound holds: a
+// `proofing`/`selected`/`delivered` gallery with nobody attached is a dead
+// end nobody can open.
 //
-// The rule — "does THIS status require at least one active client" — is
-// `requiresActiveClient()` in src/lib/galleries.ts. TODAY it has exactly one
-// enforcement site, `removeGalleryClient`, plus the detail page's mirror of
-// it for hiding the button. `publishGallery` still carries its own separate
-// `clients.length === 0` refusal, written inline instead of going through
-// that predicate, and `deliverGallery` carries no zero-client refusal at all
-// (it delivers, then reports it found nobody to email). Folding both in is
-// task #100's work, NOT something already done — see `requiresActiveClient`'s
-// own docblock for the exact state of each caller.
+// The rule — "a gallery past `draft` has at least one active client" — lives
+// in ONE place, `activeClientRuleViolation()` in src/lib/galleries.ts. Its
+// consumers, all of which grep as calls to that one function: the three
+// server actions that can break it (`publishGallery`, `deliverGallery`,
+// `removeGalleryClient` in src/app/dashboard/galleries/actions.ts) and the
+// gallery detail page's two UX mirrors. No caller re-derives the condition.
 //
-// Enforced at the APPLICATION layer, not here: Postgres has no built-in "at
-// least one row per gallery_id, conditional on a sibling column" constraint
-// short of a trigger.
+// Enforced primarily at the APPLICATION layer — a CHECK constraint cannot
+// express this (Postgres CHECKs do not span tables, and this compares
+// `galleries.status` against a COUNT of sibling rows). A deferred CONSTRAINT
+// TRIGGER pair (drizzle/0005_gallery-active-client-trigger.sql) enforces it
+// in the database too, from BOTH sides, as a backstop against hand-written
+// SQL. That backstop is not the primary check and must never become one: its
+// message is diagnostic, not user-facing copy.
 export const galleryClients = pgTable(
   "gallery_clients",
   {

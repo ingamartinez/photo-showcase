@@ -4,11 +4,11 @@ import { notFound } from "next/navigation";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/auth-guards";
 import {
+  activeClientRuleViolation,
   formatGalleryStatus,
   formatSessionDate,
   getGalleryDetail,
   getGalleryUnlockAudit,
-  requiresActiveClient,
 } from "@/lib/galleries";
 import { getClientsForPicker } from "@/lib/clients";
 import { formatCop } from "@/lib/format";
@@ -58,13 +58,32 @@ export default async function GalleryDetailPage({
   const activeClientIds = new Set(gallery.clients.map((client) => client.id));
   const eligibleClients = allClients.filter((client) => !activeClientIds.has(client.id));
 
-  // Task #97: the SAME predicate `removeGalleryClient` itself consults
-  // server-side (src/lib/galleries.ts's `requiresActiveClient`) — hiding the
-  // "Quitar" affordance when removing would leave a past-`draft` gallery
-  // with zero active clients is UX, not the authority; the action re-checks
-  // this regardless of what's rendered here. These two are the predicate's
-  // only call sites today; see its own docblock for what does NOT consult it.
-  const canRemoveAnyClient = !requiresActiveClient(gallery.status) || gallery.clients.length > 1;
+  // Task #97, rewired by task #100: the SAME function each server action
+  // consults (src/lib/galleries.ts's `activeClientRuleViolation`), asked the
+  // exact same question the action will ask. Hiding an affordance the server
+  // would refuse is UX, not the authority — every action re-checks
+  // regardless of what is rendered here.
+  //
+  // Removal: would taking one away leave the gallery empty? `- 1` because
+  // that is the count the removal would leave behind, matching
+  // `removeGalleryClient`'s own call.
+  const canRemoveAnyClient =
+    activeClientRuleViolation({
+      targetStatus: gallery.status,
+      activeClientCount: gallery.clients.length - 1,
+      action: "remove-client",
+    }) === null;
+
+  // Publishing: asked about the DESTINATION status (`proofing`), not the
+  // gallery's current `draft` — see `publishGallery`'s own call for why.
+  // Non-null means the publish button must not be offered, and this string
+  // is the reason to show in its place. The server action produces the very
+  // same sentence if anyone posts the form anyway.
+  const publishBlockedReason = activeClientRuleViolation({
+    targetStatus: "proofing",
+    activeClientCount: gallery.clients.length,
+    action: "publish",
+  });
 
   // Task #73: the unlock audit trail (who/when/reason) is a SEPARATE, tiny
   // query — see src/lib/galleries.ts's own comment on
@@ -126,16 +145,29 @@ export default async function GalleryDetailPage({
           {/* Task #94: a gallery can have several clients now — one line
               per client so each name/email pair stays legible instead of
               being crammed onto one. Task #97: each line is now its own
-              <GalleryClientRow>, adding the "Quitar" affordance. */}
-          {gallery.clients.map((client) => (
-            <GalleryClientRow
-              key={client.id}
-              galleryId={gallery.id}
-              client={client}
-              status={gallery.status}
-              removable={canRemoveAnyClient}
-            />
-          ))}
+              <GalleryClientRow>, adding the "Quitar" affordance.
+
+              Task #100: ZERO clients is legitimate for a draft (the gallery
+              was set up before the client record existed) and must read as a
+              deliberate state, never as blank space. It is also the thing
+              blocking publication, so the line says what to do next rather
+              than only reporting the absence — the "agregá" pointer lands
+              right above the attach form below. */}
+          {gallery.clients.length === 0 ? (
+            <p className="text-fg-mute mt-2 text-sm">
+              Todavía sin cliente — agregá uno acá abajo para poder publicar la galería.
+            </p>
+          ) : (
+            gallery.clients.map((client) => (
+              <GalleryClientRow
+                key={client.id}
+                galleryId={gallery.id}
+                client={client}
+                status={gallery.status}
+                removable={canRemoveAnyClient}
+              />
+            ))
+          )}
           <p className="text-fg-mute text-sm">Sesión: {formatSessionDate(gallery.sessionDate)}</p>
 
           {/* Task #97 — the product's first gallery-editing surface: attach
@@ -161,15 +193,22 @@ export default async function GalleryDetailPage({
           </dl>
 
           {/* Guarded server-side by publishGallery() itself (draft-only,
-              non-empty gallery) — hiding the button once the gallery has
-              moved past "draft" is UX, not the authority; see
-              src/app/dashboard/galleries/actions.ts's isPublishable(). */}
-          {gallery.status === "draft" && (
-            <PublishGalleryButton
-              galleryId={gallery.id}
-              clientEmails={gallery.clients.map((client) => client.email)}
-            />
-          )}
+              non-empty gallery, at least one active client) — hiding the
+              button is UX, not the authority; see
+              src/app/dashboard/galleries/actions.ts's isPublishable() and
+              its `activeClientRuleViolation()` call.
+
+              Task #100: a clientless draft gets the REASON in place of the
+              button, not a silently missing control. */}
+          {gallery.status === "draft" &&
+            (publishBlockedReason ? (
+              <p className="text-fg-mute max-w-xs text-right text-sm">{publishBlockedReason}</p>
+            ) : (
+              <PublishGalleryButton
+                galleryId={gallery.id}
+                clientEmails={gallery.clients.map((client) => client.email)}
+              />
+            ))}
 
           {/* Task #73: guarded server-side by unlockSelection() itself
               (selected-only) — hiding the panel once the gallery has moved

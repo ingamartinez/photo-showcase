@@ -35,8 +35,8 @@ export default async function GalleriesPage() {
         <ul className="border-line-2 divide-line-2 divide-y rounded-sm border">
           {galleries.length === 0 ? (
             <li className="text-fg-dim p-6 text-[15px] leading-relaxed">
-              Armá la primera galería con el formulario — elegí cliente, paquete, título y fecha de
-              la sesión.
+              Armá la primera galería con el formulario — elegí paquete, título y fecha de la
+              sesión. El cliente es opcional: podés agregarlo después.
             </li>
           ) : (
             galleries.map((gallery) => (
@@ -50,8 +50,17 @@ export default async function GalleriesPage() {
                     <p className="text-fg-mute text-sm">
                       {/* Task #94: a gallery can have several clients now —
                           joined with " · " so the list still fits on one
-                          line without truncating anyone. */}
-                      {gallery.clients.map((client) => client.name ?? client.email).join(" · ")} ·{" "}
+                          line without truncating anyone.
+
+                          Task #100: ZERO clients is a legitimate state for a
+                          draft, so it gets its own words. Joining an empty
+                          list would render " · Estándar" — a leading
+                          separator floating over nothing, which reads as
+                          missing data rather than as a deliberate state. */}
+                      {gallery.clients.length === 0
+                        ? "Todavía sin cliente"
+                        : gallery.clients.map((client) => client.name ?? client.email).join(" · ")}
+                      {" · "}
                       {gallery.package.name}
                     </p>
                     <p className="text-fg-mute text-sm">
@@ -89,17 +98,14 @@ export default async function GalleriesPage() {
           )}
         </ul>
 
-        {clients.length === 0 ? (
-          <div className="border-line-2 text-fg-dim rounded-sm border p-6 text-[15px] leading-relaxed">
-            Cargá un cliente antes de armar una galería.{" "}
-            <Link href="/dashboard/clients" className="text-accent-2 underline">
-              Ir a clientes
-            </Link>
-            .
-          </div>
-        ) : (
-          <GalleryForm clients={clients} packages={packages} />
-        )}
+        {/* Task #100: the form renders even with ZERO clients in the studio.
+            This page used to replace it with "Cargá un cliente antes de armar
+            una galería" — the exact ordering the owner asked to reverse: the
+            shoot happens, the files come off the card, and the client record
+            may not exist yet. <GalleryForm> renders that guidance (plus the
+            link to /dashboard/clients) inside the client field itself, where
+            it belongs, instead of blocking the whole form. */}
+        <GalleryForm clients={clients} packages={packages} />
       </div>
     </>
   );

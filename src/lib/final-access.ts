@@ -80,10 +80,17 @@ import type { Asset, Gallery } from "@/lib/db/schema";
  *     — but "unreachable" is not a reason to let a security gate drift
  *     looser than the thing it replaced.
  *   - It is deliberately STRICTER than the two `!== null` checks that look
- *     like siblings: `download-all/route.ts`'s deliverable FILTER and the
- *     client gallery page's `hasFinal` UI HINT. Neither is a gate. A gate
- *     being tighter than a hint fails in the protective direction; the
- *     reverse would not.
+ *     like siblings: `download-all/route.ts`'s deliverable filter and the
+ *     client gallery page's `hasFinal` UI hint. `hasFinal` really is only a
+ *     hint. `download-all`'s filter is NOT — that route's own comment calls
+ *     it "the one gate this whole route exists to get right", and it is
+ *     right: it decides which private objects get streamed into the zip,
+ *     after ownership and delivered are checked above it. So there are
+ *     currently three copies of this condition in two shapes, which is the
+ *     exact drift this module exists to end. Aligning `download-all` is
+ *     tracked separately; until then the asymmetry is safe in one direction
+ *     only, and this is that direction — a gate tighter than its siblings
+ *     fails protective, the reverse would not.
  */
 export function canReadFinalDeliverable<
   A extends Pick<Asset, "isSelected" | "isEdited" | "finalKey">,

@@ -49,6 +49,11 @@ vi.mock("@/lib/galleries", () => ({
 
 vi.mock("@/lib/r2", () => ({
   getPresignedUrl: (key: string) => `https://r2.example.com/${key}?presigned=1`,
+  // Task #89: deterministic fakes matching the real builders' shape closely
+  // enough that a rendered URL is readable in an assertion. The real,
+  // environment-namespaced format is r2.test.ts's own business.
+  displayKey: (galleryId: string, assetId: string) =>
+    `galleries/${galleryId}/display/${assetId}.webp`,
 }));
 
 // Task #94: `@/lib/gallery-access` is server-only (transitively via
@@ -318,6 +323,152 @@ describe("ClientGalleryPage chrome", () => {
       const { container } = render(element);
 
       expect(container.innerHTML).not.toContain("galleries/g1/finals/a1.jpg");
+    });
+  });
+
+  // Task #89: the headline behaviour, wired end to end through the real page
+  // and the real <ProofGrid>. What renders in the <img src> is the whole
+  // point — the client paid, so the watermark should be gone from what they
+  // LOOK at, not only from what they save.
+  describe("unwatermarked display after delivery (task #89)", () => {
+    const DELIVERABLE = {
+      id: "a1",
+      originalFilename: "IMG_0001.JPG",
+      proofKey: "galleries/g1/proofs/a1.webp",
+      proofWidth: 1600,
+      proofHeight: 1067,
+      sortOrder: 0,
+      isSelected: true,
+      isEdited: true,
+      finalKey: "galleries/g1/finals/a1.jpg",
+    };
+    const NOT_DELIVERABLE = {
+      id: "a2",
+      originalFilename: "IMG_0002.JPG",
+      proofKey: "galleries/g1/proofs/a2.webp",
+      proofWidth: 900,
+      proofHeight: 1600,
+      sortOrder: 1,
+      isSelected: false,
+      isEdited: false,
+      finalKey: null,
+    };
+
+    function srcsOf(container: HTMLElement): (string | null)[] {
+      return Array.from(container.querySelectorAll("img")).map((img) => img.getAttribute("src"));
+    }
+
+    it("renders the display derivative, not the watermarked proof, for a delivered gallery", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(
+        galleryDetail({ status: "delivered", assets: [DELIVERABLE] }),
+      );
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      const { container } = render(element);
+
+      expect(srcsOf(container)).toEqual([
+        "https://r2.example.com/galleries/g1/display/a1.webp?presigned=1",
+      ]);
+    });
+
+    // THE negative case, and the reason the whole product has a watermark at
+    // all. Same asset, same three deliverable flags, only the gallery status
+    // moved back — and the client is served the proof again. Mutating the
+    // page's `status === "delivered"` check to a constant `true` turns this
+    // red.
+    // Only `proofing` and `selected` are enumerated: `draft` and `archived`
+    // never reach this render at all for a client — `isGalleryVisibleToClient`
+    // 404s them a few lines earlier (task #63), which is a stricter refusal
+    // than serving a proof. These two are the statuses where the client IS
+    // looking at their gallery and must still see the mark.
+    it.each(["proofing", "selected"] as const)(
+      "keeps serving the watermarked proof while the gallery is %s",
+      async (status) => {
+        getGalleryDetailBySlugMock.mockResolvedValue(
+          galleryDetail({ status, assets: [DELIVERABLE] }),
+        );
+
+        const element = await ClientGalleryPage(paramsFor(SLUG));
+        const { container } = render(element);
+
+        expect(srcsOf(container)).toEqual([
+          "https://r2.example.com/galleries/g1/proofs/a1.webp?presigned=1",
+        ]);
+      },
+    );
+
+    // "An asset that is selected but has no final yet keeps showing its
+    // proof. A mixed gallery must not look broken." — task #89's own words.
+    // One delivered gallery, two assets, two different sources in the SAME
+    // render.
+    it("serves display and proof side by side in a mixed delivered gallery", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(
+        galleryDetail({ status: "delivered", assets: [DELIVERABLE, NOT_DELIVERABLE] }),
+      );
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      const { container } = render(element);
+
+      expect(srcsOf(container)).toEqual([
+        "https://r2.example.com/galleries/g1/display/a1.webp?presigned=1",
+        "https://r2.example.com/galleries/g1/proofs/a2.webp?presigned=1",
+      ]);
+    });
+
+    // The deliberate asymmetry between this PAGE and
+    // `GET /api/assets/[assetId]/display`: that route keeps the download
+    // gate's admin carve-out verbatim, this page has none. This page renders
+    // the CLIENT'S view; an admin opening it is previewing exactly that, and
+    // a preview that silently dropped the watermark would show the
+    // photographer something no client of theirs can see.
+    it("does not drop the watermark for an ADMIN previewing an undelivered gallery", async () => {
+      requireSessionMock.mockResolvedValue({
+        user: { id: "admin-1", role: "admin", email: "photographer@example.com" },
+        expires: "2099-01-01T00:00:00.000Z",
+      } as Session);
+      getGalleryDetailBySlugMock.mockResolvedValue(
+        galleryDetail({ status: "proofing", assets: [DELIVERABLE] }),
+      );
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      const { container } = render(element);
+
+      expect(srcsOf(container)).toEqual([
+        "https://r2.example.com/galleries/g1/proofs/a1.webp?presigned=1",
+      ]);
+    });
+
+    it("keeps serving the proof for a selected asset the photographer has not finished editing", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(
+        galleryDetail({
+          status: "delivered",
+          assets: [{ ...DELIVERABLE, isEdited: false, finalKey: null }],
+        }),
+      );
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      const { container } = render(element);
+
+      expect(srcsOf(container)).toEqual([
+        "https://r2.example.com/galleries/g1/proofs/a1.webp?presigned=1",
+      ]);
+    });
+
+    // The grid still reserves each tile from the PROOF's dimensions, which is
+    // what keeps this migration-free: nothing stores the derivative's own
+    // width/height. Pinned here so the trade-off is visible rather than
+    // discovered — if the photographer cropped the final differently from
+    // the original, `object-cover` on the tile absorbs the difference.
+    it("still reserves the tile's aspect ratio from the proof's stored dimensions", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(
+        galleryDetail({ status: "delivered", assets: [DELIVERABLE] }),
+      );
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      const { container } = render(element);
+
+      const wrapper = container.querySelector("img")?.parentElement;
+      expect(wrapper?.getAttribute("style")).toContain("aspect-ratio: 1600 / 1067");
     });
   });
 });

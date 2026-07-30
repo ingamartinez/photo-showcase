@@ -83,6 +83,26 @@ export type ProofAsset = {
   // shouldn't (or not render when it should) but can never actually unlock a
   // final this session doesn't own or that isn't really ready.
   hasFinal: boolean;
+  // Task #89: the presigned URL of this asset's UNWATERMARKED, browsing-sized
+  // derivative, or `null` when this asset isn't showing one — either because
+  // the gallery isn't delivered yet, or because this particular photo was
+  // never selected/edited and therefore has no final to derive from. A
+  // delivered gallery containing both kinds at once is the normal case, which
+  // is why this is per-asset rather than one flag on the gallery.
+  //
+  // When present it REPLACES `proofUrl` as what the grid and the lightbox
+  // display (see `urls`' initializer below) — the client paid, so the
+  // watermark should be gone from what they look at, not only from what they
+  // download. `proofUrl` is still carried on every asset regardless, as the
+  // fallback `refreshUrl` below drops back to if the display object turns out
+  // not to exist.
+  //
+  // Same "UI hint, never the gate" disclaimer as `hasFinal` above: the bytes
+  // behind this URL are private R2 objects, and the page that presigned it
+  // (src/app/galleries/[publicSlug]/page.tsx) had already verified this
+  // session owns the gallery. A wrong value here cannot unlock anything; it
+  // can only make this component request a URL that 404s.
+  displayUrl: string | null;
 };
 
 // Hand-rolled, not imported from `@/lib/db/schema`'s `Gallery["status"]`:
@@ -133,8 +153,16 @@ export function ProofGrid({
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
 }) {
+  // Task #89: seeded from the DISPLAY url when the page provided one, falling
+  // back to the proof. Seeding this ONE map — rather than teaching <ProofTile>
+  // and <ProofLightbox> each to prefer a different field — is what makes the
+  // unwatermarked image appear in the grid AND the lightbox from a single
+  // change: both surfaces already read this map, keyed by asset id, and have
+  // done since task #23.
   const [urls, setUrls] = useState<Record<string, string>>(() =>
-    Object.fromEntries(initialAssets.map((asset) => [asset.id, asset.proofUrl])),
+    Object.fromEntries(
+      initialAssets.map((asset) => [asset.id, asset.displayUrl ?? asset.proofUrl]),
+    ),
   );
   // A Set (not state) — which assets have already been refreshed doesn't
   // need to trigger a re-render on its own, only the `urls` update it
@@ -245,10 +273,49 @@ export function ProofGrid({
     }
   }, []);
 
+  // Which assets were rendered with a DISPLAY url rather than a proof url
+  // (task #89), captured ONCE from the server-rendered props. `refreshUrl`
+  // below is a `useCallback` with an empty dependency array — deliberately,
+  // like `toggleSelection` above — so it cannot read `initialAssets` directly
+  // without either going stale or dragging the whole array into its
+  // dependencies. A lazily-initialized ref gives it a stable, render-count-
+  // independent answer instead. Safe to freeze at first render: whether an
+  // asset HAS a display derivative is decided by the gallery's status and the
+  // photographer's uploads, neither of which changes without a page load.
+  const displayAssetIds = useRef<Set<string> | null>(null);
+  if (displayAssetIds.current === null) {
+    displayAssetIds.current = new Set(
+      initialAssets.filter((asset) => asset.displayUrl !== null).map((asset) => asset.id),
+    );
+  }
+
   const refreshUrl = useCallback(async (assetId: string) => {
     if (refreshedAssetIds.current.has(assetId)) return;
     refreshedAssetIds.current.add(assetId);
     try {
+      // Task #89: an asset showing its unwatermarked derivative must be
+      // re-signed against THAT object, not the proof — asking `/proof` here
+      // would silently put the watermark back on a delivered photo the first
+      // time its URL aged past PRESIGNED_URL_TTL_SECONDS.
+      //
+      // Two-step, in this order, because the display route can legitimately
+      // answer 404 for a reason the proof route cannot: a final uploaded
+      // BEFORE task #89 shipped has no display object in R2 until
+      // `bun run backfill:display` has run, and that route does a HEAD check
+      // rather than handing back a presigned URL for something absent (see
+      // its own comment). Falling back to the proof then is a DEGRADED but
+      // correct outcome — the client sees the watermarked version of a photo
+      // they own, not a broken tile — and it fails in the protective
+      // direction, which is the right way for this particular thing to fail.
+      if (displayAssetIds.current?.has(assetId)) {
+        const displayResponse = await fetch(`/api/assets/${assetId}/display`);
+        if (displayResponse.ok) {
+          const body = (await displayResponse.json()) as { url: string };
+          setUrls((prev) => ({ ...prev, [assetId]: body.url }));
+          return;
+        }
+      }
+
       const response = await fetch(`/api/assets/${assetId}/proof`);
       if (!response.ok) return;
       const body = (await response.json()) as { url: string };

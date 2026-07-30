@@ -25,6 +25,11 @@ vi.mock("@/lib/galleries", async () => {
 const getPresignedUrlMock = vi.fn();
 vi.mock("@/lib/r2", () => ({
   getPresignedUrl: (...args: unknown[]) => getPresignedUrlMock(...args),
+  // Task #89: the page presigns this key for a delivered gallery's edited
+  // assets. Deterministic fake, same treatment as every other key builder in
+  // this app's route tests.
+  displayKey: (galleryId: string, assetId: string) =>
+    `galleries/${galleryId}/display/${assetId}.webp`,
 }));
 
 // Task #94: ownership itself moved to src/lib/gallery-access.ts's

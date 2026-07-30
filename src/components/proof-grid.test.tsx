@@ -29,6 +29,10 @@ function assetsFor(overrides: Partial<ProofAsset>[] = [{}]): ProofAsset[] {
     isSelected: false,
     proofUrl: `https://r2.example.com/original-${index + 1}`,
     hasFinal: false,
+    // Task #89: `null` is the ordinary case — an asset only gets a display
+    // URL once its gallery is delivered AND it has a final. The tests that
+    // exercise the unwatermarked path override this explicitly.
+    displayUrl: null,
     ...override,
   }));
 }
@@ -507,6 +511,146 @@ describe("ProofGrid", () => {
 
       const link = screen.getByRole("link", { name: "Descargar todo" });
       expect(link.getAttribute("href")).toBe("/api/galleries/g1/download-all");
+    });
+  });
+
+  // Task #89. This component's half of "the client stops seeing the
+  // watermark once the gallery is delivered": WHICH url each surface paints,
+  // and which route it re-signs against when that url goes stale. Deciding
+  // whether an asset gets a display url at all is the page's job (proven in
+  // page.chrome.test.tsx) and unlocking the bytes is the route's (proven in
+  // its own suite) — this file owns neither.
+  describe("display derivative (task #89)", () => {
+    it("paints the display url in the grid, in preference to the proof url", () => {
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([
+          { hasFinal: true, displayUrl: "https://r2.example.com/display-1" },
+        ]),
+      });
+
+      const img = container.querySelector("img") as HTMLImageElement;
+      expect(img.src).toBe("https://r2.example.com/display-1");
+    });
+
+    // Grid AND lightbox, per the request — and from ONE seeded map rather
+    // than two independent preference rules, which is what keeps them from
+    // ever disagreeing about the same asset.
+    it("paints the same display url in the lightbox", async () => {
+      const user = userEvent.setup();
+      renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([
+          { hasFinal: true, displayUrl: "https://r2.example.com/display-1" },
+        ]),
+      });
+
+      await user.click(screen.getByRole("button", { name: "Ver IMG_0001.JPG" }));
+
+      const lightboxImg = screen.getByAltText("IMG_0001.JPG") as HTMLImageElement;
+      expect(lightboxImg.src).toBe("https://r2.example.com/display-1");
+    });
+
+    it("still paints the proof url for an asset the page gave no display url", () => {
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([{ hasFinal: false, displayUrl: null }]),
+      });
+
+      const img = container.querySelector("img") as HTMLImageElement;
+      expect(img.src).toBe("https://r2.example.com/original-1");
+    });
+
+    // The mixed delivered gallery, in one render: some tiles unwatermarked,
+    // some not, and nothing looks broken.
+    it("mixes display and proof tiles in the same delivered gallery", () => {
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([
+          { hasFinal: true, displayUrl: "https://r2.example.com/display-1" },
+          { hasFinal: false, displayUrl: null },
+        ]),
+      });
+
+      const srcs = Array.from(container.querySelectorAll("img")).map((img) => img.src);
+      expect(srcs).toEqual([
+        "https://r2.example.com/display-1",
+        "https://r2.example.com/original-2",
+      ]);
+    });
+
+    // The regression this exists to prevent: a display tile whose presigned
+    // url has aged past its 5-minute TTL must be re-signed against the
+    // DISPLAY route. Asking `/proof` here would silently put the watermark
+    // back on a delivered photo the moment the client left the tab open.
+    it("re-signs a stale display tile against the display route, not the proof route", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(jsonResponse(200, { url: "https://r2.example.com/display-refreshed" })),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([
+          { hasFinal: true, displayUrl: "https://r2.example.com/display-1" },
+        ]),
+      });
+
+      const img = container.querySelector("img") as HTMLImageElement;
+      fireEvent.error(img);
+
+      await vi.waitFor(() => expect(img.src).toBe("https://r2.example.com/display-refreshed"));
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith("/api/assets/a1/display");
+    });
+
+    // The safety net for a final uploaded BEFORE task #89 shipped: no display
+    // object exists in R2 until `bun run backfill:display` runs, so the
+    // display route answers 404 and the tile drops back to the watermarked
+    // proof. Degraded, but correct — and it fails in the protective
+    // direction, which is the right way for this particular thing to fail.
+    it("falls back to the proof route when the display derivative was never generated", async () => {
+      const fetchMock = vi.fn((url: string) =>
+        Promise.resolve(
+          url.endsWith("/display")
+            ? jsonResponse(404, { error: "display_not_generated" })
+            : jsonResponse(200, { url: "https://r2.example.com/proof-refreshed" }),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([
+          { hasFinal: true, displayUrl: "https://r2.example.com/display-1" },
+        ]),
+      });
+
+      const img = container.querySelector("img") as HTMLImageElement;
+      fireEvent.error(img);
+
+      await vi.waitFor(() => expect(img.src).toBe("https://r2.example.com/proof-refreshed"));
+      expect(fetchMock).toHaveBeenNthCalledWith(1, "/api/assets/a1/display");
+      expect(fetchMock).toHaveBeenNthCalledWith(2, "/api/assets/a1/proof");
+    });
+
+    // The inverse: an asset that never had a display url must NOT pay for a
+    // speculative request to a route that will always refuse it.
+    it("never asks the display route for an asset that was rendered from its proof", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(jsonResponse(200, { url: "https://r2.example.com/proof-refreshed" })),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([{ hasFinal: false, displayUrl: null }]),
+      });
+
+      fireEvent.error(container.querySelector("img") as HTMLImageElement);
+
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+      expect(fetchMock).toHaveBeenCalledWith("/api/assets/a1/proof");
     });
   });
 });

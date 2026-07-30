@@ -14,6 +14,8 @@ function assetsFor(count: number, overrides: Partial<ProofAsset>[] = []): ProofA
     isSelected: false,
     proofUrl: `https://r2.example.com/proof-${index + 1}`,
     hasFinal: false,
+    // Task #89: see the identical default in proof-grid.test.tsx.
+    displayUrl: null,
     ...overrides[index],
   }));
 }

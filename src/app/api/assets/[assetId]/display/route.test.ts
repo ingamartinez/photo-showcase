@@ -445,6 +445,37 @@ describe("GET /api/assets/[assetId]/display — a derivative that was never gene
     expect(getPresignedUrlMock).not.toHaveBeenCalled();
   });
 
+  // The probe is the one point in this feature where answering a client GET
+  // depends on R2 being reachable — the sibling proof route only signs a URL
+  // locally and never talks to R2 at all. An outage, a rotated credential or
+  // a 403 on the bucket must degrade to the watermarked proof, not to a 500:
+  // this route's contract is "a URL or a 404".
+  it("returns 404, never a 500, when the R2 probe itself throws", async () => {
+    authMock.mockResolvedValue(clientASession());
+    objectExistsMock.mockRejectedValue(new Error("R2 is unreachable"));
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "display_not_generated" });
+    // And critically: no presigned URL is handed out on the way past a
+    // failure. Failing closed means failing closed, not "sign it anyway".
+    expect(getPresignedUrlMock).not.toHaveBeenCalled();
+  });
+
+  // A thrown probe must not reach Next's error boundary either — an
+  // unhandled rejection inside a route handler is a 500 the client cannot
+  // interpret, and this suite would otherwise pass an assertion on `.status`
+  // while the real deployment logged an exception per delivered tile.
+  it("does not let the probe's rejection escape the handler", async () => {
+    authMock.mockResolvedValue(clientASession());
+    objectExistsMock.mockRejectedValue(new Error("credentials rotated"));
+    const { GET } = await import("./route");
+
+    await expect(GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID))).resolves.toBeDefined();
+  });
+
   it("checks existence against the DISPLAY key, not the final's", async () => {
     authMock.mockResolvedValue(clientASession());
     const { GET } = await import("./route");

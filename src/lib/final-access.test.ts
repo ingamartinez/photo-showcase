@@ -68,6 +68,23 @@ describe("canReadFinalDeliverable", () => {
     );
   });
 
+  // The finalKey leg is a TRUTHY test, not `!== null`, because that is
+  // byte-for-byte the condition this gate had before it was extracted out of
+  // GET /api/assets/[assetId]/final (`... || !asset.finalKey`). An empty
+  // string is unreachable today — the only writer of `assets.final_key` is
+  // that route's own POST, via the deterministic `finalKey()` builder, which
+  // cannot produce one — so this test is not defending against a live bug.
+  // It defends the CLAIM, in that route's own comment, that nothing about
+  // the rule changed when it moved. Swap this leg to `!== null` and the gate
+  // silently drifts looser than the thing it replaced, and this goes red.
+  it("refuses an empty finalKey, exactly as the pre-extraction gate did", () => {
+    expect(canReadFinalDeliverable(asset({ finalKey: "" }), gallery(), clientSession())).toBe(
+      false,
+    );
+    // Same for an admin: the finalKey leg carries no carve-out.
+    expect(canReadFinalDeliverable(asset({ finalKey: "" }), gallery(), adminSession())).toBe(false);
+  });
+
   // The leg the photographer's leverage rests on, and the one most likely to
   // be loosened by accident: before delivery a client must not reach an
   // unwatermarked pixel of their session, no matter what is already in R2.

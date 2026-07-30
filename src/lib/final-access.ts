@@ -57,10 +57,33 @@ import type { Asset, Gallery } from "@/lib/db/schema";
  * narrowed to `string` and has no reason to re-check it. A plain boolean
  * would have left every call site with a redundant `|| !asset.finalKey`
  * purely to satisfy the compiler — and a redundant copy of a gate condition
- * at a call site is exactly the drift this module exists to remove. This is
- * also why the parameters are positional rather than one options object: a
- * TypeScript type predicate can only narrow a named parameter, never a
- * destructured property of one.
+ * at a call site is exactly the drift this module exists to remove. The
+ * parameters are positional rather than one options object for the same
+ * reason: a TypeScript type predicate can only narrow a NAMED parameter,
+ * never a destructured property of one.
+ *
+ * What the predicate return type does NOT do is constrain how the finalKey
+ * leg is written. TypeScript verifies NOTHING about a type predicate's body
+ * — it trusts the annotation outright, to the point that a body of
+ * `return asset.isSelected` alone still compiles and still narrows (verified
+ * against this repo's own tsc, not assumed). So the leg's shape is a
+ * deliberate choice, and it is `!!asset.finalKey`, the TRUTHY test:
+ *
+ *   - It is byte-for-byte the condition this gate had before task #89
+ *     extracted it out of `GET /api/assets/[assetId]/final`, which read
+ *     `... || !asset.finalKey`. That is what lets that route's comment say
+ *     the rule did not change when it moved, and mean it literally. An
+ *     earlier draft used `!== null` here, which is LOOSER: it would serve a
+ *     deliverable whose `final_key` is the empty string, where the original
+ *     refused one. Unreachable today (the only writer of `assets.final_key`
+ *     is that route's own POST, via `finalKey()`, which cannot produce `""`)
+ *     — but "unreachable" is not a reason to let a security gate drift
+ *     looser than the thing it replaced.
+ *   - It is deliberately STRICTER than the two `!== null` checks that look
+ *     like siblings: `download-all/route.ts`'s deliverable FILTER and the
+ *     client gallery page's `hasFinal` UI HINT. Neither is a gate. A gate
+ *     being tighter than a hint fails in the protective direction; the
+ *     reverse would not.
  */
 export function canReadFinalDeliverable<
   A extends Pick<Asset, "isSelected" | "isEdited" | "finalKey">,
@@ -69,7 +92,7 @@ export function canReadFinalDeliverable<
   return (
     asset.isSelected &&
     asset.isEdited &&
-    asset.finalKey !== null &&
+    !!asset.finalKey &&
     !(deliveredGateAppliesToThisSession && gallery.status !== "delivered")
   );
 }

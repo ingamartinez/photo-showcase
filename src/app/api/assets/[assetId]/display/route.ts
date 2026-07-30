@@ -98,7 +98,27 @@ export async function GET(
   // presigned URL for an object that isn't there and letting the browser
   // render a broken image. The cost is paid ONLY here, on the refresh path
   // — the page's own render never probes R2, see this file's header.
-  if (!(await objectExists(key))) {
+  //
+  // A THROWN probe is treated as "not generated", deliberately, rather than
+  // being allowed to escape as a 500. This is the one place in this feature
+  // where answering a client GET depends on R2 being reachable at all — the
+  // sibling proof route never talks to R2, it only signs a URL locally — so
+  // an R2 outage, a rotated credential or a 403 on the bucket would
+  // otherwise turn every delivered tile into a server error. The client
+  // degrades identically either way (<ProofGrid> treats any non-ok response
+  // as "fall back to the proof"), but that is the CLIENT being careful, not
+  // this route; catching here makes the fail-closed direction a property of
+  // the route's own contract — "a URL or a 404", never a 500 — instead of
+  // something that happens to work out downstream. Falling back to a
+  // watermarked photo the client owns is the right failure for this: it is
+  // protective, and it is what they saw before the gallery was delivered.
+  let displayExists: boolean;
+  try {
+    displayExists = await objectExists(key);
+  } catch {
+    displayExists = false;
+  }
+  if (!displayExists) {
     return errorResponse("display_not_generated", 404);
   }
 

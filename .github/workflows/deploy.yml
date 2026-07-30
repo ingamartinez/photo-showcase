@@ -73,28 +73,172 @@ jobs:
           mkdir -p "$STAGE/.next"
           cp -r .next/static "$STAGE/.next/static"
           if [ -d public ]; then cp -r public "$STAGE/public"; fi
-          # drizzle-orm/postgres-js/migrator isn't traced by Next's standalone
-          # output (no app code imports it), so overlay the full drizzle-orm and
-          # postgres packages plus the migrate-prod script and the db module it
-          # imports, preserving the dev layout so relative imports resolve.
+          # Next's standalone tracing only emits a package under
+          # node_modules/ for code paths reachable from an app ROUTE; it
+          # inlines/tree-shakes the rest into the compiled `.next/server`
+          # chunks, so it never leaves a real, `require`-able package
+          # directory behind for something else to reuse. Any bare npm
+          # import used ONLY by a script (or by a src/lib/ module a script
+          # pulls in) therefore needs its package hand-overlaid here, same as
+          # the app's own route bundles do not help it. Confirmed hand-overlaid
+          # so far, and why each is needed:
+          #   - drizzle-orm, postgres: scripts/migrate-prod.ts is the only
+          #     caller of drizzle-orm/postgres-js/migrator anywhere in the
+          #     codebase; no route reaches that import path.
+          #   - zod (task #104 review, blocker 1): src/lib/env.ts imports it
+          #     directly, and every route that reaches env.ts does so through
+          #     Next's bundler, which inlines zod rather than leaving it as a
+          #     package -- so the FIRST time anything needs a real,
+          #     `require`-able `zod` package on disk is a raw script run via
+          #     plain `bun run`. Verified on the real droplet:
+          #     node_modules there is exactly client-only, detect-libc,
+          #     drizzle-orm, @img, @next, next, postgres, react, react-dom,
+          #     semver, sharp, styled-jsx, @swc -- no zod, and no ancestor
+          #     node_modules to fall back to either (this is a plain release
+          #     dir, not a workspace). Without this line,
+          #     backfill-display-derivatives.ts, check-r2.ts and
+          #     check-resend.ts (all three import ../src/lib/env) die on
+          #     import with "Cannot find package 'zod'".
+          # This list is NOT self-maintaining the way scripts/ and src/lib/
+          # below are -- a new script that imports a new bare npm package
+          # needs a new line here. The "Verify ops script import graphs
+          # resolve in the staged tarball" step further below exists
+          # precisely to catch the day someone forgets, by actually trying to
+          # resolve every ops script's import graph against this staged
+          # output rather than trusting this comment block to stay accurate.
           cp -r node_modules/drizzle-orm "$STAGE/node_modules/drizzle-orm"
           cp -r node_modules/postgres "$STAGE/node_modules/postgres"
+          cp -r node_modules/zod "$STAGE/node_modules/zod"
           if [ -d drizzle ]; then cp -r drizzle "$STAGE/drizzle"; fi
-          mkdir -p "$STAGE/scripts" "$STAGE/src/lib/db" "$STAGE/src/content"
-          cp scripts/migrate-prod.ts "$STAGE/scripts/migrate-prod.ts"
-          cp scripts/seed-prod.ts "$STAGE/scripts/seed-prod.ts"
-          # Phase 2 ops scripts: staged so they reach the box with the release
-          # instead of being scp'd by hand to /tmp. Both use the same relative
-          # imports as seed-prod.ts, resolved against src/lib/db already
-          # overlaid below.
-          cp scripts/seed-packages.ts "$STAGE/scripts/seed-packages.ts"
-          cp scripts/create-admin.ts "$STAGE/scripts/create-admin.ts"
-          cp src/lib/db/index.ts "$STAGE/src/lib/db/index.ts"
-          cp src/lib/db/schema.ts "$STAGE/src/lib/db/schema.ts"
+          # Ops scripts (task #104, fixing the class, not the instance): task
+          # #104 found backfill-display-derivatives.ts invisible to this step,
+          # because scripts were staged by an explicit allowlist -- one `cp`
+          # per file -- and a new script needed a new line nobody remembered
+          # to add. Adding that one line would only have fixed THIS script;
+          # the next one dropped into scripts/ hits the identical gap. So:
+          # overlay `scripts/` and `src/lib/` WHOLESALE instead of naming
+          # files one by one. Every script committed under scripts/ now
+          # reaches the droplet by construction, and so does every src/lib/
+          # module it imports (the file-PRESENCE half of the gap #104 hit --
+          # see the node_modules block above for the import-RESOLUTION half,
+          # which presence alone does not cover, and which is exactly what
+          # broke review round 1 of this task: scripts/ and src/lib/ were
+          # both fully present and it still failed on a missing `zod`).
+          #
+          # rsync's --exclude, not `cp` + a separate `find -delete`: the
+          # earlier shape copied every test file first and deleted them
+          # afterward as a silent, easy-to-forget second step. Excluding at
+          # copy time means a test file is never staged in the first place;
+          # the assertion below is the loud backstop in case a future test
+          # file naming convention (`*.spec.ts`, `*.test.tsx`, ...) isn't
+          # covered by these patterns yet.
+          rsync -a --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*.spec.ts' --exclude='*.spec.tsx' \
+            scripts/ "$STAGE/scripts/"
+          mkdir -p "$STAGE/src"
+          rsync -a --exclude='*.test.ts' --exclude='*.test.tsx' --exclude='*.spec.ts' --exclude='*.spec.tsx' \
+            src/lib/ "$STAGE/src/lib/"
+          leaked_test_files=$(find "$STAGE/scripts" "$STAGE/src/lib" -type f \
+            \( -name '*.test.ts' -o -name '*.test.tsx' -o -name '*.spec.ts' -o -name '*.spec.tsx' \))
+          if [ -n "$leaked_test_files" ]; then
+            echo "Test file(s) leaked into the staged release despite rsync's --exclude filters -- refusing to ship:"
+            echo "$leaked_test_files"
+            exit 1
+          fi
+          # r2.ts (pulled in by backfill-display-derivatives.ts) imports
+          # src/lib/env.ts through the `@/` alias, unlike every other
+          # overlaid module here, which uses relative imports. Bun resolves
+          # `@/*` from tsconfig.json's `paths` at runtime the same way it
+          # does under `bun dev` -- verified against this exact staged
+          # layout: an identical `bun run` fails with "Cannot find module
+          # '@/lib/env'" without this file, and resolves correctly with it.
+          # The release dir had no tsconfig.json before now, so this import
+          # would have failed on the droplet at runtime, not here at deploy
+          # time -- the open question task #104 was asked to close before
+          # shipping this script.
+          cp tsconfig.json "$STAGE/tsconfig.json"
+          mkdir -p "$STAGE/src/content"
           cp src/content/portfolio.ts "$STAGE/src/content/portfolio.ts"
           echo "$GIT_SHA" > "$STAGE/GIT_SHA"
           tar -czf release.tar.gz -C "$STAGE" .
           ls -lh release.tar.gz
+
+      - name: Verify ops script import graphs resolve in the staged tarball
+        run: |
+          set -eu
+          STAGE=release-stage
+          # task #104 review, item 4: file PRESENCE (the rsync overlay above)
+          # is necessary but not sufficient -- an ops script can be fully
+          # present, under a fully present scripts/ and src/lib/, and still
+          # fail at import time if a bare npm package somewhere in its
+          # transitive graph was never traced by Next AND never hand-overlaid
+          # above. That is exactly what shipped broken in review round 1:
+          # `zod` was missing and nothing caught it before the droplet did.
+          # File-presence and import-resolution are complementary checks,
+          # not alternatives -- this step is the second one, and it is what
+          # actually makes "a new script under scripts/ cannot silently fail
+          # to reach the droplet" (task #104's acceptance criterion) true.
+          #
+          # For every package.json script whose command touches `scripts/`,
+          # resolve its FULL import graph using `bun build`. `bun build`
+          # performs the same module resolution `bun run` would without
+          # executing a single line of the script's top-level code --
+          # several of these scripts do real work (DB writes, R2 writes,
+          # seeding) the instant they are imported, so actually running them
+          # here is not an option.
+          #
+          # Resolved against an EXTRACTION of release.tar.gz in a mktemp dir
+          # OUTSIDE $GITHUB_WORKSPACE, not against `$STAGE` in place -- round
+          # 2 review, blocker 2: `$STAGE` (release-stage/) lives inside this
+          # job's own checkout, right next to the `node_modules` that
+          # `bun install` populated two steps ago (a FULL install, superset
+          # of what the tarball ships). Bun's module resolution walks
+          # upward from wherever `bun build` runs, so `cd release-stage &&
+          # bun build ...` climbs past release-stage/node_modules (missing
+          # zod, say) straight into the checkout's own node_modules (has
+          # zod) and reports success -- mutation-proved: deleting zod from
+          # $STAGE alone and re-running the OLD (in-place) form of this
+          # check still printed "resolve cleanly" and exited 0. The literal
+          # bug this step exists to catch, undetected by the step meant to
+          # catch it, for the identical "a real node_modules is reachable
+          # by walking up from where bun resolves" reason as round 1's
+          # `zod` gap itself and round 2's first (contaminated) local
+          # simulation of this very check. Extracting the actual tarball
+          # into a directory with no ancestor `node_modules` removes that
+          # escape hatch, and has the added benefit of verifying what
+          # actually SHIPS (the tarball), not what was staged before
+          # tar'ing it up.
+          #
+          # NOT covered by this or any static check: a script that reaches
+          # a bare package only through a runtime-conditional
+          # `require()`/dynamic `import()` rather than a static import --
+          # `bun build`'s resolution is static. Nothing under scripts/ does
+          # that today; if one ever does, this step's silence on that one
+          # import is a known, accepted gap, not a guarantee.
+          mapfile -t ops_scripts < <(jq -r '.scripts[]' package.json | grep -oE 'scripts/[A-Za-z0-9_.-]+\.ts' | sort -u)
+          if [ "${#ops_scripts[@]}" -eq 0 ]; then
+            echo "No package.json script references scripts/*.ts -- this check would have nothing to verify, which is itself a surprise worth failing loudly on rather than silently passing."
+            exit 1
+          fi
+          resolve_root="$(mktemp -d)"
+          tar -xzf release.tar.gz -C "$resolve_root"
+          resolve_out="$(mktemp -d)"
+          failed=0
+          for rel in "${ops_scripts[@]}"; do
+            if [ ! -f "$STAGE/$rel" ]; then
+              echo "MISSING: package.json references $rel but it is not staged at $STAGE/$rel"
+              failed=1
+              continue
+            fi
+            echo "resolving $rel ..."
+            if ! (cd "$resolve_root" && bun build "$rel" --target=bun --outdir="$resolve_out"); then
+              echo "IMPORT GRAPH BROKEN: $rel would fail to even import on the droplet -- see the bun build error above. Overlay the missing package's node_modules folder in the 'Package release tarball' step."
+              failed=1
+            fi
+          done
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+          echo "All ops scripts referenced by package.json resolve cleanly against the extracted release tarball."
 
       - name: Setup SSH
         run: |

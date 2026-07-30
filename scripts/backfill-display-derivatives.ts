@@ -41,8 +41,15 @@
 // src/lib/images.ts anyway, so parallelism here would buy nothing but a
 // deeper R2 read queue.
 //
-// Relative imports, same as every other script in this directory: they run
-// under plain `bun run`, without tsconfig path mapping.
+// This file's own imports are relative, same as every other script in this
+// directory. One transitive import is NOT: src/lib/r2.ts (below, via
+// processDisplay/displayKey/...) reaches src/lib/env.ts through the `@/`
+// alias. That resolves here because the CD workflow's "Package release
+// tarball" step now overlays the repo's tsconfig.json into the release dir
+// alongside scripts/ and src/lib/ (task #104) — bun reads its `paths` field
+// at runtime the same way it does under `bun dev`. Before that overlay
+// existed, this import would have failed on the droplet at run time, not at
+// deploy time; see that step's own comment for the verified failure/fix.
 
 import { and, eq, isNotNull } from "drizzle-orm";
 import { db } from "../src/lib/db";
@@ -57,6 +64,39 @@ type BackfillCounts = {
   failed: number;
 };
 
+/** APP_ENV reaches the running app process through systemd's
+ * EnvironmentFile (`/srv/photoshowcase/env/photoshowcase.env` +
+ * `/srv/photoshowcase/app/current/release.env`) — a script run by hand over
+ * SSH inherits none of that unless it is sourced explicitly first. r2.ts's
+ * `namespacedKey()` then fails CLOSED for the running app server (unset
+ * APP_ENV -> `dev/` prefix, by design), but "fail closed by defaulting" is
+ * exactly the wrong behaviour for a maintenance script whose entire job is to
+ * write into PRODUCTION: it would silently write every display derivative
+ * into the `dev/` namespace, print success, and leave production's real
+ * `display` keys untouched — a total no-op that looks identical to a
+ * successful run (task #81, task #104). So this script refuses outright
+ * instead of defaulting either way: it does not require `APP_ENV=production`
+ * specifically (running it against the dev namespace on purpose, e.g. while
+ * developing this script, is fine) — only that whoever runs it said which
+ * environment they mean. */
+export function assertAppEnvIsSet(): void {
+  if (!process.env.APP_ENV) {
+    throw new Error(
+      "APP_ENV is not set. Refusing to run backfill:display: r2.ts's " +
+        "namespacedKey() silently prefixes every key with dev/ when APP_ENV " +
+        "is unset, so this would write display derivatives into the dev " +
+        "namespace while reporting success, and production would keep " +
+        "404ing on /display (see task #81 and task #104). Source the env " +
+        "files this process needs first, e.g. from the release dir:\n" +
+        "  set -a\n" +
+        "  . /srv/photoshowcase/env/photoshowcase.env\n" +
+        "  . /srv/photoshowcase/app/current/release.env\n" +
+        "  set +a\n" +
+        "then re-run bun run backfill:display.",
+    );
+  }
+}
+
 /** Reads a whole R2 object into memory. Deliberately NOT added to
  * src/lib/r2.ts: that module's read surface is presign (for clients) and
  * stream (for the zip writer), and buffering a full-resolution final is
@@ -70,6 +110,8 @@ async function readObject(key: string): Promise<Buffer> {
 }
 
 async function main(): Promise<void> {
+  assertAppEnvIsSet();
+
   const dryRun = process.argv.includes("--dry");
 
   // The same three facts that imply a deliverable everywhere else in this app
@@ -118,7 +160,17 @@ async function main(): Promise<void> {
 
       counts.written++;
       const kib = (display.data.length / 1024).toFixed(0);
-      console.log(`write  ${label} -> ${display.width}x${display.height}, ${kib} KiB`);
+      // `target` (the resolved R2 key, `dev/`-prefixed or not depending on
+      // APP_ENV) is printed here, not just dimensions/size, for the same
+      // reason the dry-run branch above already prints it: AC2 asks an
+      // operator to PROVE a write landed in the production namespace by
+      // listing the resulting key, and `assertAppEnvIsSet` only checks that
+      // APP_ENV is set, not that it is spelled correctly -- a typo'd value
+      // ("prod", "Production", a trailing space) passes that check and still
+      // silently writes under dev/ (namespacedKey requires an exact
+      // "production" match). Printing the summary alone would make that
+      // typo indistinguishable from a real production write.
+      console.log(`write  ${label} -> ${target} (${display.width}x${display.height}, ${kib} KiB)`);
     } catch (error: unknown) {
       // One bad asset must not abandon the rest — a missing or corrupt final
       // in R2 is exactly the kind of thing a backfill exists to surface, and
@@ -137,13 +189,20 @@ async function main(): Promise<void> {
   if (counts.failed > 0) process.exitCode = 1;
 }
 
-main()
-  .catch((error: unknown) => {
-    console.error(error);
-    process.exitCode = 1;
-  })
-  .finally(async () => {
-    // The postgres pool keeps the process alive otherwise — same teardown as
-    // scripts/seed-prod.ts.
-    await db.$client.end();
-  });
+// Gated on `import.meta.main` (Bun-native, no polyfill needed) so this file
+// can be imported from a test — to exercise `assertAppEnvIsSet` above — without
+// running the whole backfill as a side effect of the import. `bun run
+// scripts/backfill-display-derivatives.ts` still runs it: `import.meta.main`
+// is only true for the entry module bun was invoked with.
+if (import.meta.main) {
+  main()
+    .catch((error: unknown) => {
+      console.error(error);
+      process.exitCode = 1;
+    })
+    .finally(async () => {
+      // The postgres pool keeps the process alive otherwise — same teardown as
+      // scripts/seed-prod.ts.
+      await db.$client.end();
+    });
+}

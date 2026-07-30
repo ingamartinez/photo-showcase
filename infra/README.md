@@ -155,6 +155,132 @@ Push to `main` (or run the **Deploy** workflow manually). On success:
 curl https://alejoframes.com/api/health   # expect {"ok":true,...,"db":"ok"}
 ```
 
+## Ops scripts (scripts/) — how they reach the droplet, and how to run one
+
+Every file under `scripts/` (and every module it imports from `src/lib/`)
+ships to the droplet inside every release, staged by the CD workflow's
+"Package release tarball" step. This is a **wholesale overlay**, not an
+allowlist: nothing needs to be added to `.github/workflows/deploy.yml` for a
+new script to reach `/srv/photoshowcase/app/current/scripts/`.
+
+**This was not always true.** Task #104: `backfill-display-derivatives.ts`
+(task #89) shipped in `package.json`'s `backfill:display` script but was
+invisible to the droplet, because the packaging step staged ops scripts by an
+explicit allowlist — one `cp` per file — and nobody added a line for the new
+one. `git log` on that step's history is the record of every time this was
+almost repeated; the fix was to stop needing a line at all. If a future
+change reintroduces per-file `cp` lines there, that is a regression — reread
+task #104's reasoning in the step's own comment before doing it.
+
+**The one thing that can still require a manual `deploy.yml` edit — and it is
+a CHECK now, not a vibe.** File presence (the overlay above) says nothing
+about whether a script's bare npm imports can actually be resolved once it's
+staged: Next's standalone tracing only emits a `node_modules/<pkg>` directory
+for packages reachable from an app **route** — anything imported only by a
+script (or by an `src/lib/` module a script pulls in) needs its package
+hand-overlaid in the same step, or the script dies on `import` with "Cannot
+find package '\<name\>'" the moment it actually runs on the droplet, which is
+exactly what happened in task #104's first review round: `zod` (imported by
+`src/lib/env.ts`) is used by several routes too, but only through Next's
+bundler, which inlines it away — nothing ever left a real, `require`-able
+`zod` package behind for a raw script to find. **Hand-overlaid today:
+`drizzle-orm`, `postgres`, `zod`.** The "Verify ops script import graphs
+resolve in the staged tarball" CI step (right after packaging) is the actual
+enforcement: it runs `bun build` against every `package.json` script that
+points at `scripts/`, statically resolving its whole import graph against
+the staged tarball without executing any of it, and fails the deploy loud if
+anything doesn't resolve. Trust that step's pass, not this paragraph's list —
+the list is why the step exists, and the step is what makes it true.
+
+### Running `bun run backfill:display` (task #89's required post-deploy step)
+
+This backfills the unwatermarked, browsing-sized `display` derivative (task
+#89) for finals uploaded before that feature shipped. Idempotent and
+resumable — safe to re-run, and it skips any asset whose derivative already
+exists.
+
+**It refuses to run if `APP_ENV` is unset**, on purpose (task #81, task
+#104): a script invoked by hand over SSH inherits none of systemd's
+`EnvironmentFile`s, and `src/lib/r2.ts`'s `namespacedKey()` silently prefixes
+every key with `dev/` when `APP_ENV` is unset — this script would otherwise
+write every display derivative into the dev namespace, print success, and
+leave production's real objects untouched.
+
+**Source both env files INSIDE the `sudo -u photoshowcase` shell, not
+before it.** Both env files are `0640 photoshowcase:photoshowcase` — the
+`deploy` user (and anyone SSHing in as it) cannot read either one directly,
+so sourcing them before `sudo` fails outright. And even granted a way to read
+them first, `sudo` would drop the exported vars anyway: this droplet's sudo
+runs with `env_reset` (`/etc/sudoers`), which clears the environment for the
+command it invokes unless a variable is explicitly allowlisted with
+`env_keep`. Neither `APP_ENV` nor any `R2_*` var is allowlisted, so a child
+process started that way sees none of them regardless of what the parent
+shell had. The env files have to be sourced by the `photoshowcase` user
+itself, inside the `sudo`'d shell that will run the script.
+
+**Invoke the script file directly — `bun <file>.ts`, not `bun run
+<package.json alias>`.** This droplet's `sudo` has `secure_path` set to
+`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin`,
+which does not include `/opt/bun/bin`; Bun 1.3.12 on Linux shells
+`package.json` scripts out to `/usr/bin/bash` without prepending its own
+directory first, so `bun run backfill:display` inside the `sudo`'d shell
+resolves the `bun` it needs to run the alias's own command to nothing:
+`bash: line 1: bun: command not found`, `exited with code 127`. (Bun 1.3.10
+on macOS does prepend its own directory there — this only reproduces on the
+droplet's Linux build, which is why testing this runbook locally would not
+have caught it.) Invoking the file directly sidesteps the alias, and its
+`bun` entirely — this is the same shape `deploy.yml` already uses in
+production for `migrate-prod.ts` and `seed-prod.ts`:
+
+```bash
+ssh deploy@<droplet-host>
+sudo -n -u photoshowcase /bin/sh -c '
+  set -a
+  . /srv/photoshowcase/env/photoshowcase.env
+  . /srv/photoshowcase/app/current/release.env
+  set +a
+  cd /srv/photoshowcase/app/current
+  exec /opt/bun/bin/bun scripts/backfill-display-derivatives.ts --dry'   # report only, writes nothing
+
+# once the --dry output looks right, drop --dry to actually write:
+sudo -n -u photoshowcase /bin/sh -c '
+  set -a
+  . /srv/photoshowcase/env/photoshowcase.env
+  . /srv/photoshowcase/app/current/release.env
+  set +a
+  cd /srv/photoshowcase/app/current
+  exec /opt/bun/bin/bun scripts/backfill-display-derivatives.ts'
+```
+
+**What has actually been verified on the droplet, and what has not.** This
+exact `--dry` command (env-sourcing, `cd`, and the direct `bun <file>.ts`
+invocation together, read-only, no writes) was run against the droplet: it
+correctly sourced both env files and reached `exec /opt/bun/bin/bun
+scripts/backfill-display-derivatives.ts --dry`, which failed with bun's own
+`error: Module not found "scripts/backfill-display-derivatives.ts"` (exit
+code 1) — because the script is not staged on the droplet yet (that is this
+task's own deploy, not done at the time of writing), not because of the
+PATH problem the earlier `bun run` form hit. That confirms the invocation
+shape itself — env vars reach the shell, `cd` lands in the release dir,
+`/opt/bun/bin/bun` is found and runs directly — without needing the script
+to exist first. What this has **not** verified: the script's own behavior
+(the `--dry` report, the `assertAppEnvIsSet` guard, an actual R2
+read/write) — that only happens once the script is really on the box, after
+this task's deploy. Treat the first real `--dry` run post-deploy as the
+actual first execution, read its output, and confirm the printed keys land
+under the production prefix before dropping `--dry`.
+
+Run the `--dry` pass first and read its output — it lists every asset it
+would touch and why (already present vs. would write) before anything is
+written. Prove a write landed in the **production** namespace, not `dev/`, by
+reading the key the write log itself prints for each asset (it includes the
+full resolved R2 key, `dev/`-prefixed or not, not just dimensions/size) —
+don't trust the script's own "written" count alone, and don't assume
+`APP_ENV=production` was actually what got sourced: a typo'd value
+(`prod`, `Production`, a stray trailing space from a bad copy-paste) passes
+the unset-check just as easily and still lands every write in `dev/`, so
+read the printed key, not just the summary line.
+
 ## Backups
 
 The `photoshowcase` database — not the R2 media bucket — is the irreplaceable

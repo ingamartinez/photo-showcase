@@ -216,9 +216,21 @@ command it invokes unless a variable is explicitly allowlisted with
 `env_keep`. Neither `APP_ENV` nor any `R2_*` var is allowlisted, so a child
 process started that way sees none of them regardless of what the parent
 shell had. The env files have to be sourced by the `photoshowcase` user
-itself, inside the `sudo`'d shell that will run the script — verified working
-on the real droplet (a `--dry` run inside this exact shape reported all
-three of `APP_ENV`, `R2_ACCOUNT_ID` and `PGDATABASE` present):
+itself, inside the `sudo`'d shell that will run the script.
+
+**Invoke the script file directly — `bun <file>.ts`, not `bun run
+<package.json alias>`.** This droplet's `sudo` has `secure_path` set to
+`/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/snap/bin`,
+which does not include `/opt/bun/bin`; Bun 1.3.12 on Linux shells
+`package.json` scripts out to `/usr/bin/bash` without prepending its own
+directory first, so `bun run backfill:display` inside the `sudo`'d shell
+resolves the `bun` it needs to run the alias's own command to nothing:
+`bash: line 1: bun: command not found`, `exited with code 127`. (Bun 1.3.10
+on macOS does prepend its own directory there — this only reproduces on the
+droplet's Linux build, which is why testing this runbook locally would not
+have caught it.) Invoking the file directly sidesteps the alias, and its
+`bun` entirely — this is the same shape `deploy.yml` already uses in
+production for `migrate-prod.ts` and `seed-prod.ts`:
 
 ```bash
 ssh deploy@<droplet-host>
@@ -228,7 +240,7 @@ sudo -n -u photoshowcase /bin/sh -c '
   . /srv/photoshowcase/app/current/release.env
   set +a
   cd /srv/photoshowcase/app/current
-  exec /opt/bun/bin/bun run backfill:display -- --dry'   # report only, writes nothing
+  exec /opt/bun/bin/bun scripts/backfill-display-derivatives.ts --dry'   # report only, writes nothing
 
 # once the --dry output looks right, drop --dry to actually write:
 sudo -n -u photoshowcase /bin/sh -c '
@@ -237,8 +249,26 @@ sudo -n -u photoshowcase /bin/sh -c '
   . /srv/photoshowcase/app/current/release.env
   set +a
   cd /srv/photoshowcase/app/current
-  exec /opt/bun/bin/bun run backfill:display'
+  exec /opt/bun/bin/bun scripts/backfill-display-derivatives.ts'
 ```
+
+**What has actually been verified on the droplet, and what has not.** This
+exact `--dry` command (env-sourcing, `cd`, and the direct `bun <file>.ts`
+invocation together, read-only, no writes) was run against the droplet: it
+correctly sourced both env files and reached `exec /opt/bun/bin/bun
+scripts/backfill-display-derivatives.ts --dry`, which failed with bun's own
+`error: Module not found "scripts/backfill-display-derivatives.ts"` (exit
+code 1) — because the script is not staged on the droplet yet (that is this
+task's own deploy, not done at the time of writing), not because of the
+PATH problem the earlier `bun run` form hit. That confirms the invocation
+shape itself — env vars reach the shell, `cd` lands in the release dir,
+`/opt/bun/bin/bun` is found and runs directly — without needing the script
+to exist first. What this has **not** verified: the script's own behavior
+(the `--dry` report, the `assertAppEnvIsSet` guard, an actual R2
+read/write) — that only happens once the script is really on the box, after
+this task's deploy. Treat the first real `--dry` run post-deploy as the
+actual first execution, read its output, and confirm the printed keys land
+under the production prefix before dropping `--dry`.
 
 Run the `--dry` pass first and read its output — it lists every asset it
 would touch and why (already present vs. would write) before anything is

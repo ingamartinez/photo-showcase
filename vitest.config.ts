@@ -7,6 +7,48 @@ export default defineConfig({
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
+
+      // Task #31. `server-only` is NOT an installed package in this repo
+      // (`fd -HI '^server-only$' node_modules -t d` finds nothing) — Next's
+      // own bundler resolves the bare specifier itself, so under Vitest it
+      // resolves to nothing at all. Node-environment suites have always
+      // papered over that with `vi.mock("server-only", () => ({}))`, and that
+      // works because Vitest's SSR transform leaves an unresolvable bare
+      // import for the module runner (where the mocker can intercept it).
+      //
+      // A JSDOM-environment suite cannot do the same: it is transformed in
+      // web mode, where `vite:import-analysis` must resolve every import at
+      // TRANSFORM time — before any `vi.mock` factory exists to intercept
+      // anything. So `vi.mock("server-only", ...)` in a `.chrome.test.tsx`
+      // file fails with `Failed to resolve import "server-only" from ...`,
+      // which is precisely why every existing chrome suite mocks
+      // `@/lib/galleries`, `@/lib/r2`, `@/lib/gallery-access` and
+      // `@/lib/gallery-selection` WHOLESALE instead: cutting the import edge
+      // was the only way to avoid the marker.
+      //
+      // That stopped being workable when the client gallery pages started
+      // executing the GraphQL schema in process (task #31): `src/lib/graphql/
+      // *` is server-only top to bottom, and mocking it wholesale from the
+      // chrome suites would mean re-implementing the resolvers' own
+      // authorization gates inside a test fake — a fake that can drift from
+      // the gates it imitates, which is the one thing this epic (task #6)
+      // exists to prevent.
+      //
+      // WHAT THIS BUYS: `import "server-only"` resolves, inertly, in every
+      // environment, so a chrome suite can import server code and mock only
+      // the specific modules it means to.
+      //
+      // WHAT THIS COSTS, stated plainly rather than left to be discovered:
+      // until now a JSDOM suite that forgot to mock a DB-backed module failed
+      // LOUDLY at import time. It no longer does — `@/lib/db` is now
+      // importable from a chrome suite, and while importing it opens no
+      // connection (postgres.js connects lazily, see src/lib/db/index.ts), an
+      // unmocked query from such a suite would reach the developer's real
+      // local Postgres instead of failing to resolve. The marker was never
+      // the mechanism that enforced the server boundary in the first place —
+      // `next build` is, and CI runs it — but it was a useful accident, and
+      // this alias spends it.
+      "server-only": path.resolve(__dirname, "./vitest.server-only-stub.ts"),
     },
   },
   test: {

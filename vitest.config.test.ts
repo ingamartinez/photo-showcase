@@ -27,3 +27,27 @@ describe("vitest.config.ts exclude", () => {
     }
   });
 });
+
+// Task #31: the same guard, for the same reason, over the `server-only` alias
+// -- without it a JSDOM (`*.chrome.test.tsx`) suite cannot import ANY module
+// carrying `import "server-only"`, which since #31 includes the client gallery
+// pages themselves. Losing this entry does not degrade gracefully: it breaks
+// those suites at transform time with a resolution error that reads like a
+// missing dependency, which is a long way from its actual cause. See the
+// alias's own comment in vitest.config.ts.
+describe("vitest.config.ts server-only alias", () => {
+  it("aliases `server-only` to the inert stub, so JSDOM suites can import server modules", () => {
+    const alias = vitestConfig.resolve?.alias as Record<string, string> | undefined;
+
+    expect(alias?.["server-only"]).toContain("vitest.server-only-stub");
+  });
+
+  // The alias entry above is added to the SAME object that carries the "@" ->
+  // ./src mapping every suite in this repo imports through, so this asserts
+  // the addition did not replace it.
+  it("still aliases `@` to ./src", () => {
+    const alias = vitestConfig.resolve?.alias as Record<string, string> | undefined;
+
+    expect(alias?.["@"]).toContain("src");
+  });
+});

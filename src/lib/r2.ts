@@ -57,6 +57,32 @@ function getClient(): S3Client {
   return client;
 }
 
+// Branded key type (task #78) — the compiler-enforced half of what used to
+// be JUST this file's header comment. `R2Key` is a plain `string` at
+// runtime (the intersection with `{ readonly __r2: unique symbol }` is
+// erased entirely; nothing about a string's runtime representation changes),
+// but a bare `string` is NOT assignable to it, so TypeScript rejects a hand-
+// rolled literal or variable passed to `putObject`/`getPresignedUrl`/
+// `deleteObject` below.
+//
+// This closes the SPECIFIC gap #38's review flagged: nothing used to stop a
+// future call site from writing `putObject(\`galleries/${id}/…\`, …)` by
+// hand, skipping `namespacedKey` and landing a dev write in the production
+// slice of the bucket. Now the ONLY ways to produce an `R2Key` are the
+// builders below (`proofKey`/`finalKey`/`displayKey`, all funneled through
+// `namespacedKey`) and the two named escape hatches (`nonGalleryKey`,
+// `storedKey`) — every one of them greppable by searching this file for
+// `as R2Key`.
+//
+// What this does NOT do: stop a caller from constructing its own
+// `Bun.S3Client` and bypassing this module entirely (scripts/check-r2.ts
+// does exactly that, deliberately — see its own header comment), or verify
+// that `APP_ENV` is set correctly wherever the process runs. Both of those
+// stay exactly as true as they were before this task; the type system can
+// only make the boundary of THIS module hard to cross by accident, not make
+// the module itself mandatory to go through.
+export type R2Key = string & { readonly __r2: unique symbol };
+
 // Key builders — the ONLY place these strings are formed. Nothing else in
 // the app should concatenate a gallery id or asset id into an R2 key by hand.
 //
@@ -78,32 +104,39 @@ function getClient(): S3Client {
 // inside a function (never at module scope) stays dynamic through the build,
 // the same way it already does for the R2 credentials themselves.
 //
-// This mechanism keys off `APP_ENV` alone — it is a naming convention
-// enforced by this one function, not a capability restriction. It does NOT,
-// on its own, stop a process from constructing a bare `galleries/…` key: any
-// code that sets `APP_ENV=production` (accidentally or otherwise) before
-// calling `proofKey`/`finalKey` gets the production shape. The isolation this
-// buys is only as good as `APP_ENV` being set correctly wherever this process
-// runs — see `.github/workflows/deploy.yml`'s release.env step, the only
-// place `APP_ENV=production` is written for the real deployed process. A
-// stronger option (separate bucket + scoped token) was considered and
-// rejected as disproportionate for now; see task #38.
+// This mechanism keys off `APP_ENV` alone — it is a naming convention this
+// one function enforces, not a capability restriction: it does not stop a
+// process that sets `APP_ENV=production` (accidentally or otherwise) from
+// getting the production shape out of `proofKey`/`finalKey`. The isolation
+// this buys is only as good as `APP_ENV` being set correctly wherever this
+// process runs — see `.github/workflows/deploy.yml`'s release.env step, the
+// only place `APP_ENV=production` is written for the real deployed process.
+// A stronger option (separate bucket + scoped token) was considered and
+// rejected as disproportionate for now; see task #38. What task #78 adds on
+// top is narrower and orthogonal: it is no longer possible to skip this
+// function's prefixing *by forgetting to call it* and handing a raw string
+// to `putObject`/`getPresignedUrl`/`deleteObject` instead — see `R2Key`
+// above.
 //
 // Any future key builder added to this file — e.g. #26's finals-upload path —
 // inherits the namespacing for free by construction: it must call
 // `namespacedKey` for its path to end up in the bucket at all, the same way
 // `proofKey` and `finalKey` do below.
-function namespacedKey(key: string): string {
-  return process.env.APP_ENV === "production" ? key : `dev/${key}`;
+//
+// This is also the ONE place in this file that mints an `R2Key` from an
+// unbranded string outside the two named escape hatches — every builder
+// below returns exactly what this function hands back.
+function namespacedKey(key: string): R2Key {
+  return (process.env.APP_ENV === "production" ? key : `dev/${key}`) as R2Key;
 }
 
 /** Low-res, watermarked proof. Exists for every asset from the start. */
-export function proofKey(galleryId: string, assetId: string): string {
+export function proofKey(galleryId: string, assetId: string): R2Key {
   return namespacedKey(`galleries/${galleryId}/proofs/${assetId}.webp`);
 }
 
 /** Full-res, no watermark. Exists only for assets the client selected. */
-export function finalKey(galleryId: string, assetId: string): string {
+export function finalKey(galleryId: string, assetId: string): R2Key {
   return namespacedKey(`galleries/${galleryId}/finals/${assetId}.jpg`);
 }
 
@@ -130,8 +163,42 @@ export function finalKey(galleryId: string, assetId: string): string {
  * Distinct extension from the final (`.webp` vs `.jpg`) as well as a distinct
  * prefix, so the two can never collide even if a future refactor got the
  * folder wrong. */
-export function displayKey(galleryId: string, assetId: string): string {
+export function displayKey(galleryId: string, assetId: string): R2Key {
   return namespacedKey(`galleries/${galleryId}/display/${assetId}.webp`);
+}
+
+/** Escape hatch #1 (task #78): mints an `R2Key` for a legitimate key that
+ * isn't shaped like `galleries/{galleryId}/…` at all — today, that's just
+ * scripts/check-r2.ts's throwaway healthcheck probe. Still funnels through
+ * `namespacedKey`, so it lands in the same dev/prod slice of the bucket as
+ * every gallery-shaped key; it only skips the `galleries/…` path shape the
+ * builders above hard-code.
+ *
+ * Reach for this ONLY when a key genuinely has nothing to do with a gallery
+ * or asset. Anything about a gallery or asset belongs in
+ * `proofKey`/`finalKey`/`displayKey` instead — that's the whole point of
+ * branding this type in the first place. */
+export function nonGalleryKey(key: string): R2Key {
+  return namespacedKey(key);
+}
+
+/** Escape hatch #2 (task #78): re-attaches the `R2Key` brand to a key read
+ * back out of the database. `assets.proof_key`/`assets.final_key` are plain
+ * `text` columns (see schema.ts) — Drizzle infers them as ordinary
+ * `string`, so the brand `proofKey()`/`finalKey()` applied at write time
+ * doesn't survive the round trip through Postgres.
+ *
+ * Deliberately does NOT call `namespacedKey`: a value passed here is already
+ * namespaced, from whichever `APP_ENV` was active when some route wrote it
+ * — reapplying the prefix would double it (`dev/dev/galleries/…`).
+ *
+ * Use this ONLY for a value that came off an `assets` row originally written
+ * by `proofKey()`/`finalKey()`. It is, deliberately, just as easy to misuse
+ * as an inline `as R2Key` — the type system cannot prove where a `string`
+ * actually came from — but misuse is now a `grep -rn "storedKey("` away
+ * instead of scattered `as R2Key` casts with no shared name to search for. */
+export function storedKey(key: string): R2Key {
+  return key as R2Key;
 }
 
 /** Whatever Bun's S3Client accepts as a write body: buffers, blobs, streams, ... */
@@ -139,9 +206,12 @@ export type PutObjectBody = Parameters<S3Client["write"]>[1];
 
 /** Uploads bytes to R2 under `key`. `contentType` is required — R2 objects
  * are served back to clients via presigned URL, so the browser needs a
- * correct Content-Type to render them. */
+ * correct Content-Type to render them.
+ *
+ * `key` must be an `R2Key` (task #78) — the only way to get one is a builder
+ * above or a named escape hatch, never a bare string literal. */
 export async function putObject(
-  key: string,
+  key: R2Key,
   body: PutObjectBody,
   options: { contentType: string },
 ): Promise<void> {
@@ -164,18 +234,40 @@ export async function putObject(
  * `attachment; filename="…"` here is what turns that same navigation into an
  * actual download with a sensible filename, on both iOS Safari and Android
  * Chrome, without needing any client-side download plumbing beyond a normal
- * navigation to this URL. */
-export function getPresignedUrl(key: string, options?: { contentDisposition?: string }): string {
+ * navigation to this URL.
+ *
+ * `key` must be an `R2Key` (task #78) — see `putObject`'s own comment on
+ * what that means and what it doesn't. */
+export function getPresignedUrl(key: R2Key, options?: { contentDisposition?: string }): string {
   return getClient().presign(key, {
     expiresIn: PRESIGNED_URL_TTL_SECONDS,
     ...(options?.contentDisposition ? { contentDisposition: options.contentDisposition } : {}),
   });
 }
 
-/** Deletes an object from R2 (e.g. when a gallery or asset is removed). */
-export async function deleteObject(key: string): Promise<void> {
+/** Deletes an object from R2 (e.g. when a gallery or asset is removed).
+ *
+ * `key` must be an `R2Key` (task #78) — see `putObject`'s own comment on
+ * what that means and what it doesn't. */
+export async function deleteObject(key: R2Key): Promise<void> {
   await getClient().delete(key);
 }
+
+// Task #78 deliberately stops the `R2Key` requirement at the three functions
+// above (`putObject`, `getPresignedUrl`, `deleteObject`) and does NOT widen
+// it to the three read-only HEAD/stream functions below
+// (`getObjectStream`, `getObjectSize`, `objectExists`), even though they
+// take a `key: string` too and are just as easy to call with a hand-rolled
+// value. Reasoning: the risk this task closes is specifically the one #38's
+// review named — a caller skipping `namespacedKey` and landing a WRITE, or a
+// URL handed to a real BROWSER, in the wrong dev/prod slice, silently. A
+// wrongly-shaped key reaching one of the three functions below instead fails
+// LOUD and immediately (a 404 from a HEAD request, or an empty/erroring
+// stream) — there is no silent cross-namespace side effect to prevent, only
+// an ordinary "object not found" bug with an ordinary blast radius. Widening
+// to these three later, once #26 or another slice gives a concrete reason,
+// is cheap and welcome; doing it now would only add three more `storedKey`
+// call sites for no closed risk.
 
 /** Streams `key`'s bytes directly out of R2 — task #29 (download-all-as-zip).
  * This is the one deliberate, DOCUMENTED exception in this codebase to

@@ -99,21 +99,52 @@ const RAW_PROPERTY_CANDIDATES = [
 // Every assertion below now enumerates whatever the stylesheet declares.
 const APP_ALIASES = parseAppThemeAliases(readFileSync(GLOBALS, "utf8"));
 
-// The compiled utility each alias must produce: `--color-app-raised` reaches
-// the browser as `.bg-app-raised`, `--text-app-base` as `.text-app-base`.
+// What each namespace means, stated INDEPENDENTLY of the stylesheet: the
+// compiled utility an alias must produce (`--color-app-raised` reaches the
+// browser as `.bg-app-raised`, `--text-app-base` as `.text-app-base`), the
+// property it must set, and — the part that has to be computed here rather
+// than read — the token it must point at.
+//
+// WHY `target` IS A FUNCTION OF THE NAME AND NOT THE FILE. Parsing the alias
+// list out of globals.css is what keeps a newly-added alias from being silently
+// exempt (see above). But an earlier revision also took the EXPECTED VALUE from
+// the same parse and then asserted the parsed value against itself, which made
+// the whole comparison tautological: it could see that an alias pointed at some
+// `var(--app-*)`, and could not see WHICH. Measured at that revision, all three
+// of these passed 53/53 and the full suite stayed at 1274:
+//
+//   --text-app-base: var(--app-text-lead)   every dashboard base size at 16px
+//   --color-app-raised: var(--app-surface)  the nav's active-item state erased
+//   --text-app-base: var(--app-raised)      a font size pointing at a COLOUR,
+//                                           i.e. invalid at computed-value time
+//
+// Eleven near-identical lines edited by copy-paste is exactly where a
+// one-character slip in the TARGET is the likely human error, and it was the
+// one thing nothing checked. Both namespaces are 1:1 by convention, so the
+// convention is written down here, once, and the file is measured against it.
 const PROBE_BY_NAMESPACE = {
-  color: { candidate: (alias: string) => `bg-${alias}`, property: "background-color" },
-  text: { candidate: (alias: string) => `text-${alias}`, property: "font-size" },
+  color: {
+    candidate: (alias: string) => `bg-${alias}`,
+    property: "background-color",
+    target: (token: string) => `var(--app-${token})`,
+  },
+  text: {
+    candidate: (alias: string) => `text-${alias}`,
+    property: "font-size",
+    target: (token: string) => `var(--app-text-${token})`,
+  },
 } as const;
 
-const APP_ALIAS_CASES = APP_ALIASES.map(
-  (entry) =>
-    [
-      PROBE_BY_NAMESPACE[entry.namespace].candidate(entry.alias),
-      PROBE_BY_NAMESPACE[entry.namespace].property,
-      entry.value,
-    ] as const,
-);
+const APP_ALIAS_CASES = APP_ALIASES.map((entry) => {
+  const probe = PROBE_BY_NAMESPACE[entry.namespace];
+
+  return [
+    probe.candidate(entry.alias),
+    probe.property,
+    probe.target(entry.token),
+    entry.value,
+  ] as const;
+});
 
 // The trap this slice was told not to walk into, kept mechanical: radii must
 // NOT get `@theme` entries. `--app-radius*` exists because `--radius-*` are
@@ -220,28 +251,34 @@ describe("app-surface aliases stay references, so the scope can still reach them
   });
 
   it.each(APP_ALIAS_CASES)(
-    "declares .%s with a var() reference, never an inlined literal (%s: %s)",
-    (candidate, _property, value) => {
-      // THE ASSERTION THE HAND-WRITTEN LIST COULD NOT MAKE. Checked on the
-      // stylesheet's own right-hand side, before Tailwind is involved at all:
-      // a literal here (`#b08b4f`) is inlined into the utility and the scope
-      // can never reach it.
-      expect(
-        value,
-        `${candidate} resolves to ${value}, which is not a var(--app-*) reference`,
-      ).toMatch(/^var\(--app-[a-z0-9-]+\)$/);
+    "declares .%s pointing at %s: %s, and at nothing else",
+    (candidate, _property, target, declared) => {
+      // THE ASSERTION THE HAND-WRITTEN LIST COULD NOT MAKE, now also naming the
+      // token instead of only its shape. `target` is computed from the alias
+      // NAME (see PROBE_BY_NAMESPACE); `declared` is read from globals.css. Two
+      // independent sides, so this catches all three of:
+      //   * a literal RHS (`#b08b4f`) — inlined into the utility, unreachable
+      //     from the scope, which is the leak this whole guard exists for;
+      //   * an alias pointing at the WRONG token — a copy-paste slip across
+      //     eleven near-identical lines, silent and visually plausible;
+      //   * a font size pointing at a colour, or vice versa.
+      // It subsumes the `/^var\(--app-[a-z0-9-]+\)$/` shape check it replaced.
+      expect(declared, `${candidate} resolves to ${declared}, expected ${target}`).toBe(target);
     },
   );
 
-  it.each(APP_ALIAS_CASES)("compiles .%s to %s: %s", (candidate, property, value) => {
+  it.each(APP_ALIAS_CASES)("compiles .%s to %s: %s", (candidate, property, target) => {
     const body = ruleBody(candidate);
 
     expect(body, `Tailwind emitted no rule for .${candidate}`).toBeDefined();
+    // Compared against the EXPECTED target, not against whatever globals.css
+    // happens to say — the same independence as above, one layer further down.
+    //
     // Whole declaration, not `toContain`: that would also pass on
     // `var(--app-ground, #070709)`, and — for the `text-` probes — it pins the
     // PROPERTY too, since `--text-*` and `--color-*` share the `text-` prefix
     // and getting the namespace wrong yields a rule that exists and is wrong.
-    expect(body?.trim()).toBe(`${property}: ${value};`);
+    expect(body?.trim()).toBe(`${property}: ${target};`);
   });
 
   it("points every alias at a property the app scope actually declares", () => {
@@ -251,11 +288,11 @@ describe("app-surface aliases stay references, so the scope can still reach them
     // suite would ever notice.
     const layer = appLayer();
 
-    for (const [candidate, , value] of APP_ALIAS_CASES) {
-      const property = /var\((--[a-z0-9-]+)\)/.exec(value)?.[1];
+    for (const [candidate, , target] of APP_ALIAS_CASES) {
+      const property = /var\((--[a-z0-9-]+)\)/.exec(target)?.[1];
       expect(
         property,
-        `${candidate} resolves to ${value}, which is not a var() reference`,
+        `${candidate} resolves to ${target}, which is not a var() reference`,
       ).toBeDefined();
       expect(
         layer,

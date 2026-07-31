@@ -216,6 +216,33 @@ export const galleries = pgTable(
     // same gallery) — this is "who did it and when, at minimum" per the
     // task's own acceptance criterion, not an append-only history table.
     //
+    // Task #83 asked whether that is ENOUGH, since #73 framed these columns
+    // as "an audit trail for a money conversation" and last-write-wins is a
+    // current state, not a trail. DECIDED 2026-07-30, owner-approved:
+    // last-write-wins is accepted, and no history table is built.
+    //
+    // The reasoning, because "we decided not to" is not a record: what an
+    // overwrite destroys is the history of the PHOTOGRAPHER'S OWN unlocks.
+    // The evidence a disputed money conversation actually turns on — which
+    // photos were picked, when, and by whom — lives in `assets.isSelected` /
+    // `selectedAt` / `selectedBy`, and an unlock touches none of it;
+    // `selectionSubmittedAt` above is likewise preserved. So the only record
+    // that degrades belongs to the single trusted operator, who has direct
+    // database access anyway and is explicitly outside the threat model
+    // (task #66, task #24's review). "The photographer reopened this twice"
+    // is not something a counterparty litigates against the photographer's
+    // own records.
+    //
+    // This also keeps the codebase consistent with itself: `assets.selectedBy`
+    // below reached the same conclusion independently (task #94) — a true
+    // "who did what, in order" audit needs a separate append-only event
+    // table, not a column, and neither slice had a real dispute to justify
+    // building one. Deciding differently here would leave two contradictory
+    // answers to one question.
+    //
+    // Reopen if a second admin appears, or if "how many times was this
+    // reopened" ever becomes the question being asked.
+    //
     // `unlockedByEmail` stores the acting admin's OWN session email as a
     // plain snapshot at write time, not a foreign key onto `users` — same
     // "frozen fact, not a live-updating reference" reasoning as

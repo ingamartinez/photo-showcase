@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import type { Session } from "next-auth";
+import { eqColumnAndValue } from "@/lib/test/eq-column-and-value";
 
 // `import "server-only"` (transitively, via src/lib/auth-guards.ts) only
 // resolves inside a real Next.js bundle — see src/lib/auth-guards.test.ts.
@@ -39,36 +40,13 @@ vi.mock("@/lib/r2", () => ({
 // same duck-typing approach as src/app/dashboard/galleries/actions.test.ts
 // (drizzle-orm 0.45 gives no other stable way to introspect a query builder
 // chain outside of a real database).
+//
+// Task #53: `eqColumnAndValue` now lives at src/lib/test/eq-column-and-value.ts
+// and is shared with src/app/dashboard/galleries/actions.test.ts, which used
+// to carry its own (buggy) local copy — see that module's header comment for
+// why this is the one test double in the repo that's shared rather than
+// duplicated per file.
 type Row = Record<string, unknown>;
-
-function eqColumnAndValue(condition: unknown): { column?: string; value?: unknown } {
-  const chunks = (condition as { queryChunks?: unknown[] }).queryChunks ?? [];
-  let dbColumnName: string | undefined;
-  let table: unknown;
-  let value: unknown;
-  for (const chunk of chunks) {
-    if (chunk && typeof chunk === "object") {
-      if ("name" in chunk && "table" in chunk) {
-        dbColumnName = (chunk as { name: string }).name;
-        table = (chunk as { table: unknown }).table;
-      }
-      if ("value" in chunk && "encoder" in chunk) value = (chunk as { value: unknown }).value;
-    }
-  }
-  if (!dbColumnName || !table) return { column: undefined, value };
-  // `eq()`'s condition only carries the DB column name (e.g. "gallery_id"),
-  // not the JS property key (e.g. "galleryId") the row fixtures below are
-  // keyed by — drizzle-orm 0.45 exposes both on the real Column object.
-  // Resolving through `table`'s own entries rather than hardcoding a
-  // snake_case<->camelCase transform keeps this correct for every column,
-  // including the ones (like assets.galleryId) where the two names differ,
-  // instead of only accidentally working for columns like "id"/"email"
-  // where they happen to match.
-  const jsKey = Object.entries(table as Record<string, unknown>).find(
-    ([, col]) => col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
-  )?.[0];
-  return { column: jsKey, value };
-}
 
 vi.mock("@/lib/db", async () => {
   const { galleries, assets } = await import("@/lib/db/schema");
@@ -81,8 +59,11 @@ vi.mock("@/lib/db", async () => {
       select: (columns?: Record<string, unknown>) => ({
         from: (table: unknown) => ({
           where: (condition: unknown) => {
+            // `eqColumnAndValue` itself throws (rather than returning an
+            // unresolved column) when `condition` isn't a genuine `eq()` or
+            // its column can't be mapped back to a JS key — no local guard
+            // needed here.
             const { column, value } = eqColumnAndValue(condition);
-            if (!column) throw new Error("eqColumnAndValue: not an eq() condition");
 
             if (table === galleries) {
               const rows = galleryRows.filter((r) => r[column] === value);

@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "next-auth";
+import { eqColumnAndValue } from "@/lib/test/eq-column-and-value";
 
 // `import "server-only"` (transitively, via src/lib/auth-guards.ts) only
 // resolves inside a real Next.js bundle — see src/lib/auth-guards.test.ts.
@@ -62,20 +63,16 @@ vi.mock("@/lib/slug", async () => {
 // .where().limit()` really filters by the column/value encoded in the
 // `eq()` condition it's given (duck-typed off drizzle's SQL chunks, verified
 // against the real shape before writing this).
+//
+// Task #53: `eqColumnAndValue` itself used to live here as a local copy that
+// read the DB column name straight off the condition and indexed fixture
+// rows with it directly — silently wrong for any column whose JS key and DB
+// name differ (it only worked here by accident, because every `eq()` below
+// happens to compare a column named "id"). Now shared with
+// src/app/api/galleries/[galleryId]/proofs/route.test.ts (the file that
+// already had the corrected version) via src/lib/test/eq-column-and-value.ts
+// — see that module's own header comment for the full story.
 type Row = Record<string, unknown>;
-
-function eqColumnAndValue(condition: unknown): { column?: string; value?: unknown } {
-  const chunks = (condition as { queryChunks?: unknown[] }).queryChunks ?? [];
-  let column: string | undefined;
-  let value: unknown;
-  for (const chunk of chunks) {
-    if (chunk && typeof chunk === "object") {
-      if ("name" in chunk && "table" in chunk) column = (chunk as { name: string }).name;
-      if ("value" in chunk && "encoder" in chunk) value = (chunk as { value: unknown }).value;
-    }
-  }
-  return { column, value };
-}
 
 vi.mock("@/lib/db", async () => {
   const { PostgresError } = await import("postgres");
@@ -156,8 +153,11 @@ vi.mock("@/lib/db", async () => {
           where: (condition: unknown) => ({
             limit: async (n: number) => {
               const rows = table === packages ? packageRows : [];
+              // `eqColumnAndValue` itself throws (rather than returning an
+              // unresolved column) when `condition` isn't a genuine `eq()`
+              // or its column can't be mapped back to a JS key — no local
+              // guard needed here.
               const { column, value } = eqColumnAndValue(condition);
-              if (!column) throw new Error("eqColumnAndValue: not an eq() condition");
               return rows.filter((r) => r[column] === value).slice(0, n);
             },
           }),

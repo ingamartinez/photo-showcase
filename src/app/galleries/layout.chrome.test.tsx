@@ -6,9 +6,11 @@
 // `@/lib/auth-guards` is mocked wholesale here rather than mocking `@/auth`
 // and letting the real `requireSession()` run (already proven for real in
 // layout.test.ts under the node environment).
+import { Children, isValidElement, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { Session } from "next-auth";
+import { signOutAction } from "@/lib/auth-actions";
 import GalleriesLayout from "./layout";
 
 const requireSessionMock = vi.fn<() => Promise<Session>>();
@@ -31,6 +33,33 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
 });
+
+/**
+ * First element of `type` in a React element tree, or `null`.
+ *
+ * The rendered DOM cannot answer WHICH function a `<form action={...}>` is
+ * bound to — React writes the same opaque `javascript:throw ...` sentinel
+ * for every function action — so the "is it still wired to `signOutAction`"
+ * half of the sign-out test below reads `props` off the returned element
+ * tree instead. `GalleriesLayout` is an async server component that returns
+ * that tree directly, so this needs no extra rendering machinery.
+ */
+function findElementByType(node: ReactNode, type: string): ReactElement | null {
+  if (!isValidElement(node)) {
+    return null;
+  }
+  if (node.type === type) {
+    return node;
+  }
+  const { children } = node.props as { children?: ReactNode };
+  for (const child of Children.toArray(children)) {
+    const found = findElementByType(child, type);
+    if (found !== null) {
+      return found;
+    }
+  }
+  return null;
+}
 
 describe("GalleriesLayout chrome", () => {
   it("does not render the public site's marketing header/footer or the dashboard nav", async () => {
@@ -83,13 +112,33 @@ describe("GalleriesLayout chrome", () => {
   // an onClick handler — so it works with JS disabled and the session row
   // is deleted server-side (src/lib/auth-actions.ts). Rewriting the chrome
   // is exactly when a button gets quietly detached from its form.
-  it("keeps sign-out a real form submit", async () => {
+  //
+  // THREE separate failures, three separate assertions — #142's review
+  // caught this test claiming all three while reaching only the first two.
+  // Dropping the action (`<form action={signOutAction}>` -> `<form>`) breaks
+  // sign-out completely and left the whole file green, because neither
+  // `type="submit"` nor `closest("form")` says anything about what the form
+  // submits TO. The last two assertions are the ones that close that:
+  //
+  //   1. the button submits rather than doing nothing;
+  //   2. it is still inside a form at all;
+  //   3. that form has an action (React only emits the attribute when one
+  //      is passed — it is absent, not empty, on a bare `<form>`);
+  //   4. the action is `signOutAction` itself, not some other function or a
+  //      string URL, which the DOM alone cannot distinguish.
+  it("keeps sign-out a real form submit bound to signOutAction", async () => {
     const element = await GalleriesLayout({ children: <div>contenido</div> });
     render(element);
 
     const signOut = screen.getByRole("button", { name: "Cerrar sesión" });
     expect(signOut.getAttribute("type")).toBe("submit");
-    expect(signOut.closest("form")).not.toBeNull();
+
+    const renderedForm = signOut.closest("form");
+    expect(renderedForm).not.toBeNull();
+    expect(renderedForm?.getAttribute("action")).not.toBeNull();
+
+    const formElement = findElementByType(element, "form");
+    expect(formElement?.props).toMatchObject({ action: signOutAction });
   });
 
   // The client area must never pick up the dashboard's token layer — epic

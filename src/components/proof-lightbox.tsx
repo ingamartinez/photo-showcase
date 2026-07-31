@@ -116,9 +116,32 @@ export function ProofLightbox({
 }) {
   const asset = assets[index];
   const touchStartX = useRef<number | null>(null);
+  // Whatever was focused at the moment this opened — the grid tile, or a tray
+  // thumbnail. See `onOpenAutoFocus`/`onCloseAutoFocus` below for why this
+  // component has to hold it itself rather than let the primitive do it.
+  const openerRef = useRef<HTMLElement | null>(null);
 
   const hasPrev = index > 0;
   const hasNext = index < assets.length - 1;
+
+  // Background scroll lock, kept as this component's OWN guarantee rather
+  // than delegated to the dialog primitive. The primitive does ship one
+  // (`react-remove-scroll`), but it arrives through a sidecar that is not
+  // loaded in every environment — verified, not assumed: with a Radix modal
+  // open under JSDOM the body carries `pointer-events: none` from the dismiss
+  // layer and NOTHING from the scroll lock, no `data-scroll-locked`, no
+  // injected stylesheet. Six lines that behave identically everywhere are
+  // worth more here than a dependency on which half of a library woke up:
+  // without them an arrow key or a swipe also scrolls the 84-tile grid
+  // underneath on some mobile browsers, and closing returns the client to a
+  // completely different scroll position than the one they left.
+  useEffect(() => {
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, []);
 
   // ←/→ only. `Escape` used to live here too and now belongs to the dialog
   // primitive's own dismiss layer, which listens on `document` — keeping a
@@ -205,6 +228,25 @@ export function ProofLightbox({
           // beyond the title, so it is opted out rather than filled with
           // noise.
           aria-describedby={undefined}
+          // FOCUS RESTORE, DONE BY HAND ON PURPOSE — and this is the one
+          // place the primitive could not be taken as-is. Radix restores
+          // focus to its own <Dialog.Trigger>, and there is no trigger here:
+          // the thing that opened this is a tile inside <ProofGrid>'s own
+          // list, and <ProofGrid> mounts this component from state rather
+          // than wrapping 84 tiles in 84 dialogs. Its modal handler
+          // `preventDefault()`s the FocusScope's generic restore and then
+          // focuses `triggerRef.current`, which is null — measured, not
+          // guessed: focus landed on <body> and the client's place in an
+          // 84-photo grid was gone. So the opener is captured at the moment
+          // the primitive itself captures it (this event fires before focus
+          // moves into the dialog) and restored on the way out.
+          onOpenAutoFocus={() => {
+            openerRef.current = document.activeElement as HTMLElement | null;
+          }}
+          onCloseAutoFocus={(event) => {
+            event.preventDefault();
+            openerRef.current?.focus();
+          }}
           onTouchStart={handleTouchStart}
           onTouchEnd={handleTouchEnd}
           className="bg-bg-sunken fixed inset-0 z-50 grid grid-rows-[auto_1fr_auto] outline-none"
@@ -311,10 +353,12 @@ export function ProofLightbox({
 
                   PICKED IS NEVER COLOUR ALONE, the same three-channel rule
                   #145 applied to the tile (client.html:213-215), restated for
-                  a control that has room for words: the LABEL changes
-                  ("Elegir esta foto" / "✓ Elegida"), a ✓ GLYPH appears, and
-                  the button goes from a hairline outline to a filled brass
-                  block — shape, wording and figure/ground, none of them a hue.
+                  a control that has room for words: a ✓ GLYPH appears (shape),
+                  the LABEL changes from "Elegir esta foto" to "Elegida"
+                  (wording), and the button goes from a hairline outline to a
+                  filled brass block (figure/ground). Three separate
+                  expressions in the JSX below, on purpose — none of them a
+                  hue, and none of them able to carry another one's failure.
                   `aria-pressed` carries the same fact to assistive tech.
 
                   The accessible name comes from the visible label and is NOT
@@ -337,7 +381,15 @@ export function ProofLightbox({
                     : "border-line-2 text-fg hover:border-accent hover:text-accent-2 tracking-[0.04em]"
                 }`}
               >
-                {isSelected ? "✓ Elegida" : "Elegir esta foto"}
+                {/* `aria-hidden` for the same reason proof-tile.tsx's own ✓
+                    is: the button already says "Elegida" and carries
+                    `aria-pressed`, so a screen reader announcing a bare "✓"
+                    on top of both adds nothing. Rendered only when picked
+                    rather than as an empty span, because `.btn`'s `gap: 8px`
+                    (:130) would otherwise indent the label by 8px in the
+                    unpicked state for no visible reason. */}
+                {isSelected && <span aria-hidden="true">✓</span>}
+                {isSelected ? "Elegida" : "Elegir esta foto"}
               </button>
 
               <button

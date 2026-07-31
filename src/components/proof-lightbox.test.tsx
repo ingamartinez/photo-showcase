@@ -1,9 +1,11 @@
 // @vitest-environment jsdom
-import type { ComponentProps } from "react";
+import { useState, type ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ProofLightbox } from "./proof-lightbox";
 import type { ProofAsset } from "./proof-grid";
+import { computeQuota } from "@/lib/quota";
 
 function assetsFor(count: number, overrides: Partial<ProofAsset>[] = []): ProofAsset[] {
   return Array.from({ length: count }, (_, index) => ({
@@ -19,6 +21,14 @@ function assetsFor(count: number, overrides: Partial<ProofAsset>[] = []): ProofA
     ...overrides[index],
   }));
 }
+
+// The SAME pure function <SelectionCounter> is fed from, not a hand-built
+// object literal: the lightbox displays two of its fields and must keep
+// agreeing with the one place the quota maths lives (src/lib/quota.ts).
+const QUOTA = computeQuota(0, {
+  includedPhotosSnapshot: 13,
+  extraPhotoPriceCopSnapshot: 5000,
+});
 
 let onClose: ReturnType<typeof vi.fn<() => void>>;
 let onNavigate: ReturnType<typeof vi.fn<(index: number) => void>>;
@@ -37,25 +47,41 @@ afterEach(() => {
   document.body.style.overflow = "";
 });
 
+function lightboxProps(
+  overrides: Partial<ComponentProps<typeof ProofLightbox>> = {},
+): ComponentProps<typeof ProofLightbox> {
+  return {
+    assets: assetsFor(3),
+    urls: {},
+    index: 1,
+    quota: QUOTA,
+    onClose,
+    onNavigate,
+    onImageError,
+    onToggleSelection,
+    pendingAssetIds: new Set<string>(),
+    isLocked: false,
+    isDelivered: false,
+    ...overrides,
+  };
+}
+
 // Every test below wants the same handlers and an empty `pendingAssetIds` by
 // default — this only ever overrides `assets`/`urls`/`index`, so the toggle
 // wiring doesn't need repeating in every single test.
 function renderLightbox(overrides: Partial<ComponentProps<typeof ProofLightbox>> = {}) {
-  return render(
-    <ProofLightbox
-      assets={assetsFor(3)}
-      urls={{}}
-      index={1}
-      onClose={onClose}
-      onNavigate={onNavigate}
-      onImageError={onImageError}
-      onToggleSelection={onToggleSelection}
-      pendingAssetIds={new Set()}
-      isLocked={false}
-      isDelivered={false}
-      {...overrides}
-    />,
-  );
+  return render(<ProofLightbox {...lightboxProps(overrides)} />);
+}
+
+// The dialog IS the swipe surface (see the component's own comment on
+// `handleTouchStart`), so touch events go straight to the element carrying
+// `role="dialog"` — the same element the handlers are bound to.
+function dialog(): HTMLElement {
+  return screen.getByRole("dialog");
+}
+
+function touchList(clientX: number) {
+  return [{ clientX }];
 }
 
 describe("ProofLightbox", () => {
@@ -63,8 +89,30 @@ describe("ProofLightbox", () => {
     renderLightbox({ assets: assetsFor(3), index: 1 });
 
     expect(screen.getByText(/2 \/ 3/)).toBeDefined();
+    expect(screen.getByText("IMG_0002.JPG")).toBeDefined();
     const img = screen.getByAltText("IMG_0002.JPG") as HTMLImageElement;
     expect(img.src).toBe("https://r2.example.com/proof-2");
+  });
+
+  // Task #146: "cuál es, cuántas van, si esta está elegida" — the running
+  // count is the one of the three the old lightbox did not show at all, and
+  // the grid's own <SelectionCounter> is unreachable behind an `aria-hidden`
+  // modal. Both numbers come from the shared `QuotaResult`; this component
+  // does no arithmetic of its own.
+  it("shows the running selected count and the package's included count", () => {
+    renderLightbox({
+      quota: computeQuota(9, { includedPhotosSnapshot: 13, extraPhotoPriceCopSnapshot: 5000 }),
+    });
+
+    expect(screen.getByText("9 elegidas · 13 incluidas")).toBeDefined();
+  });
+
+  it("announces the running count politely, since it changes while the client looks at the photo", () => {
+    renderLightbox({
+      quota: computeQuota(9, { includedPhotosSnapshot: 13, extraPhotoPriceCopSnapshot: 5000 }),
+    });
+
+    expect(screen.getByText("9 elegidas · 13 incluidas").getAttribute("aria-live")).toBe("polite");
   });
 
   it("prefers the shared refreshed URL over the asset's own stale proofUrl", () => {
@@ -78,6 +126,10 @@ describe("ProofLightbox", () => {
     expect(img.src).toBe("https://r2.example.com/refreshed");
   });
 
+  // The 5-minute presigned-URL expiry path (task #23/#146): looking at ONE
+  // photograph for longer than `PRESIGNED_URL_TTL_SECONDS` is this screen's
+  // ordinary case, not an edge case, so the recovery hook has to survive
+  // every redesign of the markup around it.
   it("calls onImageError with the asset id when the <img> fails to load", () => {
     renderLightbox({ assets: assetsFor(1), index: 0 });
 
@@ -86,146 +138,295 @@ describe("ProofLightbox", () => {
     expect(onImageError).toHaveBeenCalledWith("a1");
   });
 
-  it("closes on Escape", () => {
-    renderLightbox();
-
-    fireEvent.keyDown(window, { key: "Escape" });
-
-    expect(onClose).toHaveBeenCalledTimes(1);
-  });
-
-  it("navigates with ArrowRight/ArrowLeft from the middle of the set", () => {
-    renderLightbox();
-
-    fireEvent.keyDown(window, { key: "ArrowRight" });
-    expect(onNavigate).toHaveBeenCalledWith(2);
-
-    fireEvent.keyDown(window, { key: "ArrowLeft" });
-    expect(onNavigate).toHaveBeenCalledWith(0);
-  });
-
-  it("does nothing on ArrowLeft at the first photo, or ArrowRight at the last", () => {
-    const { rerender } = render(
-      <ProofLightbox
-        assets={assetsFor(3)}
-        urls={{}}
-        index={0}
-        onClose={onClose}
-        onNavigate={onNavigate}
-        onImageError={onImageError}
-        onToggleSelection={onToggleSelection}
-        pendingAssetIds={new Set()}
-        isLocked={false}
-        isDelivered={false}
-      />,
-    );
-
-    fireEvent.keyDown(window, { key: "ArrowLeft" });
-    expect(onNavigate).not.toHaveBeenCalled();
-
-    rerender(
-      <ProofLightbox
-        assets={assetsFor(3)}
-        urls={{}}
-        index={2}
-        onClose={onClose}
-        onNavigate={onNavigate}
-        onImageError={onImageError}
-        onToggleSelection={onToggleSelection}
-        pendingAssetIds={new Set()}
-        isLocked={false}
-        isDelivered={false}
-      />,
-    );
-
-    fireEvent.keyDown(window, { key: "ArrowRight" });
-    expect(onNavigate).not.toHaveBeenCalled();
-  });
-
-  it("hides the 'previous' control on the first photo and the 'next' control on the last", () => {
-    const { rerender } = render(
-      <ProofLightbox
-        assets={assetsFor(3)}
-        urls={{}}
-        index={0}
-        onClose={onClose}
-        onNavigate={onNavigate}
-        onImageError={onImageError}
-        onToggleSelection={onToggleSelection}
-        pendingAssetIds={new Set()}
-        isLocked={false}
-        isDelivered={false}
-      />,
-    );
-
-    expect(screen.queryByRole("button", { name: "Foto anterior" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Foto siguiente" })).toBeDefined();
-
-    rerender(
-      <ProofLightbox
-        assets={assetsFor(3)}
-        urls={{}}
-        index={2}
-        onClose={onClose}
-        onNavigate={onNavigate}
-        onImageError={onImageError}
-        onToggleSelection={onToggleSelection}
-        pendingAssetIds={new Set()}
-        isLocked={false}
-        isDelivered={false}
-      />,
-    );
-
-    expect(screen.getByRole("button", { name: "Foto anterior" })).toBeDefined();
-    expect(screen.queryByRole("button", { name: "Foto siguiente" })).toBeNull();
-  });
-
-  it("navigates via the on-screen prev/next buttons", () => {
-    renderLightbox();
-
-    fireEvent.click(screen.getByRole("button", { name: "Foto siguiente" }));
-    expect(onNavigate).toHaveBeenCalledWith(2);
-
-    fireEvent.click(screen.getByRole("button", { name: "Foto anterior" }));
-    expect(onNavigate).toHaveBeenCalledWith(0);
-  });
-
-  it("locks body scroll while mounted, and restores it on unmount", () => {
-    const { unmount } = renderLightbox({ assets: assetsFor(1), index: 0 });
-
-    expect(document.body.style.overflow).toBe("hidden");
-
-    unmount();
-
-    expect(document.body.style.overflow).toBe("");
-  });
-
-  it("moves focus to the close button on open", () => {
+  it("shows the whole photograph rather than cropping it, which is what task #145's uniform tile box traded on", () => {
     renderLightbox({ assets: assetsFor(1), index: 0 });
 
-    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cerrar" }));
+    expect(screen.getByAltText("IMG_0001.JPG").className).toContain("object-contain");
   });
 
-  // Task #24: the client can toggle selection from the full-screen view too,
-  // not only the grid tile behind it.
-  describe("selection toggle", () => {
-    it("shows 'Seleccionar' for an unselected asset and calls onToggleSelection(id, true) on click", () => {
-      renderLightbox({ assets: assetsFor(1, [{ isSelected: false }]), index: 0 });
+  // The mock draws `.lb__wm` (client.html:504-509) because its stage is a CSS
+  // gradient with nothing to protect. Here the real mark is composited into
+  // the proof bytes by `processProof`; a CSS copy would be a FAKE mark a
+  // client deletes from the DOM in seconds. Guarded rather than merely
+  // documented, because "add the watermark from the mock" is exactly the note
+  // a future reviewer would leave on this file.
+  it("draws no CSS watermark — the real one is in the proof bytes", () => {
+    renderLightbox({ assets: assetsFor(1), index: 0 });
 
-      fireEvent.click(screen.getByRole("button", { name: "Seleccionar" }));
+    expect(screen.queryByText(/Alejo Frames/i)).toBeNull();
+    expect(dialog().querySelector('[class*="rotate-"]')).toBeNull();
+  });
 
-      expect(onToggleSelection).toHaveBeenCalledWith("a1", true);
+  describe("modal dialog mechanics", () => {
+    it("closes on Escape", () => {
+      renderLightbox();
+
+      fireEvent.keyDown(dialog(), { key: "Escape" });
+
+      expect(onClose).toHaveBeenCalledTimes(1);
     });
 
-    it("shows the selected state and calls onToggleSelection(id, false) to deselect", () => {
+    it("moves focus into the dialog on open, onto the way out", () => {
+      renderLightbox({ assets: assetsFor(1), index: 0 });
+
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cerrar" }));
+    });
+
+    // The trap. Tab from the LAST control inside the dialog must come back to
+    // the first, never reach the gallery page underneath. At index 1 of 3
+    // every control is enabled, so the ring is: Cerrar, anterior, elegir,
+    // siguiente.
+    it("traps Tab inside the dialog instead of letting it reach the page behind", async () => {
+      const user = userEvent.setup();
+      renderLightbox();
+
+      const close = screen.getByRole("button", { name: "Cerrar" });
+      const previous = screen.getByRole("button", { name: "Foto anterior" });
+      const pick = screen.getByRole("button", { name: "Elegir esta foto" });
+      const next = screen.getByRole("button", { name: "Foto siguiente" });
+
+      expect(document.activeElement).toBe(close);
+      await user.tab();
+      expect(document.activeElement).toBe(previous);
+      await user.tab();
+      expect(document.activeElement).toBe(pick);
+      await user.tab();
+      expect(document.activeElement).toBe(next);
+      // The wrap: without a trap this lands on <body> (or on the gallery page
+      // behind), which is the exact defect this test exists for.
+      await user.tab();
+      expect(document.activeElement).toBe(close);
+    });
+
+    it("wraps Shift+Tab backwards from the first control to the last", async () => {
+      const user = userEvent.setup();
+      renderLightbox();
+
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Cerrar" }));
+
+      await user.tab({ shift: true });
+
+      expect(document.activeElement).toBe(screen.getByRole("button", { name: "Foto siguiente" }));
+    });
+
+    // The other half of "must not strand focus": after closing, the client is
+    // back in the grid with focus on the tile they came from, so the next Tab
+    // continues from where they were rather than at the top of the document.
+    it("returns focus to whatever opened it when it closes", async () => {
+      function Harness() {
+        const [open, setOpen] = useState(false);
+        return (
+          <>
+            <button type="button" onClick={() => setOpen(true)}>
+              Ver IMG_0001.JPG
+            </button>
+            {open && (
+              <ProofLightbox
+                {...lightboxProps({ assets: assetsFor(1), index: 0 })}
+                onClose={() => setOpen(false)}
+              />
+            )}
+          </>
+        );
+      }
+
+      const user = userEvent.setup();
+      render(<Harness />);
+      // Captured BEFORE opening: the modal marks everything outside itself
+      // `aria-hidden`, so a role query would no longer find this button.
+      const trigger = screen.getByRole("button", { name: "Ver IMG_0001.JPG" });
+
+      await user.click(trigger);
+      expect(screen.getByRole("dialog")).toBeDefined();
+
+      await user.click(screen.getByRole("button", { name: "Cerrar" }));
+
+      // Radix restores focus on a macrotask after unmount, hence waitFor.
+      await waitFor(() => expect(document.activeElement).toBe(trigger));
+    });
+
+    it("hides the gallery page behind it from assistive tech while it is open", () => {
+      const { container } = render(
+        <>
+          <button type="button">Un control de la grilla</button>
+          <ProofLightbox {...lightboxProps()} />
+        </>,
+      );
+
+      // The dialog is in a portal on <body>; the grid's own container is a
+      // sibling, and the modal marks it hidden.
+      expect(container.getAttribute("aria-hidden")).toBe("true");
+      expect(screen.queryByRole("button", { name: "Un control de la grilla" })).toBeNull();
+      expect(screen.getByRole("button", { name: "Cerrar" })).toBeDefined();
+    });
+
+    // Asserted against the component's OWN inline lock, not the primitive's
+    // — see the effect's comment in proof-lightbox.tsx for why it keeps one.
+    it("locks background scroll while open and releases it on close", () => {
+      const { unmount } = renderLightbox({ assets: assetsFor(1), index: 0 });
+
+      expect(document.body.style.overflow).toBe("hidden");
+
+      unmount();
+
+      expect(document.body.style.overflow).toBe("");
+    });
+
+    it("names the dialog after the photo on screen", () => {
+      renderLightbox({ assets: assetsFor(3), index: 1 });
+
+      expect(screen.getByRole("dialog", { name: "IMG_0002.JPG" })).toBeDefined();
+    });
+  });
+
+  describe("navigation", () => {
+    it("navigates with ArrowRight/ArrowLeft from the middle of the set", () => {
+      renderLightbox();
+
+      fireEvent.keyDown(dialog(), { key: "ArrowRight" });
+      expect(onNavigate).toHaveBeenCalledWith(2);
+
+      fireEvent.keyDown(dialog(), { key: "ArrowLeft" });
+      expect(onNavigate).toHaveBeenCalledWith(0);
+    });
+
+    it("does nothing on ArrowLeft at the first photo, or ArrowRight at the last", () => {
+      const { rerender } = render(<ProofLightbox {...lightboxProps({ index: 0 })} />);
+
+      fireEvent.keyDown(dialog(), { key: "ArrowLeft" });
+      expect(onNavigate).not.toHaveBeenCalled();
+
+      rerender(<ProofLightbox {...lightboxProps({ index: 2 })} />);
+
+      fireEvent.keyDown(dialog(), { key: "ArrowRight" });
+      expect(onNavigate).not.toHaveBeenCalled();
+    });
+
+    it("navigates via the on-screen prev/next buttons", () => {
+      renderLightbox();
+
+      fireEvent.click(screen.getByRole("button", { name: "Foto siguiente" }));
+      expect(onNavigate).toHaveBeenCalledWith(2);
+
+      fireEvent.click(screen.getByRole("button", { name: "Foto anterior" }));
+      expect(onNavigate).toHaveBeenCalledWith(0);
+    });
+
+    // Task #146 changed this from HIDING the unusable control to disabling
+    // it. A hidden button re-flows the footer row, which moves the pick
+    // button under a thumb already travelling towards it — and the pick
+    // button is pressed 15 times in a run of 84.
+    it("keeps prev/next mounted at the ends of the set and disables them instead of hiding them", () => {
+      const { rerender } = render(<ProofLightbox {...lightboxProps({ index: 0 })} />);
+
+      expect(
+        (screen.getByRole("button", { name: "Foto anterior" }) as HTMLButtonElement).disabled,
+      ).toBe(true);
+      expect(
+        (screen.getByRole("button", { name: "Foto siguiente" }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+
+      rerender(<ProofLightbox {...lightboxProps({ index: 2 })} />);
+
+      expect(
+        (screen.getByRole("button", { name: "Foto anterior" }) as HTMLButtonElement).disabled,
+      ).toBe(false);
+      expect(
+        (screen.getByRole("button", { name: "Foto siguiente" }) as HTMLButtonElement).disabled,
+      ).toBe(true);
+    });
+  });
+
+  // Task #24/#146: the whole point of the redesign — 84 photos means 168 taps
+  // if choosing requires closing the viewer first.
+  describe("selection toggle", () => {
+    it("offers to pick an unselected photo without leaving the full-screen view", () => {
+      renderLightbox({ assets: assetsFor(1, [{ isSelected: false }]), index: 0 });
+
+      fireEvent.click(screen.getByRole("button", { name: "Elegir esta foto" }));
+
+      expect(onToggleSelection).toHaveBeenCalledWith("a1", true);
+      expect(onClose).not.toHaveBeenCalled();
+    });
+
+    it("shows the picked state and calls onToggleSelection(id, false) to unpick", () => {
       renderLightbox({ assets: assetsFor(1, [{ isSelected: true }]), index: 0 });
 
-      const button = screen.getByRole("button", { name: /Seleccionada/ });
+      const button = screen.getByRole("button", { name: "Elegida" });
       expect(button.getAttribute("aria-pressed")).toBe("true");
 
       fireEvent.click(button);
 
       expect(onToggleSelection).toHaveBeenCalledWith("a1", false);
+    });
+
+    // "Picked vs unpicked is legible and not by colour alone" is an epic-wide
+    // rule (#140), and the three channels are asserted SEPARATELY on purpose:
+    // one of them silently disappearing while the other two carry the state
+    // is precisely how a colour-only regression sneaks back in.
+    describe("picked is never colour alone", () => {
+      it("channel 1 — a ✓ glyph appears, and is absent when unpicked", () => {
+        const { rerender } = render(
+          <ProofLightbox
+            {...lightboxProps({ assets: assetsFor(1, [{ isSelected: true }]), index: 0 })}
+          />,
+        );
+
+        expect(screen.getByRole("button", { name: "Elegida" }).textContent).toContain("✓");
+
+        rerender(
+          <ProofLightbox
+            {...lightboxProps({ assets: assetsFor(1, [{ isSelected: false }]), index: 0 })}
+          />,
+        );
+
+        expect(screen.getByRole("button", { name: "Elegir esta foto" }).textContent).not.toContain(
+          "✓",
+        );
+      });
+
+      it("channel 2 — the words change, so the state survives a greyscale screenshot", () => {
+        const { rerender } = render(
+          <ProofLightbox
+            {...lightboxProps({ assets: assetsFor(1, [{ isSelected: true }]), index: 0 })}
+          />,
+        );
+
+        expect(screen.getByRole("button", { name: "Elegida" })).toBeDefined();
+        expect(screen.queryByRole("button", { name: "Elegir esta foto" })).toBeNull();
+
+        rerender(
+          <ProofLightbox
+            {...lightboxProps({ assets: assetsFor(1, [{ isSelected: false }]), index: 0 })}
+          />,
+        );
+
+        expect(screen.getByRole("button", { name: "Elegir esta foto" })).toBeDefined();
+        expect(screen.queryByRole("button", { name: "Elegida" })).toBeNull();
+      });
+
+      // CLASS-LEVEL, and named that way deliberately: jsdom paints nothing, so
+      // this proves the filled/outline SWITCH is wired, not that it renders.
+      // The painted result is evidence a capture provides, not this file.
+      it("channel 3 — the button declares a filled block when picked and a hairline outline when not", () => {
+        const { rerender } = render(
+          <ProofLightbox
+            {...lightboxProps({ assets: assetsFor(1, [{ isSelected: true }]), index: 0 })}
+          />,
+        );
+
+        expect(screen.getByRole("button", { name: "Elegida" }).className).toContain("bg-accent");
+
+        rerender(
+          <ProofLightbox
+            {...lightboxProps({ assets: assetsFor(1, [{ isSelected: false }]), index: 0 })}
+          />,
+        );
+
+        const unpicked = screen.getByRole("button", { name: "Elegir esta foto" });
+        expect(unpicked.className).not.toContain("bg-accent");
+        expect(unpicked.className).toContain("border-line-2");
+      });
     });
 
     it("disables the toggle button while this asset's toggle is pending", () => {
@@ -235,7 +436,9 @@ describe("ProofLightbox", () => {
         pendingAssetIds: new Set(["a1"]),
       });
 
-      const button = screen.getByRole("button", { name: "Seleccionar" }) as HTMLButtonElement;
+      const button = screen.getByRole("button", {
+        name: "Elegir esta foto",
+      }) as HTMLButtonElement;
       expect(button.disabled).toBe(true);
     });
 
@@ -248,7 +451,9 @@ describe("ProofLightbox", () => {
         isLocked: true,
       });
 
-      const button = screen.getByRole("button", { name: "Seleccionar" }) as HTMLButtonElement;
+      const button = screen.getByRole("button", {
+        name: "Elegir esta foto",
+      }) as HTMLButtonElement;
       expect(button.disabled).toBe(true);
     });
   });
@@ -292,27 +497,11 @@ describe("ProofLightbox", () => {
   });
 
   describe("touch swipe", () => {
-    // The swipe gesture lives on the container that wraps the image and the
-    // prev/next controls — not on the <img> itself — so touch events are
-    // dispatched against that container, the same element handleTouchStart/
-    // handleTouchEnd are actually bound to.
-    function swipeContainer(): HTMLElement {
-      const dialog = screen.getByRole("dialog");
-      const container = dialog.querySelector('[class*="relative"]');
-      if (!container) throw new Error("swipe container not found");
-      return container as HTMLElement;
-    }
-
-    function touchList(clientX: number) {
-      return [{ clientX }];
-    }
-
     it("swipes left to advance to the next photo", () => {
       renderLightbox();
 
-      const container = swipeContainer();
-      fireEvent.touchStart(container, { touches: touchList(200) });
-      fireEvent.touchEnd(container, { changedTouches: touchList(100) });
+      fireEvent.touchStart(dialog(), { touches: touchList(200) });
+      fireEvent.touchEnd(dialog(), { changedTouches: touchList(100) });
 
       expect(onNavigate).toHaveBeenCalledWith(2);
     });
@@ -320,9 +509,8 @@ describe("ProofLightbox", () => {
     it("swipes right to go to the previous photo", () => {
       renderLightbox();
 
-      const container = swipeContainer();
-      fireEvent.touchStart(container, { touches: touchList(100) });
-      fireEvent.touchEnd(container, { changedTouches: touchList(200) });
+      fireEvent.touchStart(dialog(), { touches: touchList(100) });
+      fireEvent.touchEnd(dialog(), { changedTouches: touchList(200) });
 
       expect(onNavigate).toHaveBeenCalledWith(0);
     });
@@ -333,9 +521,8 @@ describe("ProofLightbox", () => {
     it("does not navigate when the movement is below the 40px swipe threshold", () => {
       renderLightbox();
 
-      const container = swipeContainer();
-      fireEvent.touchStart(container, { touches: touchList(200) });
-      fireEvent.touchEnd(container, { changedTouches: touchList(180) });
+      fireEvent.touchStart(dialog(), { touches: touchList(200) });
+      fireEvent.touchEnd(dialog(), { changedTouches: touchList(180) });
 
       expect(onNavigate).not.toHaveBeenCalled();
     });
@@ -343,9 +530,8 @@ describe("ProofLightbox", () => {
     it("does not navigate on a swipe left past the last photo", () => {
       renderLightbox({ index: 2 });
 
-      const container = swipeContainer();
-      fireEvent.touchStart(container, { touches: touchList(200) });
-      fireEvent.touchEnd(container, { changedTouches: touchList(100) });
+      fireEvent.touchStart(dialog(), { touches: touchList(200) });
+      fireEvent.touchEnd(dialog(), { changedTouches: touchList(100) });
 
       expect(onNavigate).not.toHaveBeenCalled();
     });
@@ -353,11 +539,20 @@ describe("ProofLightbox", () => {
     it("does not navigate on a swipe right before the first photo", () => {
       renderLightbox({ index: 0 });
 
-      const container = swipeContainer();
-      fireEvent.touchStart(container, { touches: touchList(100) });
-      fireEvent.touchEnd(container, { changedTouches: touchList(200) });
+      fireEvent.touchStart(dialog(), { touches: touchList(100) });
+      fireEvent.touchEnd(dialog(), { changedTouches: touchList(200) });
 
       expect(onNavigate).not.toHaveBeenCalled();
+    });
+
+    it("tells the client the gesture exists, and says nothing when there is nowhere to swipe to", () => {
+      const { rerender } = render(<ProofLightbox {...lightboxProps()} />);
+
+      expect(screen.getByText("Deslizá para pasar")).toBeDefined();
+
+      rerender(<ProofLightbox {...lightboxProps({ assets: assetsFor(1), index: 0 })} />);
+
+      expect(screen.queryByText("Deslizá para pasar")).toBeNull();
     });
   });
 });

@@ -5,8 +5,18 @@ import { createClient, type CreateClientState } from "@/app/dashboard/clients/ac
 
 const initialState: CreateClientState = { status: "idle" };
 
+// Task #135 sweep: rendered ONLY inside <DashboardClientCreateDialog>'s
+// <DialogContent>, which portals to `document.body` — outside
+// `[data-surface="app"]` (see that file's header comment on "WHY THERE IS
+// NOT A SINGLE `app-*` UTILITY BELOW THE TRIGGER"). `--app-radius-sm` and
+// `--app-text-base` are declared under that attribute and would resolve to
+// nothing here, so this stays on brand tokens and plain Tailwind scales
+// rather than the app-surface ones — `rounded-[5px]`/`text-sm` (14px) are
+// literal stand-ins for the values `--app-radius-sm`/`--app-text-base`
+// carry, chosen so a phone/desk field and a dialog field read as the same
+// size without this form being able to reach the token that says so.
 const inputClass =
-  "border-line-2 focus-visible:border-accent text-fg placeholder:text-fg-mute rounded-sm border bg-transparent px-4 py-3 text-[15px] transition-colors outline-none";
+  "border-line-2 focus-visible:border-accent text-fg placeholder:text-fg-mute rounded-[5px] border bg-transparent px-4 py-3 text-sm transition-colors outline-none";
 
 export function ClientForm({
   onCreated,
@@ -58,8 +68,13 @@ export function ClientForm({
     // <GalleryForm> — because the dialog that now wraps this form supplies
     // its own padding and its own <DialogTitle> with that exact wording.
     <form action={formAction} className="flex flex-col gap-5">
+      {/* Task #135 sweep: `.label` (globals.css's mono, uppercase,
+          0.22em-tracked eyebrow) doesn't survive under /dashboard — epic
+          #125's own done-when. Same plain-text replacement
+          attach-gallery-clients-form.tsx already established for its own
+          field label. */}
       <div className="flex flex-col gap-2">
-        <label htmlFor="name" className="label text-fg-mute">
+        <label htmlFor="name" className="text-fg-mute text-xs tracking-wide uppercase">
           Nombre
         </label>
         <input
@@ -75,7 +90,7 @@ export function ClientForm({
       </div>
 
       <div className="flex flex-col gap-2">
-        <label htmlFor="email" className="label text-fg-mute">
+        <label htmlFor="email" className="text-fg-mute text-xs tracking-wide uppercase">
           Correo electrónico
         </label>
         <input
@@ -93,7 +108,7 @@ export function ClientForm({
       </div>
 
       <div className="flex flex-col gap-2">
-        <label htmlFor="phone" className="label text-fg-mute">
+        <label htmlFor="phone" className="text-fg-mute text-xs tracking-wide uppercase">
           WhatsApp (opcional)
         </label>
         <input
@@ -118,10 +133,14 @@ export function ClientForm({
         </p>
       )}
 
+      {/* Task #135 sweep: this used to be the marketing CTA — uppercase,
+          0.1em-tracked, 13px, the same button shape as the public site's
+          hero/header buttons. Portaled, like `inputClass` above, so this
+          reads brand tokens and a literal radius, not `app-*`. */}
       <button
         type="submit"
         disabled={pending}
-        className="border-line-2 hover:border-accent hover:text-accent-2 rounded-sm border px-[18px] py-[12px] text-[13px] tracking-[0.1em] uppercase transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+        className="border-line-2 hover:bg-bg-2 hover:border-fg-mute inline-flex min-h-11 items-center justify-center rounded-[5px] border px-4 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50"
       >
         {pending ? "Guardando…" : "Agregar cliente"}
       </button>

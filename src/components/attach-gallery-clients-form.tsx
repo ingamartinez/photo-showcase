@@ -17,8 +17,15 @@ import type { ClientForPicker } from "@/lib/clients";
 
 const initialState: AttachGalleryClientsState = { status: "idle" };
 
+// Task #135 sweep: `text-[15px]` was an ad-hoc one-off (the "each screen
+// invents its own scale" defect globals.css's app-surface comment names
+// directly). `text-sm` (14px) instead, matching `--app-text-base`'s own
+// value rather than the token itself: this file is not named `dashboard-*`
+// and does not live under `src/app/dashboard/**`, so task #175's ESLint
+// rule correctly refuses `app-*` utilities here even though the component
+// only ever renders inside that scope.
 const inputClass =
-  "border-line-2 focus-visible:border-accent text-fg placeholder:text-fg-mute rounded-sm border bg-transparent px-4 py-3 text-[15px] transition-colors outline-none";
+  "border-line-2 focus-visible:border-accent text-fg placeholder:text-fg-mute text-sm rounded-[5px] border bg-transparent px-4 py-3 transition-colors outline-none";
 
 export function AttachGalleryClientsForm({
   galleryId,
@@ -65,10 +72,18 @@ export function AttachGalleryClientsForm({
         ))}
       </select>
 
+      {/* Task #135 sweep: this used to be the marketing CTA — uppercase,
+          0.1em-tracked, 13px. The mock's own plain `.btn`
+          (design/system/dashboard.html:220-227) never uppercases or tracks a
+          button label; its only states are a border and an `--app-raised`
+          hover wash, never brass (epic #125's rule that brass is a fill,
+          never a hover/focus wash). Brand tokens (`bg-bg-2`), not `app-*` —
+          see `inputClass`'s own comment above for why this file cannot name
+          the token, and `bg-bg-2` is `--app-raised`'s own value anyway. */}
       <button
         type="submit"
         disabled={pending}
-        className="border-line-2 hover:border-accent hover:text-accent-2 min-h-11 self-start rounded-[6px] border px-[16px] py-[10px] text-[13px] tracking-[0.1em] uppercase transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-6"
+        className="border-line-2 hover:bg-bg-2 hover:border-fg-mute inline-flex min-h-11 items-center justify-center self-start rounded-[5px] border px-4 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-6"
       >
         {pending ? "Agregando…" : "Agregar"}
       </button>

@@ -19,8 +19,16 @@
 //
 // Comparison is byte-for-byte against the same `buildSchemaArtifact()` the
 // emitter script uses (see ./schema-artifact.ts on why that is one function and
-// not two), so a header edit, a lost trailing newline, or a reordered type all
-// fail here too — not only a renamed field.
+// not two), so a type or field ADDED, REMOVED or RENAMED fails here, and so do
+// a header edit and a lost trailing newline.
+//
+// WHAT IT CANNOT SEE, because byte-for-byte is not the same as
+// change-for-change: a REORDERED registration. `builder.toSchema()` sorts
+// (Pothos defaults `sortSchema: true`, see ./schema-artifact.ts), so swapping
+// two `t.expose*` lines in ./types/asset.ts produces an identical artifact and
+// this suite stays green — measured, 2 passed, not assumed. Nothing is stale in
+// that case, so there is nothing to catch; it is a limit on the failure modes
+// this guard has, not a gap in the ones it exists for.
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";

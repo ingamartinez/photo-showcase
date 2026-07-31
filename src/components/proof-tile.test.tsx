@@ -77,11 +77,13 @@ describe("ProofTile", () => {
   // is present, not a measured contrast ratio — jsdom composites nothing. What
   // it guards is that the deviation from the mock does not get "tidied back"
   // to the mock's own `.pick` (client.html:200-208), which carries no shadow:
-  // over an RGB-128 photo the mock's disc (~2.1:1) and ring (~1.9:1) both miss
-  // WCAG 1.4.11's 3:1, and the shadow is the only thing standing in for them
-  // there. Both states, since the shadow is on the shared class list.
+  // over an RGB-128 photo the mock's disc (2.13:1) and ring (1.94:1) both miss
+  // WCAG 1.4.11's 3:1, and the shadow is what backs the control there. It does
+  // not make the control conforming — see proof-tile.tsx's own note on what a
+  // blurred edge can and cannot buy — so this test's name says only that the
+  // class survives. Both states, since the shadow is on the shared class list.
   it.each([true, false])(
-    "keeps the pick control's shadow class, its only affordance on a mid-tone photo (isSelected=%s)",
+    "keeps the pick control's shadow class, the mid-tone backing the mock does not have (isSelected=%s)",
     (isSelected) => {
       renderTile({ isSelected });
 

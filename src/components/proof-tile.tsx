@@ -198,25 +198,35 @@ export function ProofTile({
           `text-shadow` on `.tile__n` above). The mock's unpicked control is a
           1px `rgba(236,234,242,0.5)` ring over a `rgba(7,7,9,0.42)` disc
           (client.html:204-205) and nothing else. Composited over a flat photo
-          and measured as WCAG relative luminance, those two channels cover for
-          each other at the EXTREMES — over a bright RGB-230 photo the dark disc
-          reaches ~3.5:1 while the pale ring vanishes; over a dark RGB-30 photo
-          the ring passes while the disc vanishes — but over a MID-TONE RGB-128
-          photo both fail at once: the disc is ~2.1:1 and the ring ~1.9:1,
-          against 1.4.11's 3:1 floor for a non-text control. Skin, grass, a grey
-          suit, a stone church wall: for a wedding set that is the most common
-          tone there is, and it is precisely the case the slice's smooth-gradient
+          and measured as WCAG relative luminance, the mock's two channels are
+          below 1.4.11's 3:1 at every photo tone — disc 2.83:1 over RGB-230,
+          2.13:1 over RGB-128, 1.10:1 over RGB-30 — and only the ring's 4.49:1
+          over a dark photo ever passes. The mid-tone case is the worst, where
+          disc 2.13:1 and ring 1.94:1 fail together. Skin, grass, a grey suit, a
+          stone church wall: for a wedding set that is the most common tone
+          there is, and it is precisely the case the slice's smooth-gradient
           fixtures could not show.
 
-          An outer shadow rather than a darker disc (`rgba(7,7,9,0.6)`, which
-          would take the mid-tone disc to ~3.0:1) for two reasons: it lands the
-          affordance at EVERY photo tone instead of nudging one case just over
+          An outer shadow rather than a darker disc for two reasons: it lands
+          the affordance at EVERY photo tone instead of nudging one case towards
           the line, and it keeps the mock's own palette values untouched — the
           same trade `.tile__n` above already made, where only the backing was
-          added and the colour stayed the mock's. On both states rather than
-          only the unpicked one, because `transition-colors` does not animate
-          box-shadow and a shadow that appeared and vanished on each tap would
-          pop. */}
+          added and the colour stayed the mock's. `rgba(7,7,9,0.6)`, the obvious
+          alternative, reaches only 2.99:1 at mid-tone and so does not clear the
+          floor either. On both states rather than only the unpicked one,
+          because `transition-colors` does not animate box-shadow and a shadow
+          that appeared and vanished on each tap would pop.
+
+          BE HONEST ABOUT WHAT THIS SHADOW IS AND IS NOT. It does not create a
+          conforming boundary: a `0 1px 6px` blur composites to roughly 1.25:1
+          against the disc and 1.70:1 against the photo. What it adds is a
+          luminance GRADIENT, which human edge detection responds to and which
+          is the standard treatment for a control sitting over imagery — but it
+          is not a measurable 3:1 step, and nothing here claims 1.4.11
+          conformance. The only computably conforming fix is a materially darker
+          disc (α≈0.72 → 3.68:1 at mid-tone), and that is a real change to the
+          mock's palette rather than an addition to it, so it is the owner's
+          call and not this slice's. Recorded here as a known gap. */}
       <button
         type="button"
         onClick={onToggleSelection}

@@ -123,9 +123,37 @@ describe("DashboardNav", () => {
     render(<DashboardNav />);
 
     const current = screen.getByRole("link", { name: "Clientes" });
-    expect(current.className).toContain("lg:bg-[var(--app-raised)]");
-    expect(current.className).toContain("lg:hover:bg-[var(--app-raised)]");
+    // `lg:bg-app-raised` since #175 — the same token, reached through the
+    // `@theme` alias instead of an arbitrary value. Asserted as whole class
+    // tokens: `toContain("lg:bg-app-raised")` alone would also be satisfied by
+    // `lg:bg-app-raised-something`, and more to the point it would keep
+    // passing if tailwind-merge dropped one of them and left the other.
+    expect(current.className.split(/\s+/)).toContain("lg:bg-app-raised");
+    expect(current.className.split(/\s+/)).toContain("lg:hover:bg-app-raised");
     expect(current.className).not.toContain("bg-accent");
+  });
+
+  // #175 migrated this component off `text-[length:var(--app-text-*)]`. The
+  // `length:` hint in those strings was not decoration: it was what told
+  // tailwind-merge the class was a SIZE. Named aliases carry no such hint, so
+  // twMerge reads `text-app-micro` as a text colour unless src/lib/utils.ts
+  // teaches it otherwise — and this component then hands `cn()` a size and a
+  // colour in the same call, so the size is DELETED from the rendered
+  // className. Nothing throws; the item just renders at the inherited size.
+  //
+  // src/lib/utils.test.ts pins the merge behaviour in isolation. This asserts
+  // it on the actual rendered element, which is what also catches the class
+  // surviving cn() but being dropped from the markup for any other reason.
+  it("keeps the app font sizes on the rendered item, both current and not", () => {
+    usePathnameMock.mockReturnValue("/dashboard/clients");
+    render(<DashboardNav />);
+
+    for (const name of ["Clientes", "Panel"]) {
+      const classes = screen.getByRole("link", { name }).className.split(/\s+/);
+
+      expect(classes, `${name} lost its phone font size`).toContain("text-app-micro");
+      expect(classes, `${name} lost its desktop font size`).toContain("lg:text-app-base");
+    }
   });
 
   // The sidebar reads in source order: wordmark, nav, account. It briefly did

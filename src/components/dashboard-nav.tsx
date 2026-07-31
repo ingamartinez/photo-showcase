@@ -75,7 +75,7 @@ export function DashboardNav() {
       // dashboard.html too, with the reasoning kept there. Nothing here
       // should reorder the sidebar: the DOM order is the reading order and
       // the tab order, and they now agree.
-      className="border-line-2 fixed inset-x-0 bottom-0 z-40 grid h-[var(--app-tabbar-h)] grid-cols-3 border-t bg-[var(--app-surface)] pb-[env(safe-area-inset-bottom,0px)] lg:static lg:flex lg:h-auto lg:flex-col lg:gap-[2px] lg:border-t-0 lg:bg-transparent lg:p-0"
+      className="border-line-2 bg-app-surface fixed inset-x-0 bottom-0 z-40 grid h-[var(--app-tabbar-h)] grid-cols-3 border-t pb-[env(safe-area-inset-bottom,0px)] lg:static lg:flex lg:h-auto lg:flex-col lg:gap-[2px] lg:border-t-0 lg:bg-transparent lg:p-0"
     >
       {DASHBOARD_NAV_ITEMS.map(({ href, label, icon: Icon }) => {
         const isCurrent = isNavItemCurrent(pathname, href);
@@ -90,9 +90,15 @@ export function DashboardNav() {
             // :527-528). The status palette is deliberately not the brand
             // accent (dashboard.html:82-91), and hover is the same raised
             // surface, never the accent.
+            // The font sizes here are `text-app-*` rather than
+            // `text-[length:var(--app-text-*)]` since #175. That is only safe
+            // because src/lib/utils.ts teaches tailwind-merge that they ARE
+            // sizes: unconfigured, twMerge reads `text-app-micro` as a text
+            // colour and the `text-fg-mute` on the next line deletes it from
+            // the output — the item would silently render at inherited size.
             className={cn(
-              "lg:hover:text-fg relative flex flex-col items-center justify-center gap-[3px] text-[length:var(--app-text-micro)] transition-colors lg:min-h-[38px] lg:flex-row lg:justify-start lg:gap-2.5 lg:rounded-[var(--app-radius-sm)] lg:px-2.5 lg:text-[length:var(--app-text-base)] lg:hover:bg-[var(--app-raised)]",
-              isCurrent ? "text-fg lg:bg-[var(--app-raised)]" : "text-fg-mute lg:text-fg-dim",
+              "lg:hover:text-fg text-app-micro lg:text-app-base lg:hover:bg-app-raised relative flex flex-col items-center justify-center gap-[3px] transition-colors lg:min-h-[38px] lg:flex-row lg:justify-start lg:gap-2.5 lg:rounded-[var(--app-radius-sm)] lg:px-2.5",
+              isCurrent ? "text-fg lg:bg-app-raised" : "text-fg-mute lg:text-fg-dim",
             )}
           >
             <Icon

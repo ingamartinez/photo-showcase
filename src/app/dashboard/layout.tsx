@@ -33,11 +33,11 @@ export default async function DashboardLayout({
   return (
     <div
       data-surface="app"
-      className="text-fg flex flex-1 flex-col bg-[var(--app-ground)] text-[length:var(--app-text-base)] leading-[var(--app-line-height)] lg:grid lg:grid-cols-[var(--app-sidebar-w)_1fr]"
+      className="text-fg bg-app-ground text-app-base flex flex-1 flex-col leading-[var(--app-line-height)] lg:grid lg:grid-cols-[var(--app-sidebar-w)_1fr]"
     >
       {/* Phone: the top bar. Desktop: the same element IS the sidebar column
           (dashboard.html:153-157, :505-512). */}
-      <header className="border-line flex items-center justify-between gap-3 border-b bg-[var(--app-surface)] px-4 py-3 lg:flex-col lg:items-stretch lg:justify-start lg:gap-6 lg:border-r lg:border-b-0 lg:px-3 lg:py-[18px]">
+      <header className="border-line bg-app-surface flex items-center justify-between gap-3 border-b px-4 py-3 lg:flex-col lg:items-stretch lg:justify-start lg:gap-6 lg:border-r lg:border-b-0 lg:px-3 lg:py-[18px]">
         <div className="lg:px-2.5 lg:pt-1">
           {/* The wordmark stays serif — the mock keeps `--serif` here at 18px
               (dashboard.html:158-159). What the panel drops is the editorial
@@ -48,7 +48,7 @@ export default async function DashboardLayout({
           <div className="font-serif text-[18px] tracking-[-0.01em]">
             Alejo <span className="text-accent">Frames</span>
           </div>
-          <span className="text-fg-mute hidden text-[length:var(--app-text-micro)] tracking-[0.06em] uppercase lg:mt-[3px] lg:block">
+          <span className="text-fg-mute text-app-micro hidden tracking-[0.06em] uppercase lg:mt-[3px] lg:block">
             Panel
           </span>
         </div>
@@ -69,7 +69,7 @@ export default async function DashboardLayout({
               rather than the mock's `display: none` there, deliberately:
               it costs no pixels either way, and "which account am I signed
               in as" is worth answering for a screen reader at every width. */}
-          <span className="text-fg-dim sr-only lg:not-sr-only lg:block lg:text-[length:var(--app-text-meta)] lg:break-all">
+          <span className="text-fg-dim lg:text-app-meta sr-only lg:not-sr-only lg:block lg:break-all">
             {session.user.email}
           </span>
           {/* Stays a real form submission to the `signOutAction` server
@@ -93,7 +93,7 @@ export default async function DashboardLayout({
           <form action={signOutAction}>
             <button
               type="submit"
-              className="text-fg-mute min-h-[var(--app-tap)] px-1 text-[length:var(--app-text-meta)] transition-colors hover:text-[var(--app-danger)] lg:min-h-6 lg:px-0 lg:text-left"
+              className="text-fg-mute text-app-meta hover:text-app-danger min-h-[var(--app-tap)] px-1 transition-colors lg:min-h-6 lg:px-0 lg:text-left"
             >
               Cerrar sesión
             </button>

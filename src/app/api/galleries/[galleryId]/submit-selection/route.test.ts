@@ -102,7 +102,13 @@ function matchesRow(row: Row, table: Record<string, unknown>, condition: unknown
 }
 
 function project(row: Row, columns: Record<string, unknown> | undefined): Row {
-  if (!columns) return row;
+  // Task #84: a real Postgres SELECT hands back a value, not a live handle —
+  // returning `row` itself here (as this fake once did) let two concurrently
+  // raced calls alias the SAME object, so the winner's synchronous
+  // `Object.assign` inside `update()` could mutate what the loser had
+  // already read. `{ ...row }` gives every caller its own snapshot, exactly
+  // like a real SELECT.
+  if (!columns) return { ...row };
   const projected: Row = {};
   for (const key of Object.keys(columns)) projected[key] = row[key];
   return projected;

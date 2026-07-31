@@ -44,6 +44,9 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Verify pre-commit fallback is intact
+        run: ./.husky/check-fallback-committed.sh
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:

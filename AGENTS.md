@@ -44,21 +44,46 @@ ever running `eslint --fix` or `prettier --write`. See #123 and the "Running lan
 in parallel" section of `KANBAN.md`.
 
 That gap is now closed at the commit itself, not just documented: `.husky/_/pre-commit`
-is a **tracked** file (re-included the same way `.claude/agents/` is re-included
-from an otherwise-ignored `.claude/*`), so it is present in a worktree's working
-tree from the moment `git worktree add` populates it — before any install ever
-runs. It checks for `node_modules` and **blocks the commit** with an explicit
-message if it is missing, telling you to run `bun install`. This is not the
-contradiction it sounds like — "the hook can't check for its own absence" is only
-true of the _generated_ hook, which genuinely does not exist yet; a _tracked_ file
-at the hook's own path is a different object with a different lifecycle, checked
-out with the rest of the working tree regardless of install state. Once `bun install` runs, husky's
-own `prepare` script overwrites this exact path with its normal generated shim
-(`node_modules/husky/index.js` does this unconditionally, every install), so the
-fallback governs only the window before the first install — exactly the window
-where the bug existed — and afterwards this repo behaves exactly as it did before
-this fix. `.husky/verify-hooks.sh` remains available for an earlier, more
-diagnostic check, but enforcement no longer depends on anyone remembering to run it.
+is a **tracked** file, added with a one-time `git add -f` despite living inside the
+otherwise fully-ignored `.husky/_/*` (its own generated `.gitignore` there says `*`,
+and that `.gitignore` is itself untracked). This is **not** the same mechanism as
+`.claude/agents/` being re-included from `.claude/*` — that one is a real, persisted
+`!` negation rule sitting in the committed top-level `.gitignore`, so anyone reading
+that file can see the exception. Nothing in `.gitignore` records this one; `git add
+-f` made the path tracked once, and it stays tracked because git tracks paths, not
+because any ignore rule says to keep it. Grep `.gitignore` for `.husky` and you will
+find nothing — that absence is not a hole in this document, it is the actual
+mechanism, and pretending otherwise hides the fragility described below.
+
+Being tracked, this file is present in a worktree's working tree from the moment
+`git worktree add` populates it — before any install ever runs. It checks for
+`node_modules` and **blocks the commit** with an explicit message if it is missing,
+telling you to run `bun install`. This is not the contradiction it sounds like —
+"the hook can't check for its own absence" is only true of the _generated_ hook,
+which genuinely does not exist yet; a _tracked_ file at the hook's own path is a
+different object with a different lifecycle, checked out with the rest of the
+working tree regardless of install state.
+
+**This protection is not durable on its own, and CI is what makes it durable.**
+`bun install` overwrites `.husky/_/pre-commit` on disk unconditionally, every time
+(`node_modules/husky/index.js` does this to every file under `.husky/_`, no
+exceptions). After that install, the file shows as `M` in `git status` — and an
+entirely ordinary `git add -A && git commit`, no flags, commits husky's 2-line
+generated delegator right over the fallback. Nothing local warns you; the working
+tree is clean afterward. A worktree built from that regressed commit is not back to
+the original silent-success bug — it is worse: the committed shim now delegates to
+`.husky/_/h`, which does not exist pre-install either, so the commit still fails,
+but with `.husky/_/h: No such file or directory` and no mention of `bun install`.
+`.github/workflows/ci.yml` runs `.husky/check-fallback-committed.sh` on every PR
+specifically to catch this: it asserts the committed blob at `.husky/_/pre-commit`
+still contains the fallback's `node_modules` check, and fails the build red if a
+plain commit has overwritten it. Also: `git rm --cached .husky/_/pre-commit` drops
+the protection outright — that stages a visible `D` rather than failing silently,
+but it is still worth knowing what that command does to this specific path.
+
+`.husky/verify-hooks.sh` remains available for an earlier, more diagnostic check
+before you attempt a commit, but enforcement no longer depends on anyone
+remembering to run it.
 
 **Decision (recorded 2026-07-30, updated 2026-07-31, #123):** we do not repoint
 `core.hooksPath` itself. It is shared repository config — verified identical from
@@ -74,4 +99,6 @@ only because they are long-lived and happened to run `bun install` once early on
 not because of anything structural, and migrating the harness that creates
 `.claude/worktrees/agent-*` is outside this repo's control anyway. `format:check`
 in the standing checklist remains as defense-in-depth for whatever this tracked
-hook cannot reach (e.g. `HUSKY=0`, or a commit made with `--no-verify`).
+hook cannot reach (e.g. `HUSKY=0`, or a commit made with `--no-verify`) — and, now,
+for the case where the fallback itself has been silently overwritten and
+`check-fallback-committed.sh` is what actually catches that, not `format:check`.

@@ -30,6 +30,15 @@ import { beforeAll, describe, expect, it } from "vitest";
 // stylesheet produce a rule for it".
 const GLOBALS = path.resolve(__dirname, "./globals.css");
 const BUTTON = path.resolve(__dirname, "../components/ui/button.tsx");
+const DROPDOWN_MENU = path.resolve(__dirname, "../components/ui/dropdown-menu.tsx");
+
+// The two ink-on-brass values, pinned BY VALUE rather than only by plumbing.
+// An earlier revision of this file asserted only that `text-accent-foreground`
+// resolved to `var(--accent-foreground)` and that the alias was declared —
+// which stayed green when the alias was mutated back to `var(--fg)`, i.e.
+// through the exact 2.02:1-on-brass defect this slice exists to remove. A
+// chain that is correctly connected to the wrong colour is still wrong.
+const INK = "#14100a";
 
 // Every semantic colour name referenced by the primitives installed in this
 // slice (button, table, dialog, dropdown-menu, badge, input, label), paired
@@ -125,6 +134,61 @@ describe("shadcn semantic colour tokens compile to real rules", () => {
         new RegExp(`(^|[^-\\w])--${name}:\\s*\\S`, "m"),
       );
     }
+  });
+
+  it("pins the ink-on-brass values, not just the plumbing that carries them", () => {
+    // --accent-foreground and --primary-foreground are the only two colours in
+    // the mapping whose whole reason to exist is a contrast ratio, so they are
+    // asserted by VALUE. #14100a on #c8a15a is 7.85:1; the `var(--fg)` these
+    // used to fall back to is 2.02:1 on the same brass. Nothing else in this
+    // file can tell those two apart.
+    const root = rootDeclarations();
+
+    expect(root).toMatch(new RegExp(`--accent-foreground:\\s*${INK}`, "i"));
+    expect(root).toMatch(new RegExp(`--primary-foreground:\\s*${INK}`, "i"));
+  });
+});
+
+describe("brass is a deliberate fill, never a focus or hover wash", () => {
+  // design/system/dashboard.html:82-91 — "STATUS PALETTE — semantic,
+  // deliberately NOT the brand accent". Brass fills exactly five things in the
+  // mock (:192, :223, :372, :437, :443) and every hover/focus surface is
+  // `var(--app-raised)` instead (:222, :527, :528). shadcn's dropdown-menu
+  // ships the opposite default because it means something else by "accent",
+  // so src/components/ui/dropdown-menu.tsx re-points those classes by hand.
+  //
+  // THIS IS THE REGRESSION THIS TEST EXISTS FOR: `shadcn add dropdown-menu
+  // --overwrite` silently restores the generated classes, and the result is a
+  // brass focus row at 2.02:1 that nothing else in the suite would notice.
+  const source = () => readFileSync(DROPDOWN_MENU, "utf8");
+
+  // Class strings only — the file's header comment quotes the generated
+  // classes on purpose to explain what was changed, and must not trip this.
+  const classStrings = () =>
+    source()
+      .split("\n")
+      .filter((line) => !line.trimStart().startsWith("//"))
+      .join("\n");
+
+  it("leaves no accent-based focus or open state in dropdown-menu.tsx", () => {
+    expect(classStrings()).not.toMatch(/focus:bg-accent/);
+    expect(classStrings()).not.toMatch(/data-open:bg-accent/);
+    expect(classStrings()).not.toMatch(/text-accent-foreground/);
+  });
+
+  it("uses the mock's own hover pairing instead", () => {
+    // `--muted` is `--bg-2`, which is what the mock calls `--app-raised`, and
+    // `--foreground` is `--fg`: byte-exact with `.tabbar__item:hover`.
+    const classes = classStrings();
+
+    expect(classes).toContain("focus:bg-muted");
+    expect(classes).toContain("focus:text-foreground");
+    expect(classes).toContain("data-open:bg-muted");
+    expect(classes).toContain("group-focus/dropdown-menu-item:text-foreground");
+  });
+
+  it("keeps the deviation documented, since the CLI would otherwise revert it", () => {
+    expect(source()).toContain("DELIBERATE, REVIEWED DEVIATION");
   });
 });
 

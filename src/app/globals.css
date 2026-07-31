@@ -81,16 +81,34 @@
      src/app/dashboard/galleries/page.chrome.test.tsx:173-179 asserts on
      `.bg-accent.rounded-full` directly (task #75's status dot).
 
-     So `focus:bg-accent` on a DropdownMenuItem paints the row brass. What
-     this token fixes is that the text on top of it stayed `--fg` (near-white
-     on brass, ~2:1) because `--color-accent-foreground` was never mapped at
-     all. Pairing it with the same ink `--primary-foreground` already uses
-     makes the brass highlight read as a deliberate, on-brand selection state
-     at ~9:1 instead of an unreadable accident.
+     THIS TOKEN IS FOR A DELIBERATE BRASS FILL ONLY — NEVER FOR A FOCUS OR
+     HOVER STATE. design/system/dashboard.html:82-91 states the rule in its
+     own words ("STATUS PALETTE — semantic, deliberately NOT the brand
+     accent"), and brass appears as a fill in exactly five places across the
+     whole mock: the unread-count dot (:192), the primary button (:223), the
+     current-step dot (:372), the selected-asset outline (:437) and badge
+     (:443). Every hover and focus surface in the mock is `var(--app-raised)`
+     instead — :222, :527, :528 — and even the current nav item does not fill
+     with brass, only its icon does (:186). `components.json`'s `menuAccent:
+     "subtle"` says the same thing.
 
-     A slice that wants a QUIET menu highlight instead must pass an explicit
-     className (e.g. `focus:bg-muted`) at the call site. It must NOT re-point
-     `--accent`: that variable is the public site's, and re-pointing it inside
+     So this exists for the case where a call site CHOOSES `bg-accent` (that
+     unread dot, that selected-asset badge) and needs legible ink on top:
+     #14100a on #c8a15a measures 7.85:1. Without it the text would inherit
+     `--fg`, which is 2.02:1 on brass — the defect this token was added to
+     close. It is kept rather than deleted even though no primitive references
+     it today, because `bg-accent` IS in the mock and the next component that
+     needs ink on brass should find the token already correct instead of
+     silently rendering at 2:1.
+
+     A shadcn component that arrives using `bg-accent` as a FOCUS wash (most
+     of the menu family does) must be re-pointed to `bg-muted`/`text-foreground`
+     in the generated file itself, the way src/components/ui/dropdown-menu.tsx
+     documents. It cannot be fixed from the call site: tailwind-merge drops
+     `focus:bg-accent` but keeps `focus:text-accent-foreground`, which lands
+     #14100a ink on #131318 at 1.02:1 — invisible, and worse than the brass it
+     was meant to replace. And it must NOT be fixed by re-pointing `--accent`:
+     that variable is the public site's, and re-pointing it inside
      `[data-surface="app"]` would silently recolour #75's dot. */
   --color-accent-foreground: var(--accent-foreground);
 
@@ -246,13 +264,26 @@
      (which is how a scoped selector CAN affect a color utility). But
      --radius-sm's right-hand side is the literal `2px`, so Tailwind
      inlines the literal itself: the compiled utility is
-     `.rounded-sm{border-radius:2px}` and the custom property is never
-     emitted to the browser at all (verified against the built
-     production CSS — zero occurrences of `--radius-sm`). There is
-     nothing left at runtime for a `[data-surface="app"] { --radius-sm: ... }`
-     override to shadow; it would be a dead declaration nobody reads,
-     which is worse than a naming collision because it fails silently
-     and looks like it works.
+     `.rounded-sm{border-radius:2px}`, with no `var(--radius-sm)` left
+     in it for anything to shadow. So a
+     `[data-surface="app"] { --radius-sm: ... }` override is a dead
+     declaration nobody reads, which is worse than a naming collision
+     because it fails silently and looks like it works.
+
+     CORRECTION (#127): this paragraph used to add "verified against the
+     built production CSS — zero occurrences of `--radius-sm`", and that
+     second claim is no longer true, though the first one still is.
+     Tailwind v4 emits a theme variable whenever its NAME appears in any
+     scanned source — including inside a comment, and including this one.
+     `--radius-sm:2px` is therefore present in the built CSS on this
+     branch. It changes nothing about the conclusion above: what makes a
+     scoped override dead is that `.rounded-sm` inlines the literal and
+     never reads the property, not whether the property happens to be
+     declared somewhere. Do not "fix" this by deleting the mention and
+     re-asserting the zero-occurrence claim; the mechanism is the point.
+     (See src/app/globals.tokens.test.ts, which pins its own Tailwind
+     source detection to `source(none)` precisely so its assertions
+     cannot pass on the strength of a comment mentioning a token.)
 
      The real, load-bearing constraint this leaves for later slices:
      `rounded-*` utilities are frozen literals, so `[data-surface="app"]`

@@ -246,7 +246,7 @@ describe("ClientGalleryPage chrome", () => {
     expect(screen.getByText(/01\/08\/2026/)).toBeDefined();
   });
 
-  it("renders every asset's proof by its presigned URL, with an aspect ratio reserved from proofWidth/proofHeight", async () => {
+  it("renders every asset's proof by its presigned URL, with a uniform tile box reserved before load", async () => {
     getGalleryDetailBySlugMock.mockResolvedValue(
       galleryDetail({
         assets: [
@@ -290,13 +290,21 @@ describe("ClientGalleryPage chrome", () => {
       "https://r2.example.com/galleries/g1/proofs/a1.webp?presigned=1",
     );
 
-    // The CLS-prevention contract: the wrapper reserves the exact aspect
-    // ratio from the asset's own proofWidth/proofHeight BEFORE the <img>
-    // has ever loaded, not after.
+    // The CLS-prevention contract, as task #145 left it: the wrapper reserves
+    // its box BEFORE the <img> has ever loaded, not after. The box is now the
+    // mock's uniform 2:3 (design/system/client.html:181) rather than each
+    // asset's own proofWidth/proofHeight — proof-tile.tsx carries the measured
+    // reason, and proof-tile.test.tsx pins the shape per orientation. These
+    // two fixtures are deliberately one landscape (1600x1067) and one portrait
+    // (900x1600): the whole point of the change is that they now reserve the
+    // SAME box, which is what stopped the pick control floating in dead space
+    // below a short tile.
     const wrapper = images[0]?.parentElement;
-    expect(wrapper?.getAttribute("style")).toContain("aspect-ratio: 1600 / 1067");
     const secondWrapper = images[1]?.parentElement;
-    expect(secondWrapper?.getAttribute("style")).toContain("aspect-ratio: 900 / 1600");
+    expect(wrapper?.className).toContain("aspect-[2/3]");
+    expect(secondWrapper?.className).toContain("aspect-[2/3]");
+    expect(wrapper?.getAttribute("style")).toBeNull();
+    expect(secondWrapper?.getAttribute("style")).toBeNull();
   });
 
   // Task #145: the redesigned pick control is an unlabelled 48px circle
@@ -607,12 +615,21 @@ describe("ClientGalleryPage chrome", () => {
       ]);
     });
 
-    // The grid still reserves each tile from the PROOF's dimensions, which is
-    // what keeps this migration-free: nothing stores the derivative's own
-    // width/height. Pinned here so the trade-off is visible rather than
-    // discovered — if the photographer cropped the final differently from
-    // the original, `object-cover` on the tile absorbs the difference.
-    it("still reserves the tile's aspect ratio from the proof's stored dimensions", async () => {
+    // WHY THIS TEST NO LONGER MENTIONS THE PROOF'S STORED DIMENSIONS. It used
+    // to assert `aspect-ratio: 1600 / 1067`, pinning task #89's own trade-off:
+    // the tile was sized from the PROOF's width/height even when it was
+    // showing the unwatermarked DISPLAY derivative, so nothing had to store
+    // the derivative's dimensions and no migration was needed; if the
+    // photographer had cropped the final differently, `object-cover` absorbed
+    // the difference.
+    //
+    // Task #145 made the tile a uniform 2:3 box, which does not weaken that
+    // argument, it removes its premise entirely — the tile now reads NO stored
+    // dimensions at all, so the display derivative cannot disagree with
+    // anything. What is still worth pinning is the half of #89's claim that
+    // can actually regress: `object-cover`, which is what keeps a
+    // differently-cropped final from stretching inside the box.
+    it("still lets object-cover absorb a final cropped differently from its proof", async () => {
       getGalleryDetailBySlugMock.mockResolvedValue(
         galleryDetail({ status: "delivered", assets: [DELIVERABLE] }),
       );
@@ -620,8 +637,9 @@ describe("ClientGalleryPage chrome", () => {
       const element = await ClientGalleryPage(paramsFor(SLUG));
       const { container } = render(element);
 
-      const wrapper = container.querySelector("img")?.parentElement;
-      expect(wrapper?.getAttribute("style")).toContain("aspect-ratio: 1600 / 1067");
+      const img = container.querySelector("img");
+      expect(img?.className).toContain("object-cover");
+      expect(img?.parentElement?.className).toContain("aspect-[2/3]");
     });
   });
 

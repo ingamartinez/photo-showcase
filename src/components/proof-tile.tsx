@@ -78,26 +78,37 @@ export function ProofTile({
         aria-label={`Ver ${asset.originalFilename}`}
         className="focus-visible:ring-accent block w-full text-left focus-visible:ring-2 focus-visible:outline-none"
       >
-        {/* Aspect ratio reserved from `proofWidth`/`proofHeight` BEFORE the
-            image ever arrives — this is what makes the grid load with zero
-            cumulative layout shift, the columns this task's acceptance
-            criterion is about.
+        {/* THE BOX IS RESERVED BEFORE THE IMAGE ARRIVES — task #23's zero-CLS
+            contract, unchanged. WHAT CHANGED in task #145 is that the reserved
+            shape is now UNIFORM (`aspect-[2/3]`, client.html:181) instead of
+            each asset's own `proofWidth / proofHeight`.
 
-            DELIBERATELY NOT the mock's uniform `aspect-ratio: 2 / 3`
-            (client.html:181). That ratio exists because the mock's tiles are
-            gradients with no intrinsic shape, and adopting it here would crop
-            roughly half the width off every landscape proof — the opposite of
-            epic #140's own "que la foto se vea". It would also break the two
-            chrome tests that pin this contract by name
-            ([publicSlug]/page.chrome.test.tsx's "aspect ratio reserved from
-            proofWidth/proofHeight" and task #89's "still reserves the tile's
-            aspect ratio from the proof's stored dimensions"). A per-asset
-            ratio reserves its box just as completely as a uniform one, so
-            nothing about the CLS guarantee depends on which is used. */}
-        <div
-          className="bg-bg-2 relative overflow-hidden"
-          style={{ aspectRatio: `${asset.proofWidth} / ${asset.proofHeight}` }}
-        >
+            This was not a preference, it was measured. The first build of this
+            slice kept the per-asset ratio and was captured at 390px and 1440px
+            (Playwright, the harness in e2e/). With landscape and portrait
+            proofs mixed — the ordinary case — a two-column grid gives every
+            row the height of its TALLEST tile, so each landscape tile sat in a
+            box roughly twice its own height. Two things followed, and the
+            second is a defect, not a taste:
+
+              1. Around 40% of the phone's screen was empty black between
+                 photos, which on 84 proofs is a great deal of extra scrolling
+                 for someone doing this one-handed.
+              2. The 48px pick control, absolutely positioned against the
+                 <li>, ended up floating in that empty space BELOW its own
+                 photo, visibly detached from the thing it selects.
+
+            A uniform box fixes both and costs a crop: `object-cover` shows the
+            middle ~44% of a 3:2 landscape. That cost is the one the mock
+            already priced in — client.html:488-489 says the grid "is only the
+            index; the decision happens [in the lightbox]", and #146 is the
+            slice that makes the lightbox the place a photo is judged whole.
+
+            CLS is unaffected: a static class reserves the box exactly as early
+            as an inline style did. `proofWidth`/`proofHeight` stay on
+            `ProofAsset` — the lightbox and the dashboard's own `asset-tile.tsx`
+            still use them, and this component is not the place to drop them. */}
+        <div className="bg-bg-2 relative aspect-[2/3] overflow-hidden">
           {/* Plain <img>, not next/image: same reasoning as asset-tile.tsx —
               proof URLs are short-lived, private, presigned R2 URLs whose
               query string is never stable between two loads of the same

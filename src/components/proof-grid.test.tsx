@@ -76,14 +76,21 @@ describe("ProofGrid", () => {
     expect(screen.getByText(/todavía no subió fotos/i)).toBeDefined();
   });
 
-  it("reserves each tile's aspect ratio from proofWidth/proofHeight before the image ever loads", () => {
+  // Task #145 changed WHICH box is reserved (a uniform 2:3, the mock's own —
+  // design/system/client.html:181 — rather than each asset's stored
+  // proofWidth/proofHeight); it did not change THAT one is reserved before the
+  // <img> loads, which is the zero-CLS contract task #23 wrote this test for.
+  // proof-tile.tsx carries the measured reason for the switch, and
+  // proof-tile.test.tsx pins the shape per orientation.
+  it("reserves each tile's uniform box before the image ever loads", () => {
     const { container } = renderGrid({
       initialAssets: assetsFor([{ proofWidth: 1600, proofHeight: 1067 }]),
     });
 
     const img = container.querySelector("img");
     const wrapper = img?.parentElement;
-    expect(wrapper?.getAttribute("style")).toContain("aspect-ratio: 1600 / 1067");
+    expect(wrapper?.className).toContain("aspect-[2/3]");
+    expect(wrapper?.getAttribute("style")).toBeNull();
   });
 
   it("renders each asset's thumbnail by its original presigned URL", () => {

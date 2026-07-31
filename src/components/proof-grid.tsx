@@ -1,9 +1,11 @@
 "use client";
 
 // The client's own view of a gallery's proofs (task #23): a responsive grid
-// that reserves each tile's exact aspect ratio up front (no cumulative
-// layout shift while images load) plus a lightbox for full-screen browsing
-// with keyboard/swipe navigation.
+// that reserves every tile's box up front (no cumulative layout shift while
+// images load) plus a lightbox for full-screen browsing with keyboard/swipe
+// navigation. Since task #145 that box is a UNIFORM 2:3 rather than each
+// asset's own ratio — see proof-tile.tsx's own comment on it for what was
+// measured at 390px and why the crop is the cheaper of the two costs.
 //
 // WHAT LIVES WHERE (task #144)
 // ============================

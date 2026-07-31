@@ -149,17 +149,24 @@ describe("ProofTile", () => {
     expect(pickButton().disabled).toBe(true);
   });
 
-  // The CLS contract from task #23, restated after the redesign because the
-  // redesign is exactly what could have dropped it: the box is reserved from
-  // the asset's OWN stored proof dimensions, before the <img> loads, and NOT
-  // from the mock's uniform `aspect-ratio: 2 / 3` (client.html:181).
-  it("reserves the box from the asset's own proof dimensions, before the image loads", () => {
-    const { container } = renderTile({
-      asset: { ...ASSET, proofWidth: 900, proofHeight: 1600 },
-    });
+  // The CLS contract from task #23, restated after task #145 changed WHICH
+  // box gets reserved. It is now the mock's uniform 2:3 (client.html:181), not
+  // the asset's own `proofWidth / proofHeight` — see proof-tile.tsx's own
+  // comment for the measured reason. What must NOT change is that the box
+  // exists before the <img> does, and that it is the SAME box whatever shape
+  // the proof happens to be: a tile that fell back to intrinsic sizing for
+  // some assets would reintroduce both the layout shift and the detached pick
+  // control the redesign removed.
+  it.each([
+    ["landscape", 1600, 1067],
+    ["portrait", 900, 1600],
+  ])("reserves the same uniform 2:3 box for a %s proof, before the image loads", (_l, w, h) => {
+    const { container } = renderTile({ asset: { ...ASSET, proofWidth: w, proofHeight: h } });
 
     const wrapper = container.querySelector("img")?.parentElement;
-    expect(wrapper?.getAttribute("style")).toContain("aspect-ratio: 900 / 1600");
+    expect(wrapper?.className).toContain("aspect-[2/3]");
+    // And nothing re-introduces a per-asset ratio through the back door.
+    expect(wrapper?.getAttribute("style")).toBeNull();
   });
 
   // Task #145's "no se toca" list, first item: a presigned proof URL is good

@@ -32,6 +32,39 @@
 // the two facts derived from `initialStatus` (#28/#29's download affordances),
 // the lightbox index, and the layout that arranges tray, counter, grid and
 // submit panel. That is deliberately the part a redesign touches.
+//
+// THREE STATES, THREE LAYOUTS (tasks #147/#148)
+// ==============================================
+// Before this pair of slices, `proofing`, `selected` and `delivered` all
+// rendered the SAME tray + counter + grid + submit-panel arrangement, with
+// only per-asset flags (`isLocked`, `showDownload`) changing what a given
+// control looked like — epic #140's own words for this were "hoy son la
+// misma pantalla con botones distintos". This file now renders three
+// genuinely different bodies, gated on `isLocked` / `isDelivered`:
+//
+//   - `proofing` (`!isLocked`) — unchanged in substance: tray, instruction
+//     line, grid, and <SelectionCounter>/<SubmitSelectionPanel> now sharing
+//     one STICKY BOTTOM BAR (task #147's own "impossible to not see" — see
+//     that bar's own comment below) instead of sitting in the normal
+//     document flow where scrolling 84 photos could carry it off-screen.
+//   - `selected` (`isLocked && !isDelivered`) — everything `proofing` shows
+//     for review (tray, counter, the picked photos, the submit panel's own
+//     "ya fue enviada" message) PLUS a new voice: `<SelectedStateNote>`
+//     below, task #148's own acceptance criterion that this screen "explica
+//     qué pasa ahora" instead of being read as a wall of disabled controls.
+//     Deliberately ADDITIVE rather than a replacement of the existing view —
+//     a client can still live here for days and wants to see exactly which
+//     photos they are waiting on, not just be told to wait.
+//   - `delivered` (`isDelivered`) — the tray, the live counter and the
+//     submit panel are ALL retired here, not merely disabled: nothing about
+//     the shared selection can change once delivered (`isLocked` is true
+//     forever, `useSharedSelection`'s own `LIVE_SYNC_STATUSES` already
+//     spends zero polls on it), and the submit panel's "tu fotógrafo ya
+//     tiene acceso a esta selección" message is stale noise weeks or months
+//     after the fact. In their place, `<DeliveredNote>` states what actually
+//     matters now — the photos are unwatermarked (#89) and the ZIP is right
+//     there — mirroring the mock's own `entregada` screen, which never shows
+//     `.tray`/`.bar` either.
 import { useCallback, useMemo, useState } from "react";
 import { DownloadAllButton } from "@/components/download-all-button";
 import { ProofLightbox } from "@/components/proof-lightbox";
@@ -41,7 +74,8 @@ import { SelectionTray } from "@/components/selection-tray";
 import { SubmitSelectionPanel } from "@/components/submit-selection-panel";
 import { useProofUrls } from "@/components/use-proof-urls";
 import { useSharedSelection, type GalleryStatus } from "@/components/use-shared-selection";
-import type { SelectionPick } from "@/lib/selection-snapshot";
+import type { QuotaResult } from "@/lib/quota";
+import { pickerLabelFor, type SelectionPick } from "@/lib/selection-snapshot";
 
 // Re-exported, not re-declared: `GalleryStatus` and the fallback poll's
 // cadence belong next to the status machine and the loop they pace
@@ -214,43 +248,61 @@ export function ProofGrid({
   // contain unselected assets that were never edited and have no final at
   // all.
   const isDelivered = initialStatus === "delivered";
-  // Task #29: the button only makes sense once there is at least one final
-  // to actually zip — same per-asset `hasFinal` truth `showDownload` below
-  // already relies on for the individual buttons, just reduced to "is there
-  // at least one". The route re-derives this exact set itself from the
-  // database on every request (see its own comment); this is a UI hint only,
-  // same disclaimer as `hasFinal`'s own.
-  const hasAnyFinal = isDelivered && initialAssets.some((asset) => asset.hasFinal);
+  // Task #29: <DeliveredNote>'s own download-all affordance only makes sense
+  // once there is at least one final to actually zip — same per-asset
+  // `hasFinal` truth `showDownload` below already relies on for the
+  // individual buttons. Task #148 widened this from a boolean ("is there at
+  // least one") to the actual count, for that note's own "N fotos" copy
+  // (client.html:941's own "15 fotos editadas..."). The route re-derives its
+  // own set from the database on every request regardless of what this
+  // renders — this is a UI hint only, same disclaimer as `hasFinal`'s own.
+  const finalAssetCount = isDelivered ? initialAssets.filter((asset) => asset.hasFinal).length : 0;
 
   return (
     <>
-      {/* Task #95 — the owner's request, literally: the chosen photos live in
-          a list at the TOP of the page, in the same thumbnail style as the
-          grid, saying who chose each one. Rendered above the counter and the
-          grid, always, including before anybody has picked anything: see
-          <SelectionTray>'s own header comment for why it does not appear on
-          first pick. */}
-      <SelectionTray
-        picks={picks}
-        urls={urls}
-        filenamesByAssetId={filenamesByAssetId}
-        viewerId={viewerId}
-        isLocked={isLocked}
-        isStale={isStale}
-        onOpenAsset={openAssetInLightbox}
-        // The SAME `refreshUrl` the grid tiles and the lightbox use, sharing
-        // the same `refreshedAssetIds` dedupe — see <SelectionTray>'s own
-        // `onImageError` comment for why the tray needs it MORE than they do.
-        onImageError={(assetId) => void refreshUrl(assetId)}
-      />
+      {/* Task #148: the tray is a view of a selection that can still change
+          (who has picked what, so far) — once `delivered`, PLAN.md §2's state
+          machine has no path back out of it, so there is nothing left to
+          watch for. Retired here rather than merely disabled, same reasoning
+          <DeliveredNote> below explains for the counter and the submit
+          panel. */}
+      {!isDelivered && (
+        <SelectionTray
+          picks={picks}
+          urls={urls}
+          filenamesByAssetId={filenamesByAssetId}
+          viewerId={viewerId}
+          isLocked={isLocked}
+          isStale={isStale}
+          onOpenAsset={openAssetInLightbox}
+          // The SAME `refreshUrl` the grid tiles and the lightbox use, sharing
+          // the same `refreshedAssetIds` dedupe — see <SelectionTray>'s own
+          // `onImageError` comment for why the tray needs it MORE than they do.
+          onImageError={(assetId) => void refreshUrl(assetId)}
+        />
+      )}
 
-      <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-        <SelectionCounter packageName={packageName} quota={quota} />
-        <div className="flex items-center gap-3">
-          {toggleError && <p className="text-xs text-[#e0796b]">{toggleError}</p>}
-          {hasAnyFinal && <DownloadAllButton galleryId={galleryId} />}
+      {isDelivered && <DeliveredNote galleryId={galleryId} finalAssetCount={finalAssetCount} />}
+
+      {/* Task #148: `selected` gets its own voice instead of reading as a
+          wall of disabled controls — <SelectionCounter> stays visible here
+          (still true, still useful context while the client waits) but
+          without the sticky bottom bar or the submit button, since there is
+          nothing left to act on. */}
+      {!isDelivered && isLocked && (
+        <div className="mb-4">
+          <SelectionCounter packageName={packageName} quota={quota} />
         </div>
-      </div>
+      )}
+
+      {!isDelivered && isLocked && (
+        <SelectedStateNote
+          quota={quota}
+          picks={picks}
+          viewerId={viewerId}
+          submittedAt={submittedAt}
+        />
+      )}
 
       {/* Task #145 — the one instruction the redesigned tile needs, and the
           mock's own words for it (design/system/client.html:714). The pick
@@ -275,8 +327,16 @@ export function ProofGrid({
           breakpoint) and :556 (four columns and a 3px gap at the desk).
           The near-zero gutter is the point rather than a detail: it buys the
           phone's two columns their width back, which is what makes a
-          thumbnail big enough to decide on without opening it. */}
-      <ul className="grid grid-cols-2 gap-[2px] sm:grid-cols-3 lg:grid-cols-4 lg:gap-[3px]">
+          thumbnail big enough to decide on without opening it.
+
+          `pb-32` only while the sticky bottom bar (below) is actually
+          mounted — `selected` and `delivered` render no bar, so nothing
+          needs clearing under the last row there. */}
+      <ul
+        className={`grid grid-cols-2 gap-[2px] sm:grid-cols-3 lg:grid-cols-4 lg:gap-[3px] ${
+          !isLocked ? "pb-32" : ""
+        }`}
+      >
         {initialAssets.map((asset, index) => {
           const isSelected = selectionById[asset.id] ?? asset.isSelected;
           return (
@@ -297,15 +357,65 @@ export function ProofGrid({
         })}
       </ul>
 
-      <div className="mt-6 flex justify-end">
-        <SubmitSelectionPanel
-          galleryId={galleryId}
-          quota={quota}
-          isLocked={isLocked}
-          submittedAt={submittedAt}
-          onSubmitted={handleSubmitted}
-        />
-      </div>
+      {/* Task #147's own hardest problem, restated: the surcharge has to be
+          impossible to not see BEFORE the client submits, on the phone,
+          without scrolling back up — the whole reason <SelectionCounter> and
+          <SubmitSelectionPanel> now share ONE bar fixed to the bottom of the
+          viewport (design/system/client.html's own `.bar`, `position: fixed;
+          inset: auto 0 0 0`) instead of sitting in the normal document flow
+          above the grid, where 84 photos of scrolling could carry them both
+          off-screen. Only while the selection can still be acted on
+          (`!isLocked`) — `selected` and `delivered` render no bar at all,
+          matching the mock's own `enviada`/`entregada` screens.
+
+          `z-40`: above the tray's sticky `z-30` (selection-tray.tsx), below
+          the lightbox's `z-50` (proof-lightbox.tsx) — the lightbox must
+          always be able to cover this, this must always be able to cover the
+          tray scrolling underneath it.
+
+          DECLARED DEVIATION FROM THE MOCK: kept `fixed` at every breakpoint
+          rather than switching to `position: sticky` at the mock's own
+          1024px rule (client.html:562-566, "en una pantalla alta nada está
+          fuera de alcance"). A fixed bar stays perfectly usable at the desk —
+          it just does not fold back into the document flow there. Revisit if
+          the owner finds it visually heavy on a large screen; nothing about
+          the phone experience, the actual acceptance criterion, depends on
+          it. */}
+      {!isDelivered && !isLocked && (
+        <div className="border-line-2 bg-bg/95 fixed inset-x-0 bottom-0 z-40 border-t px-4 pt-3 pb-[calc(12px+env(safe-area-inset-bottom,0px))] backdrop-blur-md min-[620px]:px-7 lg:px-12">
+          <div className="mx-auto flex max-w-[1280px] flex-wrap items-center justify-between gap-3">
+            <SelectionCounter packageName={packageName} quota={quota} />
+            <div className="flex items-center gap-3">
+              {toggleError && <p className="text-xs text-[#e0796b]">{toggleError}</p>}
+              <SubmitSelectionPanel
+                galleryId={galleryId}
+                quota={quota}
+                isLocked={isLocked}
+                submittedAt={submittedAt}
+                onSubmitted={handleSubmitted}
+              />
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* `selected`'s own submit panel — still rendered (its locked branch is
+          the "ya fue enviada, tu fotógrafo ya tiene acceso" message, task
+          #25's own acceptance criterion), just in the normal document flow
+          rather than the fixed bar above, since there is no button left to
+          keep in reach. Not rendered at all once `delivered`: see
+          <DeliveredNote>'s own comment for why that message goes stale. */}
+      {!isDelivered && isLocked && (
+        <div className="mt-6 flex justify-end">
+          <SubmitSelectionPanel
+            galleryId={galleryId}
+            quota={quota}
+            isLocked={isLocked}
+            submittedAt={submittedAt}
+            onSubmitted={handleSubmitted}
+          />
+        </div>
+      )}
 
       {lightboxIndex !== null && (
         <ProofLightbox
@@ -331,5 +441,122 @@ export function ProofGrid({
         />
       )}
     </>
+  );
+}
+
+// Task #148 — `selected`'s own voice: "qué eligió, qué pasa ahora... y qué
+// hacer si se equivocó" (that task's own body), mirroring
+// design/system/client.html's `enviada` screen (:898-931) in CONTENT rather
+// than its exact markup (that screen is a whole separate page in the mock;
+// here it is a block inside the same one, additive to the tray/counter/grid
+// this component already renders for a locked gallery — see the "THREE
+// STATES" section of this file's own header comment for why additive was
+// chosen over replacing the existing view).
+//
+// No invented turnaround time. The mock's own copy promises "entre una y
+// dos semanas" — a number this app has no column for (`packages` carries a
+// SESSION `durationLabel`, not an editing SLA) and inventing one here would
+// be exactly the kind of claim this component cannot back up, the same
+// standard <SubmitSelectionPanel>'s own header comment already holds itself
+// to for "has access" vs. "was notified". This says only what is true:
+// editing is in progress, the client is told by email when it's done.
+function SelectedStateNote({
+  quota,
+  picks,
+  viewerId,
+  submittedAt,
+}: {
+  quota: QuotaResult;
+  picks: SelectionPick[];
+  /** Same prop <SelectionTray> already takes — the viewer's own picks read
+   * "Vos" in the per-picker recap below too, for the same reason. */
+  viewerId: string;
+  submittedAt: string | null;
+}) {
+  // Per-picker tally (task #94's shared gallery, not per-client): "Vos 9 ·
+  // Beto 4 · Sara 2" (client.html:726, :848-850), computed off the SAME
+  // `picks` list <SelectionTray> renders — never a second count of anything,
+  // matching this whole file's own "quota is derived once, never twice"
+  // stance for the numeric quota above it.
+  const perPicker = useMemo(() => {
+    const counts = new Map<string, { label: string; count: number }>();
+    for (const pick of picks) {
+      const key = pick.pickedBy?.id ?? "unattributed";
+      const label = pickerLabelFor(pick.pickedBy, viewerId);
+      const existing = counts.get(key);
+      if (existing) existing.count += 1;
+      else counts.set(key, { label, count: 1 });
+    }
+    return [...counts.values()];
+  }, [picks, viewerId]);
+
+  return (
+    <div className="border-line-2 mt-2 mb-6 rounded-sm border p-[18px]">
+      <h2 className="font-serif text-lg">¿Qué pasa ahora?</h2>
+      <p className="text-fg-dim mt-2 text-sm">
+        Tu fotógrafo ya tiene la selección
+        {submittedAt
+          ? ` — la enviaste el ${new Date(submittedAt).toLocaleDateString("es-CO")}`
+          : ""}{" "}
+        y está editando {quota.selected} foto{quota.selected === 1 ? "" : "s"} en alta resolución y
+        sin marca de agua. Te avisamos por correo apenas estén.
+      </p>
+      <p className="text-fg-dim mt-2 text-sm">
+        ¿Te arrepentiste de alguna? La selección quedó cerrada, pero escribile a tu fotógrafo y él
+        la reabre.
+      </p>
+      {/* Only worth a breakdown once more than one person actually picked
+          something — a solo client seeing "Vos: 15" would just be the same
+          number repeated with no new information. */}
+      {perPicker.length > 1 && (
+        <dl className="mt-4 grid gap-2 text-sm">
+          {perPicker.map(({ label, count }) => (
+            <div key={label} className="flex justify-between gap-4">
+              <dt className="text-fg-mute">{label}</dt>
+              <dd className="tabular-nums">{count}</dd>
+            </div>
+          ))}
+        </dl>
+      )}
+    </div>
+  );
+}
+
+// Task #148 — `delivered`'s own header, replacing the tray/counter/submit
+// row this component retires once nothing about the selection can change
+// anymore (see the "THREE STATES" section above). Mirrors the mock's own
+// `entregada` copy (client.html:941: "15 fotos editadas, en alta resolución
+// y sin marca de agua") rather than its full-bleed hero treatment
+// (client.html:452-460) — DECLARED DEVIATION: a hero needs a chosen hero
+// image, a scrim, and a decision about which component owns the gallery
+// TITLE once it moves inside that hero (today `src/app/galleries/
+// [publicSlug]/page.tsx` owns it, unconditionally, for all three statuses).
+// That is a real design question, not a shortcut taken to save time, and
+// answering it by fiat inside this slice risked exactly the kind of
+// undiscussed cross-file ownership change this epic's own review has flagged
+// before. Left for the owner to weigh in on; nothing about the stated
+// acceptance criteria (the three states distinguish immediately, no
+// watermark, both downloads work, the ZIP shows it takes a while) depends on
+// the hero specifically.
+function DeliveredNote({
+  galleryId,
+  finalAssetCount,
+}: {
+  galleryId: string;
+  finalAssetCount: number;
+}) {
+  return (
+    <div className="mb-6">
+      <p className="text-fg-dim text-sm">
+        {finalAssetCount} foto{finalAssetCount === 1 ? "" : "s"} editada
+        {finalAssetCount === 1 ? "" : "s"}, en alta resolución y sin marca de agua — esto es lo que
+        vas a volver a ver cuando quieras.
+      </p>
+      {finalAssetCount > 0 && (
+        <div className="mt-3">
+          <DownloadAllButton galleryId={galleryId} assetCount={finalAssetCount} />
+        </div>
+      )}
+    </div>
   );
 }

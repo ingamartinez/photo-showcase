@@ -105,6 +105,31 @@ describe("SubmitSelectionPanel", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  // Task #147: the shared-board framing (schema.ts:272-273's one-selection,
+  // not one-per-client model) — this button closes the board for every
+  // client attached to the gallery, not only the one tapping it.
+  it("states the selection closes for everyone still picking, and cannot be reopened by the client alone", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    vi.stubGlobal("fetch", vi.fn());
+    const user = userEvent.setup();
+
+    render(
+      <SubmitSelectionPanel
+        galleryId="g1"
+        quota={computeQuota(15, { includedPhotosSnapshot: 13, extraPhotoPriceCopSnapshot: 5_000 })}
+        isLocked={false}
+        submittedAt={null}
+        onSubmitted={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Enviar selección" }));
+
+    const message = confirmSpy.mock.calls[0]?.[0] as string;
+    expect(message).toMatch(/se cierra para todos/);
+    expect(message).toMatch(/no se puede modificar sola/);
+  });
+
   it("POSTs to the submit route and reports the outcome once confirmed", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
     const submittedQuota = computeQuota(15, {

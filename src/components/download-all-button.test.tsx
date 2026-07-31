@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
-import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, createEvent, fireEvent, render, screen } from "@testing-library/react";
 import { DownloadAllButton } from "./download-all-button";
 
 afterEach(() => {
@@ -21,5 +21,56 @@ describe("DownloadAllButton", () => {
     const link = screen.getByRole("link", { name: "Descargar todo" });
     expect(link.getAttribute("target")).toBeNull();
     expect(link.getAttribute("rel")).toBe("noopener");
+  });
+
+  // Task #148: "a big gallery takes real time on mobile data — if that time
+  // is invisible the client taps three times and starts three downloads."
+  // The FIRST click must be allowed to proceed (its default navigation is
+  // what actually triggers the download) while entering a visible "this
+  // takes a while" state.
+  it("lets the first click proceed and shows a 'preparing' state", () => {
+    render(<DownloadAllButton galleryId="g1" />);
+    const link = screen.getByRole("link", { name: "Descargar todo" });
+
+    const clickEvent = createEvent.click(link);
+    const preventDefaultSpy = vi.spyOn(clickEvent, "preventDefault");
+    fireEvent(link, clickEvent);
+
+    expect(preventDefaultSpy).not.toHaveBeenCalled();
+    expect(screen.getByText("Preparando tu descarga…")).toBeDefined();
+    expect(link.getAttribute("aria-disabled")).toBe("true");
+  });
+
+  // The acceptance criterion itself: a SECOND tap, while the first
+  // download is still in flight, must not start a second concurrent stream
+  // of the whole zip archive.
+  it("blocks a second tap while the first download is still in flight", () => {
+    render(<DownloadAllButton galleryId="g1" />);
+    const link = screen.getByRole("link", { name: "Descargar todo" });
+
+    fireEvent.click(link);
+
+    const secondClick = createEvent.click(link);
+    const preventDefaultSpy = vi.spyOn(secondClick, "preventDefault");
+    fireEvent(link, secondClick);
+
+    expect(preventDefaultSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the asset count while preparing, when given one", () => {
+    render(<DownloadAllButton galleryId="g1" assetCount={15} />);
+
+    fireEvent.click(screen.getByRole("link", { name: "Descargar todo" }));
+
+    expect(screen.getByText(/15 fotos/)).toBeDefined();
+    expect(screen.getByText(/no cierres esta pestaña/)).toBeDefined();
+  });
+
+  it("still shows the 'do not close this tab' note without an asset count", () => {
+    render(<DownloadAllButton galleryId="g1" />);
+
+    fireEvent.click(screen.getByRole("link", { name: "Descargar todo" }));
+
+    expect(screen.getByText(/no cierres esta pestaña/)).toBeDefined();
   });
 });

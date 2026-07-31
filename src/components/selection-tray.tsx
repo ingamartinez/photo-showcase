@@ -33,6 +33,16 @@
 // appear there; and a tray that materialises on the first pick would shove
 // the entire grid down the page at the exact moment the client is aiming at
 // a thumbnail.
+//
+// STICKY TO THE TOP (task #147, design/system/client.html's own `.tray`,
+// `position: sticky; top: 0` in the app — the mock's own comment at :286
+// offsets it under its demo chrome, which this app has none of). "Se pega
+// arriba, así la ves formarse mientras recorrés 84 fotos" — the tray is
+// where the shared pick, and therefore the surcharge, is building up, and
+// scrolling it out of view while browsing 84 photos is exactly the "the
+// client reaches the end surprised" failure #147 exists to close. `z-30`,
+// below the lightbox's `z-50` (proof-lightbox.tsx) and the sticky bottom
+// bar's `z-40` (proof-grid.tsx) — the tray must never sit on top of either.
 import {
   pickerLabelFor,
   type SelectionPick,
@@ -93,7 +103,7 @@ export function SelectionTray({
   return (
     <section
       aria-label="Fotos elegidas"
-      className="border-bg-2 mb-6 rounded-sm border p-4"
+      className="border-bg-2 bg-bg/95 sticky top-0 z-30 mb-6 rounded-sm border p-4 backdrop-blur-md"
       // Announced politely: a pick landing from ANOTHER session is a change
       // the client did not cause, which is precisely the case a screen reader
       // user would otherwise never learn about. `polite`, not `assertive` —

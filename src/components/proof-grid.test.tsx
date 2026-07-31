@@ -63,6 +63,18 @@ function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
   );
 }
 
+// Task #147 split <SelectionCounter> into two lines (see that file's own
+// header comment): "incluidas/seleccionadas" and "extras/surcharge/no
+// charge" no longer live in the same text node, so a single `getByText`
+// cannot see both halves at once — this combines them the way a sighted
+// reader would, reading top to bottom, rather than pinning each line
+// separately (which would let the two silently disagree unnoticed).
+function counterText(): string {
+  const first = screen.getByText(/incluidas/).textContent ?? "";
+  const second = screen.getByText(/^extras/).textContent ?? "";
+  return `${first} ${second}`.replace(/\s+/g, " ");
+}
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -299,7 +311,7 @@ describe("ProofGrid", () => {
         extraPhotoPriceCopSnapshot: 5_000,
       });
 
-      const text = screen.getByText(/incluidas/).textContent?.replace(/\s+/g, " ");
+      const text = counterText();
       expect(text).toContain("seleccionadas 2");
       expect(text).toContain("extras 1");
     });
@@ -337,7 +349,7 @@ describe("ProofGrid", () => {
       // proves the counter renders whatever the response says rather than
       // computing its own count of tiles toggled on screen.
       await vi.waitFor(() => {
-        const text = screen.getByText(/incluidas/).textContent?.replace(/\s+/g, " ");
+        const text = counterText();
         expect(text).toContain("seleccionadas 99");
         expect(text).toContain("extras 86");
       });
@@ -427,7 +439,7 @@ describe("ProofGrid", () => {
         }),
       );
       await vi.waitFor(() => {
-        const text = screen.getByText(/incluidas/).textContent?.replace(/\s+/g, " ");
+        const text = counterText();
         expect(text).toContain("seleccionadas 15");
       });
 
@@ -449,7 +461,7 @@ describe("ProofGrid", () => {
       // earlier-issued request must be discarded, not applied just because
       // it happened to arrive last.
       await new Promise((resolve) => setTimeout(resolve, 0));
-      const text = screen.getByText(/incluidas/).textContent?.replace(/\s+/g, " ");
+      const text = counterText();
       expect(text).toContain("seleccionadas 15");
       expect(text).toContain("extras 2");
     });
@@ -557,6 +569,198 @@ describe("ProofGrid", () => {
         "disabled",
         true,
       );
+    });
+  });
+
+  // Task #147's own body: "probado — deshabilitar el control de selección
+  // para tiles no elegidos cuando quota.extras > 0 queda verde en db78646
+  // (100 tests) y también en la base c12589c (83 tests)." Meaning: the
+  // invariant `proof-tile.tsx:165-167` reaffirms in a COMMENT — "never
+  // blocks or scolds going over quota" — had NO test anywhere in this suite
+  // that would go red if it were broken. These three do.
+  describe("task #24 invariant: never blocks or scolds over quota", () => {
+    it("keeps an unpicked tile's toggle enabled once the shared selection already exceeds the included quota", () => {
+      renderGrid({
+        initialAssets: assetsFor([
+          { isSelected: true },
+          { isSelected: true },
+          { isSelected: false },
+        ]),
+        includedPhotosSnapshot: 1,
+        extraPhotoPriceCopSnapshot: 5_000,
+      });
+
+      // quota.extras = max(0, 2 - 1) = 1, already over quota, with a third,
+      // still-unpicked photo on screen.
+      expect(screen.getByRole("button", { name: "Seleccionar: IMG_0003.JPG" })).toHaveProperty(
+        "disabled",
+        false,
+      );
+    });
+
+    it("never renders any scolding, warning or limit copy while the selection is over the included quota", () => {
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }]),
+        includedPhotosSnapshot: 1,
+        extraPhotoPriceCopSnapshot: 5_000,
+      });
+
+      expect(screen.queryByText(/l[ií]mite/i)).toBeNull();
+      expect(screen.queryByText(/excedi/i)).toBeNull();
+      expect(screen.queryByText(/no se puede/i)).toBeNull();
+      expect(screen.queryByText(/atenci[oó]n/i)).toBeNull();
+    });
+
+    it("still issues the real toggle request for a NEW pick made while already over quota", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(200, {
+            asset: { id: "a3", isSelected: true, selectedAt: "2026-07-28T00:00:00.000Z" },
+            quota: {
+              selected: 3,
+              includedPhotosSnapshot: 1,
+              extraPhotoPriceCopSnapshot: 5_000,
+              extras: 2,
+              surchargeCop: 10_000,
+            },
+          }),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      renderGrid({
+        initialAssets: assetsFor([
+          { isSelected: true },
+          { isSelected: true },
+          { isSelected: false },
+        ]),
+        includedPhotosSnapshot: 1,
+        extraPhotoPriceCopSnapshot: 5_000,
+      });
+
+      await user.click(screen.getByRole("button", { name: "Seleccionar: IMG_0003.JPG" }));
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        "/api/assets/a3/selection",
+        expect.objectContaining({ body: JSON.stringify({ selected: true }) }),
+      );
+    });
+  });
+
+  // Task #148: "selected explica qué pasa ahora en vez de mostrar controles
+  // apagados." Additive to the existing tray/counter/submit-panel view
+  // (see proof-grid.tsx's own "THREE STATES" header comment for why), not a
+  // replacement of it.
+  describe("selected state (task #148)", () => {
+    it("explains what happens next instead of reading as only disabled controls", () => {
+      renderGrid({
+        initialStatus: "selected",
+        initialSubmittedAt: "2026-07-28T12:00:00.000Z",
+        initialAssets: assetsFor([{ isSelected: true }]),
+      });
+
+      expect(screen.getByText("¿Qué pasa ahora?")).toBeDefined();
+      expect(screen.getByText(/escribile a tu fotógrafo/)).toBeDefined();
+    });
+
+    it("still shows the live quota counter while the client waits", () => {
+      renderGrid({
+        initialStatus: "selected",
+        initialSubmittedAt: "2026-07-28T12:00:00.000Z",
+        initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }]),
+        includedPhotosSnapshot: 1,
+      });
+
+      expect(counterText()).toContain("seleccionadas 2");
+    });
+
+    it("breaks the recap down per picker once more than one person actually picked something", () => {
+      // The tray above (still rendered for `selected`, see this file's own
+      // "THREE STATES" comment) attributes each PICK the same way — so this
+      // queries the recap's own <dl>, not the page as a whole, since both
+      // surfaces legitimately render "Vos"/"Beto Ruiz" at once.
+      const { container } = renderGrid({
+        initialStatus: "selected",
+        initialSubmittedAt: "2026-07-28T12:00:00.000Z",
+        initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }]),
+        viewerId: "client-a",
+        initialPicks: [
+          {
+            assetId: "a1",
+            selectedAt: "2026-07-28T11:00:00.000Z",
+            pickedBy: { id: "client-a", label: "Ana Pérez" },
+          },
+          {
+            assetId: "a2",
+            selectedAt: "2026-07-28T11:05:00.000Z",
+            pickedBy: { id: "client-b", label: "Beto Ruiz" },
+          },
+        ],
+      });
+
+      const recap = container.querySelector("dl");
+      expect(recap).not.toBeNull();
+      expect(recap?.textContent).toContain("Vos");
+      expect(recap?.textContent).toContain("Beto Ruiz");
+    });
+
+    it("does not render a per-picker breakdown for a solo selection — there is nothing new it would tell the client", () => {
+      const { container } = renderGrid({
+        initialStatus: "selected",
+        initialSubmittedAt: "2026-07-28T12:00:00.000Z",
+        initialAssets: assetsFor([{ isSelected: true }]),
+        viewerId: "client-a",
+        initialPicks: [
+          {
+            assetId: "a1",
+            selectedAt: "2026-07-28T11:00:00.000Z",
+            pickedBy: { id: "client-a", label: "Ana Pérez" },
+          },
+        ],
+      });
+
+      expect(container.querySelector("dl")).toBeNull();
+    });
+  });
+
+  // Task #148: "hoy [delivered] es la misma grilla con otros botones" — the
+  // tray, the live counter and the submit panel are all retired once
+  // delivered rather than merely disabled (see proof-grid.tsx's own "THREE
+  // STATES" header comment).
+  describe("delivered state (task #148)", () => {
+    it("hides the tray, the live counter and the submit panel — none of them can still change anything", () => {
+      renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([{ isSelected: true, hasFinal: true }]),
+      });
+
+      expect(screen.queryByRole("region", { name: "Fotos elegidas" })).toBeNull();
+      expect(screen.queryByText(/incluidas/)).toBeNull();
+      expect(screen.queryByRole("status")).toBeNull();
+    });
+
+    it("states the photos are unwatermarked, and how many, in the delivered note", () => {
+      renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([
+          { isSelected: true, hasFinal: true },
+          { isSelected: true, hasFinal: true },
+          { isSelected: false, hasFinal: false },
+        ]),
+      });
+
+      expect(screen.getByText(/2 fotos editadas/)).toBeDefined();
+      expect(screen.getByText(/sin marca de agua/)).toBeDefined();
+    });
+
+    it("does not render the delivered download-all affordance when nothing has a final yet", () => {
+      renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([{ isSelected: false, hasFinal: false }]),
+      });
+
+      expect(screen.queryByRole("link", { name: "Descargar todo" })).toBeNull();
     });
   });
 
@@ -979,7 +1183,8 @@ describe("ProofGrid", () => {
 
       await onePollTick();
 
-      expect(screen.getByText(/seleccionadas 15 · extras 2/)).toBeDefined();
+      expect(counterText()).toContain("seleccionadas 15");
+      expect(counterText()).toContain("extras 2");
     });
 
     it("goes read-only the moment ANOTHER session submits — no reload", async () => {

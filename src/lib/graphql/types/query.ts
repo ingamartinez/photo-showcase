@@ -55,8 +55,9 @@ builder.queryType({
 
         // THE ownership check — admin bypass, soft-removed-client exclusion,
         // all inherited from the one shared implementation. Mutation-proven
-        // in query.test.ts: removing this call lets a signed-in stranger
-        // read any gallery by id.
+        // in route.test.ts ("refuses a signed-in client who does not own the
+        // gallery..."): removing this `if` lets a signed-in stranger read
+        // any gallery by id.
         if (!(await isGalleryOwner(galleryId, ctx.session))) return null;
 
         const detail = await getGalleryDetail(galleryId);

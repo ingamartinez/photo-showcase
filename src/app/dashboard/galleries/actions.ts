@@ -271,6 +271,36 @@ const PUBLISH_TARGET_STATUS = "proofing" as const satisfies Gallery["status"];
  * token). This preserves the ORIGINAL invariant this function's ordering
  * comment already relies on ("never half-published without every client
  * notified"), generalized from one recipient to N instead of replaced.
+ *
+ * THE CONCURRENT DOUBLE-PUBLISH RACE, considered and DECLINED (task #120,
+ * decided 2026-07-30, owner-approved) — read this before "fixing" it.
+ *
+ * Two concurrent callers can both clear `isPublishable()` against a still-
+ * `draft` row and both reach the `signIn` sends below, so both emails are
+ * gone before either reaches the guarded UPDATE. Task #61 made that write
+ * conditional on `status = 'draft'`, which correctly de-duplicates the
+ * STATUS TRANSITION but structurally cannot un-send the second email. The
+ * only real fix is claiming the row atomically BEFORE sending — which the
+ * ordering documented at the top of this comment deliberately forbids,
+ * because a failed send has to leave the gallery retryable.
+ *
+ * It was declined for two reasons. First, the realistic trigger — one
+ * photographer double-clicking — never reaches the server:
+ * `src/components/publish-gallery-button.tsx` renders `disabled={pending}`
+ * off `useActionState`. What remains needs two tabs or two devices, in a
+ * single-operator app. Second, and more decisive: building it would REVERSE
+ * a policy this very function already ships. The partial-failure branch
+ * below deliberately re-sends to clients who already received their link,
+ * and says so in the operator-facing copy ("quien ya lo recibió puede
+ * recibir un segundo correo sin problema"). A duplicate email is already an
+ * accepted outcome here, on purpose. You cannot claim-before-send without
+ * also reversing that — and the terminal state converges either way, since
+ * each magic link is independently single-use.
+ *
+ * The cost avoided: a new `gallery_status` value, a rollback path back to
+ * `draft`, an explicit partial-multi-client-failure policy, and a crash-
+ * recovery story for rows stuck mid-claim. Reopen if a second admin or a
+ * client-facing publish ever makes the race real.
  */
 export async function publishGallery(
   _prevState: PublishGalleryState,

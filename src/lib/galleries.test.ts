@@ -318,6 +318,98 @@ describe("formatSessionDate", () => {
   });
 });
 
+describe("formatClientDisplayName", () => {
+  it("returns the name trimmed", async () => {
+    const { formatClientDisplayName } = await import("./galleries");
+    expect(formatClientDisplayName("  Ana  ")).toBe("Ana");
+  });
+
+  it.each([null, undefined, "", "   "])(
+    "returns null for %s — no name to show, not a placeholder",
+    async (name) => {
+      const { formatClientDisplayName } = await import("./galleries");
+      expect(formatClientDisplayName(name)).toBeNull();
+    },
+  );
+});
+
+// Task #143's own late-added acceptance criterion: this heading names the
+// signed-in client (design/system/client.html:597-600) and must degrade to a
+// dignified sentence — never a literal `null`/`undefined` in the middle of
+// Spanish prose — when the session has no name at all.
+describe("formatGalleryIndexHeading", () => {
+  it("names the client ahead of the mock's own three lines when galleries exist", async () => {
+    const { formatGalleryIndexHeading } = await import("./galleries");
+    expect(formatGalleryIndexHeading("Ana", true)).toEqual({
+      lines: ["Ana, acá está", "todo tu trabajo", "con el estudio."],
+    });
+  });
+
+  it.each([null, undefined, "", "   "])(
+    "degrades to a name-less heading for %s — never `undefined`/`null` spliced into the sentence",
+    async (name) => {
+      const { formatGalleryIndexHeading } = await import("./galleries");
+      const heading = formatGalleryIndexHeading(name, true);
+      expect(heading.lines[0]).toBe("Acá está");
+      expect(heading.lines.join(" ")).not.toMatch(/undefined|null/i);
+    },
+  );
+
+  it("names the client in the empty-state sentence too", async () => {
+    const { formatGalleryIndexHeading } = await import("./galleries");
+    expect(formatGalleryIndexHeading("Ana", false)).toEqual({
+      lines: ["Ana, todavía no tenés ninguna galería."],
+    });
+  });
+
+  it("degrades the empty-state sentence for a nameless client", async () => {
+    const { formatGalleryIndexHeading } = await import("./galleries");
+    expect(formatGalleryIndexHeading(null, false)).toEqual({
+      lines: ["Todavía no tenés ninguna galería."],
+    });
+  });
+});
+
+describe("formatGalleryIndexLede", () => {
+  it("returns null for an empty gallery list", async () => {
+    const { formatGalleryIndexLede } = await import("./galleries");
+    expect(formatGalleryIndexLede([])).toBeNull();
+  });
+
+  it("pluralizes a single session and names the earliest year", async () => {
+    const { formatGalleryIndexLede } = await import("./galleries");
+    expect(formatGalleryIndexLede(["2024-07-02"])).toBe(
+      "Una sesión desde 2024. Las galerías no vencen: podés volver cuando quieras.",
+    );
+  });
+
+  it("counts several sessions and picks the EARLIEST year across all of them", async () => {
+    const { formatGalleryIndexLede } = await import("./galleries");
+    expect(formatGalleryIndexLede(["2026-08-01", "2026-03-14", "2024-07-02"])).toBe(
+      "3 sesiones desde 2024. Las galerías no vencen: podés volver cuando quieras.",
+    );
+  });
+});
+
+describe("formatClientGalleryCardState", () => {
+  it.each([
+    ["proofing", "Te toca elegir", "pending"],
+    ["selected", "Alejo está editando", "waiting"],
+    ["delivered", "Lista para descargar", "done"],
+  ] as const)("gives %s the client-language state %s (tone %s)", async (status, label, tone) => {
+    const { formatClientGalleryCardState } = await import("./galleries");
+    expect(formatClientGalleryCardState(status)).toEqual({ label, tone });
+  });
+
+  it.each(["draft", "archived"] as const)(
+    "throws for %s — never a client-visible status per CLIENT_VISIBLE_STATUSES",
+    async (status) => {
+      const { formatClientGalleryCardState } = await import("./galleries");
+      expect(() => formatClientGalleryCardState(status)).toThrow();
+    },
+  );
+});
+
 describe("getGalleriesForClient", () => {
   // Task #94/#98: `galleries.clientId` is gone — ownership is expressed as a
   // REAL subquery against `gallery_clients` (`inArray(galleries.id,

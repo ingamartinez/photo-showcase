@@ -275,6 +275,128 @@ export function formatSessionDate(sessionDate: string): string {
   return `${day}/${month}/${year}`;
 }
 
+// ---------------------------------------------------------------------------
+// Client index copy (task #143) — `/galleries`, the client's OWN gallery
+// list. See that page's own header comment for the read this backs
+// (`readClientGalleryList` -> `getGalleriesForClient` above).
+// ---------------------------------------------------------------------------
+
+/** `session.user.name` (or anything else callers hand it), trimmed and turned
+ * into `null` when there is nothing usable — never an empty string, never
+ * whitespace. `session.user.name` is populated by whatever the Auth.js
+ * adapter's `users` row carries, which is usually the client's own name
+ * (task #22) but is NOT guaranteed: a client the photographer creates by hand
+ * (`src/lib/users.ts`'s `createClient`, task #51) can be given no name at all,
+ * and the column is nullable in schema.ts for exactly that reason.
+ *
+ * Kept as its own function, rather than inlined where the greeting is built,
+ * so both the greeting and (future) any other copy that wants "the client's
+ * own name, or nothing" share ONE definition of what counts as "no name" —
+ * see galleries.test.ts's own pinning test for the whitespace-only case this
+ * exists to catch. */
+export function formatClientDisplayName(name: string | null | undefined): string | null {
+  const trimmed = name?.trim();
+  return trimmed ? trimmed : null;
+}
+
+/** The display heading that opens the client's own gallery index
+ * (`design/system/client.html:597-600`: `Ana, acá está<br />todo tu
+ * trabajo<br />con el estudio.`) — the ONE place under `/galleries` that
+ * answers "which account am I", now that task #142 removed the account email
+ * from the chrome (see `src/app/galleries/layout.tsx`'s own header comment
+ * for why removing it there was correct, and this task's own late-added
+ * acceptance criterion for why the answer had to land here instead).
+ *
+ * `name` is `session.user.name` verbatim, run through
+ * `formatClientDisplayName` above. A missing/blank name degrades to the SAME
+ * sentence minus its name-specific opening clause — never a literal
+ * `null`/`undefined` spliced into Spanish prose, and never a placeholder like
+ * "Cliente" standing in for a name nobody gave this account. `hasGalleries`
+ * picks between the two sentences this heading ever shows: the mock's own
+ * ("acá está todo tu trabajo…") assumes there IS work to show, which is false
+ * for a brand-new client with zero galleries — that empty case predates this
+ * task (task #22) and keeps its own sentence, just also naming the client
+ * when a name is available. */
+export function formatGalleryIndexHeading(
+  name: string | null | undefined,
+  hasGalleries: boolean,
+): { lines: string[] } {
+  const displayName = formatClientDisplayName(name);
+  if (!hasGalleries) {
+    return {
+      lines: displayName
+        ? [`${displayName}, todavía no tenés ninguna galería.`]
+        : ["Todavía no tenés ninguna galería."],
+    };
+  }
+  return {
+    lines: [
+      displayName ? `${displayName}, acá está` : "Acá está",
+      "todo tu trabajo",
+      "con el estudio.",
+    ],
+  };
+}
+
+/** The sentence right under the heading (`design/system/client.html:600`:
+ * `Tres sesiones desde 2024. Las galerías no vencen: podés volver cuando
+ * quieras.`) — its second half is always the same reassurance; only the
+ * count and the earliest year vary with what this client actually has.
+ *
+ * `sessionDates` are the client's own galleries' `sessionDate` strings
+ * (`"YYYY-MM-DD"`, same format `formatSessionDate` above reads) — the
+ * earliest year is derived from them each render, never stored, same stance
+ * every other derived count in this file takes. Returns `null` for an empty
+ * list: the zero-gallery heading above already says there is nothing yet, and
+ * "0 sesiones desde NaN" is not a sentence this index should ever render. */
+export function formatGalleryIndexLede(sessionDates: readonly string[]): string | null {
+  if (sessionDates.length === 0) return null;
+
+  const earliestYear = Math.min(...sessionDates.map((date) => Number(date.slice(0, 4))));
+  const sessionsClause =
+    sessionDates.length === 1 ? "Una sesión" : `${sessionDates.length} sesiones`;
+
+  return `${sessionsClause} desde ${earliestYear}. Las galerías no vencen: podés volver cuando quieras.`;
+}
+
+/** The client-facing word for a gallery card's state on `/galleries`'s own
+ * index (`design/system/client.html:607/615/623`, its own comment at
+ * 161-162: "State reads as a word, in the client's language — never a system
+ * status. They do not know what 'proofing' is."). Deliberately NOT
+ * `formatGalleryStatus` above: that one names the STUDIO's own workflow step
+ * for a photographer who already knows what "proofing" means; this index
+ * needs the answer to a different question — whose turn is it, and is this
+ * gallery done — which is exactly the distinction this task's own
+ * acceptance criterion asks for ("se distingue de un vistazo cuál está
+ * esperando algo del cliente y cuál ya está entregada").
+ *
+ * Only ever called with a status `getGalleriesForClient` above can actually
+ * return: `CLIENT_VISIBLE_STATUSES` already filters the query to
+ * `proofing`/`selected`/`delivered`, so `draft`/`archived` never reach this
+ * index at all. Throws rather than silently rendering a blank state for
+ * either of those, the same fail-closed stance `isGalleryVisibleToClient`
+ * takes — a status this index has no client-facing word for should be loud,
+ * not quietly invisible. */
+export function formatClientGalleryCardState(status: Gallery["status"]): {
+  label: string;
+  tone: "pending" | "waiting" | "done";
+} {
+  switch (status) {
+    case "proofing":
+      return { label: "Te toca elegir", tone: "pending" };
+    case "selected":
+      return { label: "Alejo está editando", tone: "waiting" };
+    case "delivered":
+      return { label: "Lista para descargar", tone: "done" };
+    case "draft":
+    case "archived":
+      throw new Error(
+        `formatClientGalleryCardState: "${status}" is not a client-visible status ` +
+          "(see CLIENT_VISIBLE_STATUSES above) and has no client-facing card state",
+      );
+  }
+}
+
 export type GalleryDetailAsset = {
   id: string;
   originalFilename: string;

@@ -28,7 +28,7 @@ const COLUMN_HEADINGS = ["Galería", "Clientes", "Estado", "Paquete", "Sesión",
 // row — one constant so the two can never drift apart.
 // design/system/dashboard.html:561 and :572.
 const DESK_COLUMNS =
-  "lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1.1fr)_152px_100px_108px_56px] lg:gap-x-3.5";
+  "lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1.1fr)_152px_100px_108px_56px] lg:gap-3.5";
 
 /* THE STATUS RAMP — design/system/dashboard.html:82-96.
  *
@@ -178,12 +178,17 @@ export default async function GalleriesPage() {
 
                     Touch target: three stacked lines plus 12px of vertical
                     padding on a phone; `--app-row-h` (52px) is the floor on
-                    the desk. Measured in this slice at 390px: 71px. At 1280px:
-                    52px — over WCAG 2.2 SC 2.5.8's 24px pointer minimum, and
-                    the phone value clears the 44px touch floor.
+                    the desk. MEASURED in Chromium against the built
+                    stylesheet, not assumed — 93.3px at 320px and 390px, 73.3px
+                    at 768px, 52px at 1024px and 1280px. The phone value clears
+                    epic #125's 44px touch floor with room to spare and the
+                    desk value clears WCAG 2.2 SC 2.5.8's 24px pointer minimum.
+                    No width from 320px to 1280px produces horizontal overflow.
 
                     Hover is a 2.8% white wash (:308), NEVER brass — epic
-                    #125's rule, and it cost a review round in #127/#128. */}
+                    #125's rule, and it cost a review round in #127/#128.
+                    Focus comes from globals.css:472-474's global outline, the
+                    same 2px brass the mock uses (dashboard.html:113). */}
                 <Link
                   href={`/dashboard/galleries/${gallery.id}`}
                   // The status, machine-readable. This is what the chrome

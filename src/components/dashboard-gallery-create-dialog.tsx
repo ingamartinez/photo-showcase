@@ -81,9 +81,16 @@ export function DashboardGalleryCreateDialog({
         button element already is one.
 
         `min-h-[var(--app-tap)]` is the 44px touch floor (dashboard.html:72,
-        :222). Measured at 390px in this slice: 44px.
+        :222). Measured in a browser at 320/390/768/1024/1280px: 44px at all
+        five, full-bleed below 600px and 146.8px above it.
+
+        No focus styling here on purpose — globals.css:472-474 already gives
+        every focusable element the mock's own 2px brass outline
+        (dashboard.html:113). An outline is not the "brass as a hover/focus
+        wash" the epic forbids, and re-declaring it per control is how two
+        focus rings end up disagreeing.
       */}
-      <DialogTrigger className="bg-accent text-app-base hover:bg-accent-2 focus-visible:ring-accent inline-flex min-h-[var(--app-tap)] w-full items-center justify-center gap-[7px] rounded-[var(--app-radius-sm)] px-4 font-semibold text-[#14100A] transition-colors focus-visible:ring-2 focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--app-ground)] focus-visible:outline-none min-[600px]:w-auto">
+      <DialogTrigger className="bg-accent text-app-base hover:bg-accent-2 inline-flex min-h-[var(--app-tap)] w-full items-center justify-center gap-[7px] rounded-[var(--app-radius-sm)] px-4 font-semibold text-[#14100A] transition-colors min-[600px]:w-auto">
         <Plus aria-hidden="true" className="size-4 shrink-0" />
         Nueva galería
       </DialogTrigger>

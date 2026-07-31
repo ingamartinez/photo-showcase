@@ -25,6 +25,10 @@ const getGalleryDetailBySlugMock = vi.fn<() => Promise<GalleryDetail | null>>();
 vi.mock("@/lib/galleries", () => ({
   getGalleryDetailBySlug: () => getGalleryDetailBySlugMock(),
   isGalleryVisibleToClient: (status: string) => status !== "draft" && status !== "archived",
+  // The studio's own workflow word — admin surfaces only (dashboard) per
+  // that function's own comment, and this page's ADMIN-PREVIEW-ONLY
+  // fallback for `draft`/`archived` (see page.tsx's own comment on the
+  // branch that calls this).
   formatGalleryStatus: (status: string) => {
     const labels: Record<string, string> = {
       draft: "Borrador",
@@ -34,6 +38,26 @@ vi.mock("@/lib/galleries", () => ({
       archived: "Archivada",
     };
     return labels[status] ?? status;
+  },
+  // Task #181 — the CLIENT's own word, the SAME mapping `/galleries`'s own
+  // chrome test fakes (src/app/galleries/page.chrome.test.tsx would be the
+  // wrong place to look for drift protection between the two pages' fakes;
+  // src/lib/galleries.test.ts pins the REAL function against
+  // CLIENT_VISIBLE_STATUSES). Throws for `draft`/`archived`, mirroring the
+  // real function, so a regression that calls this WITHOUT the
+  // `isGalleryVisibleToClient` guard for an admin-previewed draft/archived
+  // gallery fails this suite instead of silently passing.
+  formatClientGalleryCardState: (status: string) => {
+    const states: Record<string, { label: string; tone: "pending" | "waiting" | "done" }> = {
+      proofing: { label: "Te toca elegir", tone: "pending" },
+      selected: { label: "Alejo está editando", tone: "waiting" },
+      delivered: { label: "Lista para descargar", tone: "done" },
+    };
+    const state = states[status];
+    if (!state) {
+      throw new Error(`formatClientGalleryCardState: "${status}" is not a client-visible status`);
+    }
+    return state;
   },
   formatSessionDate: (sessionDate: string) => {
     const [year, month, day] = sessionDate.split("-");
@@ -235,15 +259,45 @@ describe("ClientGalleryPage chrome", () => {
     });
   });
 
-  it("renders the gallery's title, status and session date", async () => {
+  it("renders the gallery's title, the CLIENT's own word for its status, and the session date", async () => {
     getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
 
     const element = await ClientGalleryPage(paramsFor(SLUG));
     render(element);
 
     expect(screen.getByText("Boda Ana y Beto")).toBeDefined();
-    expect(screen.getByText("En pruebas")).toBeDefined();
+    // Task #181: "Te toca elegir" (client language), never "En pruebas" (the
+    // studio's own workflow word) — see the dedicated leak-detection suite
+    // below for the negative half of this claim across all three
+    // client-visible statuses.
+    expect(screen.getByText("Te toca elegir")).toBeDefined();
     expect(screen.getByText(/01\/08\/2026/)).toBeDefined();
+  });
+
+  // Task #181's own acceptance criterion: "a test that fails red if a studio
+  // internal word reappears on a client surface." Enumerates every status a
+  // real client can reach this page with (CLIENT_VISIBLE_STATUSES) and
+  // asserts NONE of the studio's own three words for them ever renders.
+  // Mutation-proof: reverting page.tsx's status span back to
+  // `formatGalleryStatus(gallery.status)` turns every case of this red.
+  describe("never leaks the studio's internal workflow word (task #181)", () => {
+    it.each([
+      ["proofing", "En pruebas"],
+      ["selected", "Selección enviada"],
+      ["delivered", "Entregada"],
+    ] as const)("status=%s never renders the studio's own word %s", async (status, studioWord) => {
+      getGalleryDetailBySlugMock.mockResolvedValue(
+        galleryDetail({
+          status,
+          selectionSubmittedAt: status === "selected" ? new Date("2026-07-28T12:00:00.000Z") : null,
+        }),
+      );
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      render(element);
+
+      expect(screen.queryByText(studioWord)).toBeNull();
+    });
   });
 
   it("renders every asset's proof by its presigned URL, with a uniform tile box reserved before load", async () => {
@@ -392,14 +446,14 @@ describe("ClientGalleryPage chrome", () => {
     const element = await ClientGalleryPage(paramsFor(SLUG));
     render(element);
 
-    // Not `getByText`: the gallery's own status badge (formatGalleryStatus)
-    // renders the SAME Spanish label ("Selección enviada") for the `selected`
-    // status, so this specific status message — the submit panel's own
-    // `role="status"` — is queried by role to disambiguate the two. Matched
-    // against the CORRECTED copy specifically ("tiene acceso"), not just the
-    // "Selección enviada" prefix both the status badge and the (earlier,
-    // dishonest) panel copy share — see submit-selection-panel.test.tsx's
-    // own comment on this exact pinning.
+    // Queried by role, not `getByText`, and matched against the CORRECTED
+    // copy specifically ("tiene acceso") rather than a prefix — see
+    // submit-selection-panel.test.tsx's own comment on this exact pinning.
+    // (Before task #181 the eyebrow badge above also rendered "Selección
+    // enviada" via `formatGalleryStatus`, sharing this panel's own opening
+    // words; #181 moved the badge to `formatClientGalleryCardState`'s "Alejo
+    // está editando", so `role: "status"` is no longer load-bearing for
+    // disambiguation, only for scoping to this panel's own message.)
     expect(screen.getByRole("status").textContent).toMatch(/tiene acceso/);
     expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
     expect(screen.getByRole("button", { name: /Quitar de seleccionadas/ })).toHaveProperty(

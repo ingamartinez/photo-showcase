@@ -58,6 +58,140 @@
   color-scheme: dark;
 }
 
+/* ===================================================================
+   APP SURFACE — a second layer, not a second brand (epic #125).
+
+   /dashboard is a work tool, not the portfolio: density and
+   scannability over the public site's editorial slowness. The studio
+   should still be recognisable, so the brand tokens above (--bg, --fg,
+   --accent, --accent-2, the font families) are NOT redefined here,
+   only reused. The client gallery under /galleries/[publicSlug] is
+   untouched and stays on the editorial system on purpose — see the
+   epic body (#125) for why that split is a deliberate product
+   decision and not an oversight.
+
+   SCOPING MECHANISM — a data attribute, not a class or a second
+   `:root`. Every token below lives under `[data-surface="app"]`, set
+   on the dashboard layout's root element (task #129 wires this up).
+   Chosen deliberately over the alternatives:
+     - a second `:root` block would leak into every page that loads
+       this stylesheet, i.e. everywhere, since globals.css is global;
+     - a globally-registered Tailwind utility class is one typo away
+       from landing on the public site by accident.
+   `[data-surface="app"]` is greppable, assertable from a chrome test
+   (`container.querySelector('[data-surface="app"]')`), and structurally
+   cannot leak: nothing outside the dashboard tree will ever carry it.
+
+   THIS SLICE IS ADDITIVE ONLY (#128). Nothing under src/app or
+   src/components sets `data-surface="app"` yet, so every rule below is
+   inert until #129 adds the attribute to the dashboard shell.
+
+   Reference mock: design/system/dashboard.html (kanban #126).
+   =================================================================== */
+[data-surface="app"] {
+  /* Ground / surface / raised — inverted relative to the public site.
+     There, the page ground is --bg and things sink into --bg-sunken.
+     Here the ground IS --bg-sunken and every working surface lifts off
+     it toward --bg, with --bg-2 higher again for table headers, the
+     sidebar and anything that needs to read as "above" its container.
+     Same three brand neutrals, no new colour invented — only their
+     relationship to each other flips, because a work tool wants panels
+     that read as raised trays, not framed windows. */
+  --app-ground: var(--bg-sunken);
+  --app-surface: var(--bg);
+  --app-raised: var(--bg-2);
+
+  /* Sans typographic scale, replacing the per-component `text-[15px]` /
+     `clamp()` one-offs each dashboard screen currently invents on its
+     own (#130-#134 each had a slightly different one). Reuses the
+     existing --font-sans (Geist Sans) — no new font stack, per the
+     epic's "brand tokens stay" rule. */
+  --app-text-micro: 11px;
+  --app-text-meta: 12px;
+  --app-text-body: 13px;
+  --app-text-base: 14px;
+  --app-text-lead: 16px;
+  --app-text-head: 20px;
+  --app-text-title: 22px;
+  --app-line-height: 1.5;
+  --app-weight-normal: 400;
+  --app-weight-medium: 500;
+  --app-weight-semibold: 600;
+
+  /* Density: row/cell/card spacing so every table and list agrees with
+     every other one instead of each screen picking its own `p-6`
+     (exactly the failure #132 calls out explicitly against #131: "two
+     tables that disagree on density is the failure mode this slice
+     exists to avoid"). Phone values first, per the epic's mobile-first
+     invariant — see the min-width blocks below. */
+  --app-tap: 44px;
+  --app-cell-x: 14px;
+  --app-pad-card: 16px;
+  --app-gap: 12px;
+  /* Aligned-table row height. Only meaningful once rows actually become
+     a table at the >=1024px breakpoint (see #131); at phone widths a
+     "row" is a variable-height stacked card, not a fixed-height line. */
+  --app-row-h: 52px;
+
+  /* Its own radii. --radius-sm at globals.css:38 (2px) reads as
+     editorial precision for a picture frame; a work surface wants
+     something visibly softer so cards and controls don't look
+     razor-cut. Named distinctly (--app-radius*, not --radius*), but
+     NOT for the reason "scoping an override would leak" — it would
+     not, and that is worth spelling out so #131-#134 don't go looking
+     for a cascade that can't happen.
+
+     `@theme inline` above resolves each entry AT BUILD TIME. For
+     --color-bg-2 the right-hand side is already `var(--bg-2)`, so
+     Tailwind inlines that var() reference into the generated utility
+     and it keeps responding to whatever --bg-2 resolves to at runtime
+     (which is how a scoped selector CAN affect a color utility). But
+     --radius-sm's right-hand side is the literal `2px`, so Tailwind
+     inlines the literal itself: the compiled utility is
+     `.rounded-sm{border-radius:2px}` and the custom property is never
+     emitted to the browser at all (verified against the built
+     production CSS — zero occurrences of `--radius-sm`). There is
+     nothing left at runtime for a `[data-surface="app"] { --radius-sm: ... }`
+     override to shadow; it would be a dead declaration nobody reads,
+     which is worse than a naming collision because it fails silently
+     and looks like it works.
+
+     The real, load-bearing constraint this leaves for later slices:
+     `rounded-*` utilities are frozen literals, so `[data-surface="app"]`
+     can NEVER re-skin an existing `rounded-sm` just by being applied
+     higher up the tree. Every corner the panel wants softened needs an
+     explicit per-component className change (to an arbitrary-value
+     utility reading --app-radius(-sm), or a future dashboard-specific
+     @theme entry) — #131 and friends have to do that work themselves,
+     it does not arrive for free with this token layer. */
+  --app-radius: 8px;
+  --app-radius-sm: 5px;
+}
+
+/* >=600px — small tablet / large phone landscape. Rows gain room ahead
+   of the table breakpoint. Mirrors design/system/dashboard.html's own
+   `@media (min-width: 600px)` block. Mobile-first per the epic's hard
+   rule: the values in `[data-surface="app"]` above ARE the phone
+   layout, and every media query is `min-width` and only ADDS — there
+   is no `max-width` query anywhere in this block. */
+@media (min-width: 600px) {
+  [data-surface="app"] {
+    --app-cell-x: 16px;
+    --app-pad-card: 18px;
+    --app-gap: 14px;
+  }
+}
+
+/* >=1024px — the desk. Density grows further and rows are finally wide
+   enough to read as the aligned table --app-row-h describes. */
+@media (min-width: 1024px) {
+  [data-surface="app"] {
+    --app-text-title: 26px;
+    --app-pad-card: 20px;
+    --app-gap: 20px;
+  }
+}
+
 /* Centered content column with responsive gutters. */
 .wrap {
   max-width: var(--maxw);

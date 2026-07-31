@@ -119,6 +119,66 @@
   --radius-sm: 2px;
   --radius-md: 3px;
   --radius-lg: 4px;
+
+  /* --- App-surface aliases (task #175) -----------------------------------
+     Ergonomics for the `[data-surface="app"]` layer below, NOT a second
+     scope. `text-[length:var(--app-text-base)]` is thirty characters nobody
+     types correctly from memory, and there were already a dozen distinct
+     `var(--app-*)` arbitrary-value strings across two files before #131,
+     #132, #133 and #134 multiplied them. Naming them once is cheaper than
+     un-hardcoding them from four screens later.
+
+     WHY THIS KEEPS WORKING THROUGH THE SCOPE. Every right-hand side here is
+     a `var()`, so `@theme inline` inlines the REFERENCE, not a value:
+     `.bg-app-raised{background-color:var(--app-raised)}`. The variable is
+     still resolved by the browser, so it still picks up whatever
+     `[data-surface="app"]` (and its min-width blocks) declare. This is the
+     same mechanism `--color-bg-2` uses, and it is the ONLY reason a global
+     utility can serve a scoped token layer. A literal right-hand side would
+     be inlined as the literal and the scope could never reach it — see the
+     --app-radius* comment below for the full argument.
+
+     ONLY THE TWO SCALES THAT REPEAT. Colour and font-size. The one-offs
+     (`h-[var(--app-tabbar-h)]`, `grid-cols-[var(--app-sidebar-w)_1fr]`,
+     `min-h-[var(--app-tap)]`, `leading-[var(--app-line-height)]`) stay
+     arbitrary values: each appears once, and a global utility buys nothing.
+     RADII ARE DELIBERATELY EXCLUDED — `--app-radius*` exists precisely
+     because `--radius-*` are frozen literals, and putting radii in `@theme`
+     reopens that settled argument for nothing.
+
+     THE COST, ACCEPTED WITH OPEN EYES. A `@theme` entry is GLOBAL, so
+     `bg-app-raised` is now a valid class on the marketing site too, where
+     `--app-raised` is undefined — the declaration is then invalid at
+     computed-value time, i.e. SILENTLY TRANSPARENT. That is exactly the
+     "one typo away from landing on the public site" hazard the block below
+     records against a globally-registered utility class. Two guards make it
+     defensible, and the change is not defensible without BOTH:
+       1. src/app/globals.tokens.test.ts compiles this file and asserts every
+          `app-*` utility resolves to `var(--app-*)` — so a leak outside the
+          scope is inert and greppable rather than wrong.
+       2. eslint.config.mjs restricts `app-*` classnames to
+          src/app/dashboard/** and src/components/dashboard-*, turning the
+          leak from a hope into a red check.
+     `[data-surface="app"]` remains the source of truth. These are names. */
+  --color-app-ground: var(--app-ground);
+  --color-app-surface: var(--app-surface);
+  --color-app-raised: var(--app-raised);
+  --color-app-danger: var(--app-danger);
+
+  /* Font sizes. NOTE FOR CALL SITES USING `cn()`: tailwind-merge cannot tell
+     a custom `text-app-*` font size from a `text-*` COLOUR on its own — it
+     classified `text-app-micro` as a colour and dropped it whenever a real
+     colour class followed in the same cn() call. That is why the arbitrary
+     values these replace all carried the explicit `length:` hint. The
+     classification is taught to tailwind-merge in src/lib/utils.ts; see the
+     comment there before adding a name to this list. */
+  --text-app-micro: var(--app-text-micro);
+  --text-app-meta: var(--app-text-meta);
+  --text-app-body: var(--app-text-body);
+  --text-app-base: var(--app-text-base);
+  --text-app-lead: var(--app-text-lead);
+  --text-app-head: var(--app-text-head);
+  --text-app-title: var(--app-text-title);
 }
 
 :root {

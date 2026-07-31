@@ -372,11 +372,34 @@ export async function publishGallery(
     };
   }
 
+  // Task #61 — this UPDATE is now CONDITIONAL (`WHERE status = 'draft'`), not
+  // an unconditional flip. Why the SELECT's own `isPublishable()` check above
+  // cannot substitute for this: it and this UPDATE are two SEPARATE round
+  // trips to the database, with the entire `Promise.allSettled` email send
+  // above sitting in the gap between them. A genuine double-submit (the
+  // photographer double-clicking "Publicar" on a slow connection) runs a
+  // SECOND `publishGallery` call whose own SELECT can land in that exact
+  // gap, see `status = 'draft'` (this call hasn't written yet), and race
+  // ahead — the textbook check-then-act race. Re-checking the status
+  // earlier cannot close a gap that exists AFTER the check; only the WRITE
+  // itself, made conditional, can be atomic. Postgres serializes concurrent
+  // UPDATEs against the same row, so of two racing calls at most ONE
+  // `WHERE status = 'draft'` clause matches; the other matches zero rows
+  // and changes nothing.
+  //
+  // `.returning()` is how that outcome is OBSERVED here — branching on the
+  // affected-row count, per this task's own scope, rather than assuming the
+  // write always lands. An empty result means THIS call's WHERE matched
+  // nothing: some other in-flight call already flipped this gallery to
+  // PUBLISH_TARGET_STATUS. Deliberately NOT treated as an error below — see
+  // the comment on that branch for why.
+  let updated: { id: string }[];
   try {
-    await db
+    updated = await db
       .update(galleries)
       .set({ status: PUBLISH_TARGET_STATUS })
-      .where(eq(galleries.id, gallery.id));
+      .where(and(eq(galleries.id, gallery.id), eq(galleries.status, "draft")))
+      .returning({ id: galleries.id });
   } catch {
     return {
       status: "error",
@@ -384,6 +407,35 @@ export async function publishGallery(
         "Le enviamos el correo al cliente, pero no pudimos actualizar el estado de la galería. " +
         "Volvé a intentar — el cliente puede recibir un segundo correo.",
     };
+  }
+
+  if (updated.length === 0) {
+    // The LOSING side of the race: this call's own emails already went out
+    // above (Promise.allSettled doesn't know or care who wins the write
+    // below it — see this task's own ticket, "the send happens BEFORE the
+    // update, deliberately", which this guard does NOT reorder), but some
+    // other call's UPDATE landed first and the gallery is already
+    // PUBLISH_TARGET_STATUS. This is NOT an error: the intended end state —
+    // published, client notified — was reached, just not BY this call.
+    // Reporting `status: "error"` here would tell the photographer
+    // something needs fixing when nothing does; `<PublishGalleryButton>`
+    // (src/components/publish-gallery-button.tsx) renders the exact same
+    // "Publicada" success message for both the winner and the loser, which
+    // is the correct read: from the photographer's chair, two clicks that
+    // both end in "Publicada" is indistinguishable from — and no worse
+    // than — one click that happened to land twice.
+    //
+    // What this guard does NOT fix, on purpose (see this task's own
+    // ticket): the double EMAIL. Both calls' sends already happened before
+    // either reached this line, so a true double-submit still issues two
+    // working magic links. Accepted and pre-existing — each Auth.js
+    // `verificationToken` is independently single-use (delete-then-return),
+    // so only one link survives being clicked first regardless of how many
+    // were sent.
+    //
+    // Falls through to the SAME revalidate + "published" return as the
+    // winning branch below, on purpose — see the paragraph above for why
+    // the two outcomes are meant to be indistinguishable from here on.
   }
 
   revalidatePath(`/dashboard/galleries/${gallery.id}`);

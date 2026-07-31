@@ -117,6 +117,13 @@ vi.mock("@/lib/db", async () => {
   const userRows: Row[] = [];
   const galleryClientRows: Row[] = [];
   let failNextUpdate = false;
+  // Task #61 — one entry pushed per UPDATE attempt against `galleries`,
+  // recording how many rows THAT attempt matched (0 or 1). This is how the
+  // race test below observes the guard actually doing its job at the write
+  // itself, independent of `publishGallery`'s return value (which is the
+  // SAME `{ status: "published" }` for the winner and the loser, on
+  // purpose — see actions.ts's own comment on that branch).
+  const updateOutcomes: number[] = [];
 
   return {
     db: {
@@ -149,18 +156,63 @@ vi.mock("@/lib/db", async () => {
           },
         }),
       }),
+      // Task #61: `publishGallery`'s UPDATE is now `WHERE id = ... AND status
+      // = 'draft'` (an `and()` of TWO conditions, not one bare `eq()`) and
+      // ends in `.returning(...)` — this fake has to model BOTH changes, not
+      // just tolerate them, or the guard this fake is meant to help prove
+      // out would be invisible to it.
       update: (table: unknown) => ({
         set: (values: Row) => ({
-          where: async (condition: unknown) => {
+          where: (condition: unknown) => {
             if (table !== galleries) throw new Error("fake db: unsupported table in update()");
-            if (failNextUpdate) {
-              failNextUpdate = false;
-              throw new Error("simulated update failure");
+            const conditions = parseConditions(condition).filter(
+              (c): c is { dbColumnName: string; op: "eq"; value: unknown } => c.op === "eq",
+            );
+            if (conditions.length === 0) {
+              throw new Error("eqColumnAndValue: not an eq() condition");
             }
-            const { column, value } = eqColumnAndValue(condition);
-            if (!column) throw new Error("eqColumnAndValue: not an eq() condition");
-            const row = galleryRows.find((r) => r[column] === value);
-            if (row) Object.assign(row, values);
+
+            // Resolves a db column name back to the row's JS property key,
+            // same job `eqColumnAndValue` does for a single condition —
+            // generalized here across ALL of an `and()`'s leaves, so the
+            // second condition (`status = 'draft'`) is actually enforced by
+            // this fake and not silently dropped.
+            const jsKeyFor = (dbColumnName: string) =>
+              Object.entries(galleries as unknown as Record<string, unknown>).find(
+                ([, col]) =>
+                  col &&
+                  typeof col === "object" &&
+                  (col as { name?: string }).name === dbColumnName,
+              )?.[0];
+
+            // Deliberately runs to completion SYNCHRONOUSLY — no `await`
+            // between reading the row and mutating it — which is what makes
+            // this fake a faithful stand-in for Postgres's own row-level
+            // atomicity. Two "concurrent" `publishGallery` calls in this
+            // test file are two async functions interleaved by the JS event
+            // loop at THEIR OWN await points; neither can be mid-way through
+            // THIS function while the other runs it, so of two racing
+            // UPDATEs against the same row, only one can ever observe (and
+            // flip) `status = 'draft'` — exactly what the real `WHERE`
+            // clause guarantees against a real table.
+            const applyUpdate = (): Row[] => {
+              if (failNextUpdate) {
+                failNextUpdate = false;
+                throw new Error("simulated update failure");
+              }
+              const row = galleryRows.find((r) =>
+                conditions.every((c) => {
+                  const jsKey = jsKeyFor(c.dbColumnName);
+                  return jsKey !== undefined && r[jsKey] === c.value;
+                }),
+              );
+              updateOutcomes.push(row ? 1 : 0);
+              if (!row) return [];
+              Object.assign(row, values);
+              return [row];
+            };
+
+            return { returning: async () => applyUpdate() };
           },
         }),
       }),
@@ -208,6 +260,7 @@ vi.mock("@/lib/db", async () => {
       __failNextUpdate: () => {
         failNextUpdate = true;
       },
+      __updateOutcomes: updateOutcomes,
     },
   };
 });
@@ -217,6 +270,7 @@ async function seededDb() {
     db: {
       __rows: { galleries: Row[]; assets: Row[]; users: Row[]; galleryClients: Row[] };
       __failNextUpdate: () => void;
+      __updateOutcomes: number[];
     };
   };
   return db;
@@ -276,6 +330,7 @@ beforeEach(async () => {
   db.__rows.assets.length = 0;
   db.__rows.users.length = 0;
   db.__rows.galleryClients.length = 0;
+  db.__updateOutcomes.length = 0;
   db.__rows.galleries.push(galleryRow());
   db.__rows.users.push({ id: CLIENT_ID, name: "Ana Pérez", email: CLIENT_EMAIL });
   // Task #94: ownership/notification recipients now come from the
@@ -663,5 +718,95 @@ describe("publishGallery success", () => {
 
     expect(callOrder).toEqual(["signIn", "update"]);
     expect(rows.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+  });
+});
+
+// Task #61's own acceptance criterion: this simulates the RACE, it does not
+// merely assert the guard exists. Two SEQUENTIAL calls (call, await, call
+// again) would never reach the guard at all — by the time the second call's
+// own SELECT ran, the first call's UPDATE would already have flipped the row
+// to "proofing", so the second call would be turned away by `isPublishable()`
+// long before it ever got near the `WHERE status = 'draft'` clause this task
+// added. That is the exact failure this repo has shipped before, more than
+// once (tasks #26, #73, #84, #90): a concurrency-sounding test name over
+// code that runs sequentially and never actually interleaves.
+describe("publishGallery — a genuine concurrent double-submit (task #61)", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+  });
+
+  it("guards the WRITE, not the read: both calls pass isPublishable() before either writes, yet exactly one row-update lands", async () => {
+    // The interleave, made deterministic rather than hoped-for: `signIn` is
+    // the LAST thing both calls do before reaching the guarded UPDATE, and
+    // it only runs after every read-side check above it (isPublishable, the
+    // asset count, the active-client rule) already passed against a gallery
+    // still `draft` in memory — no call has written yet at this point. By
+    // gating `signIn`'s own resolution on "the OTHER call has ALSO reached
+    // signIn", neither of the two `publishGallery` invocations below can
+    // proceed to its UPDATE until BOTH have already cleared every read-side
+    // check. That is precisely the real-world condition the ticket
+    // describes — a photographer double-clicking "Publicar" on a slow
+    // connection, where BOTH clicks' requests are already in flight, past
+    // their own reads, before either one's write lands.
+    let inFlightSignIns = 0;
+    let releaseSignIns!: () => void;
+    const bothCallsReadySignInGate = new Promise<void>((resolve) => {
+      releaseSignIns = resolve;
+    });
+    signInMock.mockImplementation(async () => {
+      inFlightSignIns += 1;
+      if (inFlightSignIns === 2) releaseSignIns();
+      await bothCallsReadySignInGate;
+      return "http://localhost/api/auth/verify-request?provider=gallery-access";
+    });
+
+    const { publishGallery } = await import("./actions");
+
+    const [resultA, resultB] = await Promise.all([
+      publishGallery({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID })),
+      publishGallery({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID })),
+    ]);
+
+    // Proves the interleave actually happened: if either call had run to
+    // completion before the other started (the sequential-test failure mode
+    // this suite is explicitly guarding against), the gate above would have
+    // deadlocked — `inFlightSignIns` would be stuck at 1, and this test
+    // would time out rather than reach this assertion.
+    expect(inFlightSignIns).toBe(2);
+
+    // The guard itself: of the two racing UPDATEs against the SAME row,
+    // exactly one `WHERE status = 'draft'` clause matches (1 row affected)
+    // and the other matches zero. Without the `AND status = 'draft'` clause
+    // this task added, BOTH would match and this array would be `[1, 1]`.
+    //
+    // MUTATION-PROVEN: reverting the `.where()` clause to the pre-#61
+    // `eq(galleries.id, gallery.id)` alone (dropping the `AND status =
+    // 'draft'`) turns this exact assertion red — `AssertionError: expected
+    // [ 1, 1 ] to deeply equal [ 0, 1 ]` — while every OTHER test in this
+    // file keeps passing (`21 passed | 1 failed`). That is the guard being
+    // caught in the act of being missing, not merely a name suggesting so.
+    const db = await seededDb();
+    expect(db.__updateOutcomes.sort()).toEqual([0, 1]);
+
+    // Exactly one status transition landed — the ticket's core requirement.
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+
+    // Neither the winner nor the loser sees this as an error. The losing
+    // call's write matched zero rows, but the gallery it asked about IS
+    // published — by the other call, a moment earlier — so both resolve
+    // identically. See publishGallery's own comment on the
+    // `updated.length === 0` branch for why an error here would be the
+    // wrong signal to the photographer.
+    expect(resultA).toEqual({ status: "published" });
+    expect(resultB).toEqual({ status: "published" });
+
+    // What this guard deliberately does NOT fix (the ticket's own "watch
+    // out", and why this task never reorders the send below the write):
+    // both calls' emails were already sent by the time either reached the
+    // guarded write, so a true simultaneous double-submit still emails the
+    // client twice. Documented, accepted, and unchanged by this task — each
+    // Auth.js magic-link token is independently single-use (delete-then-
+    // return), so only one of the two links survives being clicked first.
+    expect(signInMock).toHaveBeenCalledTimes(2);
   });
 });

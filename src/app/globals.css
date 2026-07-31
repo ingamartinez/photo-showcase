@@ -36,16 +36,63 @@
   --color-accent: var(--accent);
   --color-accent-2: var(--accent-2);
 
-  /* Keep shadcn/Tailwind base tokens wired for future UI components. */
-  --color-background: var(--bg);
-  --color-foreground: var(--fg);
-  --color-border: var(--line);
-  --color-input: var(--line-2);
-  --color-ring: var(--accent);
-  --color-muted: var(--bg-2);
-  --color-muted-foreground: var(--fg-dim);
-  --color-primary: var(--accent);
-  --color-primary-foreground: #14100a;
+  /* shadcn/Radix semantic tokens, wired to the brand (task #127, the slice
+     that finally installed the primitives this block was written ahead of).
+
+     Each entry points at a RUNTIME ALIAS declared in `:root` below (e.g.
+     `var(--popover)`), not at the brand token directly (`var(--bg-2)`). That
+     indirection is load-bearing, not decoration: shadcn's generated
+     components read some of these as raw custom properties inside arbitrary
+     values — src/components/ui/button.tsx's `secondary` variant hovers with
+     `color-mix(in oklch, var(--secondary), var(--foreground) 5%)` — and a
+     `--color-*` entry alone never puts `--secondary` in front of the browser.
+     One alias per token serves the generated utility AND the raw reference,
+     which is also the shape shadcn's own starter CSS uses, so a future
+     `shadcn add` diff reads normally against this file.
+
+     Verified against the COMPILED stylesheet, not by inspection: before this
+     slice, `bg-popover`, `bg-secondary` and `bg-destructive` emitted NO RULE
+     AT ALL (Tailwind generates nothing for a colour it has no entry for), so
+     a DialogContent would have rendered as a transparent modal and a
+     DropdownMenuContent as a floating transparent panel over page content.
+     src/app/globals.tokens.test.ts compiles this file and asserts every one
+     of them resolves, so the gap cannot silently reopen. */
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-destructive: var(--destructive);
+
+  /* NOT `--color-accent`. That name is already taken, twelve lines up, by the
+     BRAND accent — the tungsten brass this whole design system is built
+     around — and shadcn means something completely different by it: the
+     subtle neutral wash behind a focused menu item. Same utility name, one
+     runtime variable; they cannot both exist, and the brand meaning wins
+     because ~30 shipped components read `bg-accent` / `text-accent` and
+     src/app/dashboard/galleries/page.chrome.test.tsx:173-179 asserts on
+     `.bg-accent.rounded-full` directly (task #75's status dot).
+
+     So `focus:bg-accent` on a DropdownMenuItem paints the row brass. What
+     this token fixes is that the text on top of it stayed `--fg` (near-white
+     on brass, ~2:1) because `--color-accent-foreground` was never mapped at
+     all. Pairing it with the same ink `--primary-foreground` already uses
+     makes the brass highlight read as a deliberate, on-brand selection state
+     at ~9:1 instead of an unreadable accident.
+
+     A slice that wants a QUIET menu highlight instead must pass an explicit
+     className (e.g. `focus:bg-muted`) at the call site. It must NOT re-point
+     `--accent`: that variable is the public site's, and re-pointing it inside
+     `[data-surface="app"]` would silently recolour #75's dot. */
+  --color-accent-foreground: var(--accent-foreground);
 
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
@@ -72,6 +119,41 @@
   --gutter: clamp(20px, 5vw, 72px);
 
   color-scheme: dark;
+
+  /* --- shadcn/Radix semantic aliases (task #127) --------------------------
+     Runtime half of the `@theme inline` block above. Every value here is a
+     brand token reference, with exactly one exception noted below, so this
+     adds no colour to the system — it only gives shadcn's vocabulary a name
+     it can reach at runtime. Deliberately inside this `:root` rather than in
+     a second `:root` block: these are GLOBAL by nature (a `--color-*` entry
+     is global), so the objection the app-surface layer below records against
+     a second `:root` does not apply, and one block is one place to look. */
+  --background: var(--bg);
+  --foreground: var(--fg);
+  --border: var(--line);
+  --input: var(--line-2);
+  --ring: var(--accent);
+  --muted: var(--bg-2);
+  --muted-foreground: var(--fg-dim);
+  --primary: var(--accent);
+  --primary-foreground: #14100a;
+  --secondary: var(--bg-2);
+  --secondary-foreground: var(--fg);
+  /* Popovers, dropdown panels and dialog surfaces. --bg-2 rather than --bg so
+     the panel reads as lifted off BOTH grounds without a third neutral: the
+     public site's ground is --bg, the app surface's is --bg-sunken. */
+  --popover: var(--bg-2);
+  --popover-foreground: var(--fg);
+  /* Ink on the brass highlight — see the --color-accent-foreground comment. */
+  --accent-foreground: #14100a;
+  /* THE ONE VALUE NOT DERIVED FROM THE BRAND. The palette has no red, and it
+     needs one: the primitives reference `destructive` from their BASE classes
+     (`aria-invalid:border-destructive` on Input, Button and Badge), so
+     leaving it unmapped does not merely lose a red button variant — it makes
+     invalid-field styling silently do nothing on every form. This is
+     shadcn's own `neutral` base colour dark-mode destructive, taken verbatim
+     rather than invented, so a future `shadcn add` has nothing to argue with. */
+  --destructive: oklch(0.704 0.191 22.216);
 }
 
 /* ===================================================================

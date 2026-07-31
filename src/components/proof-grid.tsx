@@ -1,9 +1,11 @@
 "use client";
 
 // The client's own view of a gallery's proofs (task #23): a responsive grid
-// that reserves each tile's exact aspect ratio up front (no cumulative
-// layout shift while images load) plus a lightbox for full-screen browsing
-// with keyboard/swipe navigation.
+// that reserves every tile's box up front (no cumulative layout shift while
+// images load) plus a lightbox for full-screen browsing with keyboard/swipe
+// navigation. Since task #145 that box is a UNIFORM 2:3 rather than each
+// asset's own ratio — see proof-tile.tsx's own comment on it for what was
+// measured at 390px and why the crop is the cheaper of the two costs.
 //
 // WHAT LIVES WHERE (task #144)
 // ============================
@@ -250,13 +252,38 @@ export function ProofGrid({
         </div>
       </div>
 
-      <ul className="grid grid-cols-2 gap-2 sm:grid-cols-3 sm:gap-4 lg:grid-cols-4">
+      {/* Task #145 — the one instruction the redesigned tile needs, and the
+          mock's own words for it (design/system/client.html:714). The pick
+          control became an empty 48px circle with no label in it, so the
+          screen has to say once what it does; without this line the only
+          affordance is a bare ring. Hidden once `isLocked`, because there is
+          then no circle to press and the sentence would be a lie.
+
+          Lives here rather than in the page's header block
+          (src/app/galleries/[publicSlug]/page.tsx), where the mock puts its
+          `.lede`: that header renders for `selected` and `delivered` too, and
+          only this component knows whether the selection is still open. */}
+      {!isLocked && (
+        <p className="text-fg-dim mb-3 text-sm">
+          Tocá una foto para verla grande. El círculo la elige.
+        </p>
+      )}
+
+      {/* client.html:180 (`repeat(2, 1fr)`, `gap: 2px`), :532 (three columns
+          from 620px — Tailwind's `sm` is 640px, the nearest stop in the
+          project's own scale, and no slice in this epic gets to invent a
+          breakpoint) and :556 (four columns and a 3px gap at the desk).
+          The near-zero gutter is the point rather than a detail: it buys the
+          phone's two columns their width back, which is what makes a
+          thumbnail big enough to decide on without opening it. */}
+      <ul className="grid grid-cols-2 gap-[2px] sm:grid-cols-3 lg:grid-cols-4 lg:gap-[3px]">
         {initialAssets.map((asset, index) => {
           const isSelected = selectionById[asset.id] ?? asset.isSelected;
           return (
             <ProofTile
               key={asset.id}
               asset={asset}
+              position={index + 1}
               src={urls[asset.id] ?? asset.proofUrl}
               isSelected={isSelected}
               isPending={pendingIds.has(asset.id)}

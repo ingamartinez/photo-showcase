@@ -136,16 +136,34 @@
   /* Its own radii. --radius-sm at globals.css:38 (2px) reads as
      editorial precision for a picture frame; a work surface wants
      something visibly softer so cards and controls don't look
-     razor-cut. Named distinctly (--app-radius*, not --radius*) on
-     purpose: --radius-sm/md/lg above feed Tailwind's `rounded-*`
-     utilities GLOBALLY through the `@theme inline` block, and those
-     utilities are already used by both public-site AND dashboard
-     components (e.g. `rounded-sm` in src/app/dashboard/layout.tsx).
-     Overriding --radius-sm inside this scope would silently change
-     every existing `rounded-sm` the instant `data-surface="app"` is
-     set, with no opt-in per component — action at a distance. A
-     distinct name keeps the two radius scales independent; a future
-     consumer reaches for --app-radius(-sm) explicitly. */
+     razor-cut. Named distinctly (--app-radius*, not --radius*), but
+     NOT for the reason "scoping an override would leak" — it would
+     not, and that is worth spelling out so #131-#134 don't go looking
+     for a cascade that can't happen.
+
+     `@theme inline` above resolves each entry AT BUILD TIME. For
+     --color-bg-2 the right-hand side is already `var(--bg-2)`, so
+     Tailwind inlines that var() reference into the generated utility
+     and it keeps responding to whatever --bg-2 resolves to at runtime
+     (which is how a scoped selector CAN affect a color utility). But
+     --radius-sm's right-hand side is the literal `2px`, so Tailwind
+     inlines the literal itself: the compiled utility is
+     `.rounded-sm{border-radius:2px}` and the custom property is never
+     emitted to the browser at all (verified against the built
+     production CSS — zero occurrences of `--radius-sm`). There is
+     nothing left at runtime for a `[data-surface="app"] { --radius-sm: ... }`
+     override to shadow; it would be a dead declaration nobody reads,
+     which is worse than a naming collision because it fails silently
+     and looks like it works.
+
+     The real, load-bearing constraint this leaves for later slices:
+     `rounded-*` utilities are frozen literals, so `[data-surface="app"]`
+     can NEVER re-skin an existing `rounded-sm` just by being applied
+     higher up the tree. Every corner the panel wants softened needs an
+     explicit per-component className change (to an arbitrary-value
+     utility reading --app-radius(-sm), or a future dashboard-specific
+     @theme entry) — #131 and friends have to do that work themselves,
+     it does not arrive for free with this token layer. */
   --app-radius: 8px;
   --app-radius-sm: 5px;
 }

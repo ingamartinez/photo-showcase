@@ -92,8 +92,9 @@ function getClient(): S3Client {
 // `assertAppEnvIsSet()` from `scripts/lib/assert-app-env.ts` before minting
 // or writing a real key — see that module's header for the full mechanism,
 // and `scripts/ops-r2-guard.test.ts` for the test that fails `bun run test`
-// if a script calls one of `proofKey`/`finalKey`/`displayKey`/`putObject`/
-// `deleteObject` without also calling that guard.
+// if a script IMPORTS (under any local name — enforcement keys off the
+// import, not the call site) one of `proofKey`/`finalKey`/`displayKey`/
+// `putObject`/`deleteObject` without also calling that guard.
 export type R2Key = string & { readonly __r2: unique symbol };
 
 // Key builders — the ONLY place these strings are formed. Nothing else in

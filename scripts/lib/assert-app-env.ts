@@ -45,26 +45,42 @@
 // immediately — a loud crash before anything is written — instead of
 // discovering it later as a production key that silently never happened.
 //
-// Every script under scripts/ that calls any of `putObject`, `deleteObject`,
-// `proofKey`, `finalKey`, `displayKey` (src/lib/r2.ts's write-capable
-// exports) is REQUIRED to call this first. That requirement is enforced by
-// scripts/ops-r2-guard.test.ts, which statically scans scripts/ for that
-// exact pattern and fails `bun run test` — and therefore CI — if a script
-// calls one of those five without also calling this function. That is the
-// "cannot miss it" half of task #81's acceptance criterion: forgetting the
-// call fails the test suite, not just a comment nobody happened to read.
+// Every script under scripts/ that IMPORTS any of `putObject`,
+// `deleteObject`, `proofKey`, `finalKey`, `displayKey` (src/lib/r2.ts's
+// write-capable exports) — directly, under a local alias, via a namespace
+// import, or through a re-export declared in another file under scripts/ —
+// is REQUIRED to call this first. scripts/ops-r2-guard.test.ts enforces
+// that: it scans IMPORT AND RE-EXPORT DECLARATIONS (not call sites — the
+// first version of this test scanned call sites instead, and
+// `import { putObject as go } from "…/r2"` then calling only `go(...)`
+// defeated it completely and silently; see that file's own header for the
+// full account) for those five names under any local name, across every
+// *.ts file under scripts/. It fails `bun run test` — and therefore CI — if
+// a file's import/re-export graph brings in one of those five without the
+// SAME FILE also calling this function. That is the "cannot miss it" half
+// of task #81's acceptance criterion: forgetting the call fails the test
+// suite, not just a comment nobody happened to read.
 //
-// What this does NOT protect against: a script that reaches R2 through its
-// own hand-rolled `Bun.S3Client` instead of src/lib/r2.ts's exports (exactly
-// what scripts/check-r2.ts does, deliberately — see its own header). That
-// script never calls any of the five write-capable exports this guard's
-// enforcement test scans for, so it is exempt by construction, not by an
-// allowlist entry — and its own throwaway `_healthcheck/` key is harmless in
-// either namespace, which is why it does not call this function either. Nor
-// does this verify that a set `APP_ENV` is spelled correctly — a typo like
-// `"Production"` or `"prod"` passes this check (something WAS set) and still
-// silently lands under `dev/` (`namespacedKey` requires an exact
-// `"production"` match). This closes the UNSET case, not the misspelled one.
+// What this enforcement does NOT see: a re-export chain that routes through
+// a module living under src/ rather than scripts/ (e.g. a future
+// src/lib/ops-helpers.ts re-exporting `putObject`) — the scan only reads
+// files under scripts/, so an intermediate under src/ is invisible to it. A
+// re-export chain that instead routes through another file under scripts/
+// IS seen, though at the (wrong) file that does the re-exporting rather than
+// the file that ultimately calls it — still a loud, visible failure, not a
+// silent gap.
+//
+// It also does not verify the imported binding is ever actually used for
+// real: an unused import is flagged too, which is a false positive and the
+// safe direction to err (one unneeded guard call, not a missed one). A
+// script that reaches R2 through its own hand-rolled `Bun.S3Client` instead
+// of src/lib/r2.ts's exports (exactly what scripts/check-r2.ts does,
+// deliberately — see its own header) never imports any of the five, so it
+// is exempt by construction, not by an allowlist entry. Nor does this verify
+// that a set `APP_ENV` is spelled correctly — a typo like `"Production"` or
+// `"prod"` passes this check (something WAS set) and still silently lands
+// under `dev/` (`namespacedKey` requires an exact `"production"` match).
+// This closes the UNSET case, not the misspelled one.
 export function assertAppEnvIsSet(): void {
   if (!process.env.APP_ENV) {
     throw new Error(

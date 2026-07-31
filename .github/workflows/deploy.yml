@@ -332,6 +332,7 @@ jobs:
           "
 
       - name: Install systemd unit
+        id: install-unit
         run: |
           set -eu
           # Ships infra/systemd/photoshowcase.service + daemon-reload on every
@@ -363,7 +364,16 @@ jobs:
           # after SSH setup, as an earlier version of this step did) so the
           # unit and the release flip together in the same narrow window,
           # and so a rollback can restore both -- see "Rollback on failure"
-          # below. Deliberate trade, not an oversight: this now fails AFTER
+          # below, whose `if:` also triggers on THIS step (or "Verify
+          # installed unit matches repo") failing, not only on the flip
+          # having happened -- task #102 shipped without that and #112
+          # found the gap: this step (or Verify) failing left the newly
+          # installed unit in place with nothing to revert it, because the
+          # rollback step's gate only checked whether the flip had run. See
+          # "Rollback on failure" for the current, authoritative statement
+          # of what is and is not covered -- don't duplicate that list here,
+          # it drifts.
+          # Deliberate trade, not an oversight: this now fails AFTER
           # migrations and seeding have already run against the new release,
           # not before. Unit/release skew is persistent host state that
           # outlives this job, whereas "the database is ahead of the
@@ -423,6 +433,7 @@ jobs:
           fi
 
       - name: Verify installed unit matches repo
+        id: verify-unit
         run: |
           set -eu
           # This does NOT catch a unit hand-edited on the droplet during an
@@ -500,34 +511,101 @@ jobs:
           exit 1
 
       - name: Rollback on failure
-        if: failure() && steps.flip.outputs.prev != ''
+        # Task #112: gating on `steps.flip.outputs.prev != ''` ALONE left
+        # this step unreachable whenever "Install systemd unit" or "Verify
+        # installed unit matches repo" failed -- `prev` is only ever set by
+        # the "Flip symlink + restart" step's own run body, so if the job
+        # never reaches Flip, that output stays unset and a GitHub Actions
+        # expression reading an unset step output evaluates it as `''`,
+        # making the old condition false. The result: the unit could be
+        # installed and daemon-reload'd for the NEW release, and then the
+        # job fails before the release ever flips, with nothing to undo it
+        # -- exactly the unit/release skew #102's snapshot+restore
+        # machinery was built to close, just unreachable in this one
+        # window. `steps.<id>.outcome` is set by the Actions runtime itself
+        # once a step has actually run, regardless of whether it succeeded,
+        # so `steps.install-unit.outcome == 'failure'` / `steps.verify-unit
+        # .outcome == 'failure'` cannot go missing the way a step's own
+        # custom `echo … >> $GITHUB_OUTPUT` marker could if that step died
+        # before reaching the line that sets it.
+        if: failure() && (steps.flip.outputs.prev != '' || steps.install-unit.outcome == 'failure' || steps.verify-unit.outcome == 'failure')
         env:
           PREV: ${{ steps.flip.outputs.prev }}
         run: |
           set -eu
-          echo "rolling back to $PREV"
-          # "Install systemd unit" already ran `daemon-reload` for the NEW
-          # unit, which makes it the active definition for any future
-          # restart -- including this rollback's -- regardless of which
-          # release directory `current` points at. Restarting the OLD
-          # release under the NEW unit is not a rollback if the unit change
-          # is what broke this deploy (the most likely reason a
-          # unit-touching deploy fails at all), and with `Restart=always`
-          # that is a crash loop. Put the previous unit back first, using
-          # the snapshot "Install systemd unit" took before it overwrote
-          # anything. No new sudoers grant needed: same staging path, same
-          # granted `install` + `daemon-reload` commands, just older file
-          # contents. See task #102 review.
-          # Best-effort, not fatal: the release rollback below must always
-          # run even if this restore doesn't. Restarting the old release
-          # under the new unit is worse than not restoring the unit, but
-          # NOT restoring the release symlink at all -- because a `set -eu`
-          # abort here happened to exit before the line that has always
-          # done the restore -- is worse still: it would leave `current`
-          # pointed at the broken new release, which is strictly worse than
-          # the behaviour this replaced. See task #102 review.
+          # This step now runs for TWO distinct failure windows, and they
+          # need different recovery actions -- read both before touching
+          # this file, and keep this comment truthful (#102 review found
+          # three false doc claims in this exact area; precision here is
+          # load-bearing, not decoration):
+          #
+          # A. Flip already ran ($PREV non-empty): the release symlink was
+          #    moved AND the service was already restarted onto the new
+          #    release before something later failed (health probe, or
+          #    anything else after "Flip symlink + restart"). Covered:
+          #    restore the unit (best-effort) if it changed, flip the
+          #    symlink back to $PREV, and restart -- a restart already
+          #    happened once this run, so a second one to undo it is
+          #    required, not optional. This is the original, pre-#112
+          #    behaviour, unchanged.
+          #
+          # B. Flip never ran ($PREV empty, but "Install systemd unit" or
+          #    "Verify installed unit matches repo" failed -- the #112
+          #    window). Covered: the release symlink was never touched and
+          #    the service was never restarted this run, so there is no
+          #    release to flip back and no restart to undo. Restore the
+          #    unit (best-effort) and daemon-reload again, so the loaded
+          #    definition goes back to matching disk. Deliberately do NOT
+          #    restart the service in this branch: it is still running
+          #    whatever release and unit it started this run under,
+          #    untouched by anything that happened here, and forcing an
+          #    unprompted restart is not this step's job.
+          #
+          # NOT covered by either branch, still, after this fix:
+          #  - A step failing BEFORE "Install systemd unit" (Upload
+          #    tarball, Extract release, Run migrations, Seed portfolio
+          #    content, Seed session packages) -- none of those touch the
+          #    unit or the release symlink, so there is nothing here to
+          #    roll back. The pre-existing, separately-accepted risk there
+          #    is the database having moved ahead of the
+          #    currently-running release; see "Install systemd unit"'s own
+          #    comment on that trade -- this task does not change it.
+          #  - A unit hand-edited on the droplet outside this pipeline --
+          #    see "Verify installed unit matches repo"'s own caveat; this
+          #    step only ever restores from the snapshot THIS run took,
+          #    never from a hand-edit that predates it.
+          #  - The coarse granularity of "Install systemd unit"'s combined
+          #    `install` + `rm` + `daemon-reload` ssh command: it cannot
+          #    distinguish "cp itself failed, nothing written" from "cp
+          #    succeeded but daemon-reload didn't". Branch B treats both
+          #    the same way (attempt a restore, best-effort) -- safe either
+          #    way, but that specific partial-failure ordering has not been
+          #    exercised against a real droplet, only reasoned about.
+          #  - Real SSH/sudo/systemd failure modes in general: this fix
+          #    was reproduced and mutation-proven with a local harness that
+          #    mocks `ssh`/`scp` against a sandboxed filesystem, exercising
+          #    this file's actual `run:` bodies and `if:` expression -- not
+          #    against a live droplet or a real GitHub Actions runner. See
+          #    task #112.
           restore_ok=1
-          if [ -s prev-unit-snapshot.txt ] && ! grep -q '^__UNIT_ABSENT__$' prev-unit-snapshot.txt; then
+          snapshot_existed=0
+          # Set ONLY when "Install systemd unit"'s remote `cat` genuinely
+          # returned the __UNIT_ABSENT__ sentinel -- the one case that
+          # actually proves no unit was previously installed. A merely
+          # missing-or-empty prev-unit-snapshot.txt (an earlier command in
+          # that step failing first, or this snapshot ssh call itself
+          # failing at the transport level -- the redirect still creates
+          # the file before the command runs, so a failed `ssh` just
+          # leaves it empty) says nothing about droplet history and must
+          # NOT be reported as "first-ever install": that is precisely the
+          # false-claim class this task exists to eliminate. See #112
+          # review, round 2.
+          snapshot_confirmed_absent=0
+          if [ -s prev-unit-snapshot.txt ] && grep -q '^__UNIT_ABSENT__$' prev-unit-snapshot.txt; then
+            snapshot_confirmed_absent=1
+            echo "No previous unit snapshot to restore (first-ever install on this droplet)."
+          elif [ -s prev-unit-snapshot.txt ]; then
+            snapshot_existed=1
             scp -i ~/.ssh/deploy_key prev-unit-snapshot.txt \
               "$DEPLOY_USER@$DEPLOY_HOST:$UNIT_STAGING_DIR/photoshowcase.service" || restore_ok=0
             if [ "$restore_ok" = "1" ]; then
@@ -539,16 +617,44 @@ jobs:
               " || restore_ok=0
             fi
           else
-            echo "No previous unit snapshot to restore (first-ever install on this droplet) -- rolling back the release only."
+            echo "No unit snapshot is available from this run (the snapshot step either never ran or failed at the transport level) -- this says nothing about whether a unit was previously installed."
           fi
           if [ "$restore_ok" = "0" ]; then
-            echo "WARNING: could not restore the previous unit; continuing with the release rollback, which will restart under the NEW unit"
+            echo "WARNING: could not restore the previous unit"
           fi
-          ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
-            set -eu
-            sudo -n -u photoshowcase ln -sfn '$PREV' '$APP_ROOT/app/current'
-            sudo -n systemctl restart photoshowcase.service
-          "
+
+          if [ -n "$PREV" ]; then
+            echo "rolling back release to $PREV"
+            if [ "$restore_ok" = "0" ]; then
+              echo "WARNING: continuing with the release rollback, which will restart under the NEW unit"
+            fi
+            ssh -i ~/.ssh/deploy_key "$DEPLOY_USER@$DEPLOY_HOST" "
+              set -eu
+              sudo -n -u photoshowcase ln -sfn '$PREV' '$APP_ROOT/app/current'
+              sudo -n systemctl restart photoshowcase.service
+            "
+          else
+            # Four genuinely different outcomes for this branch's own unit
+            # restore attempt above -- report each honestly rather than
+            # asserting a cause the script never actually verified. Only
+            # `snapshot_confirmed_absent` is a proven CAUSE (the sentinel
+            # was genuinely read); the remaining "neither restored nor
+            # confirmed absent" case gets CONCLUSION-based wording instead
+            # of a guessed cause -- control flow proves nothing changed
+            # (the overwrite commands are strictly sequential after the
+            # snapshot line, so if the snapshot was never captured, none
+            # of them ran either), it does not prove why the snapshot line
+            # didn't produce a usable result. See #112 review, round 2.
+            if [ "$snapshot_existed" = "1" ] && [ "$restore_ok" = "1" ]; then
+              echo "Install/Verify failed before the flip -- no release symlink or restart to roll back. The unit WAS restored to its pre-deploy contents (see above); deliberately not restarting, since the service was never restarted this run either."
+            elif [ "$snapshot_existed" = "1" ] && [ "$restore_ok" = "0" ]; then
+              echo "Install/Verify failed before the flip -- no release symlink or restart to roll back. The unit restore ALSO failed (see WARNING above): the on-disk unit and/or loaded definition may still reflect this run's failed attempt -- investigate before the next deploy. Not restarting, since the service was never restarted this run either."
+            elif [ "$snapshot_confirmed_absent" = "1" ]; then
+              echo "Install/Verify failed before the flip -- no release symlink or restart to roll back. No previous unit snapshot existed (first-ever install on this droplet), so nothing needed restoring. Not restarting, since the service was never restarted this run either."
+            else
+              echo "Install/Verify failed before the flip -- no release symlink or restart to roll back. No unit change was made on this run to restore (either none was needed, or the snapshot could not be captured before the step failed) -- nothing to revert. Not restarting, since the service was never restarted this run either."
+            fi
+          fi
 
       - name: Prune old releases (keep 5)
         if: success()

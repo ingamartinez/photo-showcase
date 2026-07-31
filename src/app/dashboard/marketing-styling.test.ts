@@ -31,8 +31,18 @@ import { describe, expect, it } from "vitest";
 //                    shape (hero.tsx, site-header.tsx, login-form.tsx) —
 //                    surviving in client-form.tsx, gallery-form.tsx and every
 //                    dashboard action button. Both are the same editorial
-//                    device (a small-caps, tracked, uppercase treatment) and
-//                    both are guarded below.
+//                    device (a small-caps, tracked, uppercase treatment), and
+//                    an earlier revision of this guard checked only the
+//                    classed one: `uppercase`/`tracking-[0.1em]` reintroduced
+//                    on their own passed clean, which is the exact device
+//                    four of the six files this task touched exist to keep
+//                    out. Guarded below by pairing `uppercase` with any
+//                    `tracking-[…]` at 0.07em or tighter — every LEGITIMATE
+//                    uppercase treatment left under /dashboard sits at
+//                    `tracking-[0.06em]`, `tracking-[0.04em]` or
+//                    `tracking-wide` (Tailwind's 0.025em), so 0.07em is a real
+//                    gap between "the app's own quiet uppercase micro-labels"
+//                    and "the marketing CTA's 0.1em", not an arbitrary cutoff.
 //   - `clamp(...)` — the editorial display type scale (dashboard.html:82-91's
 //                    opposite number; the mock's own panel type scale,
 //                    globals.css's `--app-text-*`, is a fixed step list, not
@@ -64,6 +74,14 @@ import { describe, expect, it } from "vitest";
 // `src/components/dashboard-nav.tsx` is DELIBERATELY EXCLUDED — task #135's
 // own carve-out hands that file to a sibling lane (#174) for this wave, and
 // this guard is not the mechanism that enforces someone else's slice.
+//
+// ALSO NOT GUARDED, AND DELIBERATELY SO: `src/components/ui/button.tsx`,
+// `ui/dialog.tsx` and `ui/dropdown-menu.tsx` are, by the same import-graph
+// argument as the ten components above, ALSO reachable only from
+// /dashboard today. They are not listed here because they are vendored
+// shadcn primitives (epic #125's own "adopted for accessibility, not
+// restyled" stance) with no editorial residue in them to guard against —
+// a documentation gap in this file's own scope, not a hole in the check.
 const REPO_ROOT = path.resolve(__dirname, "../../..");
 const SRC = path.resolve(REPO_ROOT, "src");
 const COMPONENTS_DIR = path.resolve(SRC, "components");
@@ -218,6 +236,14 @@ function extractIdentifierClassValues(source: string): string[] {
  * pairing `font-serif` is allowed to appear in under /dashboard. */
 const WORDMARK_SIZE_TOKEN = "text-[18px]";
 
+/** Matches a `tracking-[…]` token at 0.07em or tighter — the marketing CTA's
+ * own `tracking-[0.1em]`, and anything closer to it than the app's own
+ * legitimate quiet-uppercase treatments (`tracking-[0.06em]`,
+ * `tracking-[0.04em]`, Tailwind's `tracking-wide` at 0.025em). See this
+ * file's header comment for why 0.07em is the real gap, not an arbitrary
+ * cutoff. */
+const TIGHT_TRACKING = /^tracking-\[0?\.(0[7-9]|[1-9])/;
+
 function findViolations(classValue: string): string[] {
   const tokens = classValue.split(/\s+/).filter(Boolean);
   const found: string[] = [];
@@ -235,6 +261,9 @@ function findViolations(classValue: string): string[] {
     found.push(
       `"font-serif" outside the ${WORDMARK_SIZE_TOKEN} wordmark exception: "${classValue}"`,
     );
+  }
+  if (tokens.includes("uppercase") && tokens.some((t) => TIGHT_TRACKING.test(t))) {
+    found.push(`the marketing CTA's uppercase/tight-tracking pairing: "${classValue}"`);
   }
 
   return found;

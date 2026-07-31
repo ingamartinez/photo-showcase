@@ -142,8 +142,17 @@ export function ProofTile({
 
           {/* client.html:192-195. Sits over the photo's own top-left corner,
               which is the quietest part of a proof and the one the 48px pick
-              target below never covers. */}
-          <span className="pointer-events-none absolute top-2 left-2 font-mono text-[10px] text-[rgba(236,234,242,0.55)] tabular-nums">
+              target below never covers.
+
+              The `text-shadow` is NOT in the mock, and it is there because the
+              capture showed it had to be: the mock's own colour
+              (rgba(236,234,242,0.55)) is legible on the mid-dark CSS gradients
+              that stand in for photographs there, and disappears completely on
+              a genuinely bright proof — an overexposed sky, a white dress,
+              which is a large share of what a wedding photographer actually
+              delivers. A number nobody can read is worse than no number. The
+              colour is the mock's, unchanged; only the backing was added. */}
+          <span className="pointer-events-none absolute top-2 left-2 font-mono text-[10px] text-[rgba(236,234,242,0.55)] tabular-nums [text-shadow:0_1px_2px_rgba(7,7,9,0.9)]">
             {String(position).padStart(2, "0")}
           </span>
         </div>

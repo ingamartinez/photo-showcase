@@ -73,6 +73,22 @@ describe("ProofTile", () => {
     expect(className).not.toContain("text-xs");
   });
 
+  // The mid-tone affordance fix, and like the test above this asserts a CLASS
+  // is present, not a measured contrast ratio — jsdom composites nothing. What
+  // it guards is that the deviation from the mock does not get "tidied back"
+  // to the mock's own `.pick` (client.html:200-208), which carries no shadow:
+  // over an RGB-128 photo the mock's disc (~2.1:1) and ring (~1.9:1) both miss
+  // WCAG 1.4.11's 3:1, and the shadow is the only thing standing in for them
+  // there. Both states, since the shadow is on the shared class list.
+  it.each([true, false])(
+    "keeps the pick control's shadow class, its only affordance on a mid-tone photo (isSelected=%s)",
+    (isSelected) => {
+      renderTile({ isSelected });
+
+      expect(pickButton().className).toContain("shadow-[0_1px_6px_rgba(7,7,9,0.6)]");
+    },
+  );
+
   // "Elegida/no elegida se distingue de un vistazo y NO DEPENDE SOLO DEL
   // COLOR" — task #145's acceptance criterion, verbatim. The two channels
   // that survive greyscale are asserted here: a glyph (shape) inside the pick

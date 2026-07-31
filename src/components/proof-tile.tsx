@@ -30,9 +30,10 @@
 //     itself, and `images.guard.test.ts` refuses to emit a proof whose
 //     watermark rasterized with no ink. Re-drawing it in CSS would be a second,
 //     FAKE mark that a client could delete from the DOM in two seconds while
-//     the real one stayed put — so this file deliberately does not, and the
-//     `brightness-[1.06]` above is the only filter applied to the photo,
-//     nowhere near enough to wash the mark out.
+//     the real one stayed put — so this file deliberately does not. The only
+//     filter this file ever applies to the photo is a PICKED tile's
+//     `brightness-[1.06] saturate-[1.04]` (client.html:215, both of them),
+//     nowhere near enough to wash the mark out; an unpicked tile gets none.
 import { DownloadFinalButton } from "@/components/download-final-button";
 import type { ProofAsset } from "@/components/proof-grid";
 
@@ -105,9 +106,23 @@ export function ProofTile({
             slice that makes the lightbox the place a photo is judged whole.
 
             CLS is unaffected: a static class reserves the box exactly as early
-            as an inline style did. `proofWidth`/`proofHeight` stay on
-            `ProofAsset` — the lightbox and the dashboard's own `asset-tile.tsx`
-            still use them, and this component is not the place to drop them. */}
+            as an inline style did.
+
+            `proofWidth`/`proofHeight` STAY on `ProofAsset`, but be clear about
+            what that means after this slice: they are read by NOTHING on the
+            client path. This tile was their last reader there, and
+            `proof-lightbox.tsx` never referenced either field at all. The one
+            reader left anywhere in the repo is `asset-tile.tsx:136`, and it
+            reads `WorkspaceAsset` (`gallery-workspace.tsx:23-24`) — a DIFFERENT
+            type, on the dashboard path, which this component does not share.
+
+            So they are still fetched and threaded the whole way down
+            (`schema.ts:380` -> `client-gallery-reads.ts:135-136` ->
+            `[publicSlug]/page.tsx:126-127` -> <ProofGrid> -> here) with no
+            consumer at the end. They are kept only because removing them is a
+            GraphQL document + regenerated types + `ProofAsset` change, which is
+            outside this slice's scope — not because anything here needs them.
+            Deleting them is a separate slice's job. */}
         <div className="bg-bg-2 relative aspect-[2/3] overflow-hidden">
           {/* Plain <img>, not next/image: same reasoning as asset-tile.tsx —
               proof URLs are short-lived, private, presigned R2 URLs whose
@@ -176,7 +191,32 @@ export function ProofTile({
           IMG_0001.JPG" / "Quitar de seleccionadas: IMG_0001.JPG" are what
           proof-grid.test.tsx and [publicSlug]/page.chrome.test.tsx query by,
           and they name the actual photo, which the mock's own "Elegir foto 1"
-          does not. The mock is the reference for the PIXELS. */}
+          does not. The mock is the reference for the PIXELS.
+
+          THE `shadow-[...]` IS A DECLARED DEVIATION FROM THE MOCK, the second
+          one in this file and for the same reason as the first (see the
+          `text-shadow` on `.tile__n` above). The mock's unpicked control is a
+          1px `rgba(236,234,242,0.5)` ring over a `rgba(7,7,9,0.42)` disc
+          (client.html:204-205) and nothing else. Composited over a flat photo
+          and measured as WCAG relative luminance, those two channels cover for
+          each other at the EXTREMES — over a bright RGB-230 photo the dark disc
+          reaches ~3.5:1 while the pale ring vanishes; over a dark RGB-30 photo
+          the ring passes while the disc vanishes — but over a MID-TONE RGB-128
+          photo both fail at once: the disc is ~2.1:1 and the ring ~1.9:1,
+          against 1.4.11's 3:1 floor for a non-text control. Skin, grass, a grey
+          suit, a stone church wall: for a wedding set that is the most common
+          tone there is, and it is precisely the case the slice's smooth-gradient
+          fixtures could not show.
+
+          An outer shadow rather than a darker disc (`rgba(7,7,9,0.6)`, which
+          would take the mid-tone disc to ~3.0:1) for two reasons: it lands the
+          affordance at EVERY photo tone instead of nudging one case just over
+          the line, and it keeps the mock's own palette values untouched — the
+          same trade `.tile__n` above already made, where only the backing was
+          added and the colour stayed the mock's. On both states rather than
+          only the unpicked one, because `transition-colors` does not animate
+          box-shadow and a shadow that appeared and vanished on each tap would
+          pop. */}
       <button
         type="button"
         onClick={onToggleSelection}
@@ -187,7 +227,7 @@ export function ProofTile({
             ? `Quitar de seleccionadas: ${asset.originalFilename}`
             : `Seleccionar: ${asset.originalFilename}`
         }
-        className={`absolute right-[7px] bottom-[7px] z-10 grid h-12 w-12 place-items-center rounded-full border text-[17px] leading-none backdrop-blur-[6px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+        className={`absolute right-[7px] bottom-[7px] z-10 grid h-12 w-12 place-items-center rounded-full border text-[17px] leading-none shadow-[0_1px_6px_rgba(7,7,9,0.6)] backdrop-blur-[6px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
           isSelected
             ? "border-accent bg-accent text-[#14100a]"
             : "text-fg hover:border-accent border-[rgba(236,234,242,0.5)] bg-[rgba(7,7,9,0.42)]"

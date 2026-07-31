@@ -93,6 +93,50 @@ describe("ProofGrid", () => {
     expect(wrapper?.getAttribute("style")).toBeNull();
   });
 
+  // THE ORIGIN OF THE TILE NUMBER, which nothing guarded until now.
+  // proof-tile.test.tsx pins the zero-padding, but it takes `position` as an
+  // INPUT, so mutating this component's `index + 1` to `index` — every tile
+  // then labelled one lower, starting at `00` — left the whole suite green.
+  // This is the only place the 1-based origin is decided, so it is the only
+  // place it can be asserted. The sequence, not just the first tile: an
+  // off-by-one that also reversed or duplicated would otherwise slip through.
+  it("numbers the tiles 01, 02, 03… — 1-based and in grid order, not 0-based", () => {
+    const { container } = renderGrid({ initialAssets: assetsFor([{}, {}, {}]) });
+
+    const tiles = [...(container.querySelector("img")?.closest("ul")?.children ?? [])];
+    expect(tiles).toHaveLength(3);
+    expect(tiles.map((tile) => tile.querySelector("span.tabular-nums")?.textContent)).toEqual([
+      "01",
+      "02",
+      "03",
+    ]);
+  });
+
+  // THE COLUMN/GAP CONFIGURATION, which nothing guarded either: collapsing the
+  // whole list to `grid-cols-1` was green across every suite. This is task
+  // #145's "densidad" criterion — "en el teléfono la miniatura tiene que ser lo
+  // bastante grande para decidir" — and the mock states it three times:
+  // client.html:180 (two columns, 2px gap), :532 (three from 620px, taken to
+  // Tailwind's `sm` at 640px, the nearest stop in the project's own scale) and
+  // :556 (four columns and a 3px gap at the desk).
+  //
+  // Like the tile's `h-12` assertion, this asserts the CLASSES: jsdom applies
+  // no stylesheet and can measure no column. The at-390px verification is the
+  // Playwright capture, not this file.
+  it("gives the grid the mock's 2/3/4-column classes and near-zero gutter", () => {
+    const { container } = renderGrid({ initialAssets: assetsFor([{}, {}]) });
+
+    const grid = container.querySelector("img")?.closest("ul");
+    expect(grid).not.toBeNull();
+    // The phone, which is the base case and not a breakpoint.
+    expect(grid?.className).toContain("grid-cols-2");
+    expect(grid?.className).toContain("gap-[2px]");
+    // The two breakpoints ADD; per this epic there is no `max-width` anywhere.
+    expect(grid?.className).toContain("sm:grid-cols-3");
+    expect(grid?.className).toContain("lg:grid-cols-4");
+    expect(grid?.className).toContain("lg:gap-[3px]");
+  });
+
   it("renders each asset's thumbnail by its original presigned URL", () => {
     const { container } = renderGrid({ initialAssets: assetsFor([{}, {}]) });
 

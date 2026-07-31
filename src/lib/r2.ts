@@ -81,6 +81,19 @@ function getClient(): S3Client {
 // stay exactly as true as they were before this task; the type system can
 // only make the boundary of THIS module hard to cross by accident, not make
 // the module itself mandatory to go through.
+//
+// The second gap — nothing here verifies `APP_ENV` — is task #81's, and it
+// is deliberately NOT closed by changing this file: making the builders
+// below throw on unset `APP_ENV` would reverse `namespacedKey`'s fail-closed
+// default for the RUNNING APP, not just for ops scripts, since this module
+// cannot tell the two apart. Instead, one-shot ops scripts (a finals
+// backfill for #26 is the anticipated case; `scripts/backfill-display-
+// derivatives.ts` for #89 is the one that shipped) call
+// `assertAppEnvIsSet()` from `scripts/lib/assert-app-env.ts` before minting
+// or writing a real key — see that module's header for the full mechanism,
+// and `scripts/ops-r2-guard.test.ts` for the test that fails `bun run test`
+// if a script calls one of `proofKey`/`finalKey`/`displayKey`/`putObject`/
+// `deleteObject` without also calling that guard.
 export type R2Key = string & { readonly __r2: unique symbol };
 
 // Key builders — the ONLY place these strings are formed. Nothing else in
@@ -110,8 +123,12 @@ export type R2Key = string & { readonly __r2: unique symbol };
 // getting the production shape out of `proofKey`/`finalKey`. The isolation
 // this buys is only as good as `APP_ENV` being set correctly wherever this
 // process runs — see `.github/workflows/deploy.yml`'s release.env step, the
-// only place `APP_ENV=production` is written for the real deployed process.
-// A stronger option (separate bucket + scoped token) was considered and
+// only place `APP_ENV=production` is written, and note it is written for the
+// systemd-managed app process ONLY — an ops script run outside that unit
+// (by hand over SSH, or via `deploy.yml`'s own `sudo -n -u photoshowcase bun
+// …` steps) inherits none of it; see this file's own "What this does NOT
+// do" paragraph above for the guard those scripts must call instead
+// (task #81). A stronger option (separate bucket + scoped token) was considered and
 // rejected as disproportionate for now; see task #38. What task #78 adds on
 // top is narrower and orthogonal: it is no longer possible to skip this
 // function's prefixing *by forgetting to call it* and handing a raw string

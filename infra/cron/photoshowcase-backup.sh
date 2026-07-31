@@ -180,11 +180,17 @@ fi
 # Read R2_* values out of the systemd EnvironmentFile WITHOUT sourcing it as
 # shell. systemd's EnvironmentFile format is not shell: `KEY=VALUE`, where
 # VALUE is everything to end of line, literally — no quoting, no expansion.
-# `EMAIL_FROM` in this exact file is `Alejo Frames <hi@alejoframes.com>`;
-# `. "$ENV_FILE"` would hand that `<` to bash as a redirect, and any value
+# That means a value systemd accepts happily can be hostile to bash:
+# `. "$ENV_FILE"` hands an unquoted `<` to bash as a redirect, and any value
 # anywhere in the file containing `$(...)` or backticks would EXECUTE as the
 # `photoshowcase` user. Plain text extraction has none of those failure
 # modes.
+#
+# This comment used to name `EMAIL_FROM` as the live example, claiming its
+# deployed value was `Alejo Frames <hi@alejoframes.com>`. That was stale:
+# measured 2026-07-31 (task #152), it is a bare `no-reply@alejoframes.com`.
+# The rule does not depend on that example — the hazard is the format's
+# permissiveness, not any one value present today.
 r2_env_value() {
   local value
   # `tail -1`, not `grep -m1`: systemd's EnvironmentFile parser applies a

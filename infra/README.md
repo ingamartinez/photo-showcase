@@ -14,6 +14,7 @@ this README is one-time host setup **you run by SSH**.
 | `caddy/Caddyfile`                    | Reverse-proxy block for `alejoframes.com` (apex) + `www` redirect.                                        |
 | `cron/photoshowcase-backup.sh`       | Daily `pg_dump` + daily R2 off-site sync of the `photoshowcase` DB. See `cron/README.md`.                 |
 | `cron/photoshowcase-backup.cron`     | `/etc/cron.d` schedule for the backup script.                                                             |
+| `email-deliverability.md`            | SPF/DKIM/DMARC for `alejoframes.com` — what is published, and why the apex has no SPF **on purpose**.     |
 
 ## One-time droplet bring-up
 

@@ -67,11 +67,21 @@ maintaining a second credentials file that can silently drift out of sync.
 The file is read as **plain text** (`grep`/`cut` on the four `R2_*` keys),
 never sourced as shell (`. "$ENV_FILE"`). systemd's `EnvironmentFile` format
 is not shell — `KEY=VALUE` with VALUE taken literally to end of line, no
-quoting or expansion. `EMAIL_FROM` in this exact file is
-`Alejo Frames <hi@alejoframes.com>`; sourcing it would hand bash a `<`
-redirect, and any value anywhere in the file containing `$(...)` or
-backticks would execute as the `photoshowcase` user. Plain-text extraction
-of only the keys this script actually needs avoids all of that.
+quoting or expansion. So a value that is fine to systemd can be hostile to
+bash: an unquoted `<` becomes a redirect, and any value anywhere in the file
+containing `$(...)` or backticks would **execute** as the `photoshowcase`
+user. Plain-text extraction of only the keys this script actually needs
+avoids all of that.
+
+**This used to cite `EMAIL_FROM` as the live example, claiming its deployed
+value was `Alejo Frames <hi@alejoframes.com>`. That was stale** — measured on
+2026-07-31 (task #152), the deployed value is a bare
+`no-reply@alejoframes.com`, no display name, no angle brackets. The example is
+gone; the rule is not, and does not depend on it. Do not read "there is no `<`
+in the file today" as "sourcing it would be safe now": the danger is that
+`EnvironmentFile` permits values shell would interpret, and the next key added
+to that file is unreviewed by this script. See `infra/email-deliverability.md`
+for where `EMAIL_FROM` is measured.
 
 This is a deliberate deviation from the findash pattern: while wiring this up
 we found `/srv/findash/env/r2.env` **does not currently exist on the

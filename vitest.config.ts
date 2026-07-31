@@ -119,11 +119,45 @@ export default defineConfig({
     // one at a time until `src/app/api/graphql/route.test.ts` (which
     // exercises the full graphql-yoga request pipeline, not just schema
     // construction) went from "graphql/@pothos/core alone fixes schema
-    // building but BREAKS route.test.ts" to green: graphql-yoga's own
-    // request-execution path runs through `@graphql-tools/executor`,
-    // `@graphql-tools/schema`, and `@graphql-tools/utils`, none of which are
-    // optional here — dropping any one of the three reproduces failures in
-    // route.test.ts again.
+    // building but BREAKS route.test.ts" to green.
+    //
+    // WHAT IS ACTUALLY PROVEN LOAD-BEARING, against the FULL suite (see the
+    // methodology note below for why "full suite" is not a throwaway
+    // qualifier here): `graphql`, `@pothos/core`,
+    // `@graphql-yoga/plugin-disable-introspection`, and
+    // `@graphql-tools/executor`. Removing any one of these four reproduces a
+    // real failure somewhere in the full run — `graphql` alone breaks
+    // route.test.ts (11 failures) despite doing nothing to the two files
+    // that exercise `graphql` directly, because route.test.ts's own
+    // introspection query hits it through a completely different call path.
+    //
+    // `graphql-yoga`, `@graphql-tools/schema`, and `@graphql-tools/utils`
+    // are NOT individually proven necessary — the four-package list above
+    // passes the full suite (93 files / 1019 tests) on its own. These three
+    // are kept anyway, DELIBERATELY, as headroom rather than being trimmed:
+    // they sit in the exact same graphql-yoga request-execution fan-out as
+    // `@graphql-tools/executor` (see graphql-yoga's own `dependencies` in
+    // its package.json), so a future graphql-yoga version bump shifting
+    // which of its internal deps touches a `graphql` class identity is a
+    // real, foreseeable way for this problem to resurface in a slightly
+    // different shape. The cost of carrying them is close to zero (no new
+    // install, this only changes which already-resolved file Vitest loads
+    // for a package already in the dependency tree); the cost of trimming
+    // and being wrong about it is a cold restart of this exact
+    // investigation. If you are here because CI went red on a graphql-yoga
+    // upgrade, `schema.test.ts` failing with graphql-js's own "another
+    // module or realm" error is the trip-wire this whole comment exists to
+    // explain, not a new bug.
+    //
+    // METHODOLOGY NOTE, IMPORTANT: minimality claims about this list are
+    // only valid when checked against the FULL suite, never against
+    // `schema.test.ts` and `route.test.ts` run in isolation. Running just
+    // those two files gives a MISLEADING result for `graphql` itself:
+    // removing it from `inline` and running only those two files still
+    // passes (module-cache and run-order effects hide the split), while the
+    // full suite catches the real breakage in route.test.ts. Anyone
+    // revisiting this list to trim it further must re-run `bun run test`
+    // (the whole suite) after every change, not just the graphql files.
     //
     // BLAST RADIUS, CHECKED: this only changes which file Vitest loads for
     // these specific packages, not what any other test resolves. Full suite

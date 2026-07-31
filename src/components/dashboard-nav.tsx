@@ -1,9 +1,11 @@
 "use client";
 
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { Images, LayoutDashboard, Users, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { formatPendingSelectionCount } from "@/lib/format";
 
 // The dashboard shell's ONE navigation (task #129), rendered exactly once by
 // `src/app/dashboard/layout.tsx`. Phone: a fixed bottom tab bar in the thumb
@@ -58,11 +60,130 @@ export function isNavItemCurrent(pathname: string, href: string): boolean {
   return pathname === href || pathname.startsWith(`${href}/`);
 }
 
+// How often the pending-review badge below re-asks the server, while this
+// tab is visible — task #174. Not a fallback for a push transport (there
+// isn't one here; see this file's own header comment further down for why),
+// this IS the mechanism. Chosen, not copied from `SELECTION_POLL_INTERVAL_MS`
+// (`@/components/use-shared-selection`, 30s): that number paces a FALLBACK
+// behind an SSE stream that carries the normal case in under a second, so its
+// size barely matters. This number paces the ONLY transport this badge has,
+// so it trades directly against staleness — a photographer who submits from
+// a client's tab and then checks their own open dashboard tab is judging this
+// slice by how many seconds that takes. 20s keeps that wait short without
+// meaningfully adding to a route that costs one indexed `COUNT` query, for a
+// product with exactly one admin (PLAN.md §4) who realistically has a
+// handful of tabs open at once.
+//
+// Exported ONLY so dashboard-nav.test.tsx can drive its polling tests
+// against the REAL cadence instead of a hand-copied literal that could
+// silently drift from it — same reason `SELECTION_POLL_INTERVAL_MS`
+// (`@/components/use-shared-selection`) is exported.
+export const PENDING_COUNT_POLL_INTERVAL_MS = 20_000;
+
+/**
+ * Polls `GET /api/galleries/pending-count` for as long as this hook stays
+ * mounted, which — because `<DashboardNav>` is rendered exactly once by
+ * `dashboard/layout.tsx` and that layout does not re-run between sibling
+ * routes — is the entire time an admin has ANY `/dashboard/**` tab open. See
+ * this file's own header comment for why a poll, not a push transport, is
+ * the whole mechanism here.
+ *
+ * Returns `null` until the first response lands (an honest "don't know yet",
+ * never a guessed 0 that could read as "nothing pending" for a moment it
+ * isn't true), then the server's own last-reported count. A failed tick
+ * — network hiccup, a 401 because the session just expired, anything —
+ * leaves the previous count in place rather than resetting to 0 or null:
+ * stale-but-honest beats confidently wrong, the same VALUE
+ * `use-shared-selection.ts`'s own poll loop keeps on a failed tick. That
+ * module's `poll()` (the non-ok branch at :361-368, the throw branch at
+ * :402-404) takes a strictly LARGER stance than this hook does, though, and
+ * this is not claimed to match it: it counts consecutive failures and
+ * escalates to a visible `isStale` flag the tray surfaces
+ * (`STALE_AFTER_CONSECUTIVE_FAILURES`, 2 in a row). This hook never
+ * escalates — it keeps the last value and says nothing, indefinitely.
+ * Deliberately not adopted here: sessions default to a 30-day database
+ * session (`src/auth.ts`, `strategy: "database"`, no `maxAge` override), so a
+ * 401 mid-tab is rare, and this badge is dashboard chrome nobody makes a
+ * quota or delivery decision against — unlike the tray, where a silently
+ * stale submit lock is the exact bug #95 exists to prevent. If that
+ * assumption changes, the fix is copying the escalation, not assuming it is
+ * already here.
+ */
+function usePendingSelectionCount(): number | null {
+  const [count, setCount] = useState<number | null>(null);
+  // Guards against two ticks overlapping (the interval firing again while a
+  // slow request from the previous tick is still in flight) — same shape as
+  // `pollInFlightRef` in use-shared-selection.ts, for the same reason: a
+  // second concurrent request here buys nothing but out-of-order responses.
+  const inFlightRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    async function poll() {
+      if (inFlightRef.current) return;
+      inFlightRef.current = true;
+      try {
+        const response = await fetch("/api/galleries/pending-count");
+        // A RESOLVED response that is not ok — most likely a 401 because the
+        // session expired mid-tab — is a different path than the `catch`
+        // below (a rejected fetch, e.g. offline). Same outcome deliberately:
+        // leave `count` exactly as it was and let the next tick retry, per
+        // this function's own doc comment.
+        // A RESOLVED response that is not ok — most likely a 401 because the
+        // session expired mid-tab — is a different path than the `catch`
+        // below (a rejected fetch, e.g. offline). Same outcome deliberately:
+        // leave `count` exactly as it was and let the next tick retry, per
+        // this function's own doc comment.
+        if (!response.ok) return;
+        const body = (await response.json()) as { count: number };
+        if (!cancelled) setCount(body.count);
+      } catch {
+        // Swallowed on purpose — see this function's own doc comment on why
+        // a failed tick leaves the last known count alone. The next tick, or
+        // the next tab-visibility wake-up below, retries.
+      } finally {
+        inFlightRef.current = false;
+      }
+    }
+
+    // Unlike `use-shared-selection.ts`'s poll loop (which deliberately skips
+    // the FIRST tick because the server-rendered page it lives on already
+    // handed it a fresh value), this hook has no such seed: `DashboardNav` is
+    // a Client Component mounted with no server-read count to start from —
+    // see this file's own header comment on why `dashboard/layout.tsx`
+    // cannot supply one. So the very first thing this hook does is fetch.
+    void poll();
+
+    const interval = setInterval(() => {
+      // Same reasoning as the shared-selection poll loop: a backgrounded tab
+      // is not worth a request, and the visibility listener below catches it
+      // back up the moment it returns.
+      if (typeof document !== "undefined" && document.hidden) return;
+      void poll();
+    }, PENDING_COUNT_POLL_INTERVAL_MS);
+
+    const onVisibilityChange = () => {
+      if (!document.hidden) void poll();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+    };
+  }, []);
+
+  return count;
+}
+
 export function DashboardNav() {
   // `usePathname()` is typed non-null inside an app-router tree; the `?? ""`
   // is only for the render-outside-a-router case (unit tests that forget to
   // mock it), where marking nothing current beats throwing.
   const pathname = usePathname() ?? "";
+  const pendingSelectionCount = usePendingSelectionCount();
 
   return (
     <nav
@@ -109,21 +230,56 @@ export function DashboardNav() {
               )}
             />
             {label}
+            {/*
+              Task #174 — the pending-review count the epic (#125) names
+              explicitly, given a MECHANISM this time, not a pixel: see this
+              file's own header comment above (`usePendingSelectionCount`)
+              for what keeps it true, and the API route's own header comment
+              (`src/app/api/galleries/pending-count/route.ts`) for why a
+              poll, not the per-gallery SSE channel this codebase already
+              has, is the transport. Hung on the Galerías item specifically
+              — matching `dashboard.html:624-625`'s own `.tabbar__dot` —
+              because that is the ONE destination this number is actually
+              about; a studio-wide badge on the wordmark or on every item
+              would say less, not more.
+
+              `pendingSelectionCount` is checked narrowly (`!== null &&
+              > 0`), not through a derived `string | null` copy computed
+              outside this block: the copy and the raw digit both need the
+              SAME guard, and computing them from one already-narrowed value
+              here is what lets TypeScript prove that, rather than trusting
+              two separately-computed values never to disagree.
+            */}
+            {href === "/dashboard/galleries" &&
+              pendingSelectionCount !== null &&
+              pendingSelectionCount > 0 && (
+                <>
+                  <span
+                    aria-hidden="true"
+                    // Phone: absolute, top-right of the icon
+                    // (dashboard.html:193-200's own `.tabbar__dot`, same
+                    // offsets). Desktop: `position: static`, pushed to the
+                    // end of the row by `ml-auto` (dashboard.html:548) — the
+                    // Link this sits inside is already `relative` on phone
+                    // and a `flex-row` on `lg:`, so no extra positioning
+                    // context is needed here.
+                    className="bg-accent absolute top-[8px] left-1/2 ml-[7px] grid h-4 min-w-[16px] place-items-center rounded-full px-1 text-[10px] font-bold text-[#14100A] tabular-nums lg:static lg:top-auto lg:left-auto lg:mt-0 lg:ml-auto"
+                  >
+                    {pendingSelectionCount}
+                  </span>
+                  {/* The full Spanish sentence, for anyone not reading the
+                      dot visually — same split the mock itself uses
+                      (`.tabbar__dot` + `.vh`, dashboard.html:642-643):
+                      the digit alone is not a sentence a screen reader
+                      should announce as-is. */}
+                  <span className="sr-only">
+                    {formatPendingSelectionCount(pendingSelectionCount)}
+                  </span>
+                </>
+              )}
           </Link>
         );
       })}
-      {/*
-        The mock also hangs a pending-review count on the Galerías icon
-        (dashboard.html:624-625, `.tabbar__dot` + the `.vh` text beside it).
-        It is deliberately NOT here yet: the number would have to be read in
-        `dashboard/layout.tsx`, and a layout does not re-run on navigation
-        between sibling routes (see that file's header comment and
-        src/lib/auth-guards.ts's) — no server action under /dashboard
-        revalidates this layout's path either, so the badge would keep
-        claiming "2 esperando" after the photographer delivered both. A
-        counter that lies is worse than a counter that is missing. It belongs
-        to whichever slice can hang it off live data.
-      */}
     </nav>
   );
 }

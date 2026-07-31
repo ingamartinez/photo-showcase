@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
-import { DashboardNav, isNavItemCurrent } from "./dashboard-nav";
+import { act, cleanup, render, screen } from "@testing-library/react";
+import { DashboardNav, isNavItemCurrent, PENDING_COUNT_POLL_INTERVAL_MS } from "./dashboard-nav";
 
 // The one thing this component needs from the router. Mocked rather than
 // wrapped in a real app-router context because the pathname IS the input
@@ -16,10 +16,22 @@ vi.mock("next/navigation", () => ({
 beforeEach(() => {
   usePathnameMock.mockReset();
   usePathnameMock.mockReturnValue("/dashboard");
+  // `<DashboardNav>` now fetches on mount (task #174's polling hook) —
+  // stubbed to a rejection by default so every test in this file that does
+  // NOT care about the badge (all of the ones above the "pending-review
+  // badge" describe block below) never issues a real, unmocked `fetch()`
+  // call. The rejection is swallowed by the hook's own `catch` (see its doc
+  // comment), so this changes nothing observable for those tests — no
+  // badge ever renders because `count` never leaves `null`.
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => Promise.reject(new Error("fetch not stubbed for this test"))),
+  );
 });
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
 });
 
 describe("isNavItemCurrent", () => {
@@ -171,5 +183,263 @@ describe("DashboardNav", () => {
     render(<DashboardNav />);
 
     expect(screen.getByRole("navigation").className).not.toMatch(/(^|[:\s])-?order-/);
+  });
+});
+
+// ============================================================================
+// Task #174 — the pending-review badge, and what keeps it TRUE
+// ============================================================================
+//
+// The epic's own rule (#125, quoting this task): "a counter that lies is
+// worse than a counter that is missing". Rendering "3" once, on mount, would
+// satisfy a test that only checks the first paint and would satisfy NOTHING
+// this task actually asked for — the whole point of #174 is that the number
+// must track reality WHILE the tab stays open, in both directions (a client
+// submitting from elsewhere, an admin delivering from here). Every test
+// below that matters drives the REAL poll loop on fake timers, at the REAL
+// cadence (`PENDING_COUNT_POLL_INTERVAL_MS`, imported rather than hand-copied
+// — same reason `proof-grid.test.tsx` imports `SELECTION_POLL_INTERVAL_MS`),
+// and asserts on what a SECOND tick does to the badge, not only on what the
+// first one does.
+describe("DashboardNav — pending-review badge (task #174)", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function jsonResponse(status: number, body: unknown): Response {
+    return {
+      ok: status >= 200 && status < 300,
+      status,
+      json: async () => body,
+    } as Response;
+  }
+
+  /** The Galerías `<a>`, found by its stable `href` rather than by accessible
+   * name — once the badge renders, the sr-only sentence beside the digit
+   * becomes PART of that name (same accessible-name algorithm a screen
+   * reader uses), so matching on "Galerías" alone would stop finding it the
+   * moment this task's own feature works. */
+  function galleriasLink(): HTMLElement {
+    const link = screen
+      .getAllByRole("link")
+      .find((candidate) => candidate.getAttribute("href") === "/dashboard/galleries");
+    if (!link) throw new Error("Galerías link not found");
+    return link;
+  }
+
+  // `span`, not the bare `[aria-hidden="true"]` attribute alone: the Icon
+  // right before it (an inline SVG) carries the same attribute, and a
+  // selector that matched either would find the icon FIRST and read its
+  // (empty) textContent instead of the badge's.
+  function badgeDigitOf(link: HTMLElement): string | null {
+    return link.querySelector('span[aria-hidden="true"]')?.textContent ?? null;
+  }
+
+  /** Lets a `fetch` already issued by the mount-time poll resolve, without
+   * advancing any interval — the initial fetch fires synchronously inside
+   * `useEffect`, not on a timer, so there is no interval tick to advance yet. */
+  async function flushMountPoll() {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(0);
+    });
+  }
+
+  async function onePollTick() {
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(PENDING_COUNT_POLL_INTERVAL_MS);
+    });
+  }
+
+  it("shows no badge before the first response lands — never a guessed zero", () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => new Promise<Response>(() => {})),
+    );
+
+    render(<DashboardNav />);
+
+    expect(badgeDigitOf(galleriasLink())).toBeNull();
+  });
+
+  it("shows the server's count on the Galerías item once the first poll resolves", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(200, { count: 2 }))),
+    );
+
+    render(<DashboardNav />);
+    await flushMountPoll();
+
+    const link = galleriasLink();
+    expect(badgeDigitOf(link)).toBe("2");
+    expect(link.textContent).toContain("2 selecciones esperando");
+  });
+
+  it("shows nothing on Panel or Clientes — the count is about Galerías specifically", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(200, { count: 4 }))),
+    );
+
+    render(<DashboardNav />);
+    await flushMountPoll();
+
+    for (const name of ["Panel", "Clientes"]) {
+      const link = screen.getAllByRole("link").find((candidate) => candidate.textContent === name);
+      if (!link) throw new Error(`${name} link not found`);
+      expect(badgeDigitOf(link)).toBeNull();
+    }
+  });
+
+  it("shows no badge once the count is confirmed at zero", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(200, { count: 0 }))),
+    );
+
+    render(<DashboardNav />);
+    await flushMountPoll();
+
+    expect(badgeDigitOf(galleriasLink())).toBeNull();
+  });
+
+  // THE test this task's own acceptance criteria are actually about: the
+  // number must change AFTER mount, without a reload, in response to
+  // something that happened elsewhere — not merely render correctly once.
+  //
+  // MUTATION-PROVEN (see this slice's own report): removing the `setInterval`
+  // call from `usePendingSelectionCount` (so only the mount-time fetch ever
+  // fires) turns this RED — the badge stays on "2" forever instead of
+  // dropping to nothing, because nothing ever asks the server again.
+  it("STALENESS: updates the badge on the NEXT poll tick when the server's count changed", async () => {
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => {
+        call += 1;
+        // First call (mount): 2 pending. Second call (one interval tick
+        // later): 0 — e.g. the photographer delivered both while this tab
+        // stayed open, the exact "other direction" #174's acceptance
+        // criteria name explicitly.
+        return Promise.resolve(jsonResponse(200, { count: call === 1 ? 2 : 0 }));
+      }),
+    );
+
+    render(<DashboardNav />);
+    await flushMountPoll();
+    expect(badgeDigitOf(galleriasLink())).toBe("2");
+
+    await onePollTick();
+
+    expect(badgeDigitOf(galleriasLink())).toBeNull();
+  });
+
+  it("goes the OTHER way too: a poll tick reporting a HIGHER count grows the badge", async () => {
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => {
+        call += 1;
+        // First call (mount): nothing pending. Second call: a client
+        // submitted from a DIFFERENT tab while this one stayed open — the
+        // direction the epic's own decisive argument is about (a Route
+        // Handler running in the CLIENT's session cannot reach this tab any
+        // other way than this tab asking again).
+        return Promise.resolve(jsonResponse(200, { count: call === 1 ? 0 : 1 }));
+      }),
+    );
+
+    render(<DashboardNav />);
+    await flushMountPoll();
+    expect(badgeDigitOf(galleriasLink())).toBeNull();
+
+    await onePollTick();
+
+    const link = galleriasLink();
+    expect(badgeDigitOf(link)).toBe("1");
+    expect(link.textContent).toContain("1 selección esperando");
+  });
+
+  it("keeps the last known count rather than blanking it on a failed tick", async () => {
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => {
+        call += 1;
+        if (call === 1) return Promise.resolve(jsonResponse(200, { count: 3 }));
+        return Promise.reject(new Error("offline"));
+      }),
+    );
+
+    render(<DashboardNav />);
+    await flushMountPoll();
+    expect(badgeDigitOf(galleriasLink())).toBe("3");
+
+    await onePollTick();
+
+    // Stale-but-honest: a network blip must not read as "nothing pending".
+    expect(badgeDigitOf(galleriasLink())).toBe("3");
+  });
+
+  // A DIFFERENT failure path than the one above: a RESOLVED, non-ok response
+  // (the doc comment's own example — a 401 because the session expired
+  // mid-tab), not a rejected fetch. The two are handled by different lines
+  // (`if (!response.ok) return;` vs. the `catch`), so a test that only ever
+  // exercises the rejection leaves the `!response.ok` branch completely
+  // unguarded — this is that branch's own test.
+  it("keeps the last known count when a tick answers 401 (session expired mid-tab)", async () => {
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => {
+        call += 1;
+        if (call === 1) return Promise.resolve(jsonResponse(200, { count: 3 }));
+        return Promise.resolve(jsonResponse(401, { error: "unauthorized" }));
+      }),
+    );
+
+    render(<DashboardNav />);
+    await flushMountPoll();
+    expect(badgeDigitOf(galleriasLink())).toBe("3");
+
+    await onePollTick();
+
+    // A 401 must read exactly like the offline case above — the last known
+    // count, not a blanked badge that would falsely claim "nothing pending"
+    // while galleries actually wait (epic #125's own rule).
+    expect(badgeDigitOf(galleriasLink())).toBe("3");
+  });
+
+  it("does not poll while the tab is hidden, and catches up the moment it becomes visible again", async () => {
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => {
+        call += 1;
+        return Promise.resolve(jsonResponse(200, { count: call === 1 ? 0 : 2 }));
+      }),
+    );
+
+    render(<DashboardNav />);
+    await flushMountPoll();
+    expect(badgeDigitOf(galleriasLink())).toBeNull();
+
+    Object.defineProperty(document, "hidden", { configurable: true, value: true });
+    await onePollTick();
+    // Backgrounded: the interval tick above must not have issued a second
+    // request while `document.hidden` was true.
+    expect(call).toBe(1);
+
+    Object.defineProperty(document, "hidden", { configurable: true, value: false });
+    await act(async () => {
+      document.dispatchEvent(new Event("visibilitychange"));
+      await vi.advanceTimersByTimeAsync(0);
+    });
+
+    expect(badgeDigitOf(galleriasLink())).toBe("2");
   });
 });

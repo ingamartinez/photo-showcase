@@ -70,6 +70,31 @@ describe("formatPendingSelectionCount", () => {
   });
 });
 
+// Task #130 review round 1: added when a review caught the `/dashboard` stat
+// tiles calling `formatClientCount`/`formatStudioGalleryCount` (full
+// sentences) for their own number line except at zero, where the page fell
+// back to a literal `"0"` — three tiles in the same grid row, three
+// different value shapes. This is the bare, locale-grouped digit every tile
+// uses now, in every state.
+describe("formatTileCount", () => {
+  it.each([
+    [0, "0"],
+    [1, "1"],
+    [13, "13"],
+  ])("formats %i as %s", async (count, expected) => {
+    const { formatTileCount } = await import("./format");
+    expect(formatTileCount(count)).toBe(expected);
+  });
+
+  // The one behavior a bare `${count}` template literal would NOT give —
+  // same reasoning `formatCop` above has for reaching for `Intl.NumberFormat`
+  // instead of a template literal.
+  it("groups thousands the moment a studio's count crosses three figures", async () => {
+    const { formatTileCount } = await import("./format");
+    expect(formatTileCount(1_234).replace(/\s/g, " ")).toBe("1.234");
+  });
+});
+
 // Task #92: the gallery detail page's archive-size warning
 // (`@/lib/gallery-archive-size`) is the one caller today.
 describe("formatBytes", () => {

@@ -6,6 +6,7 @@ import {
   formatClientCount,
   formatPendingSelectionCount,
   formatStudioGalleryCount,
+  formatTileCount,
 } from "@/lib/format";
 import { getGalleryCount, getPendingSelectionCount } from "@/lib/galleries";
 
@@ -34,17 +35,19 @@ export const metadata: Metadata = {
 // a demoted sans title, the pending-selection state as the loudest element
 // on the screen (it is the only thing that means someone is blocked on the
 // photographer), and the client/gallery/pending counts as compact stat
-// tiles below it. None of the three reads above changed, and none of the
-// three formatters this page calls changed what they return — this was a
-// hierarchy rewrite, not a data rewrite. See this page's own report (task
-// #130) for the one deliberate copy difference from the literal mock: the
-// "Clientes"/"Galerías" tiles keep showing `formatClientCount`/
-// `formatStudioGalleryCount`'s existing "N clientes"/"N galerías" sentences
-// as their value (the mock shows a bare digit) rather than adding a new
-// bare-number formatter, so `page.chrome.test.tsx`'s existing copy
-// assertions did not need to move for a change that is purely visual
-// hierarchy. The "Esperan" tile has no such sentence to preserve, so it
-// shows the bare `pendingSelectionCount` the mock does.
+// tiles below it. None of the three reads above changed — this was a
+// hierarchy rewrite, not a data rewrite.
+//
+// Review round 1 caught a real defect in the first pass: the tiles called
+// `formatClientCount`/`formatStudioGalleryCount` (full Spanish sentences,
+// "14 clientes") for their OWN number line except at zero, where they fell
+// back to a literal `"0"` — three tiles in the same grid row each showing a
+// differently-shaped value. `formatTileCount` (`@/lib/format`) now supplies
+// a bare, locale-grouped digit for every tile in every state, matching
+// `design/system/dashboard.html:655-669`'s uniform eyebrow + bare `.stat__n`
+// digit. The sentence formatters stay in use for the PROSE line above the
+// tiles ("Tenés 14 clientes y 23 galerías en marcha.") — that sentence needs
+// the noun; the tile does not, because its eyebrow already carries it.
 //
 // Calls requireAdmin() itself, same as the layout does — see that file's
 // header comment for why a page must never rely on an ancestor layout as
@@ -114,11 +117,11 @@ export default async function DashboardPage() {
       {/* Compact stat tiles, replacing the two full-row link cards this page
           used to spend on a single number each. Mirrors `.stats`,
           dashboard.html:677-693, :745-761: three equal columns even at
-          phone width. The zero case per tile keeps the exact sentence
-          `page.chrome.test.tsx` already asserts on (task #88); the
-          non-zero case keeps the formatter's own "N clientes"/"N galerías"
-          sentence as the tile's value — see this file's header comment for
-          why that is a deliberate, not-yet-bare-number choice. */}
+          phone width, EVERY tile's value a bare `formatTileCount()` digit
+          (see this file's header comment for the review-round-1 fix this
+          was) — the zero case adds an explanatory note sentence below the
+          digit, exactly the copy `page.chrome.test.tsx` asserts on (task
+          #88); it does not replace the digit with a sentence. */}
       <div className="grid grid-cols-3 gap-2">
         <Link
           href="/dashboard/clients"
@@ -128,7 +131,7 @@ export default async function DashboardPage() {
             Clientes
           </span>
           <p className="text-fg mt-1.5 text-[length:var(--app-text-lead)] leading-tight font-medium tabular-nums">
-            {clientCount === 0 ? "0" : formatClientCount(clientCount)}
+            {formatTileCount(clientCount)}
           </p>
           {clientCount === 0 && (
             <p className="text-fg-mute mt-1 text-[length:var(--app-text-meta)]">
@@ -144,7 +147,7 @@ export default async function DashboardPage() {
             Galerías
           </span>
           <p className="text-fg mt-1.5 text-[length:var(--app-text-lead)] leading-tight font-medium tabular-nums">
-            {galleryCount === 0 ? "0" : formatStudioGalleryCount(galleryCount)}
+            {formatTileCount(galleryCount)}
           </p>
           {galleryCount === 0 && (
             <p className="text-fg-mute mt-1 text-[length:var(--app-text-meta)]">
@@ -160,7 +163,7 @@ export default async function DashboardPage() {
             Esperan
           </span>
           <p className="text-fg mt-1.5 text-[length:var(--app-text-lead)] leading-tight font-medium tabular-nums">
-            {pendingSelectionCount}
+            {formatTileCount(pendingSelectionCount)}
           </p>
         </Link>
       </div>

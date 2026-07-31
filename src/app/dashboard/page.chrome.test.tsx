@@ -17,13 +17,14 @@
 // Postgres and therefore Node's `tls`, which jsdom cannot resolve — same
 // failure class as this file's own header comment on `server-only`. Only the
 // DB-touching readers (`getPendingSelectionCount`, `getGalleryCount`,
-// `getClientCount`) are mocked below; none of the three Spanish-copy
-// pluralizers this page uses (`formatClientCount`,
-// `formatPendingSelectionCount`, `formatStudioGalleryCount`) live in either
-// module anymore — task #49/#90 moved the first two out already, and task
-// #122 moved the last two survivors — they all now live in `@/lib/format`, a
-// plain module with no `server-only`/`@/lib/db` import that this file never
-// mocks, so the REAL functions run here.
+// `getClientCount`) are mocked below; none of the four formatters this page
+// uses (`formatClientCount`, `formatPendingSelectionCount`,
+// `formatStudioGalleryCount`, `formatTileCount`) live in either module
+// anymore — task #49/#90 moved the first two out already, task #122 moved
+// the next two survivors, and task #130's review round 1 added the fourth
+// — they all now live in `@/lib/format`, a plain module with no
+// `server-only`/`@/lib/db` import that this file never mocks, so the REAL
+// functions run here.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { Session } from "next-auth";
@@ -125,8 +126,14 @@ describe("DashboardPage chrome", () => {
 
     expect(screen.getByText(/Así está tu estudio\./)).toBeDefined();
     expect(screen.getByText(/Tenés 2 clientes y 2 galerías en marcha\./)).toBeDefined();
-    expect(screen.getAllByText("2 clientes").length).toBeGreaterThan(0);
-    expect(screen.getAllByText("2 galerías").length).toBeGreaterThan(0);
+    // The tiles' OWN number line is a bare, locale-grouped digit
+    // (`formatTileCount`, task #130 review round 1) — the sentence forms
+    // above stay in the prose line only. Scoped by accessible name (the
+    // eyebrow + the bare digit) rather than by the digit alone, since "2"
+    // on its own would be ambiguous against a third tile showing the same
+    // count.
+    expect(screen.getByRole("link", { name: "Clientes 2" })).toBeDefined();
+    expect(screen.getByRole("link", { name: "Galerías 2" })).toBeDefined();
     // The hardcoded lies this task removes must never render once there is
     // real data.
     expect(screen.queryByText("Todavía no hay nada acá.")).toBeNull();
@@ -152,7 +159,7 @@ describe("DashboardPage chrome", () => {
     // but the client card still tells the truth about having zero clients.
     expect(screen.queryByText("Todavía no hay nada acá.")).toBeNull();
     expect(screen.getByText("Todavía no cargaste ningún cliente.")).toBeDefined();
-    expect(screen.getByText("1 galería")).toBeDefined();
+    expect(screen.getByRole("link", { name: "Galerías 1" })).toBeDefined();
   });
 
   it("reports a gallery count with none loaded yet alongside a real client", async () => {
@@ -166,6 +173,6 @@ describe("DashboardPage chrome", () => {
     // the gallery card still tells the truth about having zero galleries.
     expect(screen.queryByText("Todavía no hay nada acá.")).toBeNull();
     expect(screen.getByText("Todavía no armaste ninguna galería.")).toBeDefined();
-    expect(screen.getByText("1 cliente")).toBeDefined();
+    expect(screen.getByRole("link", { name: "Clientes 1" })).toBeDefined();
   });
 });

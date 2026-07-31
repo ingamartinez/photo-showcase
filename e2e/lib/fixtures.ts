@@ -16,6 +16,12 @@ export const E2E_CLIENT_EMAIL = "e2e-client@photo-showcase.test";
 // the status a real client most commonly sees: past `draft` (visible to
 // clients) and short of `delivered` (which swaps in unwatermarked finals this
 // harness never uploads).
+//
+// SEEDED WITH ZERO ASSETS -- see global-setup.ts's `ensureFixtureGallery` for
+// the full note. A capture of this gallery shows the genuine empty state
+// ("Tu fotógrafo todavía no subió fotos"), not a populated proof grid.
+// Slices #145/#146 (proof grid redesign) need to seed their own `assets`
+// rows before that page has anything worth screenshotting.
 export const E2E_GALLERY_PUBLIC_SLUG = "e2e-visual-capture-gallery";
 export const E2E_GALLERY_TITLE = "Sesión de prueba (harness de captura)";
 

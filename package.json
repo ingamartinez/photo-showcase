@@ -28,7 +28,7 @@
     "verify:selection:listen": "bun run scripts/verify-selection-listen-notify.ts",
     "test": "vitest run --passWithNoTests",
     "test:watch": "vitest",
-    "test:e2e": "playwright test",
+    "test:e2e": "APP_ENV=test playwright test",
     "test:e2e:install": "playwright install chromium",
     "prepare": "husky"
   },

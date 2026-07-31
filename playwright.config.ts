@@ -8,8 +8,9 @@
 // design epics (#125 admin, #140 client), not a behavioral regression suite.
 // It seeds two authenticated sessions (see `e2e/global-setup.ts`) and hands
 // downstream specs `e2e/capture.ts`'s `captureScreen()` helper. See that
-// file and `e2e/global-setup.ts` for the full mechanism and its constraints
-// (never production, no PNGs committed, no auth bypass in `src/`).
+// file, `e2e/global-setup.ts`, and `e2e/README.md` for the full mechanism,
+// its local-only env prerequisites, and its constraints (never production,
+// no PNGs committed, no auth bypass in `src/`).
 import { defineConfig } from "@playwright/test";
 
 const PORT = 3300; // package.json:6 -- `next dev -p 3300`.
@@ -17,14 +18,19 @@ const BASE_URL = `http://localhost:${PORT}`;
 
 export default defineConfig({
   testDir: "./e2e",
-  // One shared dev server and one shared pair of seeded sessions across every
-  // spec file -- running specs in parallel workers would mean two workers
-  // racing to seed/rotate the SAME two session tokens in global-setup. This
-  // harness runs a handful of specs a few times a day, never in CI (see
-  // README below); trading worker parallelism for a boring, deterministic
-  // seed step costs nothing that matters here.
-  workers: 1,
-  fullyParallel: false,
+  // NO `workers`/`fullyParallel` override here -- an earlier version of this
+  // config pinned `workers: 1` on the theory that parallel workers would
+  // race each other seeding the two session tokens in `globalSetup`. That
+  // reasoning was WRONG and the #165 review caught it: Playwright always
+  // runs `globalSetup` exactly ONCE per invocation, before any worker
+  // starts, regardless of the configured worker count -- by the time
+  // workers exist, the two `storageState` files are already written and
+  // read-only for the rest of the run. Verified directly: `bunx playwright
+  // test --workers=4 --fully-parallel` passes the same 4 specs Playwright's
+  // own defaults would run serially. Leaving this unset means downstream
+  // lanes (~17 slices across #125/#140) get Playwright's normal
+  // parallelism as this suite grows, instead of inheriting a restriction
+  // that never did anything.
   reporter: "list",
   use: {
     baseURL: BASE_URL,
@@ -35,7 +41,7 @@ export default defineConfig({
   // lanes working in parallel worktrees don't each try to bind the same
   // port. `reuseExistingServer` is unconditional (not gated on `!process.env
   // .CI`, the usual Playwright template default): this harness is LOCAL-ONLY
-  // by design (see e2e/lib/refuse-on-production.ts) and never runs in CI, so
+  // by design (see tooling/refuse-on-production.ts) and never runs in CI, so
   // there is no CI-freshness case to guard against here.
   webServer: {
     command: "bun run dev",

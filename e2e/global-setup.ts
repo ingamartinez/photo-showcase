@@ -37,7 +37,7 @@ import {
   E2E_GALLERY_PUBLIC_SLUG,
   E2E_GALLERY_TITLE,
 } from "./lib/fixtures";
-import { refuseUnlessDevEnvironment } from "./lib/refuse-on-production";
+import { refuseUnlessDevEnvironment } from "../tooling/refuse-on-production";
 
 // A day is generous headroom for a local capture run and short enough that a
 // stray leftover row from a crashed run is never mistaken for a long-lived
@@ -83,6 +83,14 @@ async function reseedSession(
   return { sessionToken, expires };
 }
 
+// NOTE FOR WHOEVER RUNS THIS NEXT AND SEES AN EMPTY GRID: this fixture
+// gallery is seeded with ZERO assets, deliberately -- task #165's own scope
+// is the seeding/capture MECHANISM, not a realistic proof grid. A capture of
+// `/galleries/e2e-visual-capture-gallery` shows "Tu fotógrafo todavía no
+// subió fotos para esta galería" and nothing else. Slices #145/#146 (proof
+// grid redesign) need real thumbnails to capture something meaningful and
+// MUST seed their own `assets` rows (or extend this function) before
+// screenshotting that page -- this function does not do it for them.
 async function ensureFixtureGallery(
   db: ReturnType<typeof drizzle<typeof schema>>,
   clientUserId: string,
@@ -185,6 +193,19 @@ function buildStorageState(sessionToken: string, expires: Date): string {
 export default async function globalSetup(): Promise<void> {
   refuseUnlessDevEnvironment();
 
+  // COUPLED TO `src/lib/db/index.ts` BY COPY, NOT BY IMPORT -- flagged
+  // explicitly in the #165 review as a real, if currently harmless, risk:
+  // these five lines (socket default, PGHOST/PGDATABASE/PGUSER/PGPORT/
+  // PGPASSWORD precedence) are hand-duplicated from that file rather than
+  // imported, for the reason in this file's header comment (no closable
+  // pooled client to reuse). Today the two are IDENTICAL, so this harness
+  // seeds the same database the running app reads from. If `src/lib/db/
+  // index.ts` ever grows a second connection path (e.g. a `DATABASE_URL`
+  // branch), this copy will NOT follow it silently -- this file would keep
+  // seeding the socket-based dev database while the app reads from
+  // somewhere else, and every capture would render a login wall with no
+  // clue why. Whoever changes `src/lib/db/index.ts`'s connection logic
+  // should grep for this comment and update this block to match.
   const defaultSocket = process.platform === "darwin" ? "/tmp" : "/var/run/postgresql";
   const sql = postgres({
     host: process.env.PGHOST ?? defaultSocket,

@@ -176,14 +176,24 @@ export default async function GalleryDetailPage({
               with the same watermark/visibility rules the client gets
               (page.tsx:88-95's own comment on why there is no admin
               carve-out there) — <ClientPreviewBanner> on that page is what
-              tells the admin they landed in preview mode, not impersonation. */}
+              tells the admin they landed in preview mode, not impersonation.
+
+              Deliberately NOT `.label` (globals.css's mono, uppercase,
+              0.22em-tracked eyebrow style) — epic #125's own done-when says
+              no mono eyebrow survives under /dashboard, and this is a new
+              control, not a pre-existing one left in place. Plain text
+              instead. `min-h-11` (44px) for the epic's touch-target rule,
+              even though #139 isn't in its enumerated list of slices that
+              rule explicitly binds — this IS a /dashboard control. */}
           <Link
             href={`/galleries/${gallery.publicSlug}`}
             target="_blank"
             rel="noopener noreferrer"
-            className="label text-fg-dim hover:text-accent-2 mt-2 inline-block transition-colors"
+            className="text-fg-dim hover:text-accent-2 mt-2 inline-flex min-h-11 items-center gap-1 text-sm transition-colors"
           >
-            Ver como la ve el cliente ↗
+            Ver como la ve el cliente
+            <span aria-hidden="true">↗</span>
+            <span className="sr-only">(abre en una pestaña nueva)</span>
           </Link>
           {/* Task #94: a gallery can have several clients now — one line
               per client so each name/email pair stays legible instead of

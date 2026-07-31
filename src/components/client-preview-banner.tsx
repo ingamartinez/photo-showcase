@@ -28,7 +28,7 @@ export function ClientPreviewBanner({ dashboardHref }: { dashboardHref: string }
     <div className="border-line-2 bg-bg-2 text-fg-mute mb-8 flex flex-wrap items-center justify-between gap-3 rounded-sm border px-4 py-3 text-sm">
       <span>
         Estás viendo esto <strong className="text-fg font-medium">como lo ve el cliente</strong> —
-        lo que toques acá se guarda como si lo hubiera tocado el cliente.
+        lo que toques acá se guarda en la selección real del cliente, a tu nombre.
       </span>
       <Link
         href={dashboardHref}

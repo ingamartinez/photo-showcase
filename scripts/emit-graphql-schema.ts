@@ -4,28 +4,31 @@
 // WHY AN SDL FILE EXISTS AT ALL, when the schema is code-first and the whole
 // point of Pothos is not having a second `.graphql` file that can drift:
 //  1. `graphql-codegen` needs a schema it can load from a config file. The
-//     real schema lives behind `src/lib/graphql/schema.ts`, which carries
+//     real schema lives behind src/lib/graphql/schema.ts, which carries
 //     `import "server-only"` and pulls in `@/lib/db` — asking codegen's own
 //     config loader to import that is a resolution problem (see the plugin
-//     below) solved once here instead of inside a third-party loader.
+//     below) better solved once, here, than inside a third-party loader.
 //  2. It makes a schema change VISIBLE in a review diff. A code-first schema
 //     change is a diff in a `.ts` file whose GraphQL consequence a reviewer
 //     has to derive; `schema.graphql` shows the consequence itself.
 // It cannot drift silently, which is the usual objection to a second file:
-// `src/lib/graphql/schema-sdl.test.ts` fails if the committed SDL is not
-// byte-identical to `printSchema(getSchema())`.
+// src/lib/graphql/schema-sdl.test.ts fails, in the ordinary `bun run test`
+// suite, if the committed file is not byte-identical to what this would write.
 //
 // `server-only` IS NOT AN INSTALLED PACKAGE in this repo (Next's own bundler
-// resolves the bare specifier itself — see vitest.config.ts's own comment on
-// the same problem, which it solves with a Vite alias). So under plain Bun,
-// importing anything in `src/lib/graphql/**` fails to resolve before it runs.
-// A Bun virtual module supplies the same inert stub Vitest does, registered
+// resolves the bare specifier itself — see vitest.config.ts's comment on the
+// same problem, which it solves with a Vite alias). So under plain Bun,
+// importing anything in src/lib/graphql/** fails to RESOLVE before it runs. A
+// Bun virtual module supplies the same inert stub Vitest does, registered
 // BEFORE the dynamic import below so it is in place when resolution happens.
-// This is a build-time tool, never part of a request path; the marker is
-// doing its real job (keeping this graph out of a client bundle) in
-// `next build`, which is untouched by anything here.
+// This is a build-time tool, never part of a request path; the marker is doing
+// its real job — keeping this graph out of a client bundle — in `next build`,
+// which nothing here touches.
 import { plugin } from "bun";
-import { printSchema } from "graphql";
+import {
+  buildSchemaArtifact,
+  SCHEMA_ARTIFACT_RELATIVE_PATH,
+} from "../src/lib/graphql/schema-artifact";
 
 plugin({
   name: "server-only-stub",
@@ -34,33 +37,15 @@ plugin({
   },
 });
 
-// Dynamic, and after `plugin()` above: a static `import` is hoisted and would
-// resolve `server-only` before the stub is registered.
+// Dynamic, and after `plugin()` above: a static `import` is hoisted, so it
+// would try to resolve `server-only` before the stub exists. (The static
+// import at the top of this file is fine — `./schema-artifact` deliberately
+// carries no marker and reaches nothing that does.)
 const { getSchema } = await import("../src/lib/graphql/schema");
 
-const OUTPUT_PATH = new URL("../schema.graphql", import.meta.url);
+const outputPath = new URL(`../${SCHEMA_ARTIFACT_RELATIVE_PATH}`, import.meta.url);
+const artifact = buildSchemaArtifact(getSchema());
 
-// `printSchema` sorts nothing by itself — Pothos's own builder emits types in
-// a stable order (registration order, then alphabetical within a type), which
-// is what makes a byte-comparison test on this file meaningful rather than
-// flaky.
-const HEADER = `# GENERATED FILE — do not edit by hand.
-#
-# Produced by \`bun run codegen\` from the Pothos schema in
-# src/lib/graphql/**. Committed on purpose (task #32): the generated
-# TypeScript beside it is committed too, so \`bun run typecheck\` catches a
-# query that drifted from the schema in a fresh clone with no codegen step
-# run first.
-#
-# src/lib/graphql/schema-sdl.test.ts fails if this file is stale.
-`;
+await Bun.write(outputPath, artifact);
 
-// The trailing newline is not cosmetic: `schema.graphql` is checked by
-// `bun run format:check` like every other file in this repo (deliberately not
-// added to a `.prettierignore` — see codegen.ts on why generated output stays
-// inside the format gate), and Prettier requires one.
-const sdl = `${HEADER}\n${printSchema(getSchema())}\n`;
-
-await Bun.write(OUTPUT_PATH, sdl);
-
-console.log(`Wrote ${Bun.fileURLToPath(OUTPUT_PATH)} (${sdl.length} bytes)`);
+console.log(`Wrote ${Bun.fileURLToPath(outputPath)} (${artifact.length} bytes)`);

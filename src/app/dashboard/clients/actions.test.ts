@@ -1,7 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "next-auth";
-import { eq } from "drizzle-orm";
-import { users } from "@/lib/db/schema";
 
 // `import "server-only"` (transitively, via src/lib/auth-guards.ts) only
 // resolves inside a real Next.js bundle — see src/lib/auth-guards.test.ts.
@@ -415,31 +413,28 @@ describe("createClient — non-unique-violation errors are not swallowed (task #
 
 // Acceptance criterion: "A created client can immediately request a magic
 // link and get in." src/auth.ts's `signIn` callback decides whether to
-// send/accept a magic link by running exactly
-// `db.select({ id: users.id }).from(users).where(eq(users.email, address)).limit(1)`
-// against the SAME `users` table this action inserts into (see auth.ts
-// around the `signIn({ user })` callback). This test proves the seam
-// without re-implementing NextAuth: it runs the real createClient() action,
-// then re-runs that identical lookup against the fake db double above (which
-// filters genuinely by column + value, not a canned response) and asserts
-// the row is found — plus a negative control proving the double isn't just
-// always truthy.
+// send/accept a magic link by looking the address up in the SAME `users`
+// table this action inserts into. This test proves that seam without
+// re-implementing NextAuth: it runs the real createClient() action, then runs
+// `findUserIdByEmail` — the very function auth.ts's callback delegates to —
+// against the fake db double above (which filters genuinely by column +
+// value, not a canned response) and asserts the row is found, plus a negative
+// control proving the double isn't just always truthy.
+//
+// Task #51: this used to re-run a HAND-COPIED `db.select(...).from(users)
+// .where(eq(users.email, address)).limit(1)` here. That copy killed real
+// regressions, but it was still a copy: rewriting the query in auth.ts would
+// have left this green while a freshly created client silently lost the
+// ability to sign in. Importing the shared lookup instead means there is one
+// implementation to change, and changing it fails here.
 describe("the seam createClient shares with auth.ts's signIn callback", () => {
   beforeEach(() => {
     authMock.mockResolvedValue(adminSession());
   });
 
-  it("makes a freshly created client immediately findable by the exact lookup the signIn callback runs", async () => {
+  it("makes a freshly created client immediately findable by the lookup the signIn callback runs", async () => {
     const { createClient } = await import("./actions");
-    const { db } = (await import("@/lib/db")) as unknown as {
-      db: {
-        select: (...args: unknown[]) => {
-          from: (...args: unknown[]) => {
-            where: (...args: unknown[]) => { limit: (n: number) => Promise<Row[]> };
-          };
-        };
-      };
-    };
+    const { findUserIdByEmail } = await import("@/lib/users");
 
     const result = await createClient(
       { status: "idle" },
@@ -447,21 +442,13 @@ describe("the seam createClient shares with auth.ts's signIn callback", () => {
     );
     expect(result.status).toBe("created");
 
-    const found = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.email, "gala@example.com"))
-      .limit(1);
-    expect(found).toHaveLength(1);
+    // `signIn` returns `Boolean(await findUserIdByEmail(address))`, so an id
+    // here is exactly what lets the magic link through.
+    await expect(findUserIdByEmail("gala@example.com")).resolves.toEqual(expect.any(String));
 
     // Negative control: the identical lookup for an address nobody created
     // finds nothing — if the double's filtering were broken (e.g. always
     // returning every row), this would wrongly pass too.
-    const notFound = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.email, "nobody@example.com"))
-      .limit(1);
-    expect(notFound).toHaveLength(0);
+    await expect(findUserIdByEmail("nobody@example.com")).resolves.toBeUndefined();
   });
 });

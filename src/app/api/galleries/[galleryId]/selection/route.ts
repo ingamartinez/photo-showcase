@@ -1,105 +1,107 @@
 // GET /api/galleries/[galleryId]/selection — the shared selection of one
 // gallery, as the server currently holds it: which photos are picked, who
 // picked each of them, the recomputed quota, and whether the selection has
-// been submitted (task #95).
+// been submitted (task #95). This is now ALSO the route every open session
+// re-fetches from the instant it is told something changed (task #114's SSE
+// stream, `./stream/route.ts`) — see below.
 //
 // ============================================================================
-// THE TRANSPORT DECISION — polling, and why, with its droplet cost
+// THE TRANSPORT DECISION — CORRECTED (task #114): pushed, off Postgres
+// LISTEN/NOTIFY, this route as the fetch target, polling kept as a fallback
 // ============================================================================
 //
-// Task #95 introduces the FIRST live-updating surface in this product. Before
-// it there was no `EventSource`, no WebSocket, no SSE endpoint and no
-// third-party realtime service anywhere in `src/` — every screen was
-// server-rendered plus local state, and `src/components/gallery-workspace.tsx`
-// documents a deliberate refusal to even call `router.refresh()` after a
-// mutation. So the transport is a real decision, settled here the way task
-// #29 settled the zip question (PLAN.md §11): measure or reason about the
-// droplet cost FIRST, then choose, then write down what was chosen and what
-// it costs.
+// Task #95 (below, unchanged as a HISTORICAL record of what it measured and
+// why) chose polling and rejected SSE on the grounds that "this app has no
+// event bus" — an in-process `EventEmitter` would silently stop working the
+// day this ran as more than one instance, and an SSE endpoint that polled the
+// database internally would just be polling with a socket held open on top.
+// Both of those specific rejections were correct. The CONCLUSION drawn from
+// them was not: this app has run Postgres since Phase 0, and LISTEN/NOTIFY IS
+// an event bus this product already owns and already pays for — `postgres`
+// was already `^3.4.9`, `sql.listen()`/`sql.notify()` are native to it, and no
+// new dependency was needed to use them. It is also STRICTLY BETTER than the
+// `EventEmitter` shape #95 also rejected, on the exact axis #95 used to
+// reject it: a `NOTIFY` reaches every instance LISTENing on the channel, so
+// this gets MORE correct under scaling to more than one systemd process, not
+// less. Task #114 is the slice that corrects this record and builds the real
+// thing, at the owner's explicit request after confirming #95 worked but felt
+// laggy (~5s) in production — see that task's own kanban body for why the
+// cheap fix (lowering `SELECTION_POLL_INTERVAL_MS`) was offered and declined.
 //
-// DECIDED: short-interval polling of this route, from
-// `src/components/proof-grid.tsx`. Not SSE. Not a third-party service.
+// WHAT ACTUALLY CHANGED: `src/components/proof-grid.tsx` now opens
+// `GET /api/galleries/[galleryId]/selection/stream` (an `EventSource`,
+// `./stream/route.ts`) whenever the gallery is in a status where the shared
+// selection can still change. That stream carries no data of its own — see
+// its own header comment and `src/lib/selection-events.ts`'s for why — only a
+// `changed` signal, which is what triggers THIS route to be fetched, and a
+// `ready` signal on every connect/reconnect, which is what makes a client
+// recover from a signal it could have missed while disconnected (Postgres
+// NOTIFY is not durable). This route's own guard, response shape, and
+// ownership check are UNCHANGED by any of this — it was already the single
+// place both the first server-rendered paint and every live refresh get their
+// data from (see this file's other header notes below), and task #114
+// deliberately kept it that way rather than inventing a second way to read
+// the same state.
 //
-// The three options, weighed against the actual workload — a gallery opened
-// by two or three people for twenty minutes while they argue about which
-// photos to keep, on a droplet with 2 GB shared with `findash` where this app
-// is capped at 768M (PLAN.md §9):
+// WHETHER POLLING SURVIVES: yes, as a long-interval FALLBACK, not removed.
+// `SELECTION_POLL_INTERVAL_MS` (src/components/proof-grid.tsx) is now 30
+// seconds instead of #95's 5 — active the whole time the SSE stream is meant
+// to be open, independent of whether it currently IS. This is the backstop
+// for a failure mode the stream cannot self-report: a corporate proxy or
+// browser extension that silently drops an `EventSource` without ever firing
+// its `error` handler. Removing polling entirely would make that unbounded;
+// keeping it at #95's 5s would be needless waste now that push carries the
+// normal case. 30s bounds the worst case at six times less request volume
+// than #95 shipped with, for the (now rare) case where it's actually needed.
 //
-//   POLLING (chosen). One `GET` per viewer per `SELECTION_POLL_INTERVAL_MS`
-//   (5s, see src/components/proof-grid.tsx), and only while the gallery is in
-//   a status where the shared selection can still change, and only while the
-//   tab is visible. For three viewers that is 0.6 requests/second, each one
-//   four small indexed queries (the gallery row, the ownership row, the
-//   selected assets, the pickers) over a unix socket. Nothing is retained
-//   between ticks: the memory cost when nobody is looking is exactly zero,
-//   which is the state this app is in almost all the time. It survives a
-//   deploy, a systemd restart and Caddy's timeouts without anyone having to
-//   think about it — a restart costs one failed tick, and the next tick
-//   recovers with no reconnection logic to get wrong.
+// See `./stream/route.ts`'s own header comment for the guard proof and the
+// heartbeat/idle-timeout reasoning, and `src/lib/selection-events.ts`'s for
+// where NOTIFY fires (an application call at each of the three write paths
+// that can change this — a toggle, a submit, an admin unlock — not a
+// database trigger, and why), the fan-out shape (one LISTEN connection per
+// app instance, not per viewer), and how a dropped/reconnected LISTEN
+// connection recovers.
 //
-//   SSE. One-way, which is genuinely all this needs, and it is plain HTTP.
-//   But it holds a connection per viewer through Caddy and Next for as long
-//   as the tab is open, and this app has NO EVENT BUS to feed it: one systemd
-//   process, no Redis (PLAN.md §9 is explicit that image work runs inline
-//   precisely to avoid standing up a queue). So an SSE endpoint here would
-//   either need an in-process `EventEmitter` that silently stops working the
-//   day this runs as more than one instance, or it would poll the database
-//   internally anyway — polling, with a socket held open on top and a
-//   reconnection story to get right. That is the decisive argument; the
-//   memory is the secondary one.
+// ============================================================================
+// TASK #95's ORIGINAL MEASUREMENT — kept verbatim as a historical record,
+// NOT as the current architecture (see the correction above)
+// ============================================================================
 //
-//   MEASURED anyway, rather than asserted, and RE-RUNNABLE — the script is
-//   `scripts/measure-selection-transport.ts`, `bun run
-//   measure:selection:transport`, alongside task #26's and #29's own
-//   measurement scripts. It is committed precisely so these numbers can be
-//   falsified: they were taken on macOS, on a bare Bun HTTP server holding
-//   both ends of every socket in one process (so each per-viewer figure is
-//   roughly twice the server's own share), with no Next.js per-request
-//   context, no Caddy, and none of the droplet's cgroup accounting. Kanban
-//   #57 is the task that re-runs it there; until then this SUPPORTS the
-//   decision, it does not prove it. Median of 3 runs per configuration:
+// This is the reasoning and the numbers that made polling the right call
+// BEFORE this app had a way to feed SSE anything real. They are not wrong as
+// measurements — held connections really did cost what they say, and really
+// did not reliably give it back — they were simply answering a question
+// ("is SSE worth it against an EventEmitter or a self-polling endpoint") that
+// task #114 replaced with a different, better-supported design. Kept here
+// rather than deleted because the numbers below are still the best available
+// evidence for "what does holding N SSE connections cost this droplet",
+// which task #114's own design still has to reason about (a stream is held
+// open per viewer regardless of what feeds it) — see
+// `scripts/measure-selection-transport.ts` for the arm task #114 added on
+// top of these.
 //
-//     200 held SSE connections               +68.0 MiB  (348 KiB/viewer;
-//                                             277 KiB/viewer marginal
-//                                             between 100 and 200)
-//     ...reclaimed once they all close        0% / 0% / 0%  (min/median/max
-//                                             across 9 runs)
-//     200 polls (one tick for 200 viewers)    +2.0 MiB retained,
-//                                             0.09-3.35 ms per request
-//     200 SIMULTANEOUS polls                  +1.3 MiB peak, settles back
+//   200 held SSE connections               +68.0 MiB  (348 KiB/viewer;
+//                                           277 KiB/viewer marginal
+//                                           between 100 and 200)
+//   ...reclaimed once they all close        0% / 0% / 0%  (min/median/max
+//                                           across 9 runs)
+//   200 polls (one tick for 200 viewers)    +2.0 MiB retained,
+//                                           0.09-3.35 ms per request
+//   200 SIMULTANEOUS polls                  +1.3 MiB peak, settles back
 //
-//   The line that matters is the second one. Held connections ratchet RSS,
-//   and effectively none of it is handed back to the OS when they close —
-//   under a hard 768M cap with `max_memory_restart` (PLAN.md §9) that is a
-//   floor only a restart is guaranteed to recover, whereas polling's peak is
-//   transient and settles back to where it started in every run. State that
-//   honestly rather than absolutely: an earlier SINGLE-SHOT version of the
-//   same measurement once read ~45% reclaimed at one connection count, which
-//   is exactly why the committed script repeats every configuration and
-//   prints the spread instead of a sample. "Not dependably reclaimed" is the
-//   claim this rests on, not "never reclaimed" — and under a hard cap that is
-//   the same decision.
-//
-//   Two further costs surfaced in the same run rather than in production:
-//   Bun's own server kills an idle stream after 10 seconds unless configured
-//   otherwise, so SSE needs a keepalive timer per viewer, and Caddy has its
-//   own idle timeout that would have to be verified rather than assumed.
-//
-//   A THIRD-PARTY REALTIME SERVICE. Removes the droplet cost entirely, and
-//   adds an API key, a vendor, a second failure domain and a per-message bill
-//   to a product that currently has exactly one failure domain. The same
-//   argument task #29 made against the Cloudflare Worker applies verbatim:
-//   this is real infrastructure, and "two people picking wedding photos
-//   together" does not justify building it.
-//
-// The honest cost of the chosen option, stated rather than glossed: between
-// two ticks the tray is up to 5 seconds stale. That is the whole downside,
-// and for this use case it is invisible — the collaborators are in the same
-// room or on the same phone call, and 5 seconds is faster than "did you get
-// that one?" REVISIT THIS if a gallery ever routinely has ten-plus
-// simultaneous viewers, or if the interval has to drop below ~2 seconds to
-// feel right; at that point the arithmetic above changes and SSE earns
-// itself.
+// Re-framed rather than repeated (task #114's own kanban body): 200
+// concurrent viewers is not this product. Realistic concurrency is two to
+// five people in one gallery — at ~350 KiB/viewer that is one to two MiB, so
+// memory never actually ruled out SSE at this scale; what ruled it out was
+// the absence of a real event source, which task #114 supplies. The ratchet
+// is still real, though, and still worth carrying forward: RSS taken by held
+// connections does not reliably come back (measured, not assumed — an
+// earlier single-shot version of this same measurement once read ~45%
+// reclaimed at one connection count, which is exactly why the committed
+// script repeats every configuration and prints the spread instead of a
+// sample), so under a hard 768M `MemoryMax` (PLAN.md §9) a burst of viewers
+// still raises a floor only a restart recovers. Affordable at five viewers;
+// not free.
 //
 // ============================================================================
 // THE GUARD

@@ -60,6 +60,15 @@ vi.mock("@/lib/r2", () => ({
   getPresignedUrl: (...args: unknown[]) => getPresignedUrlMock(...args),
 }));
 
+// Task #92: mocked so this suite's fixtures (every one of them ships
+// `assets: []` or `finalKey: null` rows, none deliverable) never depend on
+// that staying true to avoid touching R2 — the real function's own behavior
+// is proven directly in src/lib/gallery-archive-size.test.ts.
+const getGalleryArchiveSizeMock = vi.fn();
+vi.mock("@/lib/gallery-archive-size", () => ({
+  getGalleryArchiveSize: (...args: unknown[]) => getGalleryArchiveSizeMock(...args),
+}));
+
 beforeEach(() => {
   authMock.mockReset();
   getGalleryDetailMock.mockReset();
@@ -73,6 +82,8 @@ beforeEach(() => {
   getClientsForPickerMock.mockResolvedValue([]);
   getPresignedUrlMock.mockReset();
   getPresignedUrlMock.mockReturnValue("https://r2.example.com/presigned-proof-url");
+  getGalleryArchiveSizeMock.mockReset();
+  getGalleryArchiveSizeMock.mockResolvedValue(null);
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
 });
 

@@ -80,6 +80,13 @@ vi.mock("@/lib/galleries", () => ({
 // separately here since `@/lib/galleries` is mocked wholesale above.
 vi.mock("@/lib/format", () => ({
   formatCop: (amountCop: number) => `$ ${amountCop.toLocaleString("es-CO")}`,
+  // Task #92: `@/lib/format` is mocked wholesale here (no `importActual` —
+  // that would re-drag in this file's own real, non-DB dependents), so
+  // every export the page reads off it needs its own entry, same stance as
+  // every other mock in this file. A deliberately simple fake, not the real
+  // binary-unit math (proven directly in src/lib/format.test.ts) — this
+  // suite's own job is whether the PAGE calls it and renders the result.
+  formatBytes: (bytes: number) => `${bytes} bytes`,
 }));
 
 // Task #97: the page reads `getClientsForPicker` (`@/lib/clients`) to build
@@ -94,6 +101,17 @@ vi.mock("@/lib/clients", () => ({
 
 vi.mock("@/lib/r2", () => ({
   getPresignedUrl: (key: string) => `https://r2.example.com/${key}?presigned=1`,
+}));
+
+// Task #92: mocked wholesale for the same jsdom-cannot-resolve-"server-only"
+// reason as `@/lib/galleries`/`@/lib/r2` above — this module's own
+// `import "server-only"` is unresolvable under jsdom regardless of
+// `vi.mock("server-only", ...)`. Defaults to `null` (nothing deliverable
+// yet), matching every fixture's default `assets: []`; the dedicated
+// archive-size describe block below overrides it per test.
+const getGalleryArchiveSizeMock = vi.fn();
+vi.mock("@/lib/gallery-archive-size", () => ({
+  getGalleryArchiveSize: (...args: unknown[]) => getGalleryArchiveSizeMock(...args),
 }));
 
 // The page now renders <PublishGalleryButton> whenever a fixture's status
@@ -178,6 +196,8 @@ beforeEach(() => {
   resendGalleryAccessEmailMock.mockResolvedValue({ status: "idle" });
   getClientsForPickerMock.mockReset();
   getClientsForPickerMock.mockResolvedValue([]);
+  getGalleryArchiveSizeMock.mockReset();
+  getGalleryArchiveSizeMock.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -483,6 +503,88 @@ describe("GalleryDetailPage chrome", () => {
       "disabled",
       false,
     );
+  });
+});
+
+describe("GalleryDetailPage — archive-size warning (task #92)", () => {
+  it("renders nothing about archive size when there is no deliverable final yet", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail());
+    getGalleryArchiveSizeMock.mockResolvedValue(null);
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.queryByText("Peso de la descarga")).toBeNull();
+    expect(screen.queryByText(/descarga completa/)).toBeNull();
+  });
+
+  it("shows the archive's total size once there is at least one deliverable final, with no warning at 'ok'", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail());
+    getGalleryArchiveSizeMock.mockResolvedValue({
+      status: "ok",
+      totalBytes: 200 * 1024 * 1024,
+      entryCount: 5,
+    });
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByText("Peso de la descarga")).toBeDefined();
+    expect(screen.getByText(`${200 * 1024 * 1024} bytes`)).toBeDefined();
+    expect(screen.queryByText(/descarga completa/)).toBeNull();
+  });
+
+  it("calls out a gallery approaching the ceiling, in Spanish, saying what to do", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail());
+    getGalleryArchiveSizeMock.mockResolvedValue({
+      status: "approaching",
+      totalBytes: 3_600_000_000,
+      entryCount: 18,
+    });
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    const warning = screen.getByText(/no va a funcionar por encima de unos 4 GB/);
+    expect(warning.textContent).toContain("Considerá exports más livianos");
+  });
+
+  it("uses different, more urgent copy once the gallery has already crossed the ceiling", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail());
+    getGalleryArchiveSizeMock.mockResolvedValue({
+      status: "over",
+      totalBytes: 4_400_000_000,
+      entryCount: 22,
+    });
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    const warning = screen.getByText(/ya no va a funcionar/);
+    expect(warning.textContent).toContain("entrega dividida");
+    expect(screen.queryByText(/no va a funcionar por encima de unos 4 GB\. Considerá/)).toBeNull();
+  });
+
+  it("passes the gallery's own assets to getGalleryArchiveSize, not an empty/derived list", async () => {
+    const assets = [
+      {
+        id: "a1",
+        originalFilename: "IMG_0001.JPG",
+        proofKey: "galleries/g1/proofs/a1.webp",
+        proofWidth: 1600,
+        proofHeight: 1067,
+        isSelected: true,
+        sortOrder: 0,
+        finalKey: "galleries/g1/finals/a1.jpg",
+        isEdited: true,
+      },
+    ];
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ assets }));
+    getGalleryArchiveSizeMock.mockResolvedValue(null);
+
+    await GalleryDetailPage(paramsFor(GALLERY_ID));
+
+    expect(getGalleryArchiveSizeMock).toHaveBeenCalledWith(assets);
   });
 });
 

@@ -111,3 +111,22 @@ export function formatPendingSelectionCount(pendingCount: number): string | null
   if (pendingCount === 1) return "1 selección esperando";
   return `${pendingCount} selecciones esperando`;
 }
+
+/** Human-scale byte count — binary units (1024-based, matching
+ * `ZIP32_MAX_TOTAL_BYTES`'s own "~4 GiB" framing in src/lib/zip-stream.ts),
+ * labeled the colloquial way ("GB", not "GiB") since this is read by a
+ * photographer, not written into a spec. One decimal place above bytes
+ * themselves — task #92's own gallery-detail archive-size warning
+ * (`@/lib/gallery-archive-size`) is the one caller: "4.1 GB" reads faster
+ * than "4,401,845,516 bytes". */
+export function formatBytes(bytes: number): string {
+  const units = ["B", "KB", "MB", "GB"];
+  let value = bytes;
+  let unitIndex = 0;
+  while (value >= 1024 && unitIndex < units.length - 1) {
+    value /= 1024;
+    unitIndex++;
+  }
+  const decimals = unitIndex === 0 ? 0 : 1;
+  return `${value.toFixed(decimals)} ${units[unitIndex]}`;
+}

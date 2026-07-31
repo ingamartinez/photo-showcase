@@ -12,7 +12,8 @@ import {
   isGalleryVisibleToClient,
 } from "@/lib/galleries";
 import { getClientsForPicker } from "@/lib/clients";
-import { formatCop } from "@/lib/format";
+import { formatBytes, formatCop } from "@/lib/format";
+import { getGalleryArchiveSize } from "@/lib/gallery-archive-size";
 import { getPresignedUrl } from "@/lib/r2";
 import { GalleryWorkspace } from "@/components/gallery-workspace";
 import { PublishGalleryButton } from "@/components/publish-gallery-button";
@@ -104,6 +105,15 @@ export default async function GalleryDetailPage({
   // never been unlocked — a real, reachable state this page must render
   // plainly (nothing shown at all, see below), not treat as missing data.
   const unlockAudit = await getGalleryUnlockAudit(gallery.id);
+
+  // Task #92: the SAME question GET .../download-all's own pre-flight asks
+  // ("how big would this gallery's zip be"), asked here instead so the
+  // photographer — the one who can actually fix an oversized gallery —
+  // finds out before a client clicks "descargar todo" and gets refused.
+  // `null` when nothing is deliverable yet (the common case), which is also
+  // what keeps this from ever issuing an R2 HEAD request on a gallery with
+  // no finals — see that function's own header comment.
+  const archiveSize = await getGalleryArchiveSize(gallery.assets);
 
   // Presigned URLs are generated here, at render time, for the INITIAL
   // paint only — `getPresignedUrl` is a local HMAC signature, not an R2
@@ -203,7 +213,35 @@ export default async function GalleryDetailPage({
             <dd>{gallery.assets.length}</dd>
             <dt className="text-fg-mute">Seleccionadas</dt>
             <dd>{selectedCount}</dd>
+            {/* Task #92: shown once there is at least one deliverable final
+                — a draft/proofing gallery has nothing to size yet, and
+                `archiveSize` is `null` for exactly that case (see
+                getGalleryArchiveSize's own comment). Visible regardless of
+                how close the gallery is to the ceiling — "the photographer
+                can see a gallery's total final size without triggering a
+                download" is this task's own first acceptance criterion, not
+                only the warning below. */}
+            {archiveSize && (
+              <>
+                <dt className="text-fg-mute">Peso de la descarga</dt>
+                <dd>{formatBytes(archiveSize.totalBytes)}</dd>
+              </>
+            )}
           </dl>
+
+          {/* Task #92: called out BEFORE the gallery crosses
+              GET .../download-all's own ceiling (`ZIP32_MAX_TOTAL_BYTES`/
+              `ZIP32_MAX_ENTRY_COUNT`, src/lib/zip-stream.ts) — not only once
+              it already has. Same warning color as <AssetTile>'s own "Falta
+              el final" state (src/components/asset-tile.tsx): both mean
+              "the photographer, not the client, needs to act on this". */}
+          {archiveSize && archiveSize.status !== "ok" && (
+            <p className="max-w-xs text-right text-sm text-[#e0796b]">
+              {archiveSize.status === "over"
+                ? `Los finales de esta galería pesan ${formatBytes(archiveSize.totalBytes)} — la descarga completa ya no va a funcionar (el límite ronda los 4 GB). Subí exports más livianos o coordiná una entrega dividida.`
+                : `Los finales de esta galería pesan ${formatBytes(archiveSize.totalBytes)} — la descarga completa no va a funcionar por encima de unos 4 GB. Considerá exports más livianos antes de que sea un problema.`}
+            </p>
+          )}
 
           {/* Guarded server-side by publishGallery() itself (draft-only,
               non-empty gallery, at least one active client) — hiding the

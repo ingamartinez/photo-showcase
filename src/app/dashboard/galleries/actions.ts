@@ -26,10 +26,7 @@ import {
   galleryAccessResendLimiter,
 } from "@/lib/gallery-access-rate-limiters";
 import { generateGallerySlug } from "@/lib/slug";
-import { authEnv, resendEnv } from "@/lib/env";
-import { computeQuota } from "@/lib/quota";
 import { notifySelectionChanged } from "@/lib/selection-events";
-import { sendUnlockNotificationEmail } from "@/lib/unlock-notification-email";
 
 const createGallerySchema = z.object({
   // Fed by a `<select multiple>` picker backed by getClientsForPicker()
@@ -543,11 +540,19 @@ function isUnlockable(status: Gallery["status"]): boolean {
  * PLAN.md §4's "identity is the email", snapshotted rather than a foreign
  * key; see schema.ts's comment on that column for why) and WHEN
  * (`unlockedAt`), plus an OPTIONAL `reason` a photographer can leave for
- * their own future reference and for the client's — "this is an audit
- * trail for a money conversation", per this task's own scope note. Only the
- * MOST RECENT unlock is kept (overwritten by a later one) — the acceptance
- * criterion is "who did it and when, AT MINIMUM", not a full append-only
- * log, and that scope cut is deliberate.
+ * their own future reference — "this is an audit trail for a money
+ * conversation", per this task's own scope note. Only the MOST RECENT unlock
+ * is kept (overwritten by a later one) — the acceptance criterion is "who did
+ * it and when, AT MINIMUM", not a full append-only log, and that scope cut is
+ * deliberate.
+ *
+ * Task #85 NOTE: the reason used to also be echoed into the client's own
+ * notification email (src/lib/unlock-notification-email.ts, now removed).
+ * Since that email moved onto `signIn("gallery-unlock", ...)` — a NextAuth
+ * Email provider whose `sendVerificationRequest` only ever receives the
+ * recipient's address and the magic-link URL, never call-specific data — the
+ * reason is recorded here for the admin's own record only; the client no
+ * longer sees it in the email itself.
  *
  * Guarded the same way publishGallery/submit-selection already are: the
  * UPDATE's own `WHERE status = 'selected'` is the REAL, atomic guard
@@ -695,22 +700,6 @@ export async function unlockSelection(
   // right response.
   const clients = await getGalleryClients(unlockedGallery.id);
 
-  // Quota AT THE MOMENT OF UNLOCK — since a `selected` gallery's assets
-  // cannot be toggled (`SELECTION_LOCKED_STATUSES` on the sibling PATCH
-  // route, src/app/api/assets/[assetId]/selection/route.ts), this is
-  // exactly what the client had submitted, computed off the gallery's own
-  // frozen snapshot terms — never the live `packages` row (this epic's
-  // central rule, repeated in every sibling that touches quota).
-  const siblings = await db
-    .select({ isSelected: assets.isSelected })
-    .from(assets)
-    .where(eq(assets.galleryId, unlockedGallery.id));
-  const selectedCount = siblings.filter((row) => row.isSelected).length;
-  const quota = computeQuota(selectedCount, {
-    includedPhotosSnapshot: unlockedGallery.includedPhotosSnapshot,
-    extraPhotoPriceCopSnapshot: unlockedGallery.extraPhotoPriceCopSnapshot,
-  });
-
   // Task #94 — SEVERAL clients, PARTIAL failure named explicitly: this used
   // to be a single best-effort send collapsed into one boolean
   // (`emailFailed`). With N clients, "one address bounced, the rest didn't"
@@ -721,46 +710,40 @@ export async function unlockSelection(
   // transition already committed, notification is best-effort" stance the
   // header comment above already takes; this only changes what a failure
   // REPORTS, not what it does.
+  //
+  // Task #85 moved this from a plain, direct Resend call
+  // (`sendUnlockNotificationEmail`, src/lib/unlock-notification-email.ts, now
+  // removed) onto `signIn("gallery-unlock", ...)` — the SAME MECHANISM
+  // `publishGallery`/`deliverGallery` use, on its own provider — for the
+  // reasons this function's own header comment gives. The `reason` the admin
+  // left above is still recorded on the gallery row for the audit trail
+  // (#73's own acceptance criterion); it is no longer echoed into the
+  // client's email, because `sendVerificationRequest` has no channel to carry
+  // it (see auth.ts's own comment on the `gallery-unlock` provider).
   let failedEmails: string[] = [];
-  if (clients.length === 0) {
-    // Reachable only through the removal race named at the lookup above —
-    // treated the same as every client's send failing, since there is nobody
-    // to notify either way. (This branch also said "unreachable BY DESIGN"
-    // until task #100; it never was, once #97 shipped removal.)
-    failedEmails = [];
-  } else {
-    try {
-      const { RESEND_API_KEY, EMAIL_FROM } = resendEnv();
-      const { AUTH_URL } = authEnv();
-      // The CLIENT's own gallery URL (`/galleries/[publicSlug]`), not the
-      // admin dashboard URL `sendSubmissionNotificationEmail` builds — see
-      // src/lib/unlock-notification-email.ts's own comment on why. Built
-      // once and reused for every client — it does not vary per recipient.
-      const galleryUrl = new URL(`/galleries/${unlockedGallery.publicSlug}`, AUTH_URL).toString();
+  if (clients.length > 0) {
+    const sendResults = await Promise.allSettled(
+      clients.map((client) =>
+        signIn("gallery-unlock", {
+          email: client.email,
+          redirect: false,
+          redirectTo: `/galleries/${unlockedGallery.publicSlug}`,
+        }),
+      ),
+    );
 
-      const sendResults = await Promise.allSettled(
-        clients.map((client) =>
-          sendUnlockNotificationEmail({
-            apiKey: RESEND_API_KEY,
-            from: EMAIL_FROM,
-            to: client.email,
-            clientName: client.name,
-            clientEmail: client.email,
-            galleryTitle: unlockedGallery.title,
-            galleryUrl,
-            reason,
-            quota,
-          }),
-        ),
-      );
-      failedEmails = clients
-        .filter((_, index) => sendResults[index]!.status === "rejected")
-        .map((client) => client.email);
-    } catch {
-      // `resendEnv()`/`authEnv()` itself threw (missing config) before any
-      // send was even attempted — every client counts as unreached.
-      failedEmails = clients.map((client) => client.email);
-    }
+    // A rejection that ISN'T an `AuthError` is a genuine bug/outage this
+    // action has no story for — same "let it crash rather than silently
+    // pretend" stance `publishGallery`/`deliverGallery` already take.
+    const unexpected = sendResults.find(
+      (result): result is PromiseRejectedResult =>
+        result.status === "rejected" && !(result.reason instanceof AuthError),
+    );
+    if (unexpected) throw unexpected.reason;
+
+    failedEmails = clients
+      .filter((_, index) => sendResults[index]!.status === "rejected")
+      .map((client) => client.email);
   }
 
   revalidatePath(`/dashboard/galleries/${unlockedGallery.id}`);
@@ -840,22 +823,28 @@ const DELIVER_TARGET_STATUS = "delivered" as const satisfies Gallery["status"];
  * `unlockSelection`'s own test suite documents and guards against being
  * mistaken for proof of the atomic guard.
  *
- * The client notification reuses the exact mechanism `publishGallery` uses —
- * `signIn("gallery-access", ...)` — rather than a bare
- * `/galleries/${publicSlug}` URL (the shape `sendUnlockNotificationEmail`'s
- * own `galleryUrl` uses). That distinction is deliberate, not copy-paste
- * drift: `unlockSelection` fires while the client is presumably still
- * mid-selection, with a magic-link session from the original publish email
- * that is very likely still valid (`GALLERY_ACCESS_MAX_AGE_SECONDS` is the
- * TOKEN's lifetime, but the database SESSION it establishes on click lives
- * far longer). Delivery, by contrast, can land days or weeks after that —
- * the photographer has to actually finish editing every selected photo in
- * between — by which point the client's original session may well have
- * expired. A bare URL into an expired session is not "a working link", it's
- * a login wall; re-running the SAME single-use, session-establishing
- * magic-link flow `publishGallery` already relies on is what actually
- * satisfies this task's own acceptance criterion ("a working link to the
- * gallery"), regardless of how stale the client's last session is.
+ * The client notification reuses the SAME MECHANISM `publishGallery` uses —
+ * a magic-link `signIn(...)` call — rather than a bare
+ * `/galleries/${publicSlug}` URL. That distinction is deliberate: delivery
+ * can land days or weeks after publish — the photographer has to actually
+ * finish editing every selected photo in between — by which point the
+ * client's original session may well have expired
+ * (`GALLERY_ACCESS_MAX_AGE_SECONDS` is the TOKEN's lifetime, but the database
+ * SESSION it establishes on click lives far longer, not forever). A bare URL
+ * into an expired session is not "a working link", it's a login wall;
+ * re-running the SAME single-use, session-establishing magic-link flow
+ * `publishGallery` already relies on is what actually satisfies this task's
+ * own acceptance criterion ("a working link to the gallery"), regardless of
+ * how stale the client's last session is.
+ *
+ * Task #85 gave this its OWN provider — `signIn("gallery-delivery", ...)`,
+ * not `signIn("gallery-access", ...)` — so the copy the client reads says
+ * "your finished, edited photos are ready to download"
+ * (src/lib/gallery-delivery-email.ts) rather than reusing publish's "come
+ * and choose your photos" text. The mechanism (token, session, single-use)
+ * is byte-for-byte the same as before; only which provider — and therefore
+ * which Resend template — gets called changed. `unlockSelection` below made
+ * the identical move, onto its own third provider, `gallery-unlock`.
  *
  * Ordering, deliberately the REVERSE of `publishGallery`'s own "send first,
  * then flip status": here the atomic status UPDATE happens FIRST, and the
@@ -1000,15 +989,15 @@ export async function deliverGallery(
 
   // SEVERAL clients, PARTIAL failure named explicitly — same shape as
   // `publishGallery`'s own send loop above (this reuses the identical
-  // `signIn("gallery-access", ...)` mechanism, see this function's own
-  // header comment for why), reported via WHICH address(es) failed rather
-  // than a single collapsed boolean, same reasoning as `unlockSelection`'s
-  // own rewrite.
+  // `signIn(...)` MECHANISM, now on its own `gallery-delivery` provider —
+  // see this function's own header comment for why), reported via WHICH
+  // address(es) failed rather than a single collapsed boolean, same
+  // reasoning as `unlockSelection`'s own rewrite.
   let failedEmails: string[] = [];
   if (clients.length > 0) {
     const sendResults = await Promise.allSettled(
       clients.map((client) =>
-        signIn("gallery-access", {
+        signIn("gallery-delivery", {
           email: client.email,
           redirect: false,
           redirectTo: `/galleries/${deliveredGallery.publicSlug}`,
@@ -1057,12 +1046,17 @@ export async function deliverGallery(
 // kanban body: before this, a gallery's client list was fixed at creation).
 //
 // THE TRAP this whole action exists to avoid: `gallery_clients` grants
-// AUTHORIZATION, not a way IN. The only door into a gallery is the magic
-// link `signIn("gallery-access", ...)` sends (the SAME provider
-// `publishGallery`/`deliverGallery` above already use — never a second
-// door). A client attached after the gallery was published would be
-// authorized for a gallery they have no link to and no reason to log in
-// for, unless this action sends them one itself.
+// AUTHORIZATION, not a way IN. The only door into a gallery is a magic-link
+// `signIn(...)` call — the SAME MECHANISM `publishGallery`/`unlockSelection`/
+// `deliverGallery` above already use, though each now calls it on its OWN
+// provider (task #85: `gallery-access`/`gallery-unlock`/`gallery-delivery`
+// respectively) for its own copy. This action always sends `gallery-access`
+// regardless of the gallery's current status — see "WHAT GETS SENT" below for
+// why that is still the right choice here, not an oversight left behind by
+// #85. Either way, never a second door into the gallery. A client attached
+// after the gallery was published would be authorized for a gallery they
+// have no link to and no reason to log in for, unless this action sends them
+// one itself.
 //
 // WHAT GETS SENT, DECIDED PER STATUS — reusing `isGalleryVisibleToClient`
 // (src/lib/galleries.ts), the SAME predicate that decides whether a client
@@ -1085,6 +1079,16 @@ export async function deliverGallery(
 //   - `archived` — also nothing (falls out of `isGalleryVisibleToClient`
 //     being `false`), matching the same "no defined client behavior for
 //     this status" stance `isGalleryVisibleToClient`'s own comment takes.
+//
+// NOT CHANGED BY TASK #85, ON PURPOSE: a client attached to an already-
+// `delivered` gallery still gets the generic `gallery-access` link, never
+// `gallery-delivery`'s "your photos are ready to download" copy. This
+// action's whole purpose is granting a DOOR IN, for a client the photographer
+// is adding after the fact — not re-announcing a delivery event that already
+// happened to everyone else. Switching this call site to `gallery-delivery`
+// was out of #85's scope (its acceptance criteria are about
+// `deliverGallery`'s and `unlockSelection`'s own notifications) and is left
+// as a follow-up if the mismatch is ever judged worth fixing.
 //
 // EMAIL IS SENT TO EVERY REQUESTED ID, UNCONDITIONALLY (never attached, or
 // attached-and-removed, or already-active) — not classified case by case.
@@ -1263,10 +1267,11 @@ export async function attachGalleryClients(
     };
   }
 
-  // Reuses the EXACT SAME provider call `publishGallery`/`deliverGallery`
-  // already make — never a second door into the gallery (this action's own
-  // header comment). Sent to EVERY requested client, not just the newly
-  // attached ones — see the header comment above for why.
+  // Reuses the EXACT SAME provider call `publishGallery` makes — never a
+  // second door into the gallery (this action's own header comment). Sent to
+  // EVERY requested client, not just the newly attached ones — see the
+  // header comment above for why, and for why this stays on `gallery-access`
+  // even when `gallery.status` is `delivered`.
   const sendResults = await Promise.allSettled(
     requestedUsers.map((user) =>
       signIn("gallery-access", {
@@ -1467,10 +1472,10 @@ export async function resendGalleryAccessEmail(
   // in this file already makes. Never a second door into the gallery.
   //
   // A plain try/catch, NOT the `Promise.allSettled` fan-out
-  // `attachGalleryClients`/`publishGallery`/`deliverGallery` use above: this
-  // action resends to exactly ONE recipient by design (it is a per-row
-  // affordance on `GalleryClientRow`), so there is no list of results to
-  // reconcile.
+  // `attachGalleryClients`/`publishGallery`/`unlockSelection`/`deliverGallery`
+  // use above: this action resends to exactly ONE recipient by design (it is
+  // a per-row affordance on `GalleryClientRow`), so there is no list of
+  // results to reconcile.
   try {
     await signIn("gallery-access", {
       email: membership.email,

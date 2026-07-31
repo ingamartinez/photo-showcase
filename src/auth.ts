@@ -13,6 +13,8 @@ import { db } from "@/lib/db";
 import { accounts, sessions, users, verificationTokens } from "@/lib/db/schema";
 import { authEnv, resendEnv } from "@/lib/env";
 import { sendGalleryAccessEmail } from "@/lib/gallery-access-email";
+import { sendGalleryDeliveryEmail } from "@/lib/gallery-delivery-email";
+import { sendGalleryUnlockEmail } from "@/lib/gallery-unlock-email";
 import { sendLoginEmail } from "@/lib/login-email";
 import { findUserIdByEmail } from "@/lib/users";
 
@@ -37,6 +39,15 @@ import { findUserIdByEmail } from "@/lib/users";
 // establishes a real database session; a forwarded copy of the SAME link
 // stops working after that first click, not merely after 48h — which is
 // the meaningfully safer of the two options given the forwarding risk.
+//
+// Task #85 reuses this exact constant for the two sibling providers below
+// ("gallery-unlock", "gallery-delivery") rather than declaring one apiece:
+// the reasoning above — token lifetime long enough to survive a slow inbox
+// check, short enough to bound a forwarded copy, single-use by construction
+// — applies identically to all three. Only the COPY differs between them,
+// which is why each gets its own `sendVerificationRequest` module
+// (src/lib/gallery-access-email.ts, gallery-unlock-email.ts,
+// gallery-delivery-email.ts) but not its own `maxAge`.
 export const GALLERY_ACCESS_MAX_AGE_SECONDS = 48 * 60 * 60;
 
 declare module "next-auth" {
@@ -114,6 +125,49 @@ export const { handlers, auth, signIn, signOut } = NextAuth(() => {
         maxAge: GALLERY_ACCESS_MAX_AGE_SECONDS,
         sendVerificationRequest: ({ identifier, url }) =>
           sendGalleryAccessEmail({ apiKey: RESEND_API_KEY, from: EMAIL_FROM, to: identifier, url }),
+      }),
+      // Task #85: a THIRD Email provider instance, one meaning per provider —
+      // "your submitted selection is editable again" (unlockSelection,
+      // src/app/dashboard/galleries/actions.ts). Before this, that
+      // notification was a plain, direct Resend call
+      // (src/lib/unlock-notification-email.ts, now removed) built around a
+      // BARE `/galleries/{slug}` URL rather than a magic link — a real gap,
+      // since a client's original publish-time SESSION can have expired by
+      // the time an admin unlocks a `selected` gallery days or weeks later,
+      // and a bare URL into an expired session is a login wall. Reusing this
+      // whole provider pipeline the same way `gallery-access` does closes
+      // that gap: every click establishes a fresh, valid session regardless
+      // of how stale the client's last one was.
+      Resend({
+        id: "gallery-unlock",
+        apiKey: RESEND_API_KEY,
+        from: EMAIL_FROM,
+        maxAge: GALLERY_ACCESS_MAX_AGE_SECONDS,
+        sendVerificationRequest: ({ identifier, url }) =>
+          sendGalleryUnlockEmail({ apiKey: RESEND_API_KEY, from: EMAIL_FROM, to: identifier, url }),
+      }),
+      // Task #85: the FOURTH Email provider instance — "your edited photos
+      // are ready to download" (deliverGallery,
+      // src/app/dashboard/galleries/actions.ts). `deliverGallery` (#27)
+      // deliberately reused `signIn("gallery-access", ...)` rather than a
+      // bare URL, for the identical "delivery can land weeks after publish,
+      // by which point the session may have expired" reasoning as
+      // `gallery-unlock` above — that mechanism is UNCHANGED here, only the
+      // copy moves to its own module (src/lib/gallery-delivery-email.ts) so
+      // "your selection is done and downloadable" no longer reads like a
+      // repeat of "come and choose your photos".
+      Resend({
+        id: "gallery-delivery",
+        apiKey: RESEND_API_KEY,
+        from: EMAIL_FROM,
+        maxAge: GALLERY_ACCESS_MAX_AGE_SECONDS,
+        sendVerificationRequest: ({ identifier, url }) =>
+          sendGalleryDeliveryEmail({
+            apiKey: RESEND_API_KEY,
+            from: EMAIL_FROM,
+            to: identifier,
+            url,
+          }),
       }),
     ],
     pages: {

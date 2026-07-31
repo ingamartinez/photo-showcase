@@ -2,10 +2,11 @@ import type { Metadata } from "next";
 import { forbidden, notFound } from "next/navigation";
 import { requireSession } from "@/lib/auth-guards";
 import { formatGalleryStatus, formatSessionDate, getGalleryDetailBySlug } from "@/lib/galleries";
-import { isGalleryOwner } from "@/lib/gallery-access";
+import { isAdminPreviewingClientGallery, isGalleryOwner } from "@/lib/gallery-access";
 import { getGallerySelection } from "@/lib/gallery-selection";
 import { readClientGalleryBySlug } from "@/lib/graphql/client-gallery-reads";
 import { displayKey, getPresignedUrl, storedKey } from "@/lib/r2";
+import { ClientPreviewBanner } from "@/components/client-preview-banner";
 import { ProofGrid } from "@/components/proof-grid";
 
 export const metadata: Metadata = {
@@ -169,6 +170,17 @@ export default async function ClientGalleryPage({
 
   return (
     <>
+      {/* Task #139: orientation, not permission — see
+          `isAdminPreviewingClientGallery`'s own comment in
+          src/lib/gallery-access.ts. Gated on the SAME session this page
+          already resolved above, never re-derived. A real client never
+          sees this: `session.user.role` here is populated server-side by
+          `src/auth.ts`'s session callback, not anything a client could
+          spoof to make it appear. */}
+      {isAdminPreviewingClientGallery(session) && (
+        <ClientPreviewBanner dashboardHref={`/dashboard/galleries/${gallery.id}`} />
+      )}
+
       <div className="mb-10">
         <span className="label text-accent mb-2 block">{formatGalleryStatus(gallery.status)}</span>
         <h1 className="max-w-[24ch] font-serif text-[clamp(28px,4vw,44px)] leading-[1.05] font-normal tracking-[-0.015em] text-balance">

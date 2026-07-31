@@ -69,6 +69,13 @@ vi.mock("@/lib/r2", () => ({
 const isGalleryOwnerMock = vi.fn<(galleryId: string, session: Session) => Promise<boolean>>();
 vi.mock("@/lib/gallery-access", () => ({
   isGalleryOwner: (...args: [string, Session]) => isGalleryOwnerMock(...args),
+  // Task #139: a plain re-implementation of the real predicate (admin, full
+  // stop — no gallery lookup) — this module is mocked wholesale, not via
+  // `importActual`, so every export the page imports needs its own entry
+  // here, same stance as every other mock in this file. The real function
+  // is proven directly in gallery-access.test.ts; this file's own job is
+  // whether the PAGE asks it and renders <ClientPreviewBanner> accordingly.
+  isAdminPreviewingClientGallery: (session: Session) => session.user.role === "admin",
 }));
 
 // Task #95: `@/lib/gallery-selection` is server-only for the same reason —
@@ -566,6 +573,46 @@ describe("ClientGalleryPage chrome", () => {
 
       const wrapper = container.querySelector("img")?.parentElement;
       expect(wrapper?.getAttribute("style")).toContain("aspect-ratio: 1600 / 1067");
+    });
+  });
+
+  // Task #139: the orientation banner. Note what these tests do NOT touch —
+  // `isGalleryOwnerMock` stays at its default (`true`) throughout, and
+  // nothing about the selection toggles is asserted here, because this
+  // slice is an orientation fix, not a permission one (#66, closed
+  // 2026-07-30 — ZERO changes to the selection permission model). The
+  // banner's own gate is `isAdminPreviewingClientGallery`, proven for real in
+  // gallery-access.test.ts; this file's job is whether the PAGE asks it and
+  // renders accordingly.
+  describe("admin preview banner (task #139)", () => {
+    it("shows the preview banner for an admin session", async () => {
+      requireSessionMock.mockResolvedValue({
+        user: { id: "admin-1", role: "admin", email: "photographer@example.com" },
+        expires: "2099-01-01T00:00:00.000Z",
+      } as Session);
+      getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      render(element);
+
+      expect(screen.getByRole("status").textContent).toMatch(/como lo ve el cliente/);
+      expect(screen.getByRole("link", { name: /Volver al panel/ })).toHaveProperty(
+        "href",
+        expect.stringContaining("/dashboard/galleries/g1"),
+      );
+    });
+
+    // The default fixture in this file is the owning CLIENT (`client-a`) —
+    // this is the negative case a banner-always-on regression would miss:
+    // a real client must never see "you are previewing" copy about their
+    // own gallery.
+    it("does not show the preview banner for the owning client", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      render(element);
+
+      expect(screen.queryByText(/como lo ve el cliente/)).toBeNull();
     });
   });
 });

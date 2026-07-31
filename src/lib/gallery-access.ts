@@ -64,3 +64,22 @@ export async function isGalleryOwner(galleryId: string, session: Session): Promi
 
   return row !== undefined;
 }
+
+/**
+ * Whether `session` is an admin looking at `/galleries/[publicSlug]` — the
+ * CLIENT'S OWN view of a gallery — rather than a client who actually owns it
+ * (task #139).
+ *
+ * This is an ORIENTATION question, not a permission one: it decides whether
+ * to show the "you're previewing this as the client sees it" banner, nothing
+ * else. It grants no capability and blocks no write. `isGalleryOwner` above
+ * already lets an admin act on any gallery unconditionally — task #66
+ * (closed 2026-07-30, owner-approved) decided that fork deliberately in
+ * favor of attribution (`assets.selectedBy`, task #94) over narrowing the
+ * toggle, and task #139's own correction note is explicit that re-narrowing
+ * it here would relitigate a closed decision. Do not wire this into any
+ * write path — see this function's own name: "previewing", not "acting as".
+ */
+export function isAdminPreviewingClientGallery(session: Session): boolean {
+  return session.user.role === "admin";
+}

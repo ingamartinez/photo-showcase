@@ -10,11 +10,24 @@ test.use({ storageState: ADMIN_STORAGE_STATE_PATH });
 
 for (const viewport of VIEWPORT_NAMES) {
   test(`admin dashboard renders and captures at ${viewport}`, async ({ page }) => {
-    await captureScreen(page, { name: "dashboard-index", route: "/dashboard", viewport });
+    await captureScreen(page, {
+      name: "dashboard-index",
+      route: "/dashboard",
+      viewport,
+      // Third guard, on top of the status (#169) and destination (#178)
+      // checks `captureScreen` runs for free: a link only the dashboard INDEX
+      // renders. `src/app/dashboard/layout.tsx` has no nav links of its own
+      // (checked), and the stat tiles that carry this one are rendered in
+      // both the empty and the populated state of `src/app/dashboard/
+      // page.tsx`, so this is not a bet on how much data the dev database
+      // happens to hold.
+      expectSelector: 'main a[href="/dashboard/clients"]',
+    });
 
-    // The seeded admin session must actually be authenticated -- a redirect
-    // back to /login would mean the capture above is a screenshot of the
-    // login wall, not the dashboard.
+    // Deliberately kept even though `captureScreen` now performs the
+    // equivalent check itself: this spec's job is to prove the HARNESS
+    // works, so it must still fail loudly if that internal guard is ever
+    // weakened or removed.
     await expect(page).toHaveURL(/\/dashboard$/);
   });
 }

@@ -8,17 +8,34 @@ import { CLIENT_STORAGE_STATE_PATH, E2E_GALLERY_PUBLIC_SLUG, VIEWPORT_NAMES } fr
 
 test.use({ storageState: CLIENT_STORAGE_STATE_PATH });
 
+// `formatGalleryStatus("proofing")` in `src/lib/galleries.ts`. Hardcoded
+// rather than imported: that module carries `import "server-only"` and opens
+// a Postgres connection, neither of which belongs inside a Playwright spec.
+// If the copy ever drifts this spec fails loudly, which is the right outcome
+// -- the whole point is that a capture must prove WHICH VARIANT it caught.
+const PROOFING_STATUS_LABEL = "En pruebas";
+
 for (const viewport of VIEWPORT_NAMES) {
   test(`client gallery renders and captures at ${viewport}`, async ({ page }) => {
     await captureScreen(page, {
       name: "client-gallery",
       route: `/galleries/${E2E_GALLERY_PUBLIC_SLUG}`,
       viewport,
+      // THE #179 GUARD, and the reason `expectSelector` exists at all. A
+      // gallery left at `selected` renders the LOCKED variant of this exact
+      // route, with a 200, at the exact url that was asked for -- and it
+      // still looks like a plausible proofing screen. Neither the status
+      // check (#169) nor the destination check (#178) can see that; the
+      // rendered status label can, because `selected` renders "Selección
+      // enviada" here instead.
+      expectSelector: `text="${PROOFING_STATUS_LABEL}"`,
     });
 
-    // The seeded client session must actually own the seeded gallery -- a
-    // redirect to /login (unauthenticated) or a 404/403 (wrong ownership)
-    // would mean the capture above is not the page it claims to be.
+    // Deliberately kept even though `captureScreen` now performs the
+    // equivalent checks itself: this spec's job is to prove the HARNESS
+    // works, so it must still fail loudly if those internal guards are ever
+    // weakened or removed.
     await expect(page).toHaveURL(new RegExp(`/galleries/${E2E_GALLERY_PUBLIC_SLUG}$`));
+    await expect(page.getByText(PROOFING_STATUS_LABEL)).toBeVisible();
   });
 }

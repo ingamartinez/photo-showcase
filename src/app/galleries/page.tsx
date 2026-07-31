@@ -1,8 +1,25 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { requireSession } from "@/lib/auth-guards";
-import { formatGalleryStatus, formatSessionDate } from "@/lib/galleries";
+import {
+  formatClientGalleryCardState,
+  formatGalleryIndexHeading,
+  formatGalleryIndexLede,
+  formatSessionDate,
+} from "@/lib/galleries";
 import { readClientGalleryList } from "@/lib/graphql/client-gallery-reads";
+
+// Per-`tone` colour for the state chip (`design/system/client.html:169-171`:
+// `.state--you`/`.state--wait`/`.state--done`) — a component-local map, not a
+// new `globals.css` token: `--color-*` under `@theme inline` is agent-9's
+// (#175) this cycle, and `#8FAE97` (the mock's "done" green) has no existing
+// brand token to reuse, so it is an arbitrary Tailwind value here rather than
+// a new custom property.
+const STATE_TONE_CLASS: Record<ReturnType<typeof formatClientGalleryCardState>["tone"], string> = {
+  pending: "text-accent-2",
+  waiting: "text-fg-dim",
+  done: "text-[#8FAE97]",
+};
 
 export const metadata: Metadata = {
   title: "Tus galerías",
@@ -42,47 +59,83 @@ export default async function ClientGalleriesPage() {
   // client through. There is nothing else in scope on this route to read an
   // id from either: no dynamic segment, no query string, no form.
   const galleries = await readClientGalleryList(session);
+  const hasGalleries = galleries.length > 0;
+  const heading = formatGalleryIndexHeading(session.user.name, hasGalleries);
+  const lede = formatGalleryIndexLede(galleries.map((gallery) => gallery.sessionDate));
 
   return (
     <>
       <span className="label text-accent mb-4 block">Tus galerías</span>
+      {/* `.display`, client.html:121-125 and the heading markup at 597-600.
+          `formatGalleryIndexHeading` (src/lib/galleries.ts) decides the exact
+          lines, including the null-name degrade this task's own late-added
+          acceptance criterion asks for — see that function's own comment. */}
       <h1 className="max-w-[24ch] font-serif text-[clamp(30px,4.5vw,52px)] leading-[1.05] font-normal tracking-[-0.015em] text-balance">
-        {galleries.length === 0 ? "Todavía no tenés ninguna galería." : "Tu historial."}
+        {heading.lines.map((line, index) => (
+          <span key={line}>
+            {index > 0 && <br />}
+            {line}
+          </span>
+        ))}
       </h1>
 
-      {galleries.length === 0 ? (
+      {!hasGalleries ? (
         <p className="text-fg-dim mt-5 max-w-[58ch] text-[15px] leading-relaxed">
           Cuando publiquemos las pruebas de tu sesión, tu galería va a aparecer acá.
         </p>
       ) : (
-        <ul className="border-line-2 divide-line-2 mt-10 divide-y rounded-sm border">
-          {galleries.map((gallery) => (
-            <li key={gallery.id}>
-              {/* Routed by the gallery's own `publicSlug`, not its id — same
-              client-facing URL every gallery already uses
-              (`/galleries/[publicSlug]`). That page itself decides what to
-              render for the gallery's current status (proofing → selection,
-              delivered → downloads once that page grows one) — this list's
-              only job is to get the client to the right gallery, not to
-              duplicate that per-status branching here. */}
-              <Link
-                href={`/galleries/${gallery.publicSlug}`}
-                className="hover:bg-line-2/20 flex flex-wrap items-center justify-between gap-3 p-6 transition-colors"
-              >
-                <div>
-                  <p className="font-serif text-lg">{gallery.title}</p>
-                  <p className="text-fg-mute text-sm">
-                    Sesión: {formatSessionDate(gallery.sessionDate)}
-                  </p>
-                </div>
-                <div className="flex flex-col items-end gap-1">
-                  <span className="label text-fg-mute">{formatGalleryStatus(gallery.status)}</span>
-                  <span className="text-fg-mute text-sm">{gallery.photoCount} fotos</span>
-                </div>
-              </Link>
-            </li>
-          ))}
-        </ul>
+        <>
+          {/* `.lede`, client.html:126 and 600 — count + earliest year, both
+              derived from the galleries this render already fetched, never a
+              second query. */}
+          {lede && (
+            <p className="text-fg-dim mt-3 max-w-[46ch] text-[15px] leading-relaxed">{lede}</p>
+          )}
+
+          {/* `.gal-list`, client.html:150 — a single ordered list either way:
+              the trap this task's own body names ("no agregar filtros, orden
+              ni búsqueda") rules out anything fancier than "well-ordered
+              list", for one row as much as for six. */}
+          <ul className="mt-10 flex flex-col gap-2">
+            {galleries.map((gallery) => {
+              const state = formatClientGalleryCardState(gallery.status);
+              return (
+                <li key={gallery.id}>
+                  {/* Routed by the gallery's own `publicSlug`, not its id —
+                  same client-facing URL every gallery already uses
+                  (`/galleries/[publicSlug]`). That page itself decides what
+                  to render for the gallery's current status (proofing →
+                  selection, delivered → downloads once that page grows one)
+                  — this list's only job is to get the client to the right
+                  gallery, not to duplicate that per-status branching here. */}
+                  <Link
+                    href={`/galleries/${gallery.publicSlug}`}
+                    className="border-line-2 hover:border-accent/50 flex flex-wrap items-center justify-between gap-3 rounded-sm border p-6 transition-colors"
+                  >
+                    <div>
+                      {/* `.state`, client.html:163-171 — a word in the
+                          client's own language, never the studio's workflow
+                          name (`formatGalleryStatus`, used by the admin
+                          dashboard and the gallery detail page, is a
+                          deliberately different function — see
+                          `formatClientGalleryCardState`'s own comment). */}
+                      <span
+                        className={`label mb-2 flex items-center gap-[7px] ${STATE_TONE_CLASS[state.tone]}`}
+                      >
+                        <span aria-hidden className="h-[5px] w-[5px] rounded-full bg-current" />
+                        {state.label}
+                      </span>
+                      <p className="font-serif text-2xl">{gallery.title}</p>
+                      <p className="text-fg-mute mt-1 text-sm">
+                        {formatSessionDate(gallery.sessionDate)} · {gallery.photoCount} fotos
+                      </p>
+                    </div>
+                  </Link>
+                </li>
+              );
+            })}
+          </ul>
+        </>
       )}
     </>
   );

@@ -53,7 +53,16 @@ export const DROPLET_ROOT_MARKER = "/srv/photoshowcase";
 const ALLOWED_APP_ENVS = new Set(["development", "test"]);
 
 export interface RefuseOnProductionDeps {
-  /** Defaults to `process.env.APP_ENV`. Overridable so this is testable without `vi.stubEnv`. */
+  /**
+   * Defaults to `process.env.APP_ENV` -- but only when this key is entirely
+   * absent from `deps`. Injecting `{ appEnv: undefined }` explicitly is
+   * honored as "unset" and must NOT fall through to the ambient
+   * `process.env.APP_ENV` (task #169: a naive `deps.appEnv ?? process.env.APP_ENV`
+   * makes an injected `undefined` indistinguishable from "not injected",
+   * so a developer with `APP_ENV=development` exported in their shell gets a
+   * false green -- or, for the tests asserting the unset case throws, a false
+   * red).
+   */
   appEnv?: string;
   /** Defaults to checking `DROPLET_ROOT_MARKER` on the real filesystem. Overridable for tests. */
   rootMarkerExists?: () => boolean;
@@ -71,7 +80,7 @@ export function refuseUnlessDevEnvironment(deps: RefuseOnProductionDeps = {}): v
     );
   }
 
-  const appEnv = deps.appEnv ?? process.env.APP_ENV;
+  const appEnv = "appEnv" in deps ? deps.appEnv : process.env.APP_ENV;
   if (!appEnv || !ALLOWED_APP_ENVS.has(appEnv)) {
     throw new Error(
       `APP_ENV must be explicitly set to one of ${[...ALLOWED_APP_ENVS].join(", ")} to run ` +

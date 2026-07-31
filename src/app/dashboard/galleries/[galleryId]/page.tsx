@@ -172,7 +172,12 @@ export default async function GalleryDetailPage({
     hasFinal: asset.finalKey !== null,
   }));
 
-  const currentStepIndex = WORKFLOW_STEPS.indexOf(gallery.status);
+  // Widened to `readonly string[]` before searching: `gallery.status` also
+  // admits `"archived"`, which is not one of `WORKFLOW_STEPS`' four values by
+  // design (see that constant's own comment) — `indexOf` on the narrow array
+  // type would otherwise refuse to even compile a search for a value it can
+  // never contain.
+  const currentStepIndex = (WORKFLOW_STEPS as readonly string[]).indexOf(gallery.status);
 
   return (
     <>

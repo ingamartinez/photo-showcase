@@ -5,8 +5,21 @@
 // #26 adds a final-upload control, rendered only for SELECTED assets — see
 // its own comment below for why that follows the exact same "most assets
 // never get one" rule the write route itself enforces.
+//
+// Task #134 — state legibility "at a glance across the whole grid, not one
+// tile at a time": the three states that matter (proof only / selected /
+// selected+final) are now visible ON the thumbnail itself, as overlay
+// badges (design/system/dashboard.html:441-455's `.asset__flag`/
+// `.asset__final`), not only in the below-image controls a photographer
+// would have to open one tile at a time to read. Neither badge is
+// colour-only — "Elegida" is a real word, the final badge is a "✓" glyph —
+// and the reorder/delete/final-upload CONTROLS below the image are
+// unchanged in text/role, on purpose: this file's own existing tests (task
+// #20/#26) already prove those interactions work, and this slice is a
+// restyle, not a rewrite of the interaction model.
 import { useRef, useState } from "react";
 import type { WorkspaceAsset } from "@/components/gallery-workspace";
+import { cn } from "@/lib/utils";
 
 export function AssetTile({
   asset,
@@ -130,11 +143,19 @@ export function AssetTile({
   }
 
   return (
-    <li className="border-line-2 flex flex-col gap-2 rounded-sm border p-2">
-      <div
-        className="bg-line-2 relative overflow-hidden rounded-sm"
-        style={{ aspectRatio: `${asset.proofWidth} / ${asset.proofHeight}` }}
-      >
+    <li
+      className={cn(
+        "border-line-2 flex flex-col gap-1.5 rounded-[6px] border p-1.5",
+        asset.isSelected && "outline-accent outline-2 -outline-offset-2",
+      )}
+    >
+      {/* Task #134: a FIXED aspect ratio (the mock's 3/2), not each photo's
+          own natural ratio — a uniform grid is what actually buys the
+          density this task asks for, since rows can pack predictably
+          instead of each tile claiming whatever height its own image
+          happens to want. `object-cover` already did the cropping; only the
+          box's own ratio changed. */}
+      <div className="bg-line-2 relative aspect-[3/2] overflow-hidden rounded-[4px]">
         {/* Plain <img>, not next/image: proof URLs are short-lived, private,
             presigned R2 URLs whose query string (and therefore exact form)
             is never stable between two loads of the same asset — configuring
@@ -147,10 +168,46 @@ export function AssetTile({
           onError={() => void handleImgError()}
           className="h-full w-full object-cover"
         />
+
+        {/* State badges, at a glance across the whole grid — task #134.
+            Neither is colour-only: "Elegida" is a real word, and the final
+            badge carries a "✓" glyph plus a title, matching the mock's own
+            `.asset__flag` / `.asset__final` (dashboard.html:443-455). */}
+        {asset.isSelected && (
+          <span className="bg-accent absolute top-1 left-1 rounded-full px-1.5 py-0.5 text-[9px] font-bold tracking-[0.04em] text-[#14100a] uppercase">
+            Elegida
+          </span>
+        )}
+        {asset.isSelected && asset.hasFinal && (
+          <span
+            title="Final subido"
+            aria-hidden="true"
+            className="absolute top-1 right-1 flex size-4 items-center justify-center rounded-full bg-[#7a9b82] text-[10px] font-bold text-[#08150c]"
+          >
+            ✓
+          </span>
+        )}
+
+        {/* Filename, overlaid on a bottom gradient scrim rather than a
+            separate line below the image (design/system/dashboard.html:
+            432-440) — frees up the vertical space the old layout spent on
+            it, which is the whole point of this slice's density goal. The
+            scrim is a SEPARATE layer behind the text (not a `bg-clip-text`
+            mask on the text itself) — that trick makes the glyphs show the
+            gradient THROUGH them, which is illegible against a dark tile;
+            plain light text over a dark-to-transparent scrim is what the
+            mock actually does. */}
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-black/75 to-transparent"
+        />
+        <p
+          className="text-fg-dim absolute right-1.5 bottom-1 left-1.5 truncate font-mono text-[9px]"
+          title={asset.originalFilename}
+        >
+          {asset.originalFilename}
+        </p>
       </div>
-      <p className="text-fg-mute truncate text-xs" title={asset.originalFilename}>
-        {asset.originalFilename}
-      </p>
       {error && <p className="text-xs text-[#e0796b]">{error}</p>}
       <div className="flex items-center justify-between gap-2">
         <div className="flex gap-1">
@@ -159,7 +216,7 @@ export function AssetTile({
             disabled={busy || isFirst}
             onClick={() => void handleMove("up")}
             aria-label="Mover antes"
-            className="border-line-2 hover:border-accent rounded-sm border px-2 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+            className="border-line-2 hover:border-accent min-h-6 min-w-6 rounded-[4px] border px-1.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40"
           >
             ↑
           </button>
@@ -168,7 +225,7 @@ export function AssetTile({
             disabled={busy || isLast}
             onClick={() => void handleMove("down")}
             aria-label="Mover después"
-            className="border-line-2 hover:border-accent rounded-sm border px-2 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40"
+            className="border-line-2 hover:border-accent min-h-6 min-w-6 rounded-[4px] border px-1.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40"
           >
             ↓
           </button>
@@ -177,7 +234,7 @@ export function AssetTile({
           type="button"
           disabled={busy}
           onClick={() => void handleDelete()}
-          className="text-xs text-[#e0796b] transition-colors hover:underline disabled:cursor-not-allowed disabled:opacity-40"
+          className="min-h-6 text-xs text-[#e0796b] transition-colors hover:underline disabled:cursor-not-allowed disabled:opacity-40"
         >
           Eliminar
         </button>
@@ -191,12 +248,12 @@ export function AssetTile({
           applied per-tile: `!asset.hasFinal` is visually distinct (the
           "falta" text below), not merely absent. */}
       {asset.isSelected && (
-        <div className="border-line-2 flex flex-col gap-1 border-t pt-2">
+        <div className="border-line-2 flex flex-col gap-1 border-t pt-1.5">
           <div className="flex items-center justify-between gap-2">
             <span className={asset.hasFinal ? "text-accent-2 text-xs" : "text-xs text-[#e0796b]"}>
               {asset.hasFinal ? "Final subido" : "Falta el final"}
             </span>
-            <label className="label hover:text-accent-2 cursor-pointer text-xs transition-colors">
+            <label className="hover:text-accent-2 min-h-6 cursor-pointer text-xs tracking-[0.04em] uppercase transition-colors">
               {finalBusy ? "Subiendo…" : asset.hasFinal ? "Reemplazar" : "Subir final"}
               <input
                 ref={finalInputRef}

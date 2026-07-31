@@ -27,6 +27,7 @@
 // calls out as unacceptable here.
 import { useRef, useState } from "react";
 import type { WorkspaceAsset } from "@/components/gallery-workspace";
+import { cn } from "@/lib/utils";
 
 type UploadItemStatus = "pending" | "uploading" | "done" | "error";
 
@@ -96,6 +97,10 @@ export function ProofUploader({
 }) {
   const [items, setItems] = useState<UploadItem[]>([]);
   const [busy, setBusy] = useState(false);
+  // Task #134's own dropzone requirement: "visible progress" (the drag-over
+  // outline) is a separate concern from the sequential per-file status list
+  // below, which already existed and is untouched by this state.
+  const [dragActive, setDragActive] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
 
   async function handleFiles(fileList: FileList) {
@@ -154,39 +159,92 @@ export function ProofUploader({
     if (inputRef.current) inputRef.current.value = "";
   }
 
+  const doneCount = items.filter((item) => item.status === "done").length;
+
   return (
-    <div className="border-line-2 flex flex-col gap-4 rounded-sm border p-6">
-      <span className="label text-fg-mute">Subir fotos</span>
-      <input
-        ref={inputRef}
-        type="file"
-        accept="image/*"
-        multiple
-        disabled={busy}
-        onChange={(event) => {
-          if (event.target.files) void handleFiles(event.target.files);
+    <div className="flex flex-col gap-3">
+      {/* Task #134: a real dropzone, not a bare `<input type=file>` — drag
+          bytes onto it, or click/tap anywhere in it to open the file picker
+          (the whole box is a `<label>`). `handleFiles` above is unchanged;
+          this only adds a second way to reach it. */}
+      <div
+        onDragOver={(event) => {
+          event.preventDefault();
+          if (!busy) setDragActive(true);
         }}
-        className="text-fg-dim text-[15px]"
-      />
+        onDragLeave={() => setDragActive(false)}
+        onDrop={(event) => {
+          event.preventDefault();
+          setDragActive(false);
+          if (busy) return;
+          if (event.dataTransfer.files.length > 0) void handleFiles(event.dataTransfer.files);
+        }}
+        className={cn(
+          "border-line-2 rounded-[6px] border border-dashed p-4 text-center transition-colors",
+          dragActive && "border-accent bg-accent/5",
+        )}
+      >
+        <label
+          className={cn(
+            "flex cursor-pointer flex-col items-center gap-1",
+            busy && "pointer-events-none opacity-60",
+          )}
+        >
+          <span className="text-fg text-sm font-medium">Subir fotos</span>
+          {/* Two copies, one CSS switch — "arrastrá" means nothing on a
+              touch screen (task #134's own explicit note). Chosen by INPUT
+              CAPABILITY (`pointer: coarse`/`pointer: fine`), not viewport
+              width: a touch-screen laptop at a narrow width is not a phone,
+              and a `min-width` breakpoint cannot tell the two apart. */}
+          <span className="text-fg-dim hidden text-xs pointer-coarse:block">
+            Tocá para elegir del carrete. Se marcan con agua y se reducen solas.
+          </span>
+          <span className="text-fg-dim text-xs pointer-coarse:hidden">
+            Arrastralas acá o hacé clic para elegirlas. Se marcan con agua y se reducen solas.
+          </span>
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            disabled={busy}
+            onChange={(event) => {
+              if (event.target.files) void handleFiles(event.target.files);
+            }}
+            className="sr-only"
+          />
+        </label>
+      </div>
+
       {items.length > 0 && (
-        <ul className="flex max-h-64 flex-col gap-1 overflow-y-auto text-sm">
-          {items.map((item, index) => (
-            <li key={`${item.name}-${index}`} className="flex items-center justify-between gap-3">
-              <span className="text-fg-dim truncate">{item.name}</span>
-              <span
-                className={
-                  item.status === "error"
-                    ? "text-[#e0796b]"
-                    : item.status === "done"
-                      ? "text-accent-2"
-                      : "text-fg-mute"
-                }
-              >
-                {statusLabel(item)}
-              </span>
-            </li>
-          ))}
-        </ul>
+        <>
+          {/* Batch progress, above the per-file list: how many of the
+              current batch are actually done, not just that a list exists.
+              A legible failure state stays per-file, below — one bad file
+              never blocks the count for the rest (task #20's own
+              acceptance criterion, unchanged by this slice). */}
+          <p className="text-fg-mute text-xs">
+            {doneCount} de {items.length} subidas
+          </p>
+          <ul className="flex max-h-64 flex-col gap-1 overflow-y-auto text-sm">
+            {items.map((item, index) => (
+              <li key={`${item.name}-${index}`} className="flex items-center justify-between gap-3">
+                <span className="text-fg-dim truncate">{item.name}</span>
+                <span
+                  className={
+                    item.status === "error"
+                      ? "text-[#e0796b]"
+                      : item.status === "done"
+                        ? "text-accent-2"
+                        : "text-fg-mute"
+                  }
+                >
+                  {statusLabel(item)}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </>
       )}
     </div>
   );

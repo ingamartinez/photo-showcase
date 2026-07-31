@@ -21,7 +21,10 @@ import {
   getGalleryClients,
   isGalleryVisibleToClient,
 } from "@/lib/galleries";
-import { galleryAccessResendKey, galleryAccessResendLimiter } from "@/lib/gallery-access-rate-limiters";
+import {
+  galleryAccessResendKey,
+  galleryAccessResendLimiter,
+} from "@/lib/gallery-access-rate-limiters";
 import { generateGallerySlug } from "@/lib/slug";
 import { authEnv, resendEnv } from "@/lib/env";
 import { computeQuota } from "@/lib/quota";

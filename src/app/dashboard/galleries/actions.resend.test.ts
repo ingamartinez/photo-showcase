@@ -44,8 +44,7 @@ vi.mock("next/cache", () => ({
 type Row = Record<string, unknown>;
 
 type LeafCondition =
-  | { dbColumnName: string; op: "eq"; value: unknown }
-  | { dbColumnName: string; op: "isNull" };
+  { dbColumnName: string; op: "eq"; value: unknown } | { dbColumnName: string; op: "isNull" };
 
 function parseLeaf(node: unknown): LeafCondition | undefined {
   const chunks = (node as { queryChunks?: unknown[] } | null)?.queryChunks;
@@ -560,10 +559,7 @@ describe("resendGalleryAccessEmail throttle (task #101's own DECIDED record)", (
     });
     const { resendGalleryAccessEmail } = await import("./actions");
     const sendFor = (galleryId: string) =>
-      resendGalleryAccessEmail(
-        { status: "idle" },
-        formDataWith({ galleryId, clientId: CLIENT_A }),
-      );
+      resendGalleryAccessEmail({ status: "idle" }, formDataWith({ galleryId, clientId: CLIENT_A }));
 
     await sendFor(GALLERY_ID);
     await sendFor(GALLERY_ID);

@@ -176,13 +176,5 @@ describe("getClientCount", () => {
   });
 });
 
-describe("formatClientCount", () => {
-  it.each([
-    [1, "1 cliente"],
-    [2, "2 clientes"],
-    [13, "13 clientes"],
-  ])("formats %i as %s", async (clientCount, expected) => {
-    const { formatClientCount } = await import("./clients");
-    expect(formatClientCount(clientCount)).toBe(expected);
-  });
-});
+// formatClientCount's tests moved to src/lib/format.test.ts (task #122) — it
+// is no longer exported from this module, see that file's section comment.

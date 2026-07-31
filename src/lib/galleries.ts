@@ -134,15 +134,8 @@ export async function getPendingSelectionCount(): Promise<number> {
   return row?.value ?? 0;
 }
 
-/** Spanish, pluralized copy for `getPendingSelectionCount`'s result. Returns
- * `null` at zero — the dashboard renders nothing in that case rather than a
- * "0 selecciones esperando" that would just be noise (same shape as this
- * file's other `format*` helpers, but zero has no useful sentence here). */
-export function formatPendingSelectionCount(pendingCount: number): string | null {
-  if (pendingCount <= 0) return null;
-  if (pendingCount === 1) return "1 selección esperando";
-  return `${pendingCount} selecciones esperando`;
-}
+// `formatPendingSelectionCount` (this count's Spanish copy) moved to
+// `@/lib/format` by task #122 — see that module's section comment for why.
 
 // Statuses a CLIENT (not an admin) may view via `/galleries/[publicSlug]`
 // (task #23). A `draft` gallery is still being assembled by the

@@ -182,17 +182,9 @@ describe("getPendingSelectionCount", () => {
   });
 });
 
-describe("formatPendingSelectionCount", () => {
-  it.each([
-    [0, null],
-    [1, "1 selección esperando"],
-    [2, "2 selecciones esperando"],
-    [5, "5 selecciones esperando"],
-  ])("formats %s as %s", async (pendingCount, expected) => {
-    const { formatPendingSelectionCount } = await import("./galleries");
-    expect(formatPendingSelectionCount(pendingCount)).toBe(expected);
-  });
-});
+// formatPendingSelectionCount's tests moved to src/lib/format.test.ts (task
+// #122) — it is no longer exported from this module, see that file's
+// section comment.
 
 describe("isGalleryVisibleToClient", () => {
   it.each([

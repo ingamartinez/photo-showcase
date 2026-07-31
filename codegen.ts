@@ -37,6 +37,44 @@
 // document, see src/lib/graphql/client-gallery-reads.ts). Generating
 // `fragment-masking.ts` and routing every result through `useFragment()` would
 // be ceremony over nothing.
+//
+// ─── WHERE APOLLO CLIENT IS — AND WHY IT IS NOT INSTALLED YET ──────────────
+// PLAN.md §7 names "Apollo Client + graphql-codegen for typed hooks" as the
+// client half of the learning goal, and #32's card asks for a component
+// consuming a typed hook. Codegen is here. Apollo Client is NOT, and the
+// reason is a property of this app rather than a shortcut:
+//
+// THERE IS EXACTLY ONE CLIENT-SIDE READ IN THE WHOLE APP, and it is out of
+// reach. Every `fetch()` in src/components/** was surveyed. They fall into
+// three groups, and only the third is a candidate:
+//   * presigned R2 URLs (`/api/assets/[id]/proof|final|display`) — the epic's
+//     non-negotiable rule is that binaries never traverse GraphQL, and a
+//     presigned URL is the credential that fetches one;
+//   * writes (asset delete/reorder, selection toggle, submit-selection, proof
+//     upload) plus every Server Action under src/app/**/actions.ts — this
+//     schema has no `Mutation` type at all, so there is nothing for Apollo to
+//     send;
+//   * `GET /api/galleries/[id]/selection`, polled by <ProofGrid>. The only
+//     genuine client-side READ. It is backed by `getGallerySelection()`, which
+//     #31's owner decision deliberately kept OUT of this schema (it returns the
+//     other clients' display names), and it lives inside the push/poll/
+//     optimistic-write machine tasks #95 and #114 built — which #144 is an open
+//     ticket to split before anyone redesigns it.
+//
+// So wiring Apollo today would mean either inventing a consumer or rewriting
+// the riskiest component in the app against a schema field that does not exist.
+// An installed client library with no caller is the same shape as #31's review
+// finding about `Query.galleries` having no consumer: not wrong yet, and
+// exactly where the next surprise hides. It waits for a real job — the first
+// `Mutation` field, or #144 landing and `Query.gallerySelection` being a
+// decision somebody makes on purpose.
+//
+// WHAT THIS MEANS FOR THE SHAPE OF WHAT IS HERE: nothing in the generated
+// output is server-specific. `graphql()` returns a plain `TypedDocumentNode`,
+// which is exactly what `useQuery`/`useSuspenseQuery` take, and
+// src/lib/graphql/generated/** imports no server module and carries no
+// `server-only` marker — so the day Apollo has a caller, the documents are
+// already typed for it and none of this has to move.
 import type { CodegenConfig } from "@graphql-codegen/cli";
 
 const config: CodegenConfig = {

@@ -1,32 +1,36 @@
 #!/usr/bin/env sh
-# Confirms this worktree's pre-commit hooks are actually wired up.
+# Manual, early check for whether this worktree's pre-commit hooks are
+# fully wired up. Enforcement itself does not depend on this script: the
+# tracked `.husky/_/pre-commit` fallback blocks a commit loudly on its own
+# when `node_modules` is missing (see that file's header for how). This
+# script exists so you can find out *before* attempting a commit, with a
+# clearer diagnosis than a failed commit gives you.
 #
 # core.hooksPath is set to `.husky/_`, which husky regenerates via the
-# `prepare` script -- but only when `bun install` runs. A worktree created
-# fresh (e.g. by the agent harness under `.claude/worktrees/agent-*`) starts
-# with no `node_modules` and therefore no `.husky/_`. Git resolves a
-# `core.hooksPath` that points at a missing directory by silently doing
-# nothing: no error, no warning, the commit just succeeds without
-# `lint-staged` ever running `eslint --fix` or `prettier --write`.
+# `prepare` script on `bun install`. Before that first install in a given
+# worktree, `.husky/_` only contains the one tracked fallback file -- no
+# `node_modules`, no full shim chain -- which is what this script reports.
 #
-# This cannot be checked from inside the hook itself, because the hook is
-# exactly the thing that is missing. Run this script by hand, before your
-# first commit in any freshly created worktree. See #101 and #123.
+# Run this by hand, before your first commit in any freshly created
+# worktree, or just trust the hook itself to block you. See #101 and #123.
 
 set -eu
+
+cd "$(git rev-parse --show-toplevel)"
 
 fail=0
 
 if [ ! -d ".husky/_" ]; then
   echo "FAIL: .husky/_ is missing." >&2
   echo "  Pre-commit hooks (eslint --fix, prettier --write via lint-staged)" >&2
-  echo "  will NOT run in this worktree. Git silently no-ops instead of erroring." >&2
+  echo "  cannot fully run in this worktree yet." >&2
   fail=1
 fi
 
 if [ ! -d "node_modules" ]; then
   echo "FAIL: node_modules is missing." >&2
-  echo "  bunx lint-staged has nothing to run." >&2
+  echo "  bunx lint-staged has nothing to run. The tracked pre-commit" >&2
+  echo "  fallback will block any commit you attempt until this is fixed." >&2
   fail=1
 fi
 

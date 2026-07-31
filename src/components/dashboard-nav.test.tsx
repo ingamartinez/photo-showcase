@@ -385,6 +385,35 @@ describe("DashboardNav — pending-review badge (task #174)", () => {
     expect(badgeDigitOf(galleriasLink())).toBe("3");
   });
 
+  // A DIFFERENT failure path than the one above: a RESOLVED, non-ok response
+  // (the doc comment's own example — a 401 because the session expired
+  // mid-tab), not a rejected fetch. The two are handled by different lines
+  // (`if (!response.ok) return;` vs. the `catch`), so a test that only ever
+  // exercises the rejection leaves the `!response.ok` branch completely
+  // unguarded — this is that branch's own test.
+  it("keeps the last known count when a tick answers 401 (session expired mid-tab)", async () => {
+    let call = 0;
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => {
+        call += 1;
+        if (call === 1) return Promise.resolve(jsonResponse(200, { count: 3 }));
+        return Promise.resolve(jsonResponse(401, { error: "unauthorized" }));
+      }),
+    );
+
+    render(<DashboardNav />);
+    await flushMountPoll();
+    expect(badgeDigitOf(galleriasLink())).toBe("3");
+
+    await onePollTick();
+
+    // A 401 must read exactly like the offline case above — the last known
+    // count, not a blanked badge that would falsely claim "nothing pending"
+    // while galleries actually wait (epic #125's own rule).
+    expect(badgeDigitOf(galleriasLink())).toBe("3");
+  });
+
   it("does not poll while the tab is hidden, and catches up the moment it becomes visible again", async () => {
     let call = 0;
     vi.stubGlobal(

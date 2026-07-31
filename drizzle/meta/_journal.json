@@ -43,6 +43,13 @@
       "when": 1785376687712,
       "tag": "0005_gallery-active-client-trigger",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1785539722660,
+      "tag": "0006_gallery-cover-asset",
+      "breakpoints": true
     }
   ]
 }

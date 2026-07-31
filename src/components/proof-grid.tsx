@@ -315,6 +315,12 @@ export function ProofGrid({
           }))}
           urls={urls}
           index={lightboxIndex}
+          // Task #146: the same server-recomputed quota <SelectionCounter>
+          // above renders, so the full-screen view can say how many are
+          // chosen without the client closing it to find out. Passed whole
+          // rather than as a count, because the lightbox shows the included
+          // number beside it and neither value is derived twice.
+          quota={quota}
           onClose={() => setLightboxIndex(null)}
           onNavigate={setLightboxIndex}
           onImageError={(assetId) => void refreshUrl(assetId)}

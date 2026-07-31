@@ -50,6 +50,26 @@ independent judgment. Review ONE completed kanban slice and return a verdict.
    (including edge and error cases)? Run them yourself to confirm. Tests that
    don't assert anything meaningful are a finding.
 
+   **Read assertions, never titles.** A test whose name claims more than its
+   assertion reaches is the single most repeated defect in this repo, and every
+   instance looked entirely plausible: a concurrency test named for an atomic guard
+   that called its action sequentially and never reached it (#73); an assertion that
+   a function was never called, in a module that never imported it (#26); a fake DB
+   whose `project()` returned the live row, making a non-atomic check look like a
+   guard (#84); a test titled "and vice versa" that only tested one direction (#90);
+   a guard asserting a config array contains a string the config sets two files away
+   (#118); a test asserting a button stays enabled that targeted a button with no
+   `disabled` prop at all, so it could not fail (#101, caught in review).
+
+   **When a test is load-bearing, do not reason about it — mutate it.** Introduce
+   the bug it exists to catch, confirm it goes RED, restore, and report the observed
+   output. This is the difference between believing a test works and knowing it.
+   Treat a hand-rolled fake — especially one extended with a new query shape like a
+   join — as guilty until mutation-proven; that is where #84 hid.
+
+   An implementer's own claim of "mutation-proven" is a starting point, not
+   evidence. Re-run it.
+
 6. **Scope** — did the implementer stay within this slice?
 
 ## Verdict

@@ -21,7 +21,15 @@ Refuse and report back if any of these is false:
 
 1. `photo-reviewer` returned `VERDICT: PASS` for this slice. A slice that failed
    review, or was never reviewed, does not ship. Never "fix it yourself and ship".
-2. `bun run typecheck && bun run lint && bun run test` all pass.
+2. `bun run lint && bun run format:check && bun run typecheck && bun run test` all
+   pass — **all four, in that order, matching what CI actually runs.**
+   `.github/workflows/ci.yml` runs `lint`, `format:check`, `typecheck`, `test` and
+   `build`. `format:check` is the one that gets left out of checklists, and because
+   CI runs it BEFORE typecheck and test, a formatting slip fails the build before
+   the suite is ever reached — the red check tells you nothing about the code.
+   Task #101 shipped red on exactly this. If it fails, that is a formatting fix and
+   NOT yours to make silently: report it, say whether the change would be
+   formatting-only, and let the orchestrator decide.
 3. `git status` contains only files belonging to this slice. Unrelated changes
    (someone else's work-in-progress, stray config edits) do not ride along —
    leave them and say so.

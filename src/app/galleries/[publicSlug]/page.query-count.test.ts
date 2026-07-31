@@ -36,6 +36,10 @@ vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 const isGalleryOwnerMock = vi.fn<(galleryId: string, session: Session) => Promise<boolean>>();
 vi.mock("@/lib/gallery-access", () => ({
   isGalleryOwner: (...args: [string, Session]) => isGalleryOwnerMock(...args),
+  // Task #139: reads only `session.user.role`, no query — its absence from
+  // this file's own count needs no explanation the way `isGalleryOwner`'s
+  // does above.
+  isAdminPreviewingClientGallery: (session: Session) => session.user.role === "admin",
 }));
 
 vi.mock("@/lib/gallery-selection", () => ({ getGallerySelection: () => Promise.resolve([]) }));

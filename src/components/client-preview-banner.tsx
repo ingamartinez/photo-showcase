@@ -17,10 +17,15 @@ import Link from "next/link";
  */
 export function ClientPreviewBanner({ dashboardHref }: { dashboardHref: string }) {
   return (
-    <div
-      role="status"
-      className="border-line-2 bg-bg-2 text-fg-mute mb-8 flex flex-wrap items-center justify-between gap-3 rounded-sm border px-4 py-3 text-sm"
-    >
+    // No `role="status"` here on purpose: this is static orientation copy
+    // present for the whole time the page is open, not a live-region
+    // announcement — and this page's own submit-selection panel already
+    // owns `role="status"` for a `selected` gallery's "ya no se puede
+    // modificar" message (submit-selection-panel.tsx). Giving both the same
+    // role would make `getByRole("status")` ambiguous the moment an admin
+    // previews a gallery in that status — caught by mutation-testing this
+    // exact banner (see this task's own report).
+    <div className="border-line-2 bg-bg-2 text-fg-mute mb-8 flex flex-wrap items-center justify-between gap-3 rounded-sm border px-4 py-3 text-sm">
       <span>
         Estás viendo esto <strong className="text-fg font-medium">como lo ve el cliente</strong> —
         lo que toques acá se guarda como si lo hubiera tocado el cliente.

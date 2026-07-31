@@ -595,7 +595,7 @@ describe("ClientGalleryPage chrome", () => {
       const element = await ClientGalleryPage(paramsFor(SLUG));
       render(element);
 
-      expect(screen.getByRole("status").textContent).toMatch(/como lo ve el cliente/);
+      expect(screen.getByText(/como lo ve el cliente/)).toBeDefined();
       expect(screen.getByRole("link", { name: /Volver al panel/ })).toHaveProperty(
         "href",
         expect.stringContaining("/dashboard/galleries/g1"),

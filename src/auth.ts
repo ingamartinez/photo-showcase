@@ -9,6 +9,7 @@ import NextAuth, { type DefaultSession } from "next-auth";
 import Resend from "next-auth/providers/resend";
 import { DrizzleAdapter } from "@auth/drizzle-adapter";
 import { eq } from "drizzle-orm";
+import { AUTH_BASE_PATH } from "@/lib/auth-base-path";
 import { db } from "@/lib/db";
 import { accounts, sessions, users, verificationTokens } from "@/lib/db/schema";
 import { authEnv, resendEnv } from "@/lib/env";
@@ -150,7 +151,7 @@ export const { handlers, auth, signIn, signOut } = NextAuth(() => {
         return session;
       },
     },
-    basePath: "/api/auth",
+    basePath: AUTH_BASE_PATH,
     // The app sits behind Caddy; without this, Auth.js rejects the proxied Host
     // header and every callback URL comes out wrong in production.
     trustHost: true,

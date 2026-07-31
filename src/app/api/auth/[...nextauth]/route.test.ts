@@ -46,10 +46,48 @@ describe("isBuiltinSignin", () => {
     ["/api/auth/providers", false],
     ["/api/auth/callback/resend", false],
     ["/api/auth/signout", false],
+    // The decoy: guards against a naive `startsWith("/signin")` (no slash)
+    // mistake, which would also catch this and wrongly 404 a real route.
     ["/api/auth/signing-something-else", false],
+    // Task #44: a case mismatch. Auth.js's own action parser happens to
+    // reject this too today, but this guard must not depend on that — it
+    // normalizes case itself before matching.
+    ["/api/auth/SignIn", true],
+    ["/api/auth/SIGNIN/resend", true],
+    // Task #44: `%2F` is a percent-encoded `/`. `new URL(...).pathname`
+    // preserves it literally (verified: it does not auto-decode), so without
+    // decoding here this would slip past a naive string match entirely.
+    ["/api/auth/signin%2Fresend", true],
+    // Case AND percent-encoding together — normalization order must handle
+    // both, not just whichever is tested in isolation.
+    ["/api/auth/SIGNIN%2Fresend", true],
+    // Malformed percent-encoding must not throw — it falls back to matching
+    // the raw (lowercased) pathname instead of 500ing the whole auth route.
+    // The literal trailing "%" is never stripped, so this one does NOT match
+    // "/signin" exactly — it delegates, same as any other unrecognized path.
+    ["/api/auth/signin%", false],
+    ["/api/auth/callback%2Fresend", false],
   ])("%s -> %s", async (pathname, expected) => {
     const { isBuiltinSignin } = await import("./route");
     expect(isBuiltinSignin(pathname)).toBe(expected);
+  });
+});
+
+// Task #44: the guard's base path must not be a second hardcoded copy of
+// `basePath` in `src/auth.ts` — if it were, the two could silently drift
+// apart (e.g. someone changes one and not the other). Both `route.ts` and
+// `src/auth.ts` import this same constant (see `src/lib/auth-base-path.ts`'s
+// header comment for why it is its own module rather than exported directly
+// from `src/auth.ts`: `next-auth` cannot be imported for real inside Vitest).
+// This pins the REAL, unmocked value both of them are built against, so a
+// future edit that reintroduces a second hardcoded "/api/auth" literal in
+// either file — instead of importing this constant — has to change this
+// expectation too, or be caught by the `isBuiltinSignin` table above
+// silently matching against the wrong prefix.
+describe("AUTH_BASE_PATH drift", () => {
+  it("is the single base path both src/auth.ts and the signin guard are built against", async () => {
+    const { AUTH_BASE_PATH } = await import("@/lib/auth-base-path");
+    expect(AUTH_BASE_PATH).toBe("/api/auth");
   });
 });
 

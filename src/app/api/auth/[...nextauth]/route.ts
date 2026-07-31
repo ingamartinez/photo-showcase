@@ -38,14 +38,53 @@
 
 import { NextResponse, type NextRequest } from "next/server";
 import { handlers } from "@/auth";
+import { AUTH_BASE_PATH } from "@/lib/auth-base-path";
+
+// Task #44: this used to match against the raw pathname, which meant its
+// correctness rested on an undocumented coincidence — Auth.js's own action
+// parser (`@auth/core/lib/utils/actions.js`) splits on a literal `/` and does
+// an exact-string match against a fixed lowercase action list, so a case
+// mismatch (`/api/auth/SignIn`) or a `%2F`-encoded slash
+// (`/api/auth/signin%2Fresend`) also failed to resolve on Auth.js's side and
+// threw `UnknownAction` — but nothing here made that true independently. If
+// `@auth/core` ever changed how it parses actions, this guard would have kept
+// waving those variants straight through to the real signin handler with no
+// warning. Normalizing case and percent-encoding below closes that gap: this
+// guard now decides on its own, without relying on how any other parser
+// treats the same string.
+function normalizePathname(pathname: string): string {
+  try {
+    // Resolve percent-encoding first (so `%2F` reads as the `/` it encodes),
+    // then lowercase — order matters for `%2F` but not for case escapes.
+    return decodeURIComponent(pathname).toLowerCase();
+  } catch {
+    // Malformed percent-encoding (a lone `%`, a truncated escape) is not
+    // itself the leak this guard closes — fall back to matching the raw
+    // pathname's case instead of 500ing the whole auth route on garbage
+    // input.
+    return pathname.toLowerCase();
+  }
+}
 
 /**
  * True for Auth.js's own signin endpoints: `/api/auth/signin` (the built-in
  * form) and `/api/auth/signin/:provider` (the POST that starts a signin).
+ *
+ * What this guarantees on its own, without appeal to Auth.js internals: any
+ * pathname whose case- and percent-decoding-normalized form is exactly
+ * `{AUTH_BASE_PATH}/signin` or begins with `{AUTH_BASE_PATH}/signin/` is
+ * blocked. `AUTH_BASE_PATH` is imported from `@/lib/auth-base-path`, the same
+ * constant `src/auth.ts` passes to `NextAuth()` as `basePath` — not a second
+ * hardcoded copy — so the two cannot drift apart (see `route.test.ts`'s
+ * drift test).
+ *
  * Exported for the regression test — see `route.test.ts`.
  */
 export function isBuiltinSignin(pathname: string): boolean {
-  const afterBasePath = pathname.replace(/^\/api\/auth/, "");
+  const normalized = normalizePathname(pathname);
+  const afterBasePath = normalized.startsWith(AUTH_BASE_PATH)
+    ? normalized.slice(AUTH_BASE_PATH.length)
+    : normalized;
   return afterBasePath === "/signin" || afterBasePath.startsWith("/signin/");
 }
 

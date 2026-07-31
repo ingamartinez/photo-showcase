@@ -17,6 +17,7 @@ export type ClientGalleryListQuery = {
     status: GalleryStatus;
     sessionDate: string;
     photoCount: number;
+    coverProofKey: string | null;
   }>;
 };
 
@@ -69,6 +70,7 @@ export const ClientGalleryListDocument = {
                 { kind: "Field", name: { kind: "Name", value: "status" } },
                 { kind: "Field", name: { kind: "Name", value: "sessionDate" } },
                 { kind: "Field", name: { kind: "Name", value: "photoCount" } },
+                { kind: "Field", name: { kind: "Name", value: "coverProofKey" } },
               ],
             },
           },

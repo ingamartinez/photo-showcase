@@ -674,6 +674,21 @@ export type ClientGalleryListItem = {
   status: Gallery["status"];
   sessionDate: string;
   photoCount: number;
+  // The photographer's own explicitly-picked cover for this gallery's 16:10
+  // index card (task #180) — `galleries.coverAssetId`'s target asset's own
+  // `proofKey`. `null` when no cover has been picked yet, which is the
+  // ORDINARY state for a brand-new gallery, not an edge case (schema.ts's
+  // own comment on `coverAssetId`); the client index's own card renders
+  // task #143's existing text-forward fallback whenever this is `null` —
+  // see src/app/galleries/page.tsx.
+  //
+  // A bare R2 object key, never a presigned URL — same allowlist discipline
+  // `GalleryDetailAsset.proofKey` already holds itself to, and the same
+  // "binaries/credentials never traverse GraphQL, the PAGE presigns" stance
+  // src/lib/graphql/client-gallery-reads.ts's header takes. The page
+  // re-attaches the `R2Key` brand with `storedKey()` before presigning it,
+  // exactly like every other proof key this app renders.
+  coverProofKey: string | null;
 };
 
 /** Every gallery visible to a CLIENT (task #22's `/galleries` list) —
@@ -763,14 +778,55 @@ export async function getGalleriesForClient(clientId: string): Promise<ClientGal
     },
   });
 
-  return rows.map((row) => ({
-    id: row.id,
-    title: row.title,
-    publicSlug: row.publicSlug,
-    status: row.status,
-    sessionDate: row.sessionDate,
-    photoCount: row.assets.length,
-  }));
+  // Task #180: resolve each gallery's own explicitly-picked cover asset (if
+  // any) in ONE additional, BATCHED query — never one query per gallery
+  // (this function's own "single pass" contract, unchanged; see
+  // page.query-count.test.ts). `galleries.coverAssetId` is a plain column on
+  // the rows the query above already returned, no join needed to learn
+  // WHICH asset id each gallery points at — only to learn that asset's own
+  // `proofKey`, which is what this second query is for.
+  const coverAssetIds = rows
+    .map((row) => row.coverAssetId)
+    .filter((id): id is string => typeof id === "string");
+
+  // Skipped entirely (no round trip at all) when nothing in this page of
+  // results has a cover set yet — the common case for a freshly-created
+  // gallery, and for every gallery until a future admin surface picks one.
+  const coverAssetsById =
+    coverAssetIds.length === 0
+      ? new Map<string, { id: string; galleryId: string; proofKey: string }>()
+      : new Map(
+          (
+            await db.query.assets.findMany({
+              where: inArray(assets.id, coverAssetIds),
+              columns: { id: true, galleryId: true, proofKey: true },
+            })
+          ).map((asset) => [asset.id, asset]),
+        );
+
+  return rows.map((row) => {
+    const coverAsset = row.coverAssetId ? coverAssetsById.get(row.coverAssetId) : undefined;
+    // Defensive equality, not a bare id lookup: `coverAssetId` is a plain FK
+    // onto `assets.id` (any asset in the system, schema.ts's own comment on
+    // why it is not modeled as a scoped relation), so this guards against a
+    // future write path that ever let a gallery's cover point at an asset
+    // belonging to a DIFFERENT gallery — which would otherwise leak that
+    // other gallery's private proof onto this client's index card. Falls
+    // back to the `null`/no-cover state exactly like a gallery that never
+    // had a cover set at all.
+    const coverProofKey =
+      coverAsset && coverAsset.galleryId === row.id ? coverAsset.proofKey : null;
+
+    return {
+      id: row.id,
+      title: row.title,
+      publicSlug: row.publicSlug,
+      status: row.status,
+      sessionDate: row.sessionDate,
+      photoCount: row.assets.length,
+      coverProofKey,
+    };
+  });
 }
 
 // ---------------------------------------------------------------------------

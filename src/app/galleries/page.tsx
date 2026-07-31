@@ -8,6 +8,7 @@ import {
   formatSessionDate,
 } from "@/lib/galleries";
 import { readClientGalleryList } from "@/lib/graphql/client-gallery-reads";
+import { getPresignedUrl, storedKey } from "@/lib/r2";
 
 // Per-`tone` colour for the state chip (`design/system/client.html:169-171`:
 // `.state--you`/`.state--wait`/`.state--done`) — a component-local map, not a
@@ -99,6 +100,37 @@ export default async function ClientGalleriesPage() {
           <ul className="mt-10 flex flex-col gap-2">
             {galleries.map((gallery) => {
               const state = formatClientGalleryCardState(gallery.status);
+              // Task #180 — the photographer's own explicitly-picked cover
+              // (never derived, see galleries.ts's own comment on
+              // `coverProofKey`). Presigned HERE, in the page, not in the
+              // GraphQL resolver: same "binaries/credentials never traverse
+              // GraphQL" stance every other proof in this app already
+              // follows (src/lib/graphql/client-gallery-reads.ts's header).
+              // `null` — no cover chosen yet — is this gallery's ORDINARY
+              // starting state, not an edge case; see the `else` branch
+              // below for what that degrades to.
+              const coverUrl = gallery.coverProofKey
+                ? getPresignedUrl(storedKey(gallery.coverProofKey))
+                : null;
+
+              // `.state`/`.gal-card__t`/`.gal-card__meta`, client.html:607-609
+              // — shared between both card variants below so the two never
+              // drift into two different renderings of the SAME three facts.
+              const cardText = (
+                <>
+                  <span
+                    className={`label mb-2 flex items-center gap-[7px] ${STATE_TONE_CLASS[state.tone]}`}
+                  >
+                    <span aria-hidden className="h-[5px] w-[5px] rounded-full bg-current" />
+                    {state.label}
+                  </span>
+                  <p className="font-serif text-2xl">{gallery.title}</p>
+                  <p className="text-fg-mute mt-1 text-sm">
+                    {formatSessionDate(gallery.sessionDate)} · {gallery.photoCount} fotos
+                  </p>
+                </>
+              );
+
               return (
                 <li key={gallery.id}>
                   {/* Routed by the gallery's own `publicSlug`, not its id —
@@ -108,29 +140,57 @@ export default async function ClientGalleriesPage() {
                   selection, delivered → downloads once that page grows one)
                   — this list's only job is to get the client to the right
                   gallery, not to duplicate that per-status branching here. */}
-                  <Link
-                    href={`/galleries/${gallery.publicSlug}`}
-                    className="border-line-2 hover:border-accent/50 flex flex-wrap items-center justify-between gap-3 rounded-sm border p-6 transition-colors"
-                  >
-                    <div>
-                      {/* `.state`, client.html:163-171 — a word in the
-                          client's own language, never the studio's workflow
-                          name (`formatGalleryStatus`, used by the admin
-                          dashboard and the gallery detail page, is a
-                          deliberately different function — see
-                          `formatClientGalleryCardState`'s own comment). */}
-                      <span
-                        className={`label mb-2 flex items-center gap-[7px] ${STATE_TONE_CLASS[state.tone]}`}
-                      >
-                        <span aria-hidden className="h-[5px] w-[5px] rounded-full bg-current" />
-                        {state.label}
-                      </span>
-                      <p className="font-serif text-2xl">{gallery.title}</p>
-                      <p className="text-fg-mute mt-1 text-sm">
-                        {formatSessionDate(gallery.sessionDate)} · {gallery.photoCount} fotos
-                      </p>
-                    </div>
-                  </Link>
+                  {coverUrl ? (
+                    // `.gal-card`, client.html:604-627 — a photo card, 16:10,
+                    // text overlaid on a bottom-to-top gradient. This is the
+                    // ONLY branch that ever renders a photo; #143's original
+                    // text-forward card (the `else` below) is the fallback
+                    // for every gallery that has not had a cover picked yet,
+                    // not a legacy path being phased out.
+                    <Link
+                      href={`/galleries/${gallery.publicSlug}`}
+                      className="hover:border-accent/50 relative block overflow-hidden rounded-sm border border-transparent transition-colors"
+                    >
+                      {/* `.gal-card__img`, client.html:152 — 16:10, reserved
+                          before the photo loads (no CLS), same discipline
+                          proof-tile.tsx's own aspect-ratio box already
+                          holds itself to for the proofing grid's tiles. */}
+                      <div className="relative aspect-[16/10]">
+                        {/* Plain <img>, not next/image: same reasoning as
+                            proof-tile.tsx — a short-lived presigned R2 URL
+                            is not a stable path next/image's optimizer can
+                            cache or re-derive a src set from. */}
+                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                        <img
+                          src={coverUrl}
+                          alt=""
+                          className="absolute inset-0 h-full w-full object-cover"
+                        />
+                        {/* The mock's own bottom-to-top gradient
+                            (client.html:153-156) — text sits directly on
+                            the photo, so this is what keeps it legible
+                            regardless of what the photo itself looks
+                            like. */}
+                        <div
+                          aria-hidden
+                          className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/15 to-transparent"
+                        />
+                      </div>
+                      <div className="absolute inset-x-0 bottom-0 px-6 pb-[18px]">{cardText}</div>
+                    </Link>
+                  ) : (
+                    // The degrade this task's own acceptance criterion
+                    // requires: no cover chosen yet must never collapse the
+                    // card or leave a broken hole where a photo should be.
+                    // #143's original bordered, text-only card, verbatim —
+                    // it already works today, and it keeps working here.
+                    <Link
+                      href={`/galleries/${gallery.publicSlug}`}
+                      className="border-line-2 hover:border-accent/50 flex flex-wrap items-center justify-between gap-3 rounded-sm border p-6 transition-colors"
+                    >
+                      <div>{cardText}</div>
+                    </Link>
+                  )}
                 </li>
               );
             })}

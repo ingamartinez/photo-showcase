@@ -42,6 +42,7 @@ type GalleryClient {
 }
 
 type GalleryListItem {
+  coverProofKey: String
   id: ID!
   photoCount: Int!
   publicSlug: String!

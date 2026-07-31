@@ -43,6 +43,36 @@ vi.mock("@/lib/galleries", async () => {
   };
 });
 
+// Task #180: `@/lib/r2` is server-only (it constructs an `S3Client` lazily
+// off `r2Env()`, see r2.ts's own header) — mocked wholesale here, same
+// reasoning and same deterministic-fake shape as
+// src/app/galleries/[publicSlug]/page.chrome.test.tsx's own mock of this
+// module. Real presigning is proven in src/lib/r2.test.ts; this file's own
+// job is whether the PAGE calls it for a gallery's cover key and renders the
+// result.
+vi.mock("@/lib/r2", () => ({
+  getPresignedUrl: (key: string) => `https://r2.example.com/${key}?presigned=1`,
+  storedKey: (key: string) => key,
+}));
+
+/** A minimal `ClientGalleryListItem`, `coverProofKey: null` by default (the
+ * ordinary, no-cover-picked-yet state, task #180's own framing) — every
+ * fixture in this file that does not care about the cover starts here so a
+ * future required field does not have to be hand-added to every literal in
+ * this file one by one. */
+function galleryListItem(overrides: Partial<ClientGalleryListItem> = {}): ClientGalleryListItem {
+  return {
+    id: "g1",
+    title: "Boda Ana y Beto",
+    publicSlug: "abc123",
+    status: "proofing",
+    sessionDate: "2026-08-01",
+    photoCount: 24,
+    coverProofKey: null,
+    ...overrides,
+  };
+}
+
 function sessionWithName(name: string | null | undefined): Session {
   return {
     user: { id: "client-a", role: "client", email: "ana@example.com", name },
@@ -62,16 +92,7 @@ afterEach(() => {
 
 describe("ClientGalleriesPage chrome", () => {
   it("renders each gallery's title, client-language state, session date and photo count, linked by publicSlug", async () => {
-    getGalleriesForClientMock.mockResolvedValue([
-      {
-        id: "g1",
-        title: "Boda Ana y Beto",
-        publicSlug: "abc123",
-        status: "proofing",
-        sessionDate: "2026-08-01",
-        photoCount: 24,
-      },
-    ]);
+    getGalleriesForClientMock.mockResolvedValue([galleryListItem()]);
 
     const element = await ClientGalleriesPage();
     render(element);
@@ -94,22 +115,22 @@ describe("ClientGalleriesPage chrome", () => {
 
   it("distinguishes a gallery waiting on the studio from one ready to download", async () => {
     getGalleriesForClientMock.mockResolvedValue([
-      {
+      galleryListItem({
         id: "g1",
         title: "Sesión de compromiso",
         publicSlug: "s1",
         status: "selected",
         sessionDate: "2026-03-14",
         photoCount: 13,
-      },
-      {
+      }),
+      galleryListItem({
         id: "g2",
         title: "Retrato — invierno",
         publicSlug: "s2",
         status: "delivered",
         sessionDate: "2024-07-02",
         photoCount: 20,
-      },
+      }),
     ]);
 
     const element = await ClientGalleriesPage();
@@ -124,16 +145,7 @@ describe("ClientGalleriesPage chrome", () => {
 
   it("names the signed-in client in the display heading (client.html:597-600)", async () => {
     requireSessionMock.mockResolvedValue(sessionWithName("Ana"));
-    getGalleriesForClientMock.mockResolvedValue([
-      {
-        id: "g1",
-        title: "Boda Ana y Beto",
-        publicSlug: "abc123",
-        status: "proofing",
-        sessionDate: "2026-08-01",
-        photoCount: 24,
-      },
-    ]);
+    getGalleriesForClientMock.mockResolvedValue([galleryListItem()]);
 
     const element = await ClientGalleriesPage();
     const { container } = render(element);
@@ -150,16 +162,7 @@ describe("ClientGalleriesPage chrome", () => {
   // `formatGalleryIndexHeading` for the reasoning.
   it("degrades to a name-less heading, never `undefined`, when session.user.name is null", async () => {
     requireSessionMock.mockResolvedValue(sessionWithName(null));
-    getGalleriesForClientMock.mockResolvedValue([
-      {
-        id: "g1",
-        title: "Boda Ana y Beto",
-        publicSlug: "abc123",
-        status: "proofing",
-        sessionDate: "2026-08-01",
-        photoCount: 24,
-      },
-    ]);
+    getGalleriesForClientMock.mockResolvedValue([galleryListItem()]);
 
     const element = await ClientGalleriesPage();
     const { container } = render(element);
@@ -182,22 +185,22 @@ describe("ClientGalleriesPage chrome", () => {
 
   it("renders one row per gallery, in the order the query returned them", async () => {
     const galleries: ClientGalleryListItem[] = [
-      {
+      galleryListItem({
         id: "g1",
         title: "Sesión de verano",
         publicSlug: "s1",
         status: "delivered",
         sessionDate: "2026-06-01",
         photoCount: 30,
-      },
-      {
+      }),
+      galleryListItem({
         id: "g2",
         title: "Cumpleaños",
         publicSlug: "s2",
         status: "proofing",
         sessionDate: "2026-07-01",
         photoCount: 15,
-      },
+      }),
     ];
     getGalleriesForClientMock.mockResolvedValue(galleries);
 
@@ -219,5 +222,73 @@ describe("ClientGalleriesPage chrome", () => {
 
     expect(screen.getByText("Todavía no tenés ninguna galería.")).toBeDefined();
     expect(screen.queryByRole("link")).toBeNull();
+  });
+
+  // Task #180: the cover photo, and its degrade. Two things this describe
+  // block proves that a weaker "the card renders" assertion would not:
+  // (1) a gallery WITH a cover actually renders an <img> presigned from its
+  // own `coverProofKey`, in the mock's 16:10 box; (2) a gallery WITHOUT one
+  // renders NO <img> at all and falls back to #143's original bordered card
+  // — not a collapsed card, not a broken image, not an empty photo box.
+  describe("gallery cover photo (task #180)", () => {
+    it("renders the cover photo in a reserved 16:10 box, presigned from the gallery's own coverProofKey", async () => {
+      getGalleriesForClientMock.mockResolvedValue([
+        galleryListItem({ coverProofKey: "galleries/g1/proofs/a1.webp" }),
+      ]);
+
+      const element = await ClientGalleriesPage();
+      const { container } = render(element);
+
+      const img = container.querySelector("img");
+      expect(img).not.toBeNull();
+      expect(img?.getAttribute("src")).toBe(
+        "https://r2.example.com/galleries/g1/proofs/a1.webp?presigned=1",
+      );
+      expect(img?.parentElement?.className).toContain("aspect-[16/10]");
+    });
+
+    // THE degrade this task's own acceptance criterion demands: no cover
+    // picked yet (the ordinary state for a fresh gallery) must not collapse
+    // the card or leave a broken hole. Mutation-proof: removing the
+    // `coverUrl ? ... : ...` branch in page.tsx and always taking the photo
+    // path would render a broken/empty <img> here instead of nothing —
+    // turning this test red.
+    it("renders NO <img> at all, and keeps the text-forward card, when no cover has been picked yet", async () => {
+      getGalleriesForClientMock.mockResolvedValue([galleryListItem({ coverProofKey: null })]);
+
+      const element = await ClientGalleriesPage();
+      const { container } = render(element);
+
+      expect(container.querySelector("img")).toBeNull();
+      // The fallback card is exactly #143's original: title and meta line
+      // still render, inside a bordered (not photo) card.
+      expect(screen.getByText("Boda Ana y Beto")).toBeDefined();
+      const link = screen.getByRole("link");
+      expect(link.className).toContain("border-line-2");
+    });
+
+    it("renders a mix of photo and text-forward cards side by side without breaking either", async () => {
+      getGalleriesForClientMock.mockResolvedValue([
+        galleryListItem({
+          id: "g1",
+          title: "Con portada",
+          publicSlug: "s1",
+          coverProofKey: "galleries/g1/proofs/cover.webp",
+        }),
+        galleryListItem({
+          id: "g2",
+          title: "Sin portada",
+          publicSlug: "s2",
+          coverProofKey: null,
+        }),
+      ]);
+
+      const element = await ClientGalleriesPage();
+      const { container } = render(element);
+
+      expect(container.querySelectorAll("img")).toHaveLength(1);
+      expect(screen.getByText("Con portada")).toBeDefined();
+      expect(screen.getByText("Sin portada")).toBeDefined();
+    });
   });
 });

@@ -38,6 +38,7 @@ function listItem(overrides: Partial<ClientGalleryListItem> = {}): ClientGallery
     status: "proofing",
     sessionDate: "2026-08-01",
     photoCount: 24,
+    coverProofKey: null,
     ...overrides,
   };
 }
@@ -51,6 +52,7 @@ const QUERY = /* GraphQL */ `
       status
       sessionDate
       photoCount
+      coverProofKey
     }
   }
 `;
@@ -110,7 +112,13 @@ describe("Query.galleryList authorization", () => {
   it("returns every field the client index renders, in the order the query returned them", async () => {
     getGalleriesForClientMock.mockResolvedValue([
       listItem({ id: "g1", title: "Sesión de verano", publicSlug: "s1", photoCount: 30 }),
-      listItem({ id: "g2", title: "Cumpleaños", publicSlug: "s2", photoCount: 15 }),
+      listItem({
+        id: "g2",
+        title: "Cumpleaños",
+        publicSlug: "s2",
+        photoCount: 15,
+        coverProofKey: "galleries/g2/proofs/a1.webp",
+      }),
     ]);
 
     const result = await run(sessionFor("client", "client-a"));
@@ -124,6 +132,7 @@ describe("Query.galleryList authorization", () => {
           status: "proofing",
           sessionDate: "2026-08-01",
           photoCount: 30,
+          coverProofKey: null,
         },
         {
           id: "g2",
@@ -132,6 +141,7 @@ describe("Query.galleryList authorization", () => {
           status: "proofing",
           sessionDate: "2026-08-01",
           photoCount: 15,
+          coverProofKey: "galleries/g2/proofs/a1.webp",
         },
       ],
     });

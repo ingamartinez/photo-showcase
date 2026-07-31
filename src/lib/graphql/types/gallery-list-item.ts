@@ -42,5 +42,15 @@ export const GalleryListItemType = builder
        * id-only `assets` projection. See PLAN.md's rule that selection counts
        * and their derivatives are computed, not persisted. */
       photoCount: t.exposeInt("photoCount"),
+      /** Task #180 — the bare R2 key of the photographer's own explicitly-
+       * picked cover photo, or `null` when none has been picked yet (the
+       * ordinary state for a fresh gallery, see schema.ts's own comment on
+       * `galleries.coverAssetId`). A KEY, never a presigned URL: this schema
+       * never carries one, for the same reason `Gallery.assets` carries
+       * `proofKey`/`finalKey` rather than a signed URL (see ./asset.ts's own
+       * header, and client-gallery-reads.ts's "what deliberately does not go
+       * through GraphQL"). The PAGE presigns it, the same way it already
+       * presigns every other proof key it renders. */
+      coverProofKey: t.exposeString("coverProofKey", { nullable: true }),
     }),
   });

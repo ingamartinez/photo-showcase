@@ -199,7 +199,7 @@ describe("readClientGalleryBySlug", () => {
 });
 
 describe("readClientGalleryList", () => {
-  it("returns the client's own index rows", async () => {
+  it("returns the client's own index rows, including the cover key (task #180)", async () => {
     getGalleriesForClientMock.mockResolvedValue([
       {
         id: "g1",
@@ -208,6 +208,7 @@ describe("readClientGalleryList", () => {
         status: "proofing",
         sessionDate: "2026-08-01",
         photoCount: 24,
+        coverProofKey: "galleries/g1/proofs/a1.webp",
       },
     ]);
     const { readClientGalleryList } = await import("./client-gallery-reads");
@@ -220,6 +221,7 @@ describe("readClientGalleryList", () => {
         status: "proofing",
         sessionDate: "2026-08-01",
         photoCount: 24,
+        coverProofKey: "galleries/g1/proofs/a1.webp",
       },
     ]);
     expect(getGalleriesForClientMock).toHaveBeenCalledWith("client-a");

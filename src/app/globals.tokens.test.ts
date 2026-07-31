@@ -74,10 +74,19 @@ const RAW_PROPERTY_CANDIDATES = [
   "rounded-[min(var(--radius-md),10px)]",
 ];
 
-// Task #172: a real `dark:` call site, taken verbatim from src/components/ui/
-// input.tsx rather than invented, so this pins the utility an actual
-// primitive ships, not a stand-in shaped like one.
+// Task #172: real `dark:` call sites, taken verbatim from src/components/ui/
+// input.tsx and button.tsx rather than invented, so these pin utilities an
+// actual primitive ships, not a stand-in shaped like one.
 const DARK_VARIANT_CANDIDATE = "dark:bg-input/30";
+// A second, MODIFIER-FREE call site (button.tsx's outline variant), used only
+// for the selector-shape assertion below. `dark:bg-input/30`'s `/30` opacity
+// triggers Tailwind's color-mix fallback compilation, which nests the
+// declaration one level deeper than the bare selector — a real detail of
+// HOW opacity is compiled, not of what `dark:` means, and it would make a
+// selector-shape assertion fragile against the wrong thing. `dark:border-input`
+// compiles to a single, flat rule, so the assertion is only ever sensitive to
+// the one thing this test exists to check.
+const DARK_VARIANT_SHAPE_CANDIDATE = "dark:border-input";
 
 // --- Task #175: the app-surface @theme aliases -----------------------------
 //
@@ -173,6 +182,7 @@ beforeAll(async () => {
     ...APP_ALIAS_CASES.map(([candidate]) => candidate),
     ...APP_FORBIDDEN_CANDIDATES,
     DARK_VARIANT_CANDIDATE,
+    DARK_VARIANT_SHAPE_CANDIDATE,
   ];
   const pinned = source.replace(
     '@import "tailwindcss";',
@@ -267,6 +277,71 @@ describe("dark: applies unconditionally in this single-theme app (task #172)", (
     // fallback strategy, unrelated to the dark-mode question this test
     // guards) — either shape still resolves through `--input`.
     expect(body).toMatch(/background-color:\s*(var\(--input\)|color-mix\(.*var\(--input\).*\))/);
+  });
+
+  it("compiles the selector to apply unconditionally: no .dark ancestor, no media wrapper", () => {
+    // Catches a class of "looks-fixed" regression the assertion above does
+    // NOT: `@custom-variant dark (&:is(.dark *));` — the shape shadcn's own
+    // starter suggests for a REAL two-theme app — also satisfies "not
+    // wrapped in prefers-color-scheme", because it isn't one. Nothing in
+    // this codebase ever adds a `.dark` class to anything (task #172's own
+    // explicit trap), so a selector gated on `:is(.dark *)` is permanently
+    // unmatched — a total, silent failure dressed up as a fix, and the
+    // assertion above alone would stay green through it. Verified: compiling
+    // this exact mutation leaves that assertion green (no
+    // `prefers-color-scheme` string anywhere), which is exactly why it is
+    // not sufficient on its own.
+    //
+    // Uses DARK_VARIANT_SHAPE_CANDIDATE rather than DARK_VARIANT_CANDIDATE:
+    // opacity-modified utilities (`/30`) compile through a color-mix
+    // fallback, which is unrelated noise for this particular question.
+    //
+    // WHY THIS WALKS A BALANCED BLOCK RATHER THAN THE TEXT UP TO THE FIRST
+    // "{": measured directly rather than assumed, Tailwind's compiler does
+    // NOT always emit the variant as a suffix on the flat selector
+    // (`.dark\:border-input:is(.dark *) { … }`). Depending on what else is
+    // in the same stylesheet, it can instead emit the variant as a NESTED
+    // rule one level inside the bare selector
+    // (`.dark\:border-input { &:is(.dark *) { … } }`) — same meaning, CSS
+    // nesting resolves an `&`-prefixed nested selector against its parent
+    // identically to the flattened compound form, but a naive "nothing
+    // before the first {" check reads the OUTER, unconditional-looking
+    // selector and misses the real gate sitting one level down. An earlier
+    // revision of this test asserted exactly that and stayed green through
+    // the `:is(.dark *)` mutation for precisely this reason.
+    const escapedSelector = ".dark\\:border-input";
+    const selectorIndex = css.indexOf(escapedSelector);
+
+    expect(
+      selectorIndex,
+      `found no compiled selector for .${DARK_VARIANT_SHAPE_CANDIDATE}`,
+    ).not.toBe(-1);
+
+    // Extract the FULL balanced block for this rule (selector through its
+    // matching closing brace, tracking nesting depth), so a gate hiding
+    // inside a nested `&`-rule is included, not just the outer selector.
+    const braceStart = css.indexOf("{", selectorIndex);
+    let depth = 0;
+    let blockEnd = braceStart;
+    for (let i = braceStart; i < css.length; i++) {
+      if (css[i] === "{") depth++;
+      else if (css[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          blockEnd = i + 1;
+          break;
+        }
+      }
+    }
+    const block = css.slice(selectorIndex, blockEnd);
+
+    // `:is(.dark` catches the gate in EITHER shape: flattened
+    // (`.dark\:border-input:is(.dark *)`) or nested (`&:is(.dark *)`) —
+    // both contain this literal substring, and nothing in a correctly
+    // unconditional compile ever does.
+    expect(block, `rule for .${DARK_VARIANT_SHAPE_CANDIDATE} is gated: ${block}`).not.toMatch(
+      /:is\(\.dark/,
+    );
   });
 
   it("never wraps any rule in a prefers-color-scheme media query", () => {

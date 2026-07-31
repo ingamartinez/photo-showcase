@@ -626,3 +626,20 @@ describe("PATCH /api/assets/[assetId]/selection — persistence and quota recomp
     });
   });
 });
+
+// Task #58: proves this route's mutation lock is literally the SAME Set as
+// the DELETE/reorder routes' — not a separately maintained copy of the same
+// three strings, which is exactly the shape that drifted silently before.
+// `SELECTION_LOCKED_STATUSES` stays exported under its task-#73 name (the
+// unlock-action suite imports it by that name) but is now an alias for
+// `ASSET_MUTATION_BLOCKED_STATUSES`, checked here by reference (`toBe`, not
+// `toEqual`) so a future refactor that reintroduces a second `new Set([...])`
+// literal fails this assertion immediately.
+describe("SELECTION_LOCKED_STATUSES — single shared definition (task #58)", () => {
+  it("is reference-identical to the shared ASSET_MUTATION_BLOCKED_STATUSES", async () => {
+    const { SELECTION_LOCKED_STATUSES } = await import("./route");
+    const { ASSET_MUTATION_BLOCKED_STATUSES } = await import("@/lib/asset-access");
+
+    expect(SELECTION_LOCKED_STATUSES).toBe(ASSET_MUTATION_BLOCKED_STATUSES);
+  });
+});

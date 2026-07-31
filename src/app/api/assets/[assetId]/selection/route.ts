@@ -54,9 +54,8 @@ import { z } from "zod";
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets } from "@/lib/db/schema";
-import type { Gallery } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
-import { loadOwnedAsset } from "@/lib/asset-access";
+import { ASSET_MUTATION_BLOCKED_STATUSES, loadOwnedAsset } from "@/lib/asset-access";
 import { isGalleryVisibleToClient } from "@/lib/galleries";
 import { computeQuota } from "@/lib/quota";
 import { notifySelectionChanged } from "@/lib/selection-events";
@@ -66,8 +65,17 @@ export const runtime = "nodejs";
 const assetIdSchema = z.uuid();
 const bodySchema = z.object({ selected: z.boolean() });
 
-// Same gate, same reasoning, as the sibling DELETE/reorder routes (task #56)
-// — but note this set does NOT include `draft`. `draft` is refused by the
+// The mutation lock — task #58 unified this with the identical set the
+// DELETE and reorder routes each carried as their own local copy (three
+// verbatim `["selected","delivered","archived"]` literals across three
+// files was the drift risk task #58 closed; see
+// src/lib/asset-access.ts's comment on `ASSET_MUTATION_BLOCKED_STATUSES`
+// for the full rationale, which now covers this route too). This alias
+// keeps the route-local, task-#73-established export name (see below) so
+// nothing importing `SELECTION_LOCKED_STATUSES` from THIS module needs to
+// change — but there is exactly one Set behind both names.
+//
+// Note this set does NOT include `draft`. `draft` is refused by the
 // SEPARATE `isGalleryVisibleToClient` gate above (non-admin only) rather
 // than by this one, because this set's job is "the selection is settled,
 // refuse EVERYONE including admin"; `draft` is the opposite situation — an
@@ -77,18 +85,18 @@ const bodySchema = z.object({ selected: z.boolean() });
 // this one) — letting a toggle through after that would silently change
 // what the client already committed to, including the surcharge they were
 // quoted. `delivered` and `archived` are closed states for the same reason
-// the other two routes refuse them.
+// the other two routes refuse them. Do NOT fold this with the
+// `isGalleryVisibleToClient` gate above just because their status lists
+// happen to overlap today — they gate different principals (everyone
+// including admin, vs. non-admins only) and are checked independently
+// below.
 //
 // Exported (task #73) so the admin unlock action's own test suite
 // (src/app/dashboard/galleries/actions.unlock.test.ts) can assert "after
 // unlock, `proofing` is not in the REAL gate this route enforces" against
 // this exact set, instead of asserting a hand-copied string literal that
 // could silently drift from what this route actually checks.
-export const SELECTION_LOCKED_STATUSES = new Set<Gallery["status"]>([
-  "selected",
-  "delivered",
-  "archived",
-]);
+export const SELECTION_LOCKED_STATUSES = ASSET_MUTATION_BLOCKED_STATUSES;
 
 function errorResponse(error: string, status: number): NextResponse {
   return NextResponse.json({ error }, { status });

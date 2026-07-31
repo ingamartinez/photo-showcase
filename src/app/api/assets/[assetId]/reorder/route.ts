@@ -21,25 +21,13 @@ import { z } from "zod";
 import { asc, eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets } from "@/lib/db/schema";
-import type { Gallery } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
-import { loadOwnedAsset } from "@/lib/asset-access";
+import { ASSET_MUTATION_BLOCKED_STATUSES, loadOwnedAsset } from "@/lib/asset-access";
 
 export const runtime = "nodejs";
 
 const assetIdSchema = z.uuid();
 const bodySchema = z.object({ direction: z.enum(["up", "down"]) });
-
-// Same gate, same reasoning, as the sibling DELETE route right next to this
-// one (task #56) — see its comment on this constant for the full rationale.
-// Reordering after SELECTED/DELIVERED/ARCHIVED is just as much a silent
-// change to what the client already committed to or received as deleting
-// is; ARCHIVED refuses outright rather than merely warning.
-const ASSET_MUTATION_BLOCKED_STATUSES = new Set<Gallery["status"]>([
-  "selected",
-  "delivered",
-  "archived",
-]);
 
 function errorResponse(error: string, status: number): NextResponse {
   return NextResponse.json({ error }, { status });
@@ -84,10 +72,11 @@ export const PATCH = withApiSession(async function PATCH(
   }
   const { asset, gallery } = lookup;
 
-  // The status gate, checked BEFORE any mutation — see the constant's
-  // comment above. Matches #15's convention for a wrong-state gallery: 409,
-  // not 403 (the caller is authorized, the gallery's current state just
-  // refuses this action).
+  // The status gate, checked BEFORE any mutation — see
+  // src/lib/asset-access.ts's comment on the constant for the full
+  // rationale (same gate as the sibling DELETE route, task #56). Matches
+  // #15's convention for a wrong-state gallery: 409, not 403 (the caller is
+  // authorized, the gallery's current state just refuses this action).
   if (ASSET_MUTATION_BLOCKED_STATUSES.has(gallery.status)) {
     return errorResponse("gallery_locked", 409);
   }

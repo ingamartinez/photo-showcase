@@ -207,3 +207,47 @@ describe("loadOwnedAsset", () => {
     expect(isGalleryOwnerMock).not.toHaveBeenCalled();
   });
 });
+
+// Task #58: three call sites (the DELETE route, the reorder route, and the
+// client-facing selection-toggle route) used to each carry their own
+// verbatim `["selected","delivered","archived"]` literal. Each route's own
+// suite only ever asserted ITS OWN behaviour, so a status added or removed
+// from one copy without touching the siblings would ship unnoticed — one
+// mutation path gated, another left open, with every existing test suite
+// still green. A test that merely re-asserted "the constant equals these
+// three strings" would not have caught that: it would just be a FOURTH copy
+// of the same three literals, drifting in lockstep with whichever copy it
+// was written against.
+//
+// This test instead pins the set against the live `galleries.status` enum
+// (schema.ts's `galleryStatus`, the actual source of truth for what a
+// gallery's status can be), so it fails the moment someone adds a new
+// status to the enum and forgets to decide whether it belongs on this list
+// — the exact silent-drift failure mode task #58 exists to close.
+describe("ASSET_MUTATION_BLOCKED_STATUSES — pinned against the galleries.status enum", () => {
+  it("contains only real members of the enum (no stale or misspelled values)", async () => {
+    const { galleryStatus } = await import("@/lib/db/schema");
+    const { ASSET_MUTATION_BLOCKED_STATUSES } = await import("./asset-access");
+
+    for (const status of ASSET_MUTATION_BLOCKED_STATUSES) {
+      expect(galleryStatus.enumValues).toContain(status);
+    }
+  });
+
+  it("classifies EVERY enum member as blocked or not — a status added to the enum without an explicit decision here fails this assertion instead of shipping silently", async () => {
+    const { galleryStatus } = await import("@/lib/db/schema");
+    const { ASSET_MUTATION_BLOCKED_STATUSES } = await import("./asset-access");
+
+    const notBlocked = galleryStatus.enumValues.filter(
+      (status) => !ASSET_MUTATION_BLOCKED_STATUSES.has(status),
+    );
+
+    // Today the only two statuses in which the asset set is still mutable
+    // are `draft` and `proofing` — see the constant's own comment in
+    // asset-access.ts for why. Every other member of the enum, including
+    // any added in the future, is expected on the blocked side; a new
+    // status lands here instead and fails the assertion until a human
+    // decides which side it belongs on.
+    expect([...notBlocked].sort()).toEqual(["draft", "proofing"]);
+  });
+});

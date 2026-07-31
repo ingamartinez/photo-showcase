@@ -48,23 +48,22 @@ export const APP_FONT_SIZES = [
  * `font-size` group — fixes the colour collision above and immediately
  * introduces its mirror image, because that group also carries
  * `conflictingClassGroups: { "font-size": ["leading"] }`. In stock Tailwind
- * that rule is CORRECT: `text-sm` emits a font size AND a line height, so a
- * `leading-*` written before it is genuinely superseded.
+ * that rule is CORRECT: a built-in size utility emits a font size AND a line
+ * height, so a leading utility written before it is genuinely superseded.
  *
- *     .text-sm       { font-size: …; line-height: var(--tw-leading, …) }
- *     .text-app-base { font-size: var(--app-text-base) }
- *
- * These aliases emit font-size ONLY. Folded into `font-size` they inherit the
- * rule anyway, so `cn("leading-6", "text-app-base")` returns `"text-app-base"`
- * — the line height deleted, and nothing emitted to replace it. Silent, and
- * order-dependent: the same pair written the other way round keeps both.
+ * These aliases emit font-size ONLY — there is no line-height declaration in
+ * the compiled rule at all. Folded into `font-size` they inherit the conflict
+ * anyway, so a leading utility followed by an app size returns just the size:
+ * the line height deleted, and nothing emitted to replace it. Silent, and
+ * order-dependent — the same pair written the other way round keeps both.
+ * src/lib/utils.test.ts pins both orders.
  *
  * So the group is separate and declared to conflict with `font-size` in BOTH
  * directions (a real size still replaces an app size and vice versa, which is
  * what a call site means by writing either), and with nothing else. Measured:
- * against the shipped alternative this changes exactly one pairing —
- * `leading-*` before an app size now survives — and leaves every other
- * combination, including all stock Tailwind behaviour, byte-identical.
+ * against the shipped alternative this changes exactly one pairing — a leading
+ * utility before an app size now survives — and leaves every other combination,
+ * including all stock Tailwind behaviour, byte-identical.
  *
  * REJECTED ALTERNATIVE: declaring `--text-app-*--line-height` companions in
  * `@theme` so the utilities really do emit a line height. That would make the
@@ -72,8 +71,13 @@ export const APP_FONT_SIZES = [
  * deliberately made `--app-line-height` a SINGLE root-level value the whole
  * surface inherits. Picking seven of them is a design decision, this slice has
  * no mandate for it, and applying the one value to all seven would put 1.5 on
- * `text-app-title` at 26px. Modelling what the CSS actually emits is the
- * change that carries no design opinion.
+ * the largest step at 26px. Modelling what the CSS actually emits is the change
+ * that carries no design opinion.
+ *
+ * (No class is named anywhere in this comment, deliberately — see the note on
+ * APP_FONT_SIZES above. This file is scanned by Tailwind, and an earlier draft
+ * of these paragraphs shipped two dead utilities into the production
+ * stylesheet purely by quoting them.)
  */
 const twMerge = extendTailwindMerge<"app-font-size">({
   extend: {

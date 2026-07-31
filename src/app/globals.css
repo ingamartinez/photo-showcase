@@ -199,9 +199,10 @@
    (`container.querySelector('[data-surface="app"]')`), and structurally
    cannot leak: nothing outside the dashboard tree will ever carry it.
 
-   THIS SLICE IS ADDITIVE ONLY (#128). Nothing under src/app or
-   src/components sets `data-surface="app"` yet, so every rule below is
-   inert until #129 adds the attribute to the dashboard shell.
+   WHO SETS IT: `src/app/dashboard/layout.tsx` (task #129), on the single
+   root element of the dashboard shell — the one place, and the only one.
+   #128 added every token below while nothing set the attribute yet, so
+   this whole block was inert until that shell landed.
 
    Reference mock: design/system/dashboard.html (kanban #126).
    =================================================================== */
@@ -296,6 +297,33 @@
      it does not arrive for free with this token layer. */
   --app-radius: 8px;
   --app-radius-sm: 5px;
+
+  /* Shell geometry (#129) — the mock's --tabbar-h / --sidebar-w
+     (design/system/dashboard.html:79-80), carrying this block's --app-
+     prefix like every token above. #128 deliberately left these for the
+     slice that builds the shell.
+
+     Both are read by ONE navigation element, not two: at phone widths it
+     is a fixed bottom tab bar --app-tabbar-h tall (thumb zone, and the
+     content's bottom padding clears it); at >=1024px the same element
+     becomes the sidebar's links inside an --app-sidebar-w column. See
+     src/components/dashboard-nav.tsx for why duplicating that markup per
+     breakpoint is the failure mode epic #125 forbids outright. */
+  --app-tabbar-h: 58px;
+  --app-sidebar-w: 236px;
+
+  /* Destructive intent, for the one control in the shell that has it: the
+     sign-out button's hover (design/system/dashboard.html:170, --danger).
+     Scoped here with the --app- prefix rather than added to :root, because
+     nothing on the public site has a destructive action to colour.
+
+     This is NOT the mock's status ramp (--st-draft/proofing/selected/
+     delivered/archived, dashboard.html:82-96). That ramp describes gallery
+     STATE and belongs to the slices that ship badges and rows; it is
+     deliberately not smuggled in here by a shell that has no state to
+     show. If those tokens land later they should follow this same naming,
+     as --app-st-*. */
+  --app-danger: #c4756b;
 }
 
 /* >=600px — small tablet / large phone landscape. Rows gain room ahead

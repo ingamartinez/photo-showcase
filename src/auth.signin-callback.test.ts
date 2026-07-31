@@ -69,6 +69,8 @@ vi.mock("@/lib/env", () => ({
 
 vi.mock("@/lib/login-email", () => ({ sendLoginEmail: vi.fn() }));
 vi.mock("@/lib/gallery-access-email", () => ({ sendGalleryAccessEmail: vi.fn() }));
+vi.mock("@/lib/gallery-unlock-email", () => ({ sendGalleryUnlockEmail: vi.fn() }));
+vi.mock("@/lib/gallery-delivery-email", () => ({ sendGalleryDeliveryEmail: vi.fn() }));
 
 vi.mock("@/lib/users", () => ({
   findUserIdByEmail: (email: string) => mocks.findUserIdByEmail(email),

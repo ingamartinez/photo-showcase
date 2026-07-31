@@ -90,11 +90,13 @@ function getClient(): S3Client {
 // backfill for #26 is the anticipated case; `scripts/backfill-display-
 // derivatives.ts` for #89 is the one that shipped) call
 // `assertAppEnvIsSet()` from `scripts/lib/assert-app-env.ts` before minting
-// or writing a real key — see that module's header for the full mechanism,
-// and `scripts/ops-r2-guard.test.ts` for the test that fails `bun run test`
-// if a script IMPORTS (under any local name — enforcement keys off the
-// import, not the call site) one of `proofKey`/`finalKey`/`displayKey`/
-// `putObject`/`deleteObject` without also calling that guard.
+// or writing a real key — see that module's header for the full mechanism
+// and, importantly, for what it does NOT guarantee. `scripts/ops-r2-
+// guard.test.ts` runs a best-effort lint that fails `bun run test` for a
+// script that imports one of `proofKey`/`finalKey`/`displayKey`/
+// `putObject`/`deleteObject` without also calling that guard — see that
+// file's own header for the precise, non-exhaustive list of import shapes
+// it can and cannot see. Neither of those two files claims more than that.
 export type R2Key = string & { readonly __r2: unique symbol };
 
 // Key builders — the ONLY place these strings are formed. Nothing else in

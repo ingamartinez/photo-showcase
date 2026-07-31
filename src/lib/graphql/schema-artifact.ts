@@ -47,9 +47,22 @@ export const SCHEMA_ARTIFACT_RELATIVE_PATH = "schema.graphql";
  * excluded — see codegen.ts on why generated output stays inside both gates),
  * and Prettier requires one.
  *
- * Stable across runs because `printSchema` walks the schema in Pothos's own
- * registration order rather than sorting or hashing anything, which is what
- * makes a byte-comparison guard meaningful instead of flaky.
+ * Stable across runs, which is what makes a byte-comparison guard meaningful
+ * instead of flaky — and the reason is worth naming correctly, because an
+ * earlier version of this comment named the wrong component and drew a weaker
+ * conclusion from it. `printSchema` emits whatever order it is handed;
+ * `builder.toSchema()` is what imposes one, because Pothos defaults
+ * `sortSchema` to `true`. Verified rather than inferred: with
+ * `toSchema({ sortSchema: false })` this app's SDL leads with
+ * `enum GalleryStatus` and prints `Asset`'s fields in the order ./types/asset.ts
+ * registers them (`id, originalFilename, proofKey, …`), against the committed
+ * file's alphabetical `Asset` first and `finalKey, id, isEdited, …`.
+ *
+ * That is a STRONGER stability guarantee than registration order would be, not
+ * a weaker one: the artifact is order-INDEPENDENT, so moving a field or a type
+ * declaration around in src/lib/graphql/types/** cannot produce a diff here at
+ * all. The flip side is a real limit on what ./schema-sdl.test.ts can see —
+ * see that file, where it is stated.
  */
 export function buildSchemaArtifact(schema: GraphQLSchema): string {
   return `${HEADER}\n${printSchema(schema)}\n`;

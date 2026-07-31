@@ -62,6 +62,10 @@ describe("the schema, imported and executed directly (no HTTP layer)", () => {
     expect(sdl).toContain("type Query");
     expect(sdl).toContain("gallery(id: ID!): Gallery");
     expect(sdl).toContain("galleries: [Gallery!]");
+    // Task #31's two additions. `galleryBySlug` takes a String, not an ID:
+    // the slug is opaque text this app mints, never a GraphQL identity.
+    expect(sdl).toContain("galleryBySlug(publicSlug: String!): Gallery");
+    expect(sdl).toContain("galleryList: [GalleryListItem!]");
   });
 
   it("graphql() refuses a client who does not own the gallery — same gate as route.test.ts, exercised without HTTP", async () => {

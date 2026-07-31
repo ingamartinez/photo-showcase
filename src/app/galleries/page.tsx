@@ -1,7 +1,8 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { requireSession } from "@/lib/auth-guards";
-import { formatGalleryStatus, formatSessionDate, getGalleriesForClient } from "@/lib/galleries";
+import { formatGalleryStatus, formatSessionDate } from "@/lib/galleries";
+import { readClientGalleryList } from "@/lib/graphql/client-gallery-reads";
 
 export const metadata: Metadata = {
   title: "Tus galerías",
@@ -15,18 +16,32 @@ export const metadata: Metadata = {
 // never rely on an ancestor layout (src/app/galleries/layout.tsx here) as
 // its only check. `requireSession()`, not `requireAdmin()`: this page is
 // this client area's landing page (task #22) — an admin may also sign in
-// and land here, but `getGalleriesForClient` below scopes the result to
-// THEIR OWN galleries either way (see that function's own comment), so
-// there is no separate "everyone's galleries" branch for an admin to fall
-// into by visiting this route.
+// and land here, but the read below scopes the result to THEIR OWN
+// galleries either way, so there is no separate "everyone's galleries"
+// branch for an admin to fall into by visiting this route.
 export default async function ClientGalleriesPage() {
   const session = await requireSession();
 
+  // Task #31: read through the GraphQL schema (`Query.galleryList`), executed
+  // IN PROCESS rather than over HTTP — see
+  // src/lib/graphql/execute.ts's header for why, and what that path does and
+  // does not include.
+  //
+  // NOTHING ABOUT THE SCOPING RULE MOVED. The resolver behind `galleryList`
+  // calls the SAME `getGalleriesForClient(session.user.id)` this page called
+  // directly before, so the ownership subquery, the soft-removed-client
+  // filter and the CLIENT_VISIBLE_STATUSES filter are all still the one
+  // implementation in src/lib/galleries.ts — including its deliberate absence
+  // of an admin bypass. What changed is where the call is made from, not what
+  // it does.
+  //
   // The session's own user id — never an id read from the URL or a form
-  // field, this task's core acceptance criterion. There is nothing else in
-  // scope on this route to read an id from: no dynamic segment, no query
-  // string, no form.
-  const galleries = await getGalleriesForClient(session.user.id);
+  // field, this route's core acceptance criterion (task #22) — and passing
+  // the whole session in is what keeps that true: `galleryList` takes no
+  // arguments at all, so there is nothing a caller could name a different
+  // client through. There is nothing else in scope on this route to read an
+  // id from either: no dynamic segment, no query string, no form.
+  const galleries = await readClientGalleryList(session);
 
   return (
     <>

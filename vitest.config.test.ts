@@ -27,3 +27,40 @@ describe("vitest.config.ts exclude", () => {
     }
   });
 });
+
+// Task #31: the same guard, for the same reason, over the `server-only` alias
+// -- without it a JSDOM (`*.chrome.test.tsx`) suite cannot import ANY module
+// carrying `import "server-only"`, which since #31 includes the client gallery
+// pages themselves. Losing this entry does not degrade gracefully: it breaks
+// those suites at transform time with a resolution error that reads like a
+// missing dependency, which is a long way from its actual cause. See the
+// alias's own comment in vitest.config.ts.
+describe("vitest.config.ts server-only alias", () => {
+  // WHAT THIS CHECK REACHES, and what it does not — disclosed here rather than
+  // implied by the test's name (kanban #118 is open against an earlier test in
+  // this same file for exactly that omission). This is a STATIC assertion on
+  // the config object: it proves the entry is present and still points at the
+  // stub. It cannot prove the CONSEQUENCE — that a JSDOM suite can therefore
+  // import a marker-carrying module — because that is transform-time
+  // behaviour, and nothing about a string in a config object demonstrates it.
+  // The consequence is asserted, unavoidably, by every `*.chrome.test.tsx`
+  // suite that imports one: src/app/galleries/page.chrome.test.tsx and
+  // src/app/galleries/[publicSlug]/page.chrome.test.tsx both fail at transform
+  // time with `Failed to resolve import "server-only"` if this entry is
+  // removed. That is the real proof; this test only stops the entry from being
+  // deleted with a plausible-looking green run in files nobody re-reads.
+  it("keeps the `server-only` entry pointing at the inert stub", () => {
+    const alias = vitestConfig.resolve?.alias as Record<string, string> | undefined;
+
+    expect(alias?.["server-only"]).toContain("vitest.server-only-stub");
+  });
+
+  // The alias entry above is added to the SAME object that carries the "@" ->
+  // ./src mapping every suite in this repo imports through, so this asserts
+  // the addition did not replace it.
+  it("still aliases `@` to ./src", () => {
+    const alias = vitestConfig.resolve?.alias as Record<string, string> | undefined;
+
+    expect(alias?.["@"]).toContain("src");
+  });
+});

@@ -1,14 +1,10 @@
 import type { Metadata } from "next";
 import { forbidden, notFound } from "next/navigation";
 import { requireSession } from "@/lib/auth-guards";
-import {
-  formatGalleryStatus,
-  formatSessionDate,
-  getGalleryDetailBySlug,
-  isGalleryVisibleToClient,
-} from "@/lib/galleries";
+import { formatGalleryStatus, formatSessionDate, getGalleryDetailBySlug } from "@/lib/galleries";
 import { isGalleryOwner } from "@/lib/gallery-access";
 import { getGallerySelection } from "@/lib/gallery-selection";
+import { readClientGalleryBySlug } from "@/lib/graphql/client-gallery-reads";
 import { displayKey, getPresignedUrl, storedKey } from "@/lib/r2";
 import { ProofGrid } from "@/components/proof-grid";
 
@@ -33,9 +29,8 @@ export const metadata: Metadata = {
 // identifier meant to ever appear in a client-facing URL (128 bits of
 // randomness, unguessable by walking sequential-feeling ids). There is no
 // format to validate up front the way `/dashboard/galleries/[galleryId]`
-// validates a UUID: `getGalleryDetailBySlug` below simply returns `null`
-// for any string that doesn't match a row, which this page already turns
-// into a 404.
+// validates a UUID: the read below simply resolves to `null` for any string
+// that doesn't match a row, which this page turns into a 404.
 export default async function ClientGalleryPage({
   params,
 }: {
@@ -44,32 +39,50 @@ export default async function ClientGalleryPage({
   const session = await requireSession();
 
   const { publicSlug } = await params;
-  const gallery = await getGalleryDetailBySlug(publicSlug);
-  if (!gallery) notFound();
 
-  // Ownership: one of the gallery's OWN clients (task #94 — a gallery can
-  // now have several), or an admin — the same rule src/lib/asset-access.ts's
-  // loadOwnedAsset() applies per-asset, applied here at the gallery level
-  // since this page resolves ONE gallery directly, not an asset. An
-  // unguessable slug in the URL is NOT treated as proof of anything by
-  // itself (task #23's core security requirement, restated after the route
-  // was corrected to use the slug instead of the id: the slug only stops
-  // enumeration, it is not authorization) — ownership is decided by
-  // src/lib/gallery-access.ts's `isGalleryOwner` (the session against the
-  // gallery's own clients), never here directly, so this stays in lockstep
-  // with every sibling route instead of rewriting the same comparison.
-  // A signed-in client who obtains another client's slug still gets a real
-  // 403 here, not a redirect and not a 404 that would let them fish for
-  // which slugs resolve to a real gallery.
-  const isAdmin = session.user.role === "admin";
-  if (!(await isGalleryOwner(gallery.id, session))) forbidden();
+  // Task #31: read through the GraphQL schema (`Query.galleryBySlug`),
+  // executed IN PROCESS rather than over HTTP — see
+  // src/lib/graphql/execute.ts's header for why, and what that path does and
+  // does not include.
+  //
+  // AUTHORIZATION DID NOT MOVE OUT OF THIS PAGE SO MUCH AS GAIN A SECOND
+  // ENFORCER. That resolver runs the SAME two gates this page used to run
+  // inline, calling the SAME helpers: `isGalleryOwner` (src/lib/
+  // gallery-access.ts — one of the gallery's own clients per task #94, or an
+  // admin) and `isGalleryVisibleToClient` (src/lib/galleries.ts — a `draft`
+  // gallery is still being assembled and is hidden even from the client who
+  // owns it, admins excepted so the photographer can preview). Neither rule
+  // is restated here, so neither can drift from the version every sibling
+  // route uses. An unguessable slug is still NOT treated as proof of anything
+  // (task #23's core security requirement): a signed-in client holding
+  // another client's slug gets nothing back.
+  const gallery = await readClientGalleryBySlug(publicSlug, session);
 
-  // A draft gallery is still being assembled by the photographer — never
-  // shown to a client even when their own session legitimately owns it. See
-  // isGalleryVisibleToClient's own comment in src/lib/galleries.ts. Admins
-  // bypass this so the photographer can preview a gallery before publishing
-  // it, the same "admin sees everything" stance loadOwnedAsset takes.
-  if (!isAdmin && !isGalleryVisibleToClient(gallery.status)) notFound();
+  if (!gallery) {
+    // THE ONE THING GRAPHQL STRUCTURALLY CANNOT TELL THIS PAGE, and the
+    // reason these two helpers are still called here. `galleryBySlug`
+    // collapses "no such slug", "not yours" and "not visible yet" into a
+    // single `null` on purpose — that is its no-existence-oracle design, see
+    // src/lib/graphql/types/query.ts's header. This page needs the
+    // distinction, because it has always answered 403 for a signed-in
+    // non-owner and 404 for an unknown slug, and quietly turning the former
+    // into the latter would change what a client sees.
+    //
+    // So the distinction is re-derived HERE, from the same two helpers, and
+    // ONLY on the refusal path: a caller who is allowed to see the gallery
+    // never reaches this block, so the happy path still costs exactly the
+    // queries the resolver made. A refused caller pays for one extra read of
+    // a gallery they were not allowed to see — the price of not encoding the
+    // refusal reason into a field a browser can query.
+    const refused = await getGalleryDetailBySlug(publicSlug);
+    if (!refused) notFound();
+    if (!(await isGalleryOwner(refused.id, session))) forbidden();
+    // Exists, and this session owns it — so the only gate left for the
+    // resolver to have failed is the client-visibility one, which this page
+    // has always answered with a 404 rather than a 403: a client must not be
+    // able to tell "your gallery isn't ready yet" from "no such gallery".
+    notFound();
+  }
 
   // Presigned at render time, for the INITIAL paint only — `getPresignedUrl`
   // is a local HMAC signature, not an R2 round trip, so doing this once per
@@ -114,7 +127,10 @@ export default async function ClientGalleryPage({
       isSelected: asset.isSelected,
       // `asset.proofKey` came off the `assets` table, which loses the
       // `R2Key` brand on the round trip through Postgres — see
-      // `storedKey`'s own comment in src/lib/r2.ts.
+      // `storedKey`'s own comment in src/lib/r2.ts. Task #31 added a GraphQL
+      // hop in front of that round trip, which does not restore it either
+      // (`Asset.proofKey` is a plain `String` over the wire), so `storedKey`
+      // is if anything more load-bearing here than it was.
       proofUrl: getPresignedUrl(storedKey(asset.proofKey)),
       hasFinal,
       // Task #89. Presigned from `displayKey` — a pure function of
@@ -144,6 +160,11 @@ export default async function ClientGalleryPage({
   // load" and "what the server says now" cannot drift into two different
   // answers. Read AFTER the ownership and visibility gates above, never
   // before: it returns other clients' names.
+  //
+  // A DIRECT call, deliberately left out of the GraphQL move (task #31): this
+  // function is not in that schema and was not added to it. Same position the
+  // presigned-URL calls above hold — see src/lib/graphql/
+  // client-gallery-reads.ts's header for both.
   const initialPicks = await getGallerySelection(gallery.id);
 
   return (
@@ -162,9 +183,12 @@ export default async function ClientGalleryPage({
         galleryId={gallery.id}
         initialAssets={initialAssets}
         initialStatus={gallery.status}
-        initialSubmittedAt={
-          gallery.selectionSubmittedAt ? gallery.selectionSubmittedAt.toISOString() : null
-        }
+        // Already an ISO string, not a `Date`: this builder registers no
+        // `Date` scalar, so `Gallery.selectionSubmittedAt` resolves through
+        // `.toISOString()` itself (src/lib/graphql/types/gallery.ts) — the
+        // same conversion this line used to do, one layer down. `<ProofGrid>`
+        // wanted a string either way.
+        initialSubmittedAt={gallery.selectionSubmittedAt}
         initialPicks={initialPicks}
         // Display only — the tray renders this session's own picks as "Vos".
         // Nothing is authorized by it: every route <ProofGrid> calls resolves

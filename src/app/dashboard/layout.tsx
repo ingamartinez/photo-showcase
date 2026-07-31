@@ -63,11 +63,27 @@ export default async function DashboardLayout({
               verifying WHICH account is signed in, and it spends no pixels. */}
           <span className="sr-only">{session.user.email}</span>
           {/* Stays a real form submission to the `signOutAction` server
-              action. Do not turn it into a client-side handler. */}
+              action. Do not turn it into a client-side handler.
+
+              `lg:min-h-6` is a floor, not a look: the mock's own
+              `min-height: 0` at this breakpoint (dashboard.html:512, now
+              corrected there too) left this control 18px tall on a pointer
+              device, under WCAG 2.2 SC 2.5.8's 24x24 CSS px minimum — and
+              SC 2.5.8's "inline" exception covers targets sitting inside a
+              sentence of text, which a standalone button in a sidebar is
+              not. Expressed as min-height, the same property carrying the
+              44px phone value above, so the two read as one constraint at
+              two floors. Deliberately NOT `lg:py-1.5`: padding would add
+              nothing visible either, but it is spacing, and spacing is the
+              kind of thing a later tidy-up removes without knowing it was
+              load-bearing — and it would push the label down inside the
+              account block's own `lg:pt-3.5` rhythm. A native button
+              centres its content box, so this grows the target without
+              moving a pixel of ink: it still reads as quiet text. */}
           <form action={signOutAction}>
             <button
               type="submit"
-              className="text-fg-mute min-h-[var(--app-tap)] px-1 text-[length:var(--app-text-meta)] transition-colors hover:text-[var(--app-danger)] lg:min-h-0 lg:px-0 lg:text-left"
+              className="text-fg-mute min-h-[var(--app-tap)] px-1 text-[length:var(--app-text-meta)] transition-colors hover:text-[var(--app-danger)] lg:min-h-6 lg:px-0 lg:text-left"
             >
               Cerrar sesión
             </button>

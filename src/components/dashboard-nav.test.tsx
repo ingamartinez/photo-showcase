@@ -108,12 +108,23 @@ describe("DashboardNav", () => {
   // (design/system/dashboard.html:82-91), and the only brass on a current
   // item is its icon (:186, :527-528). A background of `--accent` here would
   // be the exact mistake that rule exists to prevent.
+  //
+  // HOVER IS THE SAME RULE (dashboard.html:527) and needs its own POSITIVE
+  // assertion, not just the negative one below. `not.toContain("bg-accent")`
+  // does catch a literal `lg:hover:bg-accent` — verified by mutation — but it
+  // is blind to the two nearest ways to get brass in here anyway: writing it
+  // as an arbitrary value (`lg:hover:bg-[var(--accent)]`, which contains no
+  // "bg-accent" substring at all, and was measured GREEN against the negative
+  // assertion alone) or simply deleting the hover treatment. Naming the class
+  // that must BE there closes both; a rule asserted only by what it forbids
+  // can always be broken by spelling the same thing differently.
   it("indicates the current item with the raised surface, never an accent fill", () => {
     usePathnameMock.mockReturnValue("/dashboard/clients");
     render(<DashboardNav />);
 
     const current = screen.getByRole("link", { name: "Clientes" });
     expect(current.className).toContain("lg:bg-[var(--app-raised)]");
+    expect(current.className).toContain("lg:hover:bg-[var(--app-raised)]");
     expect(current.className).not.toContain("bg-accent");
   });
 });

@@ -509,7 +509,14 @@
     }
     .brand { padding: 4px 10px 0; }
     .brand__sub { display: block; margin-top: 3px; }
-    .topbar__out { text-align: left; min-height: 0; padding: 0; }
+    /* 24px, not 0: the phone's 44px --tap floor relaxes on a pointer device
+       but does not disappear. WCAG 2.2 SC 2.5.8 (AA) wants 24x24 CSS px for
+       any pointer target, and its "inline" exception is for targets inside a
+       sentence of text — a standalone control in a sidebar is not that. This
+       said `min-height: 0` until #129 measured what shipped from it (18px),
+       so any slice reading this block for fidelity inherits the floor now
+       instead of inheriting the bug. */
+    .topbar__out { text-align: left; min-height: 24px; padding: 0; }
 
     /* The tab bar's items become the sidebar nav — same markup, same
        three destinations, relocated. */

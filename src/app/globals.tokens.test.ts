@@ -4,6 +4,7 @@ import postcss from "postcss";
 import tailwind from "@tailwindcss/postcss";
 import { beforeAll, describe, expect, it } from "vitest";
 import { APP_FONT_SIZES } from "@/lib/utils";
+import { parseAppThemeAliases } from "../../tooling/app-theme-tokens.mjs";
 
 // Task #127 — the wiring test for the shadcn primitives.
 //
@@ -86,17 +87,32 @@ const RAW_PROPERTY_CANDIDATES = [
 // a second source of truth. That is what this block makes impossible to do
 // silently. (Guard 2 is the `no-restricted-syntax` rule in eslint.config.mjs,
 // which keeps these classnames out of every file that is not the dashboard.)
-const APP_COLORS: ReadonlyArray<readonly [name: string, resolvesTo: string]> = [
-  ["app-ground", "var(--app-ground)"],
-  ["app-surface", "var(--app-surface)"],
-  ["app-raised", "var(--app-raised)"],
-  ["app-danger", "var(--app-danger)"],
-];
+//
+// THE LIST IS PARSED OUT OF globals.css, NOT WRITTEN DOWN HERE, and that is the
+// whole difference between this guard and a decorative one. The first version
+// of this block enumerated four colour names by hand. Appending a FIFTH entry
+// with a literal right-hand side — `--color-app-brass: #b08b4f` — left it at 41
+// passed, 41 green, while Tailwind emitted `.bg-app-brass{background-color:
+// #b08b4f}`: a global utility the scope can never reach, i.e. precisely the
+// defect the paragraph above claims is impossible. A guard that only covers the
+// names someone remembered to list is a guard against nothing in particular.
+// Every assertion below now enumerates whatever the stylesheet declares.
+const APP_ALIASES = parseAppThemeAliases(readFileSync(GLOBALS, "utf8"));
 
-// Derived from the list `src/lib/utils.ts` teaches tailwind-merge, so the two
-// cannot drift apart — see the "no size is missing from either side" test.
-const APP_TEXT: ReadonlyArray<readonly [name: string, resolvesTo: string]> = APP_FONT_SIZES.map(
-  (name) => [name, `var(--app-text-${name.replace(/^app-/, "")})`] as const,
+// The compiled utility each alias must produce: `--color-app-raised` reaches
+// the browser as `.bg-app-raised`, `--text-app-base` as `.text-app-base`.
+const PROBE_BY_NAMESPACE = {
+  color: { candidate: (alias: string) => `bg-${alias}`, property: "background-color" },
+  text: { candidate: (alias: string) => `text-${alias}`, property: "font-size" },
+} as const;
+
+const APP_ALIAS_CASES = APP_ALIASES.map(
+  (entry) =>
+    [
+      PROBE_BY_NAMESPACE[entry.namespace].candidate(entry.alias),
+      PROBE_BY_NAMESPACE[entry.namespace].property,
+      entry.value,
+    ] as const,
 );
 
 // The trap this slice was told not to walk into, kept mechanical: radii must
@@ -118,8 +134,7 @@ beforeAll(async () => {
   const candidates = [
     ...SEMANTIC_COLORS.map(([name]) => `bg-${name}`),
     ...RAW_PROPERTY_CANDIDATES,
-    ...APP_COLORS.map(([name]) => `bg-${name}`),
-    ...APP_TEXT.map(([name]) => `text-${name}`),
+    ...APP_ALIAS_CASES.map(([candidate]) => candidate),
     ...APP_FORBIDDEN_CANDIDATES,
   ];
   const pinned = source.replace(
@@ -195,23 +210,38 @@ describe("app-surface aliases stay references, so the scope can still reach them
     return layer as string;
   }
 
-  it.each(APP_COLORS)("emits .bg-%s as %s, not as an inlined literal", (name, resolvesTo) => {
-    const body = ruleBody(`bg-${name}`);
-
-    expect(body, `Tailwind emitted no rule for .bg-${name}`).toBeDefined();
-    // `toContain` would also pass on `var(--app-ground, #070709)` or on a
-    // literal that merely mentions the name, so pin the whole declaration.
-    expect(body?.trim()).toBe(`background-color: ${resolvesTo};`);
+  it("finds aliases to check at all, so an empty list cannot pass vacuously", () => {
+    // `it.each([])` reports zero tests and a green file. Every assertion below
+    // is generated from APP_ALIASES, so the parser returning nothing would make
+    // this whole guard disappear rather than fail.
+    expect(APP_ALIASES.length, "parsed no app-* aliases out of globals.css").toBeGreaterThanOrEqual(
+      APP_FONT_SIZES.length + 1,
+    );
   });
 
-  it.each(APP_TEXT)("emits .text-%s as font-size: %s", (name, resolvesTo) => {
-    const body = ruleBody(`text-${name}`);
+  it.each(APP_ALIAS_CASES)(
+    "declares .%s with a var() reference, never an inlined literal (%s: %s)",
+    (candidate, _property, value) => {
+      // THE ASSERTION THE HAND-WRITTEN LIST COULD NOT MAKE. Checked on the
+      // stylesheet's own right-hand side, before Tailwind is involved at all:
+      // a literal here (`#b08b4f`) is inlined into the utility and the scope
+      // can never reach it.
+      expect(
+        value,
+        `${candidate} resolves to ${value}, which is not a var(--app-*) reference`,
+      ).toMatch(/^var\(--app-[a-z0-9-]+\)$/);
+    },
+  );
 
-    expect(body, `Tailwind emitted no rule for .text-${name}`).toBeDefined();
-    // Also asserts it is a FONT SIZE and not a colour: `--text-*` and
-    // `--color-*` share the `text-` prefix, and getting the namespace wrong
-    // produces a rule that exists and is the wrong property.
-    expect(body?.trim()).toBe(`font-size: ${resolvesTo};`);
+  it.each(APP_ALIAS_CASES)("compiles .%s to %s: %s", (candidate, property, value) => {
+    const body = ruleBody(candidate);
+
+    expect(body, `Tailwind emitted no rule for .${candidate}`).toBeDefined();
+    // Whole declaration, not `toContain`: that would also pass on
+    // `var(--app-ground, #070709)`, and — for the `text-` probes — it pins the
+    // PROPERTY too, since `--text-*` and `--color-*` share the `text-` prefix
+    // and getting the namespace wrong yields a rule that exists and is wrong.
+    expect(body?.trim()).toBe(`${property}: ${value};`);
   });
 
   it("points every alias at a property the app scope actually declares", () => {
@@ -221,9 +251,12 @@ describe("app-surface aliases stay references, so the scope can still reach them
     // suite would ever notice.
     const layer = appLayer();
 
-    for (const [, resolvesTo] of [...APP_COLORS, ...APP_TEXT]) {
-      const property = /var\((--[a-z0-9-]+)\)/.exec(resolvesTo)?.[1];
-      expect(property, `${resolvesTo} is not a var() reference`).toBeDefined();
+    for (const [candidate, , value] of APP_ALIAS_CASES) {
+      const property = /var\((--[a-z0-9-]+)\)/.exec(value)?.[1];
+      expect(
+        property,
+        `${candidate} resolves to ${value}, which is not a var() reference`,
+      ).toBeDefined();
       expect(
         layer,
         `${property} is referenced by an app-* utility but never declared under [data-surface="app"]`,

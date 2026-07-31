@@ -2,6 +2,13 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
 import prettier from "eslint-config-prettier/flat";
+import { appUtilityClassPattern } from "./tooling/app-theme-tokens.mjs";
+
+// Built from the `@theme` aliases actually declared in src/app/globals.css, so
+// an alias added there is covered by this rule the moment it exists. Anchored
+// on the TOKEN NAMES rather than on a list of utility prefixes — see
+// tooling/app-theme-tokens.mjs for the five utilities the prefix list missed.
+const APP_UTILITY_PATTERN = appUtilityClassPattern();
 
 // See the `no-restricted-syntax` block near the bottom of this file for why an
 // `app-*` classname outside the dashboard tree is a defect and not a style
@@ -114,11 +121,24 @@ const eslintConfig = defineConfig([
   // of the deal is in src/app/globals.tokens.test.ts, which pins every alias to
   // a `var(--app-*)` REFERENCE so that a leak is at least inert and greppable.
   //
-  // Matching is on the utility PREFIX (`bg-app-…`, not any string containing
-  // "app-"), optionally behind Tailwind variants, so `"my-app-name"` is not a
-  // finding. Both `Literal` and `TemplateElement` are covered: `cn()` call sites
-  // use plain strings today, but a template literal is one refactor away and it
-  // would slip past a `Literal`-only selector without anyone noticing.
+  // Matching is anchored on the TOKEN NAMES parsed out of globals.css, behind
+  // any utility prefix and any Tailwind variants. It deliberately does NOT
+  // enumerate the prefixes it knows about: the first version of this rule did,
+  // and `border-t-app-raised`, `border-x-app-danger`, `ring-offset-app-raised`,
+  // `inset-ring-app-raised` and `inset-shadow-app-raised` all compile to live
+  // rules and all walked straight through it — in a codebase this border-heavy,
+  // the sided `border-{t,b,l,r,x,y,s,e}-*` family was the one that mattered.
+  // Requiring a real token name after `app-` closes that without reintroducing
+  // false positives on strings like `"my-app-name"`. See
+  // tooling/app-theme-tokens.mjs.
+  //
+  // Both `Literal` and `TemplateElement` are covered: `cn()` call sites use
+  // plain strings today, but a template literal is one refactor away and would
+  // slip past a `Literal`-only selector without anyone noticing.
+  //
+  // eslint.config.test.ts asserts this rule by BEHAVIOUR — it runs ESLint over
+  // fixture sources — rather than by inspecting this array. Deleting this block
+  // used to leave `lint` and all 1228 tests green.
   {
     files: ["src/**/*.{ts,tsx}"],
     ignores: ["src/app/dashboard/**", "src/components/dashboard-*"],
@@ -126,11 +146,11 @@ const eslintConfig = defineConfig([
       "no-restricted-syntax": [
         "error",
         {
-          selector: `Literal[value=/(^|[\\s:])(bg|text|border|ring|outline|fill|stroke|shadow|decoration|caret|accent|divide|placeholder|from|via|to)-app-[a-z0-9-]/]`,
+          selector: `Literal[value=/${APP_UTILITY_PATTERN}/]`,
           message: APP_UTILITY_MESSAGE,
         },
         {
-          selector: `TemplateElement[value.raw=/(^|[\\s:])(bg|text|border|ring|outline|fill|stroke|shadow|decoration|caret|accent|divide|placeholder|from|via|to)-app-[a-z0-9-]/]`,
+          selector: `TemplateElement[value.raw=/${APP_UTILITY_PATTERN}/]`,
           message: APP_UTILITY_MESSAGE,
         },
       ],

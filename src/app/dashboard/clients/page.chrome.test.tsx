@@ -160,6 +160,31 @@ describe("ClientsPage chrome", () => {
     expect(within(row).getByText("2 galerías")).toBeDefined();
   });
 
+  // jsdom never computes CSS grid layout, so no assertion here can see the
+  // column MISALIGNMENT a conditionally-rendered wrapper element would cause
+  // at >=1024px (verified instead against the compiled build in a real
+  // browser — see this task's own report). What this test CAN and does prove
+  // is the actual mechanism the fix relies on: the phone cell is always its
+  // own element in the row, present-or-empty, never absent-or-present. A
+  // regression that "tidies" the wrapping <span> itself into
+  // `{client.phone && <span>…</span>}` (rather than only its TEXT) drops the
+  // row from 4 child elements to 3 for any client missing a phone, which is
+  // exactly the shape that shifts every column after it one slot to the left
+  // under CSS grid auto-placement.
+  it("keeps a constant number of cells per row regardless of whether the client has a phone", async () => {
+    getClientsWithGalleryCountMock.mockResolvedValue([
+      client({ id: "with-phone", phone: "+57 300 0000" }),
+      client({ id: "without-phone", phone: null }),
+    ]);
+
+    const element = await ClientsPage();
+    const { container } = render(element);
+
+    const [withPhone, withoutPhone] = rowsIn(container);
+    expect(withPhone.children).toHaveLength(4);
+    expect(withoutPhone.children).toHaveLength(4);
+  });
+
   it("renders the empty state when there are no clients yet", async () => {
     getClientsWithGalleryCountMock.mockResolvedValue([]);
 

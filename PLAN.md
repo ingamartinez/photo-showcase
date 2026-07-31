@@ -284,4 +284,35 @@ Email templates, download-all (zip), gallery expiry/archival, favorites, basic a
   has to drop below ~2s to feel right, and re-run
   `scripts/measure-selection-transport.ts` on the DROPLET (kanban #57) before
   treating any of the numbers above as authoritative there.
+
+  **Superseded (task #114): pushed off Postgres LISTEN/NOTIFY, this same
+  route as the fetch target, short-interval polling demoted to a 30s
+  fallback.** The measurement above was never wrong — it is kept verbatim,
+  above, as the historical record — but the CONCLUSION #95 drew from it was:
+  **"there is no event bus to feed an SSE endpoint" is false.** This app has
+  run Postgres since Phase 0, and LISTEN/NOTIFY IS an event bus this product
+  already owns and already pays for — `postgres` was already `^3.4.9`,
+  `sql.listen()`/`sql.notify()` are native to it, and no new dependency was
+  needed to use them. It is also strictly BETTER than the in-process
+  `EventEmitter` shape #95 rejected above, on the exact axis #95 used to
+  reject it: a `NOTIFY` reaches EVERY instance LISTENing on the channel, so
+  this gets MORE correct under scaling to more than one systemd process, not
+  less — it does not silently stop working the day that happens. Task #114
+  was the owner's own request, made after confirming #95 worked correctly in
+  production but felt laggy (up to 5s); the cheap fix (lowering
+  `SELECTION_POLL_INTERVAL_MS`) was offered and explicitly declined in favor
+  of the real thing. The one number #95 could not have measured (nothing real
+  fed SSE yet) is now measured too, via the same re-runnable script: one
+  dedicated LISTEN connection costs a FIXED **+1.3 MiB, once per app
+  instance, regardless of viewer count** — never per viewer, which is the
+  whole point of using Postgres as the event bus rather than reinventing one.
+  Full corrected reasoning, where NOTIFY fires and why (an application call
+  at each write path, not a database trigger), the fan-out shape, and how a
+  dropped/reconnected LISTEN connection recovers live in
+  `src/app/api/galleries/[galleryId]/selection/route.ts`'s own header
+  comment (the corrected record) and `src/lib/selection-events.ts`'s; the
+  client half (the SSE wiring, and what "issue clock" means for a pushed
+  event) lives in `src/components/proof-grid.tsx`'s "LIVE SYNC" and "PUSH
+  TRANSPORT" sections.
+
 - Watermark design (logo, opacity, tiling) — needs the actual brand asset.

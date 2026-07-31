@@ -1,17 +1,24 @@
-// Memory measurement for task #95's transport decision — the same role
-// scripts/measure-zip-memory.ts (task #29) plays for the download-all route
-// and scripts/measure-final-memory.ts (task #26) plays for `processFinal`:
-// "report what was observed, don't estimate it." Run manually:
+// Memory measurement for task #95's transport decision, EXTENDED by task
+// #114 to cover the arm #95 couldn't measure (there was nothing real feeding
+// SSE yet) — the same role scripts/measure-zip-memory.ts (task #29) plays for
+// the download-all route and scripts/measure-final-memory.ts (task #26)
+// plays for `processFinal`: "report what was observed, don't estimate it."
+// Run manually:
 //   bun run measure:selection:transport
 //
-// THE QUESTION THIS SCRIPT ANSWERS: what does HOLDING a connection per viewer
-// cost the droplet (768M `MemoryMax`, infra/systemd/photoshowcase.service,
-// shared with `findash`), versus letting each viewer poll and hang up?
+// THE QUESTIONS THIS SCRIPT ANSWERS: what does HOLDING a connection per
+// viewer cost the droplet (768M `MemoryMax`, infra/systemd/
+// photoshowcase.service, shared with `findash`), versus letting each viewer
+// poll and hang up (task #95) — AND (task #114) what does the ONE Postgres
+// LISTEN connection this app now keeps open per instance cost, on top of
+// whatever a held SSE connection itself costs?
 //
 // It exists because the answer is now load-bearing. Task #95 chose polling
-// over SSE for the collaborative selection tray, and the numbers this script
-// prints are cited as justification in two places that outlive any one
-// session: PLAN.md §11, and
+// over SSE for the collaborative selection tray on the grounds that nothing
+// real fed an SSE endpoint; task #114 built the thing that does (Postgres
+// LISTEN/NOTIFY) and needed its OWN cost measured rather than assumed cheap.
+// The numbers this script prints are cited as justification in two places
+// that outlive any one session: PLAN.md §11, and
 // src/app/api/galleries/[galleryId]/selection/route.ts's own header comment.
 // A measurement whose script does not exist cannot be re-run, which would
 // make those recorded numbers unfalsifiable — and an unfalsifiable number
@@ -24,7 +31,11 @@
 //   1. baseline RSS — the empty server, before any load.
 //   2. N held SSE connections — the SSE shape's real cost: one open
 //      `text/event-stream` response per viewer, retained for as long as the
-//      tab stays open.
+//      tab stays open. Task #114's design holds exactly this same shape per
+//      viewer (see `./route.ts` in `src/app/api/galleries/[galleryId]/
+//      selection/stream/`) — what changed is what FEEDS it (Postgres
+//      LISTEN/NOTIFY instead of nothing), not what holding it costs, so this
+//      number is unchanged in relevance even though it predates #114.
 //   3. RSS AFTER every one of them disconnects. **This is the line that
 //      decided task #95** and the reason this script reads current RSS rather
 //      than `maxRSS` (see the methodology note below). Held connections
@@ -39,10 +50,25 @@
 //      outlier that turns into a false certainty when it is the only sample
 //      anyone ever took.
 //   4. N polls, sequentially — one interval's worth of traffic for N viewers
-//      in the polling design, plus the per-request wall time.
+//      in the polling design, plus the per-request wall time. Task #114 keeps
+//      this exact transport as a 30s fallback (proof-grid.tsx) rather than
+//      removing it, so this number still matters — just at 1/6th the request
+//      volume #95 shipped with, since the interval only fires that often now.
 //   5. N SIMULTANEOUS polls — the pathological tick, where every viewer's
 //      timer happens to fire together. Reported as a peak AND a settled
 //      figure, because "does it come back" is the whole comparison.
+//   6. (task #114) THE LISTEN CONNECTION ITSELF — a ONE-TIME, per-app-instance
+//      cost, independent of how many viewers are held (see the "FAN-OUT
+//      SHAPE" decision in src/lib/selection-events.ts's own header comment):
+//      RSS before and after establishing exactly one `sql.listen()`
+//      connection against the SAME Postgres this app's own `src/lib/db/
+//      index.ts` connects to (same env vars, same unix-socket-with-peer-auth
+//      default). Unlike measurements 1-5, this one NEEDS a reachable
+//      Postgres and is SKIPPED with a clear message if none is configured —
+//      acceptable because #1-5 (the per-viewer comparison this script
+//      already existed for) need no database at all, and this is the one
+//      genuinely new thing task #114 needs measured on top of them, not a
+//      replacement for the bare-Bun.serve methodology below.
 //
 // ============================================================================
 // METHODOLOGY — three deliberate differences from the sibling measure scripts
@@ -403,6 +429,80 @@ function reportMarginal(previous: Aggregate, current: Aggregate): void {
   );
 }
 
+/** Task #114's own addition — see item 6 in this file's header comment.
+ *
+ * Deliberately a FRESH, throwaway `postgres()` client, not the app's own
+ * shared `pubsub` (`src/lib/db/index.ts`): this script needs to fully `.end()`
+ * whatever connection it opens so the process can exit afterward (a
+ * `sql.listen()` connection is a live, held-open TCP socket that would
+ * otherwise keep this script running forever — verified by reading
+ * `node_modules/postgres/src/index.js`'s own `end()`, which is the ONE
+ * function that also closes its internal `listen.sql` singleton;
+ * `unlisten()` alone does not). Reusing `src/lib/db`'s own long-lived export
+ * would mean either never closing it (hanging this script) or closing the
+ * module every OTHER importer in the same process might still expect to be
+ * open — a throwaway client owned entirely by this function avoids both.
+ * Same connection parameters as `src/lib/db/index.ts` (env vars, and the same
+ * macOS-vs-Linux socket default), duplicated rather than imported, matching
+ * this script's own sibling scripts' convention of being self-contained. */
+async function measureListenConnectionCost(): Promise<void> {
+  console.log("--- LISTEN connection cost (task #114) ---");
+
+  let postgres: typeof import("postgres");
+  try {
+    ({ default: postgres } = await import("postgres"));
+  } catch (error) {
+    console.log(`  skipped: could not load the \`postgres\` package (${(error as Error).message})`);
+    return;
+  }
+
+  const defaultSocket = process.platform === "darwin" ? "/tmp" : "/var/run/postgresql";
+  const sql = postgres({
+    host: process.env.PGHOST ?? defaultSocket,
+    database: process.env.PGDATABASE ?? "photoshowcase",
+    username: process.env.PGUSER ?? process.env.USER,
+    port: process.env.PGPORT ? Number(process.env.PGPORT) : undefined,
+    password: process.env.PGPASSWORD,
+    max: 10,
+    idle_timeout: 20,
+    prepare: false,
+    connect_timeout: 5,
+  });
+
+  await settle();
+  const baseline = rss();
+
+  try {
+    await sql.listen("measure_selection_transport_probe", () => {});
+  } catch (error) {
+    console.log(`  skipped: could not reach the configured Postgres (${(error as Error).message})`);
+    console.log(
+      "  (expected off a machine with no local/reachable dev Postgres — this is the one\n" +
+        "  measurement in this script that needs a real database; see this file's header comment)",
+    );
+    await sql.end({ timeout: 0 });
+    return;
+  }
+
+  await settle();
+  const afterListen = rss();
+  const delta = afterListen - baseline;
+
+  console.log(
+    `  one dedicated LISTEN connection`.padEnd(36) +
+      `+${bytesToMiB(delta).padStart(6)} MiB   ` +
+      `(fixed, ONE per app instance regardless of viewer count — never per viewer)`,
+  );
+  console.log(
+    "  Compare against the per-viewer SSE cost above: this is paid ONCE, not N times, which\n" +
+      "  is the entire reason task #114 chose 'one LISTEN connection feeding N local SSE\n" +
+      "  responses' over 'one LISTEN connection per viewer' (src/lib/selection-events.ts's own\n" +
+      "  header comment, 'FAN-OUT SHAPE').\n",
+  );
+
+  await sql.end({ timeout: 0 });
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   if (args[0] === "--worker") {
@@ -439,6 +539,8 @@ async function main(): Promise<void> {
   }
   console.log("");
   reportConclusion(aggregates);
+  console.log("");
+  await measureListenConnectionCost();
 }
 
 main().catch((error: unknown) => {

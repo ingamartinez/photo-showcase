@@ -1,0 +1,71 @@
+# GENERATED FILE — do not edit by hand.
+#
+# Produced by `bun run codegen` from the Pothos schema in
+# src/lib/graphql/**. Committed on purpose (task #32): the generated
+# TypeScript beside it is committed too, so `bun run typecheck` catches a
+# query that drifted from the schema in a fresh clone with no codegen step
+# run first.
+#
+# src/lib/graphql/schema-sdl.test.ts fails if this file is stale.
+
+type Asset {
+  finalKey: String
+  id: ID!
+  isEdited: Boolean!
+  isSelected: Boolean!
+  originalFilename: String!
+  proofHeight: Int!
+  proofKey: String!
+  proofWidth: Int!
+  sortOrder: Int!
+}
+
+type Gallery {
+  assets: [Asset!]!
+  clients: [GalleryClient!]!
+  createdAt: String!
+  extraPhotoPriceCopSnapshot: Int!
+  id: ID!
+  includedPhotosSnapshot: Int!
+  package: Package!
+  publicSlug: String!
+  selectionSubmittedAt: String
+  sessionDate: String!
+  status: GalleryStatus!
+  title: String!
+}
+
+type GalleryClient {
+  email: String!
+  id: ID!
+  name: String
+}
+
+type GalleryListItem {
+  id: ID!
+  photoCount: Int!
+  publicSlug: String!
+  sessionDate: String!
+  status: GalleryStatus!
+  title: String!
+}
+
+enum GalleryStatus {
+  archived
+  delivered
+  draft
+  proofing
+  selected
+}
+
+type Package {
+  id: ID!
+  name: String!
+}
+
+type Query {
+  galleries: [Gallery!]!
+  gallery(id: ID!): Gallery
+  galleryBySlug(publicSlug: String!): Gallery
+  galleryList: [GalleryListItem!]!
+}

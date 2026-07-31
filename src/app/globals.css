@@ -18,6 +18,40 @@
 @source not "../../design";
 
 /*
+  Same rule, second application (task #175): keep the files that TALK ABOUT
+  classnames out of the files that PRODUCE them.
+
+  A test that asserts which utilities are allowed where, or that `cn()` keeps a
+  size and a line height together, has to CONTAIN the class strings it argues
+  about — they are the assertion. Tailwind's scanner cannot tell an assertion
+  from a call site, so it compiled the whole cast of the app-surface lint
+  fixtures into the production stylesheet: +771 bytes of rules that exist only
+  because something argued they must never be used. Measured on this branch,
+  before these directives.
+
+  Nothing excluded here renders markup. `tooling/` is dev-time tools staged by
+  nothing (see eslint.config.mjs for the tooling/ vs scripts/ split), the ESLint
+  config and its test carry fixture strings and rule documentation, and a
+  `*.test.*` file asserts about components rather than being one — every class a
+  component actually needs is in the component, which is still scanned.
+
+  NOTE THAT THIS COMMENT NAMES NO CLASS, and neither should any comment in a
+  scanned file. globals.css cannot exclude itself, and an earlier draft of this
+  very paragraph quoted the utilities it was congratulating itself on removing,
+  which put every one of them straight back. The same trap as the `--radius-sm`
+  note further down, and as the bracket-syntax note in src/lib/utils.ts.
+
+  If a component ever builds a classname dynamically and relies on a test file
+  to make the full string visible to the scanner, THAT is the bug: fix it with
+  `@source inline(...)` naming the real candidates, not by deleting these lines.
+*/
+@source not "../../tooling";
+@source not "../../eslint.config.mjs";
+@source not "../../eslint.config.test.ts";
+@source not "../**/*.test.ts";
+@source not "../**/*.test.tsx";
+
+/*
   Alejo Frames — dark gallery.
   A deliberately single-theme, cinema-black world: cool-biased near-black ground,
   a single tungsten-brass accent used sparingly, high-contrast serif display.

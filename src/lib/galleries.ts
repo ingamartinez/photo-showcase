@@ -9,7 +9,7 @@
 // epic's central rule).
 import "server-only";
 
-import { and, count, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, count, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { galleries, galleryClients } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
@@ -616,22 +616,32 @@ export async function getGalleryUnlockAudit(galleryId: string): Promise<GalleryU
 // clients and galleries. See src/app/dashboard/page.tsx's header comment.
 // ---------------------------------------------------------------------------
 
-/** How many galleries exist, total, across every status. Powers the
- * "Galerías" summary on `/dashboard` (task #88) — a dedicated `count()`
- * query, same reasoning as `getPendingSelectionCount` above: the dashboard
- * index only needs a number, not `getGalleriesWithDetails().length`, which
- * would pull every gallery's client/package/asset joins just to discard
- * everything but a count. */
+/** How many galleries are currently "en marcha" — every status EXCEPT
+ * `archived`. Powers the "Galerías" summary on `/dashboard` (task #88) and
+ * the sentence right above it ("Tenés N clientes y M galerías en marcha.")
+ * — a dedicated `count()` query, same reasoning as `getPendingSelectionCount`
+ * above: the dashboard index only needs a number, not
+ * `getGalleriesWithDetails().length`, which would pull every gallery's
+ * client/package/asset joins just to discard everything but a count.
+ *
+ * Task #90: originally counted EVERY status, including `archived`, while
+ * the sentence it powers already said "en marcha" — harmless only because
+ * no code path set a gallery to `archived` yet (PLAN.md §2 marks archival as
+ * future, task #42). Excluding it here, rather than softening the copy to
+ * something status-agnostic like "en total", was chosen because the rest of
+ * this codebase already treats `archived` as a closed, historical state the
+ * moment it exists — see `CLIENT_VISIBLE_STATUSES` above and
+ * `src/app/api/assets/[assetId]/route.ts`'s own comment — so a dashboard
+ * that greets the photographer with "how your studio is doing right now"
+ * should not count a gallery nobody is working on anymore toward that
+ * number. The two (this query and the sentence in
+ * src/app/dashboard/page.tsx) must keep agreeing — see this function's own
+ * test in galleries.test.ts, which asserts the `archived` exclusion
+ * directly rather than trusting a mock's return value. */
 export async function getGalleryCount(): Promise<number> {
-  const [row] = await db.select({ value: count() }).from(galleries);
+  const [row] = await db
+    .select({ value: count() })
+    .from(galleries)
+    .where(ne(galleries.status, "archived"));
   return row?.value ?? 0;
-}
-
-/** Spanish, pluralized copy for `getGalleryCount`'s result — the total
- * gallery count on `/dashboard` (task #88). Distinct from `formatGalleryCount`
- * in src/lib/clients.ts, which describes how many galleries belong to ONE
- * client, not the studio-wide total. */
-export function formatGalleryCountTotal(galleryCount: number): string {
-  if (galleryCount === 1) return "1 galería";
-  return `${galleryCount} galerías`;
 }

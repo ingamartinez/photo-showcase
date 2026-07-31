@@ -6,7 +6,7 @@
 // markup (names, emails, and the pluralized gallery-count text), not just
 // that the page resolves. Without this, a reviewer's independent check found
 // two ways this slice could stay 25/25 green while broken: deleting the
-// `formatGalleryCount(...)` span entirely, or making the non-empty branch
+// `formatClientGalleryCount(...)` span entirely, or making the non-empty branch
 // never render at all (the old page.test.ts always resolved `[]`, so
 // clients.map(...) was never exercised).
 //
@@ -20,9 +20,14 @@
 // client-form.test.tsx already does, since `<ClientForm />` imports it and
 // it too pulls in `@/lib/auth-guards` transitively.
 //
-// `formatGalleryCount`'s own pluralization logic is unit-tested directly
-// against the REAL export in src/lib/clients.test.ts (node environment) —
-// the copy below exists only because that module can't be imported here.
+// `formatClientGalleryCount` is NOT mocked (task #49): it moved out of
+// `@/lib/clients` into `@/lib/format`, a plain module with no
+// `server-only`/`@/lib/db` import (see that file's header comment), so this
+// test imports and exercises the REAL function instead of re-implementing
+// its pluralization logic inline — the exact duplication #49 was filed to
+// remove. `formatClientGalleryCount`'s own pluralization logic is ALSO
+// unit-tested directly in src/lib/format.test.ts (node environment); this
+// file is what proves the real copy actually reaches the page's markup.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { Session } from "next-auth";
@@ -36,11 +41,6 @@ vi.mock("@/lib/auth-guards", () => ({ requireAdmin: () => requireAdminMock() }))
 const getClientsWithGalleryCountMock = vi.fn<() => Promise<ClientWithGalleryCount[]>>();
 vi.mock("@/lib/clients", () => ({
   getClientsWithGalleryCount: () => getClientsWithGalleryCountMock(),
-  formatGalleryCount: (count: number) => {
-    if (count === 0) return "Sin galerías todavía";
-    if (count === 1) return "1 galería";
-    return `${count} galerías`;
-  },
 }));
 
 vi.mock("./actions", () => ({

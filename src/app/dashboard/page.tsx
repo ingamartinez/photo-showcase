@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { requireAdmin } from "@/lib/auth-guards";
 import { formatClientCount, getClientCount } from "@/lib/clients";
+import { formatStudioGalleryCount } from "@/lib/format";
 import {
-  formatGalleryCountTotal,
   formatPendingSelectionCount,
   getGalleryCount,
   getPendingSelectionCount,
@@ -53,7 +53,7 @@ export default async function DashboardPage() {
       <p className="text-fg-dim mt-5 max-w-[58ch] text-[15px] leading-relaxed">
         {isEmpty
           ? "Este va a ser tu punto de partida: cargás un cliente, armás una galería con el paquete que contrató y subís las pruebas."
-          : `Tenés ${formatClientCount(clientCount)} y ${formatGalleryCountTotal(galleryCount)} en marcha.`}
+          : `Tenés ${formatClientCount(clientCount)} y ${formatStudioGalleryCount(galleryCount)} en marcha.`}
       </p>
       {pendingSelectionCopy && (
         <Link
@@ -84,7 +84,7 @@ export default async function DashboardPage() {
           <p className="group-hover:text-accent-2 mt-3 font-serif text-xl transition-colors">
             {galleryCount === 0
               ? "Todavía no armaste ninguna galería."
-              : formatGalleryCountTotal(galleryCount)}
+              : formatStudioGalleryCount(galleryCount)}
           </p>
         </Link>
       </div>

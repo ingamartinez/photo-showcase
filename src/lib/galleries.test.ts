@@ -663,8 +663,9 @@ describe("getGalleryUnlockAudit", () => {
 });
 
 describe("getGalleryCount", () => {
-  it("counts every gallery via a dedicated count() query, not the full detail query", async () => {
-    const fromMock = vi.fn().mockResolvedValue([{ value: 2 }]);
+  it("counts galleries via a dedicated count() query, not the full detail query", async () => {
+    const whereMock = vi.fn().mockResolvedValue([{ value: 2 }]);
+    const fromMock = vi.fn().mockReturnValue({ where: whereMock });
     selectMock.mockReturnValue({ from: fromMock });
     const { galleries } = await import("./db/schema");
     const { getGalleryCount } = await import("./galleries");
@@ -676,21 +677,34 @@ describe("getGalleryCount", () => {
     expect(findManyMock).not.toHaveBeenCalled();
   });
 
+  // Task #90: the dashboard sentence this powers says "en marcha" — a
+  // gallery this query counted while its status was `archived` would make
+  // the number and the words lie the moment archival ships (#42). Asserting
+  // the actual predicate passed to `.where()`, not just that some predicate
+  // was passed, is what would have caught the original bug: a mock that
+  // simply returns `[{ value: 2 }]` regardless of the filter would stay
+  // green even if the `ne(...)` below were deleted entirely.
+  it("excludes archived galleries from the count", async () => {
+    const whereMock = vi.fn().mockResolvedValue([{ value: 2 }]);
+    const fromMock = vi.fn().mockReturnValue({ where: whereMock });
+    selectMock.mockReturnValue({ from: fromMock });
+    const { ne } = await import("drizzle-orm");
+    const { galleries } = await import("./db/schema");
+    const { getGalleryCount } = await import("./galleries");
+
+    await getGalleryCount();
+
+    expect(whereMock).toHaveBeenCalledWith(ne(galleries.status, "archived"));
+  });
+
   it("returns 0 when no row comes back", async () => {
-    selectMock.mockReturnValue({ from: () => Promise.resolve([]) });
+    selectMock.mockReturnValue({ from: () => ({ where: () => Promise.resolve([]) }) });
     const { getGalleryCount } = await import("./galleries");
 
     await expect(getGalleryCount()).resolves.toBe(0);
   });
 });
 
-describe("formatGalleryCountTotal", () => {
-  it.each([
-    [1, "1 galería"],
-    [2, "2 galerías"],
-    [13, "13 galerías"],
-  ])("formats %i as %s", async (galleryCount, expected) => {
-    const { formatGalleryCountTotal } = await import("./galleries");
-    expect(formatGalleryCountTotal(galleryCount)).toBe(expected);
-  });
-});
+// formatGalleryCountTotal's tests moved to src/lib/format.test.ts
+// (task #49/#90) — it is no longer exported from this module, see that
+// file's `formatStudioGalleryCount`.

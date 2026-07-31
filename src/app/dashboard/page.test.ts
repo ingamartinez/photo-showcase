@@ -20,7 +20,9 @@ vi.mock("@/auth", () => ({
 // read the database — mocked here the same way
 // `dashboard/galleries/page.test.ts` mocks `@/lib/galleries` (importActual +
 // override only what this page calls), so the real `formatPendingSelectionCount()`
-// / `formatGalleryCountTotal()` still run.
+// still runs. `formatStudioGalleryCount()` doesn't need this treatment at
+// all (task #49/#90) — it lives in `@/lib/format`, a module this file never
+// mocks.
 const getPendingSelectionCountMock = vi.fn<() => Promise<number>>();
 const getGalleryCountMock = vi.fn<() => Promise<number>>();
 vi.mock("@/lib/galleries", async () => {

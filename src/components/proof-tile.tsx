@@ -4,11 +4,41 @@
 // by task #144. Presentational only: it holds no state, issues no request and
 // decides nothing — every flag below is computed by <ProofGrid> and every
 // click is handed straight back to it.
+//
+// TASK #145 REDESIGNED THIS FILE AGAINST design/system/client.html's `elegir`
+// screen. The case being designed for is the one in that task's body: 84
+// proofs, pick 15, one hand, on a phone, at night. Three things follow, and
+// each is a line in the mock:
+//
+//   - THE PICK TARGET IS 48px AND SITS IN THE THUMB'S PATH (client.html:197-208
+//     — "48px, bottom-right, thumb reach, and separate from the photo body so
+//     tapping to LOOK and tapping to CHOOSE are never the same gesture"). It
+//     used to be a text pill roughly 24px tall pinned to the TOP-right corner:
+//     above the WCAG 2.5.8 24px floor by a hair, well under this task's own
+//     44px requirement, and at the far end of the reach arc on a phone held in
+//     one hand.
+//   - PICKED IS NEVER COLOUR ALONE (client.html:213-215). Three redundant
+//     channels, so the state survives a colour-blind reader, a sun-washed
+//     screen and a greyscale print of a screenshot alike: a ✓ GLYPH inside the
+//     circle (shape), a 3px INSET FRAME around the photo (structure), and the
+//     photo itself brightening slightly (luminance). `aria-pressed` carries
+//     the same fact to assistive tech, as it always did.
+//   - THE WATERMARK IS IN THE BYTES, NOT IN THIS MARKUP. The mock draws
+//     `.tile__wm` as rotated text (client.html:186-191) because its tiles are
+//     CSS gradients with nothing to protect; here `processProof`
+//     (src/lib/images.ts) composites the mark into the proof derivative
+//     itself, and `images.guard.test.ts` refuses to emit a proof whose
+//     watermark rasterized with no ink. Re-drawing it in CSS would be a second,
+//     FAKE mark that a client could delete from the DOM in two seconds while
+//     the real one stayed put — so this file deliberately does not, and the
+//     `brightness-[1.06]` above is the only filter applied to the photo,
+//     nowhere near enough to wash the mark out.
 import { DownloadFinalButton } from "@/components/download-final-button";
 import type { ProofAsset } from "@/components/proof-grid";
 
 export function ProofTile({
   asset,
+  position,
   src,
   isSelected,
   isPending,
@@ -19,6 +49,12 @@ export function ProofTile({
   onToggleSelection,
 }: {
   asset: ProofAsset;
+  /** 1-based position in the grid, rendered in the tile's corner
+   * (client.html:192-195 `.tile__n`). Scanning 84 near-identical proofs on a
+   * phone is exactly when "the fourth one" stops being a usable way to talk
+   * about a photo with the person sitting next to you — and `originalFilename`
+   * (`IMG_4417.JPG`) is not that either. Display only; nothing keys off it. */
+  position: number;
   src: string;
   isSelected: boolean;
   isPending: boolean;
@@ -40,14 +76,26 @@ export function ProofTile({
         type="button"
         onClick={onOpen}
         aria-label={`Ver ${asset.originalFilename}`}
-        className="focus-visible:ring-accent block w-full rounded-sm text-left focus-visible:ring-2 focus-visible:outline-none"
+        className="focus-visible:ring-accent block w-full text-left focus-visible:ring-2 focus-visible:outline-none"
       >
         {/* Aspect ratio reserved from `proofWidth`/`proofHeight` BEFORE the
             image ever arrives — this is what makes the grid load with zero
             cumulative layout shift, the columns this task's acceptance
-            criterion is about. */}
+            criterion is about.
+
+            DELIBERATELY NOT the mock's uniform `aspect-ratio: 2 / 3`
+            (client.html:181). That ratio exists because the mock's tiles are
+            gradients with no intrinsic shape, and adopting it here would crop
+            roughly half the width off every landscape proof — the opposite of
+            epic #140's own "que la foto se vea". It would also break the two
+            chrome tests that pin this contract by name
+            ([publicSlug]/page.chrome.test.tsx's "aspect ratio reserved from
+            proofWidth/proofHeight" and task #89's "still reserves the tile's
+            aspect ratio from the proof's stored dimensions"). A per-asset
+            ratio reserves its box just as completely as a uniform one, so
+            nothing about the CLS guarantee depends on which is used. */}
         <div
-          className="bg-bg-2 relative overflow-hidden rounded-sm"
+          className="bg-bg-2 relative overflow-hidden"
           style={{ aspectRatio: `${asset.proofWidth} / ${asset.proofHeight}` }}
         >
           {/* Plain <img>, not next/image: same reasoning as asset-tile.tsx —
@@ -62,8 +110,31 @@ export function ProofTile({
             alt=""
             onError={onError}
             loading="lazy"
-            className="h-full w-full object-cover transition-transform duration-300 hover:scale-[1.03]"
+            className={`h-full w-full object-cover transition-[filter] duration-200 ${
+              isSelected ? "brightness-[1.06] saturate-[1.04]" : ""
+            }`}
           />
+
+          {/* Channel two of "picked is not colour alone": an inset frame, so
+              the state is legible as a change of STRUCTURE across the whole
+              grid at a glance, not one tile at a time. A border on an overlay
+              rather than `outline-offset: -3px` (client.html:214) purely
+              because a Tailwind outline-offset utility is one more thing to
+              get subtly wrong across versions; the painted result is the
+              same 3px brass frame inset into the photo. */}
+          {isSelected && (
+            <span
+              aria-hidden="true"
+              className="border-accent pointer-events-none absolute inset-0 border-[3px]"
+            />
+          )}
+
+          {/* client.html:192-195. Sits over the photo's own top-left corner,
+              which is the quietest part of a proof and the one the 48px pick
+              target below never covers. */}
+          <span className="pointer-events-none absolute top-2 left-2 font-mono text-[10px] text-[rgba(236,234,242,0.55)] tabular-nums">
+            {String(position).padStart(2, "0")}
+          </span>
         </div>
       </button>
 
@@ -73,7 +144,19 @@ export function ProofTile({
           of the tile only visually, via absolute placement on the `relative`
           <li>. Never blocks or scolds going over quota (task #24) — this
           control does exactly one thing, flip this one asset's selection,
-          regardless of how many are already selected. */}
+          regardless of how many are already selected.
+
+          48px square (client.html:200-208's `--tap`), comfortably past this
+          task's 44px floor, and in the BOTTOM-right rather than the top: on a
+          phone held one-handed the bottom edge of a tile is the reachable
+          one, and the top-right of a tile in the last row is the furthest
+          point on the screen from the thumb.
+
+          The accessible name did NOT change with the visual — "Seleccionar:
+          IMG_0001.JPG" / "Quitar de seleccionadas: IMG_0001.JPG" are what
+          proof-grid.test.tsx and [publicSlug]/page.chrome.test.tsx query by,
+          and they name the actual photo, which the mock's own "Elegir foto 1"
+          does not. The mock is the reference for the PIXELS. */}
       <button
         type="button"
         onClick={onToggleSelection}
@@ -84,19 +167,29 @@ export function ProofTile({
             ? `Quitar de seleccionadas: ${asset.originalFilename}`
             : `Seleccionar: ${asset.originalFilename}`
         }
-        className={`absolute top-2 right-2 z-10 rounded-full px-2 py-1 text-xs font-medium shadow transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-          isSelected ? "bg-accent text-bg" : "bg-bg/85 text-fg hover:bg-bg"
+        className={`absolute right-[7px] bottom-[7px] z-10 grid h-12 w-12 place-items-center rounded-full border text-[17px] leading-none backdrop-blur-[6px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+          isSelected
+            ? "border-accent bg-accent text-[#14100a]"
+            : "text-fg hover:border-accent border-[rgba(236,234,242,0.5)] bg-[rgba(7,7,9,0.42)]"
         }`}
       >
-        {isSelected ? "✓ Seleccionada" : "Seleccionar"}
+        {/* Channel one: a shape, not a hue. `aria-hidden` because the button's
+            own `aria-label` and `aria-pressed` already say this, and a screen
+            reader announcing a bare "✓" after them adds nothing. */}
+        <span aria-hidden="true">{isSelected ? "✓" : ""}</span>
       </button>
 
-      {/* Bottom-right, not on top of the selection badge above — task #28's
-          own affordance, shown only once the gallery is delivered AND this
+      {/* Bottom-LEFT since task #145, not bottom-right — task #28's own
+          affordance, shown only once the gallery is delivered AND this
           specific asset actually has a final (see <ProofGrid>'s own
-          `showDownload` computation). */}
+          `showDownload` computation). It used to sit bottom-right and the
+          selection pill sat top-right; now that the pick target owns the
+          bottom-right corner the two would overlap, and a `delivered` gallery
+          renders BOTH (the toggle stays mounted-but-disabled per #25, it is
+          not hidden). Only the position moved here — the delivered screen's
+          own visual treatment is task #148's. */}
       {showDownload && (
-        <div className="absolute right-2 bottom-2 z-10">
+        <div className="absolute bottom-2 left-2 z-10">
           <DownloadFinalButton assetId={asset.id} originalFilename={asset.originalFilename} />
         </div>
       )}

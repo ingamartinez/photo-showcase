@@ -2,7 +2,8 @@
 
 // One row per ACTIVE client on the gallery detail page (task #97) — renders
 // the same "name · email" line #94 already established, plus a two-step
-// "Quitar" affordance for the new removal action.
+// "Quitar" affordance for the removal action and, since task #101, a
+// "Reenviar acceso" affordance for the resend action.
 //
 // The removal confirmation names WHAT is about to happen, not just "¿estás
 // seguro?" — the kanban task's own explicit requirement: removing a client
@@ -13,14 +14,35 @@
 // `activeClientRuleViolation()` guard, src/lib/galleries.ts) — "hiding is UX,
 // not authority" stance as every other guard in this app: the action itself
 // re-checks this regardless of what `removable` is computed as here.
+//
+// Task #101's `resendable` follows the same "UX only, never the authority"
+// stance — it is server-computed (`isGalleryVisibleToClient(gallery.status)`
+// in page.tsx) and passed in as a plain boolean, rather than imported here,
+// because this is a Client Component ("use client" below) and
+// `isGalleryVisibleToClient` lives in a `server-only`-guarded module
+// (src/lib/galleries.ts) that a Client Component cannot import at all.
+// `resendGalleryAccessEmail` re-derives the same answer from the DB row
+// regardless of what this component was told to render.
+//
+// TWO INDEPENDENT `useActionState` HOOKS, ONE PER FORM, EACH WITH ITS OWN
+// `pending` — the trap a naive version of this row would fall into (and did,
+// on this task's first, lost implementation attempt): sharing ONE `pending`
+// flag between "Quitar" and "Reenviar" would disable "Confirmar" (the
+// removal action's own submit button) while an unrelated resend is still in
+// flight, and vice versa. The two actions do not touch the same data
+// (`removeGalleryClient` writes `removedAt`; `resendGalleryAccessEmail`
+// writes nothing at all) and have no reason to block each other in the UI.
 import { useActionState, useState } from "react";
 import {
   removeGalleryClient,
+  resendGalleryAccessEmail,
   type RemoveGalleryClientState,
+  type ResendGalleryAccessEmailState,
 } from "@/app/dashboard/galleries/actions";
 import type { Gallery } from "@/lib/db/schema";
 
-const initialState: RemoveGalleryClientState = { status: "idle" };
+const initialRemoveState: RemoveGalleryClientState = { status: "idle" };
+const initialResendState: ResendGalleryAccessEmailState = { status: "idle" };
 
 const REMOVE_WARNING_BY_STATUS: Record<Gallery["status"], string> = {
   draft:
@@ -37,16 +59,25 @@ export function GalleryClientRow({
   client,
   status,
   removable,
+  resendable,
 }: {
   galleryId: string;
   client: { id: string; name: string | null; email: string };
   status: Gallery["status"];
   removable: boolean;
+  resendable: boolean;
 }) {
-  const [state, formAction, pending] = useActionState(removeGalleryClient, initialState);
+  const [removeState, removeFormAction, removePending] = useActionState(
+    removeGalleryClient,
+    initialRemoveState,
+  );
+  const [resendState, resendFormAction, resendPending] = useActionState(
+    resendGalleryAccessEmail,
+    initialResendState,
+  );
   const [confirming, setConfirming] = useState(false);
 
-  if (state.status === "removed") {
+  if (removeState.status === "removed") {
     return (
       <p className="text-fg-mute mt-2 text-sm line-through decoration-1">
         {client.name ?? client.email} · {client.email} — quitado.
@@ -60,6 +91,19 @@ export function GalleryClientRow({
         <p className="text-fg-mute text-sm">
           {client.name ?? client.email} · {client.email}
         </p>
+        {resendable && (
+          <form action={resendFormAction}>
+            <input type="hidden" name="galleryId" value={galleryId} />
+            <input type="hidden" name="clientId" value={client.id} />
+            <button
+              type="submit"
+              disabled={resendPending}
+              className="label text-fg-dim hover:text-accent-2 transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {resendPending ? "Reenviando…" : "Reenviar acceso"}
+            </button>
+          </form>
+        )}
         {removable && !confirming && (
           <button
             type="button"
@@ -72,17 +116,17 @@ export function GalleryClientRow({
       </div>
 
       {removable && confirming && (
-        <form action={formAction} className="flex flex-col items-start gap-2">
+        <form action={removeFormAction} className="flex flex-col items-start gap-2">
           <input type="hidden" name="galleryId" value={galleryId} />
           <input type="hidden" name="clientId" value={client.id} />
           <p className="text-xs text-[#e0796b]">{REMOVE_WARNING_BY_STATUS[status]}</p>
           <div className="flex gap-3">
             <button
               type="submit"
-              disabled={pending}
+              disabled={removePending}
               className="label text-[#e0796b] disabled:cursor-not-allowed disabled:opacity-50"
             >
-              {pending ? "Quitando…" : "Confirmar"}
+              {removePending ? "Quitando…" : "Confirmar"}
             </button>
             <button
               type="button"
@@ -95,9 +139,20 @@ export function GalleryClientRow({
         </form>
       )}
 
-      {state.status === "error" && (
+      {removeState.status === "error" && (
         <p role="alert" className="text-xs text-[#e0796b]">
-          {state.message}
+          {removeState.message}
+        </p>
+      )}
+
+      {(resendState.status === "resend_email_failed" || resendState.status === "throttled") && (
+        <p role="alert" className="text-xs text-[#e0796b]">
+          {resendState.message}
+        </p>
+      )}
+      {resendState.status === "resent" && (
+        <p role="status" className="text-accent-2 text-xs">
+          {resendState.message}
         </p>
       )}
     </div>

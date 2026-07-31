@@ -80,6 +80,19 @@ describe("ClientsPage chrome", () => {
         createdAt: new Date("2026-02-01"),
         galleryCount: 0,
       },
+      // Task #52: a client row created by the magic-link flow (rather than
+      // the dashboard form) can genuinely have no name — `users.name` is
+      // nullable. Both fixtures above always had a name, so the page's
+      // `client.name ?? client.email` fallback went uncovered: removing it
+      // kept every prior assertion green.
+      {
+        id: "u3",
+        name: null,
+        email: "carla@example.com",
+        phone: null,
+        createdAt: new Date("2026-03-01"),
+        galleryCount: 1,
+      },
     ]);
 
     const element = await ClientsPage();
@@ -93,6 +106,12 @@ describe("ClientsPage chrome", () => {
     expect(screen.getByText("beto@example.com")).toBeDefined();
     expect(screen.getByText("+57 300 0000")).toBeDefined();
     expect(screen.getByText("Sin galerías todavía")).toBeDefined();
+
+    // The nameless client's row renders its email in BOTH the name slot
+    // (the `client.name ?? client.email` fallback) and the dedicated email
+    // line below it, so the same string appears twice on the page.
+    expect(screen.getAllByText("carla@example.com")).toHaveLength(2);
+    expect(screen.getByText("1 galería")).toBeDefined();
 
     // Sanity check against a false positive: the EMPTY-state copy must be
     // absent — a page that (bug) always renders the empty branch regardless

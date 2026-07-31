@@ -43,6 +43,7 @@
   },
   "dependencies": {
     "@auth/drizzle-adapter": "^1.11.3",
+    "@graphql-typed-document-node/core": "^3.2.0",
     "@graphql-yoga/plugin-disable-introspection": "2.22.1",
     "@pothos/core": "^4.13.1",
     "class-variance-authority": "^0.7.1",

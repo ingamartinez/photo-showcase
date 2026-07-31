@@ -26,10 +26,7 @@ import {
   galleryAccessResendLimiter,
 } from "@/lib/gallery-access-rate-limiters";
 import { generateGallerySlug } from "@/lib/slug";
-import { authEnv, resendEnv } from "@/lib/env";
-import { computeQuota } from "@/lib/quota";
 import { notifySelectionChanged } from "@/lib/selection-events";
-import { sendUnlockNotificationEmail } from "@/lib/unlock-notification-email";
 
 const createGallerySchema = z.object({
   // Fed by a `<select multiple>` picker backed by getClientsForPicker()
@@ -543,11 +540,19 @@ function isUnlockable(status: Gallery["status"]): boolean {
  * PLAN.md §4's "identity is the email", snapshotted rather than a foreign
  * key; see schema.ts's comment on that column for why) and WHEN
  * (`unlockedAt`), plus an OPTIONAL `reason` a photographer can leave for
- * their own future reference and for the client's — "this is an audit
- * trail for a money conversation", per this task's own scope note. Only the
- * MOST RECENT unlock is kept (overwritten by a later one) — the acceptance
- * criterion is "who did it and when, AT MINIMUM", not a full append-only
- * log, and that scope cut is deliberate.
+ * their own future reference — "this is an audit trail for a money
+ * conversation", per this task's own scope note. Only the MOST RECENT unlock
+ * is kept (overwritten by a later one) — the acceptance criterion is "who did
+ * it and when, AT MINIMUM", not a full append-only log, and that scope cut is
+ * deliberate.
+ *
+ * Task #85 NOTE: the reason used to also be echoed into the client's own
+ * notification email (src/lib/unlock-notification-email.ts, now removed).
+ * Since that email moved onto `signIn("gallery-unlock", ...)` — a NextAuth
+ * Email provider whose `sendVerificationRequest` only ever receives the
+ * recipient's address and the magic-link URL, never call-specific data — the
+ * reason is recorded here for the admin's own record only; the client no
+ * longer sees it in the email itself.
  *
  * Guarded the same way publishGallery/submit-selection already are: the
  * UPDATE's own `WHERE status = 'selected'` is the REAL, atomic guard
@@ -695,22 +700,6 @@ export async function unlockSelection(
   // right response.
   const clients = await getGalleryClients(unlockedGallery.id);
 
-  // Quota AT THE MOMENT OF UNLOCK — since a `selected` gallery's assets
-  // cannot be toggled (`SELECTION_LOCKED_STATUSES` on the sibling PATCH
-  // route, src/app/api/assets/[assetId]/selection/route.ts), this is
-  // exactly what the client had submitted, computed off the gallery's own
-  // frozen snapshot terms — never the live `packages` row (this epic's
-  // central rule, repeated in every sibling that touches quota).
-  const siblings = await db
-    .select({ isSelected: assets.isSelected })
-    .from(assets)
-    .where(eq(assets.galleryId, unlockedGallery.id));
-  const selectedCount = siblings.filter((row) => row.isSelected).length;
-  const quota = computeQuota(selectedCount, {
-    includedPhotosSnapshot: unlockedGallery.includedPhotosSnapshot,
-    extraPhotoPriceCopSnapshot: unlockedGallery.extraPhotoPriceCopSnapshot,
-  });
-
   // Task #94 — SEVERAL clients, PARTIAL failure named explicitly: this used
   // to be a single best-effort send collapsed into one boolean
   // (`emailFailed`). With N clients, "one address bounced, the rest didn't"
@@ -721,46 +710,40 @@ export async function unlockSelection(
   // transition already committed, notification is best-effort" stance the
   // header comment above already takes; this only changes what a failure
   // REPORTS, not what it does.
+  //
+  // Task #85 moved this from a plain, direct Resend call
+  // (`sendUnlockNotificationEmail`, src/lib/unlock-notification-email.ts, now
+  // removed) onto `signIn("gallery-unlock", ...)` — the SAME MECHANISM
+  // `publishGallery`/`deliverGallery` use, on its own provider — for the
+  // reasons this function's own header comment gives. The `reason` the admin
+  // left above is still recorded on the gallery row for the audit trail
+  // (#73's own acceptance criterion); it is no longer echoed into the
+  // client's email, because `sendVerificationRequest` has no channel to carry
+  // it (see auth.ts's own comment on the `gallery-unlock` provider).
   let failedEmails: string[] = [];
-  if (clients.length === 0) {
-    // Reachable only through the removal race named at the lookup above —
-    // treated the same as every client's send failing, since there is nobody
-    // to notify either way. (This branch also said "unreachable BY DESIGN"
-    // until task #100; it never was, once #97 shipped removal.)
-    failedEmails = [];
-  } else {
-    try {
-      const { RESEND_API_KEY, EMAIL_FROM } = resendEnv();
-      const { AUTH_URL } = authEnv();
-      // The CLIENT's own gallery URL (`/galleries/[publicSlug]`), not the
-      // admin dashboard URL `sendSubmissionNotificationEmail` builds — see
-      // src/lib/unlock-notification-email.ts's own comment on why. Built
-      // once and reused for every client — it does not vary per recipient.
-      const galleryUrl = new URL(`/galleries/${unlockedGallery.publicSlug}`, AUTH_URL).toString();
+  if (clients.length > 0) {
+    const sendResults = await Promise.allSettled(
+      clients.map((client) =>
+        signIn("gallery-unlock", {
+          email: client.email,
+          redirect: false,
+          redirectTo: `/galleries/${unlockedGallery.publicSlug}`,
+        }),
+      ),
+    );
 
-      const sendResults = await Promise.allSettled(
-        clients.map((client) =>
-          sendUnlockNotificationEmail({
-            apiKey: RESEND_API_KEY,
-            from: EMAIL_FROM,
-            to: client.email,
-            clientName: client.name,
-            clientEmail: client.email,
-            galleryTitle: unlockedGallery.title,
-            galleryUrl,
-            reason,
-            quota,
-          }),
-        ),
-      );
-      failedEmails = clients
-        .filter((_, index) => sendResults[index]!.status === "rejected")
-        .map((client) => client.email);
-    } catch {
-      // `resendEnv()`/`authEnv()` itself threw (missing config) before any
-      // send was even attempted — every client counts as unreached.
-      failedEmails = clients.map((client) => client.email);
-    }
+    // A rejection that ISN'T an `AuthError` is a genuine bug/outage this
+    // action has no story for — same "let it crash rather than silently
+    // pretend" stance `publishGallery`/`deliverGallery` already take.
+    const unexpected = sendResults.find(
+      (result): result is PromiseRejectedResult =>
+        result.status === "rejected" && !(result.reason instanceof AuthError),
+    );
+    if (unexpected) throw unexpected.reason;
+
+    failedEmails = clients
+      .filter((_, index) => sendResults[index]!.status === "rejected")
+      .map((client) => client.email);
   }
 
   revalidatePath(`/dashboard/galleries/${unlockedGallery.id}`);

@@ -6,15 +6,27 @@ import type { Session } from "next-auth";
 // same stub as this directory's own actions.publish.test.ts.
 vi.mock("server-only", () => ({}));
 
+// `@/auth` is mocked wholesale — BOTH exports this file's transitive imports
+// actually need: `auth()` (via requireAdmin()) and `signIn()` (called
+// directly by unlockSelection since task #85, the SAME MECHANISM
+// `publishGallery`/`deliverGallery` use, on its own `gallery-unlock`
+// provider — see actions.ts's own header comment on `unlockSelection` for
+// why this is a magic link rather than the bare gallery URL task #73
+// originally shipped).
 const authMock = vi.fn();
-vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
+const signInMock = vi.fn();
+vi.mock("@/auth", () => ({
+  auth: (...args: unknown[]) => authMock(...args),
+  signIn: (...args: unknown[]) => signInMock(...args),
+}));
 
 // `unlockSelection` lives in the SAME MODULE as `publishGallery`, which
 // imports `AuthError` from "next-auth" at the top of the file — the real
 // package's root index eagerly imports `./lib/env.js` (which imports
 // `next/server`) at module scope, unresolvable under Vitest. Mocked
-// wholesale, same fix as actions.publish.test.ts's own identical mock, even
-// though this suite never exercises the `AuthError` branch itself.
+// wholesale, same fix as actions.publish.test.ts's own identical mock.
+// Unlike before task #85, this suite NOW exercises the `AuthError` branch —
+// see the "client notification failure" describe block below.
 vi.mock("next-auth", () => ({
   AuthError: class AuthError extends Error {},
 }));
@@ -24,19 +36,6 @@ vi.mock("next-auth", () => ({
 const revalidatePathMock = vi.fn();
 vi.mock("next/cache", () => ({
   revalidatePath: (...args: unknown[]) => revalidatePathMock(...args),
-}));
-
-// Mocked at the module boundary, not the network (`fetch`) boundary — same
-// reasoning as actions.publish.test.ts mocking `signIn` rather than
-// Resend's HTTP call, and submit-selection/route.test.ts mocking
-// `sendSubmissionNotificationEmail`: this suite is about `unlockSelection`'s
-// OWN orchestration (who gets emailed, with what, and what the action
-// reports back when the send fails), which
-// src/lib/unlock-notification-email.test.ts already covers at the
-// Resend-call level.
-const sendUnlockNotificationEmailMock = vi.fn();
-vi.mock("@/lib/unlock-notification-email", () => ({
-  sendUnlockNotificationEmail: (...args: unknown[]) => sendUnlockNotificationEmailMock(...args),
 }));
 
 // Task #114: `unlockSelection` is one of the three write paths that must
@@ -300,16 +299,11 @@ function formDataWith(fields: Record<string, string | undefined>) {
 
 beforeEach(async () => {
   authMock.mockReset();
+  signInMock.mockReset();
   revalidatePathMock.mockReset();
-  sendUnlockNotificationEmailMock.mockReset();
-  sendUnlockNotificationEmailMock.mockResolvedValue(undefined);
   notifySelectionChangedMock.mockReset();
   notifySelectionChangedMock.mockResolvedValue(undefined);
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
-  vi.stubEnv("RESEND_API_KEY", "re_test_key");
-  vi.stubEnv("EMAIL_FROM", "no-reply@alejoframes.com");
-  vi.stubEnv("AUTH_SECRET", "test-secret-at-least-32-characters-long");
-  vi.stubEnv("AUTH_URL", "http://localhost:3300");
 
   const db = await seededDb();
   db.__rows.galleries.length = 0;
@@ -333,7 +327,7 @@ describe("unlockSelection authorization", () => {
       unlockSelection({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID })),
     ).rejects.toMatchObject({ digest: "NEXT_HTTP_ERROR_FALLBACK;403" });
 
-    expect(sendUnlockNotificationEmailMock).not.toHaveBeenCalled();
+    expect(signInMock).not.toHaveBeenCalled();
     const db = await seededDb();
     expect(db.__rows.galleries[0]).toMatchObject({ status: "selected" });
   });
@@ -346,7 +340,7 @@ describe("unlockSelection authorization", () => {
       unlockSelection({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID })),
     ).rejects.toMatchObject({ digest: "NEXT_REDIRECT;replace;/login;307;" });
 
-    expect(sendUnlockNotificationEmailMock).not.toHaveBeenCalled();
+    expect(signInMock).not.toHaveBeenCalled();
   });
 });
 
@@ -364,7 +358,7 @@ describe("unlockSelection validation and guards", () => {
     );
 
     expect(result.status).toBe("error");
-    expect(sendUnlockNotificationEmailMock).not.toHaveBeenCalled();
+    expect(signInMock).not.toHaveBeenCalled();
   });
 
   it("rejects a gallery id that does not exist", async () => {
@@ -394,7 +388,7 @@ describe("unlockSelection validation and guards", () => {
       );
 
       expect(result.status).toBe("error");
-      expect(sendUnlockNotificationEmailMock).not.toHaveBeenCalled();
+      expect(signInMock).not.toHaveBeenCalled();
       expect(db.__rows.galleries[0]).toMatchObject({ status });
     },
   );
@@ -416,6 +410,9 @@ describe("unlockSelection validation and guards", () => {
 describe("unlockSelection success", () => {
   beforeEach(() => {
     authMock.mockResolvedValue(adminSession("photographer@example.com"));
+    signInMock.mockResolvedValue(
+      "http://localhost/api/auth/verify-request?provider=gallery-unlock",
+    );
   });
 
   it("flips the gallery from selected to proofing, revalidates both dashboard views, and preserves selectionSubmittedAt", async () => {
@@ -468,18 +465,20 @@ describe("unlockSelection success", () => {
     expect(db.__rows.galleries[0]!.unlockReason).toBeNull();
   });
 
-  it("emails the client at their own address, with the CLIENT-facing gallery URL", async () => {
+  // Task #85: the notification moved off a bare `/galleries/{slug}` URL
+  // (src/lib/unlock-notification-email.ts, now removed) onto a magic link,
+  // the SAME mechanism `publishGallery`/`deliverGallery` use, on its own
+  // `gallery-unlock` provider.
+  it("emails the client at their own address via the gallery-unlock provider, with the gallery's own URL", async () => {
     const { unlockSelection } = await import("./actions");
 
     await unlockSelection({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID }));
 
-    expect(sendUnlockNotificationEmailMock).toHaveBeenCalledTimes(1);
-    const call = sendUnlockNotificationEmailMock.mock.calls[0]![0] as {
-      to: string;
-      galleryUrl: string;
-    };
-    expect(call.to).toBe(CLIENT_EMAIL);
-    expect(call.galleryUrl).toBe("http://localhost:3300/galleries/abc123");
+    expect(signInMock).toHaveBeenCalledWith("gallery-unlock", {
+      email: CLIENT_EMAIL,
+      redirect: false,
+      redirectTo: "/galleries/abc123",
+    });
   });
 
   // Task #94's own acceptance criterion: every client attached to the
@@ -496,11 +495,15 @@ describe("unlockSelection success", () => {
     );
 
     expect(result).toEqual({ status: "unlocked" });
-    expect(sendUnlockNotificationEmailMock).toHaveBeenCalledTimes(2);
-    const recipients = sendUnlockNotificationEmailMock.mock.calls.map(
-      (call) => (call[0] as { to: string }).to,
+    expect(signInMock).toHaveBeenCalledTimes(2);
+    expect(signInMock).toHaveBeenCalledWith(
+      "gallery-unlock",
+      expect.objectContaining({ email: CLIENT_EMAIL }),
     );
-    expect(recipients.sort()).toEqual(["beto@example.com", CLIENT_EMAIL].sort());
+    expect(signInMock).toHaveBeenCalledWith(
+      "gallery-unlock",
+      expect.objectContaining({ email: "beto@example.com" }),
+    );
   });
 
   // Task #97 acceptance criterion: a REMOVED client must never receive an
@@ -522,11 +525,11 @@ describe("unlockSelection success", () => {
     );
 
     expect(result).toEqual({ status: "unlocked" });
-    expect(sendUnlockNotificationEmailMock).toHaveBeenCalledTimes(1);
-    const recipients = sendUnlockNotificationEmailMock.mock.calls.map(
-      (call) => (call[0] as { to: string }).to,
+    expect(signInMock).toHaveBeenCalledTimes(1);
+    expect(signInMock).toHaveBeenCalledWith(
+      "gallery-unlock",
+      expect.objectContaining({ email: CLIENT_EMAIL }),
     );
-    expect(recipients).toEqual([CLIENT_EMAIL]);
   });
 
   // The gate this task's own acceptance criterion asks to verify against —
@@ -545,6 +548,15 @@ describe("unlockSelection success", () => {
     const newStatus = db.__rows.galleries[0]!.status as "proofing";
     expect(SELECTION_LOCKED_STATUSES.has(newStatus)).toBe(false);
   });
+
+  it("re-throws a non-AuthError failure from signIn instead of silently reporting it as a form error", async () => {
+    signInMock.mockRejectedValue(new Error("totally unrelated bug"));
+    const { unlockSelection } = await import("./actions");
+
+    await expect(
+      unlockSelection({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID })),
+    ).rejects.toThrow("totally unrelated bug");
+  });
 });
 
 describe("unlockSelection — client notification failure", () => {
@@ -557,7 +569,8 @@ describe("unlockSelection — client notification failure", () => {
   // learn immediately, since the client has no other way to discover the
   // reopen on their own.
   it("still unlocks the gallery, but reports a distinct result, when the client email fails to send", async () => {
-    sendUnlockNotificationEmailMock.mockRejectedValue(new Error("Resend error (500): boom"));
+    const { AuthError } = await import("next-auth");
+    signInMock.mockRejectedValue(new AuthError("Resend error (500): boom"));
     const { unlockSelection } = await import("./actions");
     const db = await seededDb();
 
@@ -578,8 +591,10 @@ describe("unlockSelection — client notification failure", () => {
     const db = await seededDb();
     db.__rows.users.push({ id: "client-b", name: "Beto Ruiz", email: "beto@example.com" });
     db.__rows.galleryClients.push({ galleryId: GALLERY_ID, userId: "client-b" });
-    sendUnlockNotificationEmailMock.mockImplementation(async (params: { to: string }) => {
-      if (params.to === "beto@example.com") throw new Error("Resend error (500): boom");
+    const { AuthError } = await import("next-auth");
+    signInMock.mockImplementation(async (_provider: string, opts: { email: string }) => {
+      if (opts.email === "beto@example.com") throw new AuthError("Resend error (500): boom");
+      return "http://localhost/api/auth/verify-request?provider=gallery-unlock";
     });
     const { unlockSelection } = await import("./actions");
 
@@ -618,7 +633,7 @@ describe("unlockSelection — client notification failure", () => {
     );
 
     expect(result.status).toBe("unlocked_email_failed");
-    expect(sendUnlockNotificationEmailMock).not.toHaveBeenCalled();
+    expect(signInMock).not.toHaveBeenCalled();
     expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
   });
 });
@@ -626,6 +641,9 @@ describe("unlockSelection — client notification failure", () => {
 describe("unlockSelection — concurrent unlock (the atomic guard)", () => {
   beforeEach(() => {
     authMock.mockResolvedValue(adminSession());
+    signInMock.mockResolvedValue(
+      "http://localhost/api/auth/verify-request?provider=gallery-unlock",
+    );
   });
 
   // A SEQUENTIAL double-unlock (the first call fully resolves before the
@@ -652,7 +670,7 @@ describe("unlockSelection — concurrent unlock (the atomic guard)", () => {
     expect(first.status).toBe("unlocked");
     expect(second.status).toBe("error");
     expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
-    expect(sendUnlockNotificationEmailMock).toHaveBeenCalledTimes(1);
+    expect(signInMock).toHaveBeenCalledTimes(1);
   });
 
   // THE actual proof of the atomicity guard (actions.ts's own "the UPDATE's
@@ -686,6 +704,6 @@ describe("unlockSelection — concurrent unlock (the atomic guard)", () => {
     expect([first.status, second.status].sort()).toEqual(["error", "unlocked"]);
     expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
     // Only the WINNER's email ever went out.
-    expect(sendUnlockNotificationEmailMock).toHaveBeenCalledTimes(1);
+    expect(signInMock).toHaveBeenCalledTimes(1);
   });
 });

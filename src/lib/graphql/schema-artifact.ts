@@ -11,14 +11,26 @@
 //
 // IT LIVES UNDER src/lib/ AND THAT HAS A COST WORTH NAMING. src/lib/ is
 // `rsync`ed into the release tarball WHOLESALE (.github/workflows/deploy.yml),
-// so this module reaches the droplet, and it imports bare `graphql`, which the
-// release's hand-curated three-package `node_modules` overlay does not include.
-// Harmless while nothing under `scripts/` imports it — verified by running that
-// workflow's own "Verify ops script import graphs" step locally, not by reading
-// import lines. The day an ops script reaches anything in src/lib/graphql/**,
-// that step fails on `graphql` and this paragraph is why. It stays here anyway
-// because ./schema-sdl.test.ts imports it and a test under src/ importing from
-// tooling/ would be the wrong direction.
+// so THIS module reaches the droplet, where the bare `graphql` it imports below
+// cannot be resolved: the release's `node_modules` holds only what Next's
+// standalone tracing left for the app's routes plus a three-package overlay
+// (`drizzle-orm`, `postgres`, `zod`), and no route reaches `graphql` either.
+//
+// So the rule for an ops script under scripts/ is NOT "avoid src/lib/graphql/**"
+// — it is "avoid any staged src/lib module that imports a bare package the
+// release does not ship". This file is one. The three files under ./generated/
+// are NOT, even though they name `@graphql-typed-document-node/core`, which is
+// equally unshipped: their only external import is `import type`, and Bun erases
+// that, so nothing has to resolve. Stating the rule this way rather than
+// carving out `generated/**` keeps it true when a new generated file lands.
+//
+// Nothing under scripts/ reaches this module today, verified by running that
+// workflow's own "Verify ops script import graphs" step locally rather than by
+// reading import lines — and #32's re-review established that the step is a
+// faithful proxy in BOTH directions (a probe script reaching here fails the
+// gate AND fails for real in the extracted tarball; one reaching ./generated/
+// passes both). It stays here anyway because ./schema-sdl.test.ts imports it,
+// and a test under src/ importing from tooling/ would be the wrong direction.
 //
 // TAKES THE SCHEMA AS AN ARGUMENT rather than calling `getSchema()` itself,
 // and that is load-bearing rather than stylistic: `./schema.ts` carries

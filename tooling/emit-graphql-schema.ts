@@ -20,11 +20,17 @@
 // schema.ts` the gate rejected it for TWO independent reasons, and both are
 // worth knowing before writing any other tool in this shape:
 //
-//  1. The release's `node_modules` is a HAND-CURATED OVERLAY of three packages
-//     (`drizzle-orm`, `postgres`, `zod`) — not a full install, with no ancestor
-//     `node_modules` to fall back on. `graphql` is a real production dependency
-//     and still absent. "It is in `dependencies`" is NOT the condition for
-//     resolving on the droplet; being in that overlay is.
+//  1. The release's `node_modules` is not a full install and has no ancestor
+//     `node_modules` to fall back on. It is assembled from two sources: what
+//     Next's standalone tracing left behind for the app's own routes, plus a
+//     HAND-CURATED OVERLAY of exactly three packages (`drizzle-orm`,
+//     `postgres`, `zod`) that only scripts need. That comes to 14 top-level
+//     entries in the staged tarball — `@img @next @swc client-only detect-libc
+//     drizzle-orm next postgres react react-dom semver sharp styled-jsx zod` —
+//     so the directory is not bare; it is just arbitrary from a script's point
+//     of view. `graphql` is a real production dependency and is absent from
+//     both sources, because no route reaches it either. "It is in
+//     `dependencies`" is NOT the condition for resolving on the droplet.
 //  2. The `plugin()` call below registers its `server-only` stub AT RUNTIME.
 //     `bun build --target=bun` resolves the dynamic `import()` STATICALLY,
 //     without executing a single line of top-level code, so the stub does not
@@ -40,9 +46,26 @@
 // this imports, `src/lib/graphql/schema-artifact.ts`, DOES live under
 // `src/lib/`, which is staged wholesale, and it imports bare `graphql`. That is
 // harmless today because nothing under `scripts/` reaches it (verified with the
-// gate itself, not by reading imports). The day an ops script imports anything
-// from `src/lib/graphql/**`, the gate will fail on `graphql` and this paragraph
-// is the explanation.
+// gate itself, not by reading imports).
+//
+// THE RULE, stated as the rule rather than as a list of files, because a list
+// goes stale: an ops script may reach any staged `src/lib` module EXCEPT one
+// that imports a bare package outside the release's `node_modules` (point 1
+// above). `schema-artifact.ts` is such a module — bare `graphql`. Type-only
+// imports do not count: Bun erases `import type`, so nothing has to resolve.
+// That is why the three files under `src/lib/graphql/generated/` are reachable
+// despite naming `@graphql-typed-document-node/core`, which is not overlaid
+// either — their only external import is `import type`.
+//
+// AND THE GATE ENFORCES EXACTLY THAT RULE, IN BOTH DIRECTIONS, which is what
+// makes moving this tool sufficient rather than merely tidier: it fails on the
+// import graphs that would fail on the droplet, and passes on the ones that
+// work there. Verified with throwaway probe ops scripts during #32's
+// re-review — one reaching `schema-artifact.ts` (gate FAIL, and a real run in
+// the extracted tarball dies with `Cannot find package 'graphql'`), one
+// reaching `generated/` (gate PASS, and the real run works). So this trap is
+// not a hole; it is a failure that arrives at deploy time with an accurate
+// message, and this paragraph is the explanation for it.
 //
 // WHY AN SDL FILE EXISTS AT ALL, when the schema is code-first and the whole
 // point of Pothos is not having a second `.graphql` file that can drift:

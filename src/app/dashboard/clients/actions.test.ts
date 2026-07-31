@@ -1,7 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "next-auth";
-import { eq } from "drizzle-orm";
-import { users } from "@/lib/db/schema";
 
 // `import "server-only"` (transitively, via src/lib/auth-guards.ts) only
 // resolves inside a real Next.js bundle — see src/lib/auth-guards.test.ts.
@@ -281,6 +279,72 @@ describe("createClient success + normalization", () => {
   });
 });
 
+// Task #48: `.normalize("NFKC")` landed in #18 round 2 with no test, so
+// removing it left the suite green. The whole point of that call is that the
+// form in which an address is STORED here and the form in which auth.ts looks
+// it up cannot diverge — Auth.js normalizes the address it receives with
+// `.normalize("NFKC").toLowerCase().trim()` before `signIn`'s callback ever
+// runs (see next-auth's Resend/email provider), so an address typed in a
+// non-NFKC-normal form must land on its NFKC form here too.
+//
+// Note on the addresses used below: the criterion's own example pair is
+// "ＡＮＡ@ｅｘａｍｐｌｅ.com" -> "ana@example.com", but `rows` inside the
+// `@/lib/db` double is module-scoped and shared by every test in this file,
+// and the sibling suite above already stores "ana@example.com". Reusing that
+// exact normalized address here would make this test hit the duplicate-email
+// branch instead of the insert path, in either order. The fullwidth->ASCII
+// case being pinned is identical; only the local part and domain differ so
+// this suite stands on its own regardless of what ran before it.
+describe("createClient NFKC email normalization (task #48)", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+  });
+
+  it("stores a fullwidth address in its NFKC-normalized ASCII form", async () => {
+    const { createClient } = await import("./actions");
+    const { db } = (await import("@/lib/db")) as unknown as { db: { __rows: Row[] } };
+
+    const result = await createClient(
+      { status: "idle" },
+      // Fullwidth Latin letters (U+FF21.., U+FF41..) in BOTH the local part
+      // and the domain. NFKC maps each to its ASCII compatibility equivalent,
+      // and only then does `.toLowerCase()` produce "ana@nfkc.example.com".
+      // Without `.normalize("NFKC")` the chain lowercases the fullwidth
+      // letters into their own fullwidth lowercase forms
+      // ("ａｎａ@ｎｆｋｃ.ｅｘａｍｐｌｅ.com"), which `z.email()` then rejects
+      // outright — so dropping it turns this into `status: "error"` with no
+      // row at all.
+      formDataWith({ name: "Ana Fullwidth", email: "ＡＮＡ@ｎｆｋｃ.ｅｘａｍｐｌｅ.com" }),
+    );
+
+    expect(result).toEqual({ status: "created" });
+    const stored = db.__rows.find((r) => r.email === "ana@nfkc.example.com");
+    expect(stored).toMatchObject({ name: "Ana Fullwidth", email: "ana@nfkc.example.com" });
+  });
+
+  // The seam consequence of the test above, stated directly: once the
+  // fullwidth address is stored NFKC-normalized, the plain ASCII address a
+  // client would actually type at /login is the SAME row — it collides
+  // instead of quietly creating a second account for the same person.
+  it("recognizes the plain ASCII form of a stored fullwidth address as the same client", async () => {
+    const { createClient } = await import("./actions");
+
+    const first = await createClient(
+      { status: "idle" },
+      formDataWith({ name: "Julia", email: "ＪＵＬＩＡ@ｅｘａｍｐｌｅ.com" }),
+    );
+    expect(first).toEqual({ status: "created" });
+
+    const second = await createClient(
+      { status: "idle" },
+      formDataWith({ name: "Julia (again)", email: "julia@example.com" }),
+    );
+
+    expect(second.status).toBe("error");
+    expect(second.message).toBe("Ya existe un cliente con ese correo electrónico.");
+  });
+});
+
 describe("createClient duplicate email", () => {
   beforeEach(() => {
     authMock.mockResolvedValue(adminSession());
@@ -322,6 +386,79 @@ describe("createClient duplicate email", () => {
   });
 });
 
+// Task #50: React 19 blanks a `<form action={fn}>`'s uncontrolled fields on
+// every submit, so a rejected duplicate used to cost the photographer the
+// whole form. The documented way back is for the action to return what was
+// submitted and for the form to feed it into `defaultValue` — see
+// src/components/client-form.tsx and its own test. This is the server half:
+// the values have to actually come back, verbatim, on every error path.
+describe("createClient echoes the submitted values back on error (task #50)", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+  });
+
+  it("returns the values exactly as typed when the email is a duplicate", async () => {
+    const { createClient } = await import("./actions");
+
+    await createClient(
+      { status: "idle" },
+      formDataWith({ name: "Karla", email: "karla@example.com" }),
+    );
+
+    const result = await createClient(
+      { status: "idle" },
+      formDataWith({ name: "  Karla Otra  ", email: "  Karla@Example.com  ", phone: " +57 1 " }),
+    );
+
+    expect(result.status).toBe("error");
+    // Verbatim, NOT `parsed.data`: the photographer gets their own input back
+    // to correct, not a trimmed/lowercased rewrite of it that they never
+    // typed. Trimming here would also silently "fix" the very whitespace they
+    // may be trying to look at.
+    expect(result.values).toEqual({
+      name: "  Karla Otra  ",
+      email: "  Karla@Example.com  ",
+      phone: " +57 1 ",
+    });
+  });
+
+  it("returns the values when validation fails, where there is no parsed data to fall back on", async () => {
+    const { createClient } = await import("./actions");
+
+    const result = await createClient(
+      { status: "idle" },
+      formDataWith({ name: "Lía", email: "not-an-email", phone: "+57 300" }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.values).toEqual({ name: "Lía", email: "not-an-email", phone: "+57 300" });
+  });
+
+  it("reads an omitted field back as an empty string, not null", async () => {
+    const { createClient } = await import("./actions");
+
+    // No `phone` key at all — `FormData#get` returns null for it.
+    const result = await createClient(
+      { status: "idle" },
+      formDataWith({ name: "Mara", email: "still-not-an-email" }),
+    );
+
+    expect(result.values).toEqual({ name: "Mara", email: "still-not-an-email", phone: "" });
+  });
+
+  it("returns no values on success, so the form comes back empty for the next client", async () => {
+    const { createClient } = await import("./actions");
+
+    const result = await createClient(
+      { status: "idle" },
+      formDataWith({ name: "Nico", email: "nico@example.com", phone: "+57 300" }),
+    );
+
+    expect(result).toEqual({ status: "created" });
+    expect(result.values).toBeUndefined();
+  });
+});
+
 describe("createClient — non-unique-violation errors are not swallowed (task #47)", () => {
   beforeEach(() => {
     authMock.mockResolvedValue(adminSession());
@@ -349,31 +486,28 @@ describe("createClient — non-unique-violation errors are not swallowed (task #
 
 // Acceptance criterion: "A created client can immediately request a magic
 // link and get in." src/auth.ts's `signIn` callback decides whether to
-// send/accept a magic link by running exactly
-// `db.select({ id: users.id }).from(users).where(eq(users.email, address)).limit(1)`
-// against the SAME `users` table this action inserts into (see auth.ts
-// around the `signIn({ user })` callback). This test proves the seam
-// without re-implementing NextAuth: it runs the real createClient() action,
-// then re-runs that identical lookup against the fake db double above (which
-// filters genuinely by column + value, not a canned response) and asserts
-// the row is found — plus a negative control proving the double isn't just
-// always truthy.
+// send/accept a magic link by looking the address up in the SAME `users`
+// table this action inserts into. This test proves that seam without
+// re-implementing NextAuth: it runs the real createClient() action, then runs
+// `findUserIdByEmail` — the very function auth.ts's callback delegates to —
+// against the fake db double above (which filters genuinely by column +
+// value, not a canned response) and asserts the row is found, plus a negative
+// control proving the double isn't just always truthy.
+//
+// Task #51: this used to re-run a HAND-COPIED `db.select(...).from(users)
+// .where(eq(users.email, address)).limit(1)` here. That copy killed real
+// regressions, but it was still a copy: rewriting the query in auth.ts would
+// have left this green while a freshly created client silently lost the
+// ability to sign in. Importing the shared lookup instead means there is one
+// implementation to change, and changing it fails here.
 describe("the seam createClient shares with auth.ts's signIn callback", () => {
   beforeEach(() => {
     authMock.mockResolvedValue(adminSession());
   });
 
-  it("makes a freshly created client immediately findable by the exact lookup the signIn callback runs", async () => {
+  it("makes a freshly created client immediately findable by the lookup the signIn callback runs", async () => {
     const { createClient } = await import("./actions");
-    const { db } = (await import("@/lib/db")) as unknown as {
-      db: {
-        select: (...args: unknown[]) => {
-          from: (...args: unknown[]) => {
-            where: (...args: unknown[]) => { limit: (n: number) => Promise<Row[]> };
-          };
-        };
-      };
-    };
+    const { findUserIdByEmail } = await import("@/lib/users");
 
     const result = await createClient(
       { status: "idle" },
@@ -381,21 +515,13 @@ describe("the seam createClient shares with auth.ts's signIn callback", () => {
     );
     expect(result.status).toBe("created");
 
-    const found = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.email, "gala@example.com"))
-      .limit(1);
-    expect(found).toHaveLength(1);
+    // `signIn` returns `Boolean(await findUserIdByEmail(address))`, so an id
+    // here is exactly what lets the magic link through.
+    await expect(findUserIdByEmail("gala@example.com")).resolves.toEqual(expect.any(String));
 
     // Negative control: the identical lookup for an address nobody created
     // finds nothing — if the double's filtering were broken (e.g. always
     // returning every row), this would wrongly pass too.
-    const notFound = await db
-      .select({ id: users.id })
-      .from(users)
-      .where(eq(users.email, "nobody@example.com"))
-      .limit(1);
-    expect(notFound).toHaveLength(0);
+    await expect(findUserIdByEmail("nobody@example.com")).resolves.toBeUndefined();
   });
 });

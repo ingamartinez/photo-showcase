@@ -15,10 +15,25 @@ export function ClientForm() {
   // inputs, React 19 itself calls `requestFormReset` synchronously at submit
   // time (see react-dom's `startHostTransition`) — before `createClient` even
   // runs, not after it resolves. So every submission blanks the fields,
-  // success or error alike; there is no built-in way to keep, say, a
-  // duplicate email visible for the photographer to correct without lifting
-  // the fields into controlled state, which this simple admin form doesn't
-  // need.
+  // success or error alike.
+  //
+  // Task #50: that reset is the reason this form needs `defaultValue` at all,
+  // and it is also what makes `defaultValue` work. A form reset clears each
+  // input's dirty-value flag, after which the input's displayed value follows
+  // its `value` ATTRIBUTE again — which is what React writes when the
+  // `defaultValue` prop changes. So the sequence on a rejected duplicate is:
+  // submit blanks the fields, `createClient` resolves with `status: "error"`
+  // and the submitted `values`, the re-render puts those values into
+  // `defaultValue`, and the (no longer dirty) inputs show them again. This is
+  // React 19's own documented way to keep a rejected submission on screen; it
+  // does NOT require lifting the fields into controlled state, and an earlier
+  // version of this comment was wrong to claim otherwise.
+  //
+  // Only the error branch feeds values back. On success `values` is absent, so
+  // `defaultValue` returns to "" and the form is empty for the next client —
+  // the reset's own behavior, kept deliberately rather than worked around.
+  const values = state.status === "error" ? state.values : undefined;
+
   return (
     <form action={formAction} className="border-line-2 flex flex-col gap-5 rounded-sm border p-6">
       <span className="label text-fg-mute">Nuevo cliente</span>
@@ -34,6 +49,7 @@ export function ClientForm() {
           required
           autoComplete="name"
           placeholder="Nombre y apellido"
+          defaultValue={values?.name ?? ""}
           className={inputClass}
         />
       </div>
@@ -49,6 +65,7 @@ export function ClientForm() {
           required
           autoComplete="email"
           placeholder="cliente@ejemplo.com"
+          defaultValue={values?.email ?? ""}
           aria-invalid={state.status === "error"}
           aria-describedby={state.status === "error" ? "client-form-error" : undefined}
           className={inputClass}
@@ -65,6 +82,7 @@ export function ClientForm() {
           type="tel"
           autoComplete="tel"
           placeholder="+57 300 000 0000"
+          defaultValue={values?.phone ?? ""}
           className={inputClass}
         />
       </div>

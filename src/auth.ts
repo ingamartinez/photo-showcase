@@ -8,13 +8,13 @@
 import NextAuth, { type DefaultSession } from "next-auth";
 import Resend from "next-auth/providers/resend";
 import { DrizzleAdapter } from "@auth/drizzle-adapter";
-import { eq } from "drizzle-orm";
 import { AUTH_BASE_PATH } from "@/lib/auth-base-path";
 import { db } from "@/lib/db";
 import { accounts, sessions, users, verificationTokens } from "@/lib/db/schema";
 import { authEnv, resendEnv } from "@/lib/env";
 import { sendGalleryAccessEmail } from "@/lib/gallery-access-email";
 import { sendLoginEmail } from "@/lib/login-email";
+import { findUserIdByEmail } from "@/lib/users";
 
 // Task #21: publishing a gallery emails the client a magic link that signs
 // them in DIRECTLY — no `/login` detour — straight into their gallery. That
@@ -133,17 +133,19 @@ export const { handlers, auth, signIn, signOut } = NextAuth(() => {
       //
       // On the click step it re-checks because the client could have been
       // deleted between requesting the link and following it.
+      //
+      // Task #51: the lookup itself lives in src/lib/users.ts rather than
+      // inline here, because the admin dashboard's `createClient` action is
+      // the only thing that ever mints one of these identities and its test
+      // suite has to be able to prove that what it just inserted is what this
+      // callback will find. It used to prove that against a hand-copied query,
+      // which would have stayed green if this line changed. One function, one
+      // lookup, both sides.
       async signIn({ user }) {
         const address = user.email;
         if (!address) return false;
 
-        const [existing] = await db
-          .select({ id: users.id })
-          .from(users)
-          .where(eq(users.email, address))
-          .limit(1);
-
-        return Boolean(existing);
+        return Boolean(await findUserIdByEmail(address));
       },
       session({ session, user }) {
         session.user.id = user.id;

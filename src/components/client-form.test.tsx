@@ -63,9 +63,9 @@ describe("ClientForm", () => {
 
   // React 19 blanks uncontrolled fields in a <form action={fn}> synchronously
   // at submit time (see client-form.tsx's comment) — for either outcome, not
-  // only success. This asserts the actual, if slightly rough, behavior
-  // rather than a "resets on success only" story that isn't true here.
-  it("blanks the typed values once submitted, regardless of the action's outcome", async () => {
+  // only success. On success that is exactly what is wanted: the form comes
+  // back empty, ready for the next client.
+  it("blanks the typed values after a successful create", async () => {
     createClientMock.mockResolvedValue({ status: "created" });
     const user = userEvent.setup();
     render(<ClientForm />);
@@ -77,5 +77,63 @@ describe("ClientForm", () => {
 
     await screen.findByText("Cliente agregado.");
     expect(emailInput.value).toBe("");
+  });
+
+  // Task #50, the papercut: the same reset used to blank the fields on an
+  // ERROR too, so a photographer told "ya existe un cliente con ese correo"
+  // had to retype name, email and phone to change one character. The action
+  // now returns what was submitted and this form feeds it back through
+  // `defaultValue`, which the reset restores to.
+  it("keeps the submitted values on screen when the action rejects a duplicate", async () => {
+    createClientMock.mockResolvedValue({
+      status: "error",
+      message: "Ya existe un cliente con ese correo electrónico.",
+      values: { name: "Ana Pérez", email: "ana@example.com", phone: "+57 300 0000" },
+    });
+    const user = userEvent.setup();
+    render(<ClientForm />);
+
+    const nameInput = screen.getByLabelText("Nombre") as HTMLInputElement;
+    const emailInput = screen.getByLabelText("Correo electrónico") as HTMLInputElement;
+    const phoneInput = screen.getByLabelText("WhatsApp (opcional)") as HTMLInputElement;
+    await user.type(nameInput, "Ana Pérez");
+    await user.type(emailInput, "ana@example.com");
+    await user.type(phoneInput, "+57 300 0000");
+    await user.click(screen.getByRole("button", { name: "Agregar cliente" }));
+
+    await screen.findByRole("alert");
+    expect(nameInput.value).toBe("Ana Pérez");
+    expect(emailInput.value).toBe("ana@example.com");
+    expect(phoneInput.value).toBe("+57 300 0000");
+  });
+
+  // The other half of the same rule, and the reason `values` is scoped to the
+  // error branch: a later SUCCESS must not resurrect the values a previous
+  // failed attempt left behind, or the photographer starts the next client on
+  // top of the previous one's data.
+  it("clears the fields again once a retry succeeds", async () => {
+    createClientMock.mockResolvedValue({
+      status: "error",
+      message: "Ya existe un cliente con ese correo electrónico.",
+      values: { name: "Ana Pérez", email: "ana@example.com", phone: "" },
+    });
+    const user = userEvent.setup();
+    render(<ClientForm />);
+
+    const emailInput = screen.getByLabelText("Correo electrónico") as HTMLInputElement;
+    await user.type(screen.getByLabelText("Nombre"), "Ana Pérez");
+    await user.type(emailInput, "ana@example.com");
+    await user.click(screen.getByRole("button", { name: "Agregar cliente" }));
+    await screen.findByRole("alert");
+    expect(emailInput.value).toBe("ana@example.com");
+
+    createClientMock.mockResolvedValue({ status: "created" });
+    await user.clear(emailInput);
+    await user.type(emailInput, "ana2@example.com");
+    await user.click(screen.getByRole("button", { name: "Agregar cliente" }));
+
+    await screen.findByText("Cliente agregado.");
+    expect(emailInput.value).toBe("");
+    expect((screen.getByLabelText("Nombre") as HTMLInputElement).value).toBe("");
   });
 });

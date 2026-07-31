@@ -40,7 +40,10 @@ export function AttachGalleryClientsForm({
   return (
     <form action={formAction} className="flex flex-col gap-2">
       <input type="hidden" name="galleryId" value={galleryId} />
-      <label htmlFor="attach-client-ids" className="label text-fg-mute">
+      {/* Task #133: no `.label` (globals.css's mono, uppercase,
+          0.22em-tracked eyebrow style) survives under /dashboard — epic
+          #125's own done-when. Plain text instead. */}
+      <label htmlFor="attach-client-ids" className="text-fg-mute text-xs tracking-wide uppercase">
         Agregar clientes
       </label>
       {/* Same `multiple` picker as gallery-form.tsx's own client select —
@@ -65,7 +68,7 @@ export function AttachGalleryClientsForm({
       <button
         type="submit"
         disabled={pending}
-        className="border-line-2 hover:border-accent hover:text-accent-2 self-start rounded-sm border px-[16px] py-[10px] text-[13px] tracking-[0.1em] uppercase transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+        className="border-line-2 hover:border-accent hover:text-accent-2 min-h-11 self-start rounded-[6px] border px-[16px] py-[10px] text-[13px] tracking-[0.1em] uppercase transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-6"
       >
         {pending ? "Agregando…" : "Agregar"}
       </button>

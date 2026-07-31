@@ -336,8 +336,17 @@ export function ProofLightbox({
                 (which is what this component used to do): the pick button is
                 pressed 15 times in a run of 84 and it must not change width or
                 position between one photo and the next, because a target that
-                moves under a thumb already travelling towards it is a mis-tap. */}
-            <div className="grid grid-cols-[auto_1fr_auto] items-center gap-[10px]">
+                moves under a thumb already travelling towards it is a mis-tap.
+
+                THE CAP FROM `sm` UP IS MEASURED, NOT TASTE. Full-bleed is
+                right on a phone — the thumb should not have to aim — but the
+                first build of this row was captured at 1440 and the pick
+                button came out 1228px wide, which is not a button, it is a
+                stripe. 460px centred is the mock's OWN answer to the same
+                question: its submit sheet is a full-width bottom sheet on a
+                phone and `max-width: 460px; margin-inline: auto` from 620px up
+                (client.html:539-541). Reused rather than re-invented. */}
+            <div className="grid grid-cols-[auto_1fr_auto] items-center gap-[10px] sm:mx-auto sm:w-full sm:max-w-[460px]">
               <button
                 type="button"
                 onClick={() => onNavigate(index - 1)}

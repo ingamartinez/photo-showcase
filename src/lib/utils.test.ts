@@ -7,8 +7,8 @@ import { APP_FONT_SIZES, cn } from "./utils";
 
 // Task #175. `cn()` is `twMerge(clsx(...))`, and twMerge decides which class
 // group a `text-*` class belongs to from its SUFFIX alone — it has no access to
-// the compiled Tailwind theme. A t-shirt size or an explicitly-typed arbitrary
-// value (`text-[length:…]`) is a font size; ANYTHING ELSE is a text colour.
+// the compiled Tailwind theme. A t-shirt size, or an arbitrary value carrying an
+// explicit `length:` type hint, is a font size; ANYTHING ELSE is a text colour.
 //
 // So a custom `text-app-base` reads as a colour, and the LAST colour in a cn()
 // call wins: the font size is not overridden, it is DELETED from the output

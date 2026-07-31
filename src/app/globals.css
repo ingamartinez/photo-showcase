@@ -122,11 +122,17 @@
 
   /* --- App-surface aliases (task #175) -----------------------------------
      Ergonomics for the `[data-surface="app"]` layer below, NOT a second
-     scope. `text-[length:var(--app-text-base)]` is thirty characters nobody
-     types correctly from memory, and there were already a dozen distinct
-     `var(--app-*)` arbitrary-value strings across two files before #131,
-     #132, #133 and #134 multiplied them. Naming them once is cheaper than
-     un-hardcoding them from four screens later.
+     scope. The arbitrary value `text-app-base` replaces is thirty characters
+     nobody types correctly from memory, and there were already a dozen
+     distinct `var(--app-*)` arbitrary-value strings across two files before
+     #131, #132, #133 and #134 multiplied them. Naming them once is cheaper
+     than un-hardcoding them from four screens later.
+
+     (Those old strings are deliberately not quoted anywhere in this repo's
+     comments any more: Tailwind generates a utility from any candidate it
+     finds in a scanned file, comments included — the same mechanism the
+     --app-radius* note below records for `--radius-sm` — so quoting them
+     kept the dead rules alive in the shipped stylesheet.)
 
      WHY THIS KEEPS WORKING THROUGH THE SCOPE. Every right-hand side here is
      a `var()`, so `@theme inline` inlines the REFERENCE, not a value:
@@ -139,9 +145,9 @@
      --app-radius* comment below for the full argument.
 
      ONLY THE TWO SCALES THAT REPEAT. Colour and font-size. The one-offs
-     (`h-[var(--app-tabbar-h)]`, `grid-cols-[var(--app-sidebar-w)_1fr]`,
-     `min-h-[var(--app-tap)]`, `leading-[var(--app-line-height)]`) stay
-     arbitrary values: each appears once, and a global utility buys nothing.
+     (--app-tabbar-h, --app-sidebar-w, --app-tap, --app-line-height) stay
+     arbitrary values at their single call site: each appears exactly once,
+     and a global utility buys nothing.
      RADII ARE DELIBERATELY EXCLUDED — `--app-radius*` exists precisely
      because `--radius-*` are frozen literals, and putting radii in `@theme`
      reopens that settled argument for nothing.

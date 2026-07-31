@@ -90,10 +90,10 @@ export function DashboardNav() {
             // :527-528). The status palette is deliberately not the brand
             // accent (dashboard.html:82-91), and hover is the same raised
             // surface, never the accent.
-            // The font sizes here are `text-app-*` rather than
-            // `text-[length:var(--app-text-*)]` since #175. That is only safe
-            // because src/lib/utils.ts teaches tailwind-merge that they ARE
-            // sizes: unconfigured, twMerge reads `text-app-micro` as a text
+            // The font sizes here are named `text-app-*` aliases rather than
+            // the `length:`-hinted arbitrary values they were before #175.
+            // That is only safe because src/lib/utils.ts teaches tailwind-merge
+            // that they ARE sizes: unconfigured, twMerge reads it as a text
             // colour and the `text-fg-mute` on the next line deletes it from
             // the output — the item would silently render at inherited size.
             className={cn(

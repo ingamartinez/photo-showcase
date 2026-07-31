@@ -133,8 +133,8 @@ describe("DashboardNav", () => {
     expect(current.className).not.toContain("bg-accent");
   });
 
-  // #175 migrated this component off `text-[length:var(--app-text-*)]`. The
-  // `length:` hint in those strings was not decoration: it was what told
+  // #175 migrated this component off the `length:`-hinted arbitrary values.
+  // That hint was not decoration: it was what told
   // tailwind-merge the class was a SIZE. Named aliases carry no such hint, so
   // twMerge reads `text-app-micro` as a text colour unless src/lib/utils.ts
   // teaches it otherwise — and this component then hands `cn()` a size and a

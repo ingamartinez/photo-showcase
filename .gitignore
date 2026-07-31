@@ -59,6 +59,26 @@ next-env.d.ts
 # SDD skill-registry cache (regenerated locally)
 .atl/*.cache.json
 
-# Design working files (mocks, IG-sourced references, screenshots) — not app code
-/design/
+# Design working files (IG-sourced references, screenshots, raw crops) — not app code.
+# EXCEPT the design-system mocks: they are the approved visual source of truth for
+# epics #125 (dashboard) and #140 (client gallery), and every slice in those epics has
+# an acceptance criterion that says "matches the mock". While /design/ was ignored
+# wholesale, `git worktree add` never populated it, so no agent worktree could see the
+# mock — #128 verified against it only because it happened to use an absolute path,
+# while #127 concluded the file did not exist. Same criterion, opposite outcomes, both
+# reported honestly. See task #170.
+#
+# The negation needs all four lines: git does not descend into an ignored directory,
+# so re-including a file inside one requires un-ignoring each parent first.
+#
+# Deliberately still ignored: design/assets/ (4.6 MB of JPEGs and Instagram-sourced
+# reference material — not ours to redistribute, and binaries in git history are
+# forever). dashboard.html and client.html are fully self-contained, no images, no
+# external URLs. home.html does reference design/system/assets/, which stays ignored;
+# its <img> tags will not resolve on a fresh clone. That is accepted: the mock is read
+# for its markup and CSS, not its photographs.
+/design/*
+!/design/system/
+/design/system/*
+!/design/system/*.html
 kanban/

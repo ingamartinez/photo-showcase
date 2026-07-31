@@ -21,6 +21,38 @@
 // displaying it. No new route was needed — this GET already returned
 // exactly the presigned URL a download needed, it just never told R2 to
 // answer with a download-flavored response.
+//
+// TASK #93's DECISION — what a missing R2 object should answer with, on a
+// route that has already told the client "yes, this is yours to download":
+// `canReadFinalDeliverable` only proves the DATABASE says a final exists
+// (`asset.finalKey` is set); it never talks to R2. Before this task, a
+// `finalKey` whose object had been deleted out from under the row (or was
+// never actually written) meant `getPresignedUrl` still handed back a URL —
+// one that 404s on R2 with an XML body the client cannot read, at the last
+// step of a flow they already paid for.
+//
+// This is a DATA-INTEGRITY problem on the photographer's side, not a client
+// error: the client did everything right (selected, paid, waited for
+// delivery) and their session — the two conditions actually within THEIR
+// control — are fine. Weighed against the two obvious alternatives:
+//   - A plain 404 was rejected. It's honest about "not found", but this
+//     route already uses 404 for `final_not_available` — the ENTITLEMENT
+//     gate (wrong client, not selected, not delivered yet). Reusing it here
+//     would make "you don't have access" and "we lost your photo" the same
+//     response, which is exactly backwards: one is the client's own session
+//     being wrong, the other is nothing the client did.
+//   - Silently skipping/falling back was never on the table for a SINGLE
+//     asset's own download route — there is nothing to substitute a missing
+//     final with (unlike download-all's own N-entries case, where "skip
+//     this one, log loudly" was considered and also rejected — see that
+//     route's own comment).
+// `502` was chosen instead — same status this route's own POST handler
+// already uses for `upload_failed` (an R2 write that didn't happen the way
+// this app promised), extended here to an R2 READ that should have
+// succeeded and didn't. It signals "our dependency, not your request" the
+// way a 4xx cannot, and it is a code this app already treats as "the
+// photographer needs to know", not merely logged and moved on from — see
+// `notifyAdminOfMissingFinal` below, called on this exact branch.
 import { forbidden } from "next/navigation";
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
@@ -31,7 +63,8 @@ import { withApiSession } from "@/lib/auth-guards";
 import { loadOwnedAsset } from "@/lib/asset-access";
 import { canReadFinalDeliverable } from "@/lib/final-access";
 import { processDisplay, processFinal } from "@/lib/images";
-import { displayKey, finalKey, getPresignedUrl, putObject } from "@/lib/r2";
+import { notifyAdminOfMissingFinal } from "@/lib/missing-final-notification-email";
+import { displayKey, finalKey, getPresignedUrl, objectExists, putObject } from "@/lib/r2";
 
 export const runtime = "nodejs";
 
@@ -146,6 +179,31 @@ export const GET = withApiSession(async function GET(
   // nothing about the rule changed when it moved.
   if (!canReadFinalDeliverable(asset, gallery, session)) {
     return errorResponse("final_not_available", 404);
+  }
+
+  // Task #93: the gate above only proves the DATABASE thinks a final
+  // exists. One HEAD request (no bytes read — see objectExists's own
+  // comment in src/lib/r2.ts) confirms the R2 OBJECT actually still does,
+  // before a presigned URL for it is ever handed out. A thrown probe is
+  // treated the same as an explicit `false` — fail closed, same stance
+  // GET .../display already takes on this exact call (see that route's own
+  // comment on why a throw here must never become an unrelated 500).
+  let objectStillExists: boolean;
+  try {
+    objectStillExists = await objectExists(asset.finalKey);
+  } catch {
+    objectStillExists = false;
+  }
+  if (!objectStillExists) {
+    // Best-effort — see notifyAdminOfMissingFinal's own comment. Awaited so
+    // the alert has actually been attempted before this request ends, not
+    // fired-and-forgotten into a serverless-style function that could be
+    // frozen before it completes.
+    await notifyAdminOfMissingFinal({
+      gallery,
+      missingFilenames: [asset.originalFilename],
+    });
+    return errorResponse("final_missing", 502);
   }
 
   // Sensible download filename (task #28's own acceptance criterion) plus a

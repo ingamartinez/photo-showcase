@@ -43,6 +43,15 @@ vi.mock("@/lib/gallery-access", () => ({
   isGalleryOwner: (...args: [string, Session]) => isGalleryOwnerMock(...args),
 }));
 
+// Task #93: the "photographer finds out" side effect — mocked at this
+// boundary for the same reason ./final/route.test.ts mocks it: this suite's
+// own job is whether the ROUTE calls it, with which missing filenames, not
+// whether Resend's own request shape is correct.
+const notifyAdminOfMissingFinalMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/missing-final-notification-email", () => ({
+  notifyAdminOfMissingFinal: (...args: unknown[]) => notifyAdminOfMissingFinalMock(...args),
+}));
+
 // In-memory stand-in for the R2 bucket — same shape as
 // route.download.test.ts's own fake, plus a `.file()` method (this route's
 // only R2 entry point is `getObjectStream`, which calls `.file(key).stream()`
@@ -234,6 +243,8 @@ beforeEach(async () => {
   isGalleryOwnerMock.mockImplementation(
     async (_galleryId, session) => session.user.role === "admin" || session.user.id === CLIENT_A_ID,
   );
+  notifyAdminOfMissingFinalMock.mockReset();
+  notifyAdminOfMissingFinalMock.mockResolvedValue(undefined);
   store.clear();
   sizeOverrides.clear();
   streamOpenCount = 0;
@@ -605,6 +616,68 @@ describe("GET /api/galleries/[galleryId]/download-all — Zip64-less capacity ce
     await expect(response.json()).resolves.toEqual({ error: "too_many_files" });
     expect(sizeCallCount).toBe(0);
     expect(streamOpenCount).toBe(0);
+  });
+});
+
+// Task #93: a stale `finalKey`, or an object deleted out from under the
+// row, used to reject the pre-flight's own `Promise.all` and escape GET
+// unhandled — a bare 500 with no R2 stream ever opened, but also nothing
+// telling the client OR the photographer what happened.
+describe("GET /api/galleries/[galleryId]/download-all — a missing R2 object during pre-flight (task #93)", () => {
+  it("returns 502 final_missing, notifies the photographer with the missing filename, and never opens a single R2 stream", async () => {
+    authMock.mockResolvedValue(clientSession());
+    const db = await seededDb();
+    db.__rows.galleries.push(galleryRow());
+
+    store.set("finals/present.jpg", { data: Buffer.from("PRESENT BYTES") });
+    db.__rows.assets.push(
+      assetRow({
+        id: ASSET_1_ID,
+        originalFilename: "present.jpg",
+        isSelected: true,
+        isEdited: true,
+        finalKey: "finals/present.jpg",
+        sortOrder: 0,
+      }),
+      // Deliberately never put into `store` — the fake's `.size()` throws
+      // "no object at key", standing in for a stale `finalKey`/deleted R2
+      // object the database still points at.
+      assetRow({
+        id: ASSET_2_ID,
+        originalFilename: "missing.jpg",
+        isSelected: true,
+        isEdited: true,
+        finalKey: "finals/missing.jpg",
+        sortOrder: 1,
+      }),
+    );
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({ error: "final_missing" });
+    expect(streamOpenCount).toBe(0);
+    expect(notifyAdminOfMissingFinalMock).toHaveBeenCalledWith({
+      gallery: expect.objectContaining({ id: GALLERY_ID }),
+      missingFilenames: ["missing.jpg"],
+    });
+  });
+
+  it("never calls notifyAdminOfMissingFinal on the happy path", async () => {
+    authMock.mockResolvedValue(clientSession());
+    const db = await seededDb();
+    db.__rows.galleries.push(galleryRow());
+    store.set("finals/only.jpg", { data: Buffer.from("bytes") });
+    db.__rows.assets.push(
+      assetRow({ isSelected: true, isEdited: true, finalKey: "finals/only.jpg" }),
+    );
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(200);
+    expect(notifyAdminOfMissingFinalMock).not.toHaveBeenCalled();
   });
 });
 

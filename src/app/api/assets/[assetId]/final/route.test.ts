@@ -23,6 +23,11 @@ const putObjectMock = vi.fn();
 // means that test would start observing calls instead of silently having
 // nothing to spy on.
 const deleteObjectMock = vi.fn();
+// Task #93: defaults to "present" so every PRE-EXISTING test in this file
+// (none of which is about this gap) keeps exercising the happy path exactly
+// as before. The dedicated "missing R2 object" describe block below
+// overrides this per test.
+const objectExistsMock = vi.fn<(key: string) => Promise<boolean>>().mockResolvedValue(true);
 vi.mock("@/lib/r2", () => ({
   getPresignedUrl: (...args: unknown[]) => getPresignedUrlMock(...args),
   // A deterministic fake, not src/lib/r2.ts's real (environment-namespaced)
@@ -39,6 +44,19 @@ vi.mock("@/lib/r2", () => ({
     `galleries/${galleryId}/display/${assetId}.webp`,
   putObject: (...args: unknown[]) => putObjectMock(...args),
   deleteObject: (...args: unknown[]) => deleteObjectMock(...args),
+  objectExists: (...args: [string]) => objectExistsMock(...args),
+}));
+
+// Task #93: the "photographer finds out" side effect — mocked at this
+// boundary (not Resend's own HTTP call) for the same reason
+// submit-selection/route.test.ts mocks `sendSubmissionNotificationEmail`
+// rather than `fetch`: this suite's own job is whether the ROUTE calls this
+// on the right branch, with the right asset, never twice on the happy path
+// — not whether Resend's own request shape is correct (that belongs to
+// missing-final-notification-email.test.ts).
+const notifyAdminOfMissingFinalMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/missing-final-notification-email", () => ({
+  notifyAdminOfMissingFinal: (...args: unknown[]) => notifyAdminOfMissingFinalMock(...args),
 }));
 
 // This route's own wiring (the gates, the ordering, the DB write) is what's
@@ -278,6 +296,10 @@ beforeEach(async () => {
   putObjectMock.mockReset();
   putObjectMock.mockResolvedValue(undefined);
   deleteObjectMock.mockReset();
+  objectExistsMock.mockReset();
+  objectExistsMock.mockResolvedValue(true);
+  notifyAdminOfMissingFinalMock.mockReset();
+  notifyAdminOfMissingFinalMock.mockResolvedValue(undefined);
   processFinalMock.mockReset();
   processFinalMock.mockResolvedValue({ data: Buffer.from("fake-final-jpeg-bytes") });
   processDisplayMock.mockReset();
@@ -492,6 +514,53 @@ describe("GET /api/assets/[assetId]/final — the final-specific gate", () => {
     const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
 
     expect(response.status).toBe(404);
+  });
+});
+
+// Task #93: the database saying `final_key` is set is not proof the R2
+// object is still there — a stale key or an object deleted out from under
+// the row must produce a DESCRIBED response, never an unhandled throw, and
+// must tell the photographer, not just the client who hit it.
+describe("GET /api/assets/[assetId]/final — the R2 object is missing (task #93)", () => {
+  it("returns 502 final_missing, never presigns, and notifies the photographer when objectExists resolves false", async () => {
+    authMock.mockResolvedValue(clientASession());
+    objectExistsMock.mockResolvedValue(false);
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({ error: "final_missing" });
+    expect(getPresignedUrlMock).not.toHaveBeenCalled();
+    expect(notifyAdminOfMissingFinalMock).toHaveBeenCalledWith({
+      gallery: expect.objectContaining({ id: GALLERY_A_ID, title: "Boda Ana y Beto" }),
+      missingFilenames: ["IMG_0001.JPG"],
+    });
+  });
+
+  // Same fail-closed stance GET .../display already takes on this exact
+  // probe (see that route's own comment): a THROWN check must never escape
+  // as an unrelated 500, it is treated as "not there".
+  it("treats a thrown objectExists the same as an explicit false", async () => {
+    authMock.mockResolvedValue(clientASession());
+    objectExistsMock.mockRejectedValue(new Error("R2 unreachable"));
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
+
+    expect(response.status).toBe(502);
+    await expect(response.json()).resolves.toEqual({ error: "final_missing" });
+    expect(getPresignedUrlMock).not.toHaveBeenCalled();
+  });
+
+  it("never calls notifyAdminOfMissingFinal on the happy path", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
+
+    expect(response.status).toBe(200);
+    expect(notifyAdminOfMissingFinalMock).not.toHaveBeenCalled();
   });
 });
 

@@ -57,6 +57,7 @@ import { assets, galleries } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
 import { canReadFinalDeliverable } from "@/lib/final-access";
 import { isGalleryOwner } from "@/lib/gallery-access";
+import { notifyAdminOfMissingFinal } from "@/lib/missing-final-notification-email";
 import { getObjectSize, getObjectStream } from "@/lib/r2";
 import {
   buildZipStream,
@@ -247,12 +248,65 @@ export const GET = withApiSession(async function GET(
   // happen is before the first byte goes out. See `checkZip32Limits`'s own
   // comment for why this exists at all — the format's fixed 32-bit/16-bit
   // header fields, and what crossing them does if this check weren't here.
-  const sizePlans = await Promise.all(
-    deliverable.map(async (asset, index) => ({
-      name: zipEntryNames[index]!,
-      size: await getObjectSize(asset.finalKey),
-    })),
+  //
+  // N HEAD requests, one per deliverable asset, considered and left
+  // UNCAPPED (task #93's own acceptance criterion asks this be written down
+  // rather than silently decided): `deliverable.length` is already bounded
+  // above by `ZIP32_MAX_ENTRY_COUNT` (65,534) before this point is ever
+  // reached, but the real ceiling is PLAN.md §3's own package shape — the
+  // largest package caps at 20 included photos, and only an admin can
+  // create assets at all, so no real gallery gets anywhere near a fan-out
+  // that would matter. Revisit only if that shape changes.
+  //
+  // TASK #93's DECISION on a HEAD that comes back "not there": a stale
+  // `finalKey`, or an object deleted out from under the row, used to reject
+  // this whole `Promise.all` and escape as an unhandled 500 (this task's
+  // own body). Every entry's own HEAD is now caught individually instead of
+  // letting one rejection sink the batch — this is a single request for an
+  // entire gallery's paid deliverables, so ONE missing object must not
+  // silently take down the other N-1 that are fine. Three options were
+  // weighed for what happens to a caller who hits this (same reasoning GET
+  // .../final's own header comment spells out in full — read that for the
+  // 404-vs-502 tradeoff, not repeated here):
+  //   - Skip the missing entr(y/ies) and deliver the rest, logging loudly:
+  //     REJECTED. The client asked for "every photo I selected" and would
+  //     silently receive fewer, with nothing in the archive itself to tell
+  //     them one is missing — this task's own body calls that "its own
+  //     quiet wrongness", and this route's whole reason to exist (its own
+  //     header comment) is "one button that gets the WHOLE delivered set".
+  //   - A 404: rejected for the same reason as GET .../final's own —
+  //     `no_finals_available` above already means 404 on THIS route, and
+  //     that is a genuinely different situation (nothing to deliver at
+  //     all, no data-integrity problem) from "some of what we owe this
+  //     client is unexpectedly gone".
+  //   - 502, same code (`final_missing`) as GET .../final: chosen, for
+  //     the same "our dependency, not your request" reasoning, and because
+  //     giving the two download paths the SAME error code for the SAME
+  //     underlying gap is what lets a client (or a future admin dashboard)
+  //     treat them as one problem, not two.
+  const sizePlans: { name: string; size: number }[] = [];
+  const missingFilenames: string[] = [];
+  await Promise.all(
+    deliverable.map(async (asset, index) => {
+      try {
+        sizePlans[index] = {
+          name: zipEntryNames[index]!,
+          size: await getObjectSize(asset.finalKey),
+        };
+      } catch {
+        missingFilenames.push(asset.originalFilename);
+      }
+    }),
   );
+  if (missingFilenames.length > 0) {
+    // Best-effort — see notifyAdminOfMissingFinal's own comment
+    // (src/lib/missing-final-notification-email.ts). Awaited for the same
+    // reason GET .../final awaits it: this request is about to end, and the
+    // alert must actually have been attempted before it does.
+    await notifyAdminOfMissingFinal({ gallery, missingFilenames });
+    return errorResponse("final_missing", 502);
+  }
+
   const capacityCheck = checkZip32Limits(sizePlans);
   if (!capacityCheck.ok) {
     return errorResponse(capacityCheck.reason, 413);

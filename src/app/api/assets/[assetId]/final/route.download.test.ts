@@ -52,6 +52,14 @@ class FakeS3Client {
   async delete(key: string): Promise<void> {
     store.delete(key);
   }
+  // Task #93: GET .../final now confirms the R2 object actually exists
+  // (a HEAD-request-only check, `objectExists` — see src/lib/r2.ts, which
+  // calls `getClient().exists(key)` directly, not `.file(key)`) before
+  // presigning it. This suite's fake bucket needs the SAME "is it really
+  // there" answer `store` already gives every other method here.
+  async exists(key: string): Promise<boolean> {
+    return store.has(key);
+  }
 }
 
 function keyFromFakeUrl(url: string): string {

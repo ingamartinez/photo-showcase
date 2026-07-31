@@ -3,6 +3,7 @@ import path from "node:path";
 import postcss from "postcss";
 import tailwind from "@tailwindcss/postcss";
 import { beforeAll, describe, expect, it } from "vitest";
+import { APP_FONT_SIZES } from "@/lib/utils";
 
 // Task #127 — the wiring test for the shadcn primitives.
 //
@@ -72,6 +73,37 @@ const RAW_PROPERTY_CANDIDATES = [
   "rounded-[min(var(--radius-md),10px)]",
 ];
 
+// --- Task #175: the app-surface @theme aliases -----------------------------
+//
+// GUARD 1 OF TWO, and the change is not defensible without both. A `@theme`
+// entry is GLOBAL: `bg-app-raised` is a valid class on the marketing site too,
+// where `--app-raised` is undefined. What keeps that survivable is that the
+// compiled rule must be `background-color: var(--app-raised)` — a reference,
+// not a value — so a leak outside `[data-surface="app"]` is invalid at
+// computed-value time (inert, greppable) instead of painting the wrong thing.
+// The moment an entry's right-hand side stops being a `var()`, Tailwind inlines
+// the LITERAL, the scope can no longer reach it, and the alias quietly becomes
+// a second source of truth. That is what this block makes impossible to do
+// silently. (Guard 2 is the `no-restricted-syntax` rule in eslint.config.mjs,
+// which keeps these classnames out of every file that is not the dashboard.)
+const APP_COLORS: ReadonlyArray<readonly [name: string, resolvesTo: string]> = [
+  ["app-ground", "var(--app-ground)"],
+  ["app-surface", "var(--app-surface)"],
+  ["app-raised", "var(--app-raised)"],
+  ["app-danger", "var(--app-danger)"],
+];
+
+// Derived from the list `src/lib/utils.ts` teaches tailwind-merge, so the two
+// cannot drift apart — see the "no size is missing from either side" test.
+const APP_TEXT: ReadonlyArray<readonly [name: string, resolvesTo: string]> = APP_FONT_SIZES.map(
+  (name) => [name, `var(--app-text-${name.replace(/^app-/, "")})`] as const,
+);
+
+// The trap this slice was told not to walk into, kept mechanical: radii must
+// NOT get `@theme` entries. `--app-radius*` exists because `--radius-*` are
+// frozen literals; a `rounded-app-*` utility reopens that settled argument.
+const APP_FORBIDDEN_CANDIDATES = ["rounded-app-sm", "rounded-app"];
+
 // One compile, shared by every assertion below. Deliberately not one per
 // test: @tailwindcss/postcss caches its compiled design system against the
 // `from` path, so a second `process()` with the same path silently reuses
@@ -83,7 +115,13 @@ beforeAll(async () => {
   const source = readFileSync(GLOBALS, "utf8");
 
   expect(source).toContain('@import "tailwindcss";');
-  const candidates = [...SEMANTIC_COLORS.map(([name]) => `bg-${name}`), ...RAW_PROPERTY_CANDIDATES];
+  const candidates = [
+    ...SEMANTIC_COLORS.map(([name]) => `bg-${name}`),
+    ...RAW_PROPERTY_CANDIDATES,
+    ...APP_COLORS.map(([name]) => `bg-${name}`),
+    ...APP_TEXT.map(([name]) => `text-${name}`),
+    ...APP_FORBIDDEN_CANDIDATES,
+  ];
   const pinned = source.replace(
     '@import "tailwindcss";',
     `@import "tailwindcss" source(none);\n@source inline("${candidates.join(" ")}");`,
@@ -146,6 +184,75 @@ describe("shadcn semantic colour tokens compile to real rules", () => {
 
     expect(root).toMatch(new RegExp(`--accent-foreground:\\s*${INK}`, "i"));
     expect(root).toMatch(new RegExp(`--primary-foreground:\\s*${INK}`, "i"));
+  });
+});
+
+describe("app-surface aliases stay references, so the scope can still reach them", () => {
+  /** The base (non-media-query) `[data-surface="app"]` declaration block. */
+  function appLayer(): string {
+    const layer = /\[data-surface="app"\]\s*\{([^}]*)\}/.exec(css)?.[1];
+    expect(layer, 'no [data-surface="app"] block in the compiled stylesheet').toBeDefined();
+    return layer as string;
+  }
+
+  it.each(APP_COLORS)("emits .bg-%s as %s, not as an inlined literal", (name, resolvesTo) => {
+    const body = ruleBody(`bg-${name}`);
+
+    expect(body, `Tailwind emitted no rule for .bg-${name}`).toBeDefined();
+    // `toContain` would also pass on `var(--app-ground, #070709)` or on a
+    // literal that merely mentions the name, so pin the whole declaration.
+    expect(body?.trim()).toBe(`background-color: ${resolvesTo};`);
+  });
+
+  it.each(APP_TEXT)("emits .text-%s as font-size: %s", (name, resolvesTo) => {
+    const body = ruleBody(`text-${name}`);
+
+    expect(body, `Tailwind emitted no rule for .text-${name}`).toBeDefined();
+    // Also asserts it is a FONT SIZE and not a colour: `--text-*` and
+    // `--color-*` share the `text-` prefix, and getting the namespace wrong
+    // produces a rule that exists and is the wrong property.
+    expect(body?.trim()).toBe(`font-size: ${resolvesTo};`);
+  });
+
+  it("points every alias at a property the app scope actually declares", () => {
+    // The other half of the chain. A `--color-app-x: var(--app-x)` entry with
+    // no `--app-x` in the scope compiles to a rule that looks right and paints
+    // nothing — and because these utilities are global, nothing else in the
+    // suite would ever notice.
+    const layer = appLayer();
+
+    for (const [, resolvesTo] of [...APP_COLORS, ...APP_TEXT]) {
+      const property = /var\((--[a-z0-9-]+)\)/.exec(resolvesTo)?.[1];
+      expect(property, `${resolvesTo} is not a var() reference`).toBeDefined();
+      expect(
+        layer,
+        `${property} is referenced by an app-* utility but never declared under [data-surface="app"]`,
+      ).toMatch(new RegExp(`(^|[^-\\w])${property}:\\s*\\S`, "m"));
+    }
+  });
+
+  it("keeps the font-size scale in globals.css and utils.ts in step", () => {
+    // THE DRIFT THAT MATTERS. tailwind-merge cannot tell a custom `text-app-*`
+    // font size from a text COLOUR, so src/lib/utils.ts has to name the scale
+    // for it (see that file). A `--text-app-*` entry added here but not there
+    // is silently dropped by every `cn()` call that also sets a colour — the
+    // class renders, at the inherited size. This walks both directions.
+    const declared = [...readFileSync(GLOBALS, "utf8").matchAll(/--text-(app-[a-z0-9-]+):/g)].map(
+      (m) => m[1],
+    );
+
+    expect([...declared].sort()).toEqual([...APP_FONT_SIZES].sort());
+  });
+
+  it("does not alias the radius scale, which is the trap this slice was set", () => {
+    // #128's finding again, from the other side: `--app-radius*` is a separate
+    // name precisely BECAUSE `--radius-*` are frozen literals. A `--radius-app-*`
+    // @theme entry would inline `5px` into `.rounded-app-sm` and hand the panel
+    // a corner radius the scope can never re-skin — the exact dead-declaration
+    // failure the globals.css comment spends a paragraph on.
+    for (const candidate of APP_FORBIDDEN_CANDIDATES) {
+      expect(ruleBody(candidate), `.${candidate} should not exist`).toBeUndefined();
+    }
   });
 });
 

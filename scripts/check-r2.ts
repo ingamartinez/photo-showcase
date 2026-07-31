@@ -40,6 +40,20 @@ async function main(): Promise<void> {
 
   const file = client.file(TEST_KEY);
 
+  // Task #103: `objectExists` (src/lib/r2.ts, Bun's `S3Client.exists()`) had
+  // only ever run against a MOCKED S3Client — this is the one place in the
+  // repo that talks to the real bucket, so it is also the one place that can
+  // prove its two possible answers for real. Checked BEFORE the write below:
+  // an absent key must read as `false`, not throw and not some other
+  // truthy-but-wrong value — the residual risk this task exists to close
+  // (see this task's own body: #89's try/catch already neutralises a throw,
+  // what remained unproven was the wrong-truthy case).
+  const missingBeforeWrite = await file.exists();
+  if (missingBeforeWrite !== false) {
+    throw new Error(`exists() on an absent key returned ${missingBeforeWrite}, expected false`);
+  }
+  console.log("exists   ok  (absent key -> false)");
+
   await file.write(TEST_BODY);
   console.log(`write    ok  ${TEST_KEY}`);
 
@@ -48,6 +62,24 @@ async function main(): Promise<void> {
     throw new Error(`read mismatch: expected "${TEST_BODY}", got "${roundTripped}"`);
   }
   console.log("read     ok");
+
+  // Same check, now that the object is actually there — proves `exists()`
+  // isn't just always returning `false`.
+  const presentAfterWrite = await file.exists();
+  if (presentAfterWrite !== true) {
+    throw new Error(`exists() on a present key returned ${presentAfterWrite}, expected true`);
+  }
+  console.log("exists   ok  (present key -> true)");
+
+  // `getObjectSize` (src/lib/r2.ts, Bun's `S3Client.size()`) has the exact
+  // same "only ever run against mocks" gap (task #103's own acceptance
+  // criterion suggests covering it in the same pass) — same HEAD-only
+  // mechanism, same real-bucket blind spot, cheap to close here.
+  const size = await client.size(TEST_KEY);
+  if (size !== TEST_BODY.length) {
+    throw new Error(`size() returned ${size}, expected ${TEST_BODY.length}`);
+  }
+  console.log(`size     ok  (${size} bytes)`);
 
   // The app never streams image bytes: clients fetch R2 directly with a
   // short-lived presigned URL. If presigning works, that whole path works.
@@ -76,6 +108,15 @@ async function main(): Promise<void> {
 
   await file.delete();
   console.log("delete   ok");
+
+  // Closes the loop: the same key must read as absent again after delete,
+  // not linger truthy due to some R2/edge-cache quirk this app would
+  // otherwise never notice.
+  const missingAfterDelete = await file.exists();
+  if (missingAfterDelete !== false) {
+    throw new Error(`exists() after delete returned ${missingAfterDelete}, expected false`);
+  }
+  console.log("exists   ok  (deleted key -> false again)");
 
   console.log("\nR2 is correctly configured.");
 }

@@ -450,6 +450,27 @@ describe("GET /api/galleries/[galleryId]/download-all — the filter itself", ()
     }
   });
 
+  // Task #103: the filter now delegates to `canReadFinalDeliverable`
+  // (src/lib/final-access.ts) instead of carrying its own `!== null` copy of
+  // this leg — that function's own suite pins the empty-string refusal
+  // against the gate directly; this test pins the SAME behavior on THIS
+  // route, the way #89 pinned it on GET .../final. An empty `final_key` is
+  // unreachable today (only `finalKey()`'s deterministic builder ever writes
+  // the column), but a `!== null` regression here would silently admit one
+  // into the archive.
+  it("excludes an asset with an empty-string finalKey, exactly as the shared gate does", async () => {
+    authMock.mockResolvedValue(clientSession());
+    const db = await seededDb();
+    db.__rows.galleries.push(galleryRow());
+    db.__rows.assets.push(assetRow({ isSelected: true, isEdited: true, finalKey: "" }));
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "no_finals_available" });
+  });
+
   it("orders entries by the assets' own sort_order, matching the gallery's display order", async () => {
     authMock.mockResolvedValue(clientSession());
     const db = await seededDb();

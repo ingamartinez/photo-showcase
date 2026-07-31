@@ -55,6 +55,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets, galleries } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
+import { canReadFinalDeliverable } from "@/lib/final-access";
 import { isGalleryOwner } from "@/lib/gallery-access";
 import { getObjectSize, getObjectStream } from "@/lib/r2";
 import {
@@ -182,15 +183,22 @@ export const GET = withApiSession(async function GET(
     return errorResponse("gallery_not_delivered", 404);
   }
 
-  // The exact same three-condition filter GET .../final enforces PER ASSET
-  // (see that route's own comment): `isSelected && isEdited && finalKey`.
-  // This is the one gate this whole route exists to get right — it hands
-  // over an entire gallery's paid deliverables in a single request, so
-  // there is no "close enough" here. An asset the client never selected, or
-  // one the photographer never finished editing, must never end up in the
-  // archive even if it happens to carry a stray `finalKey` (e.g. a mistaken
-  // upload — see the final route's own POST handler comment on why
-  // `finalKey` alone is never treated as sufficient).
+  // The exact same gate GET .../final enforces PER ASSET, via the ONE
+  // shared predicate (task #103 — see src/lib/final-access.ts's own header
+  // comment on why two copies of a four-condition boolean drift the first
+  // time one is edited). This is the one gate this whole route exists to
+  // get right — it hands over an entire gallery's paid deliverables in a
+  // single request, so there is no "close enough" here. An asset the client
+  // never selected, or one the photographer never finished editing, must
+  // never end up in the archive even if it happens to carry a stray
+  // `finalKey` (e.g. a mistaken upload — see the final route's own POST
+  // handler comment on why `finalKey` alone is never treated as
+  // sufficient). Calling `canReadFinalDeliverable` here re-checks the
+  // delivered/admin-carve-out leg this route already gated above at the
+  // GALLERY level — redundant for a non-admin (the gallery-level check
+  // above already ensures it), harmless for an admin (same carve-out
+  // either way), and it is what keeps this filter from EVER drifting from
+  // the gate `GET .../final` enforces per asset.
   const assetRows = await db
     .select({
       originalFilename: assets.originalFilename,
@@ -203,9 +211,8 @@ export const GET = withApiSession(async function GET(
     .where(eq(assets.galleryId, gallery.id));
 
   const deliverable = assetRows
-    .filter(
-      (asset): asset is typeof asset & { finalKey: string } =>
-        asset.isSelected && asset.isEdited && asset.finalKey !== null,
+    .filter((asset): asset is typeof asset & { finalKey: string } =>
+      canReadFinalDeliverable(asset, gallery, session),
     )
     .sort((a, b) => a.sortOrder - b.sortOrder);
 

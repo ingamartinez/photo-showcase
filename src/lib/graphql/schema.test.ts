@@ -86,28 +86,40 @@ describe("the schema, imported and executed directly (no HTTP layer)", () => {
 
     const sdl = printSchema(getSchema());
 
+    // EVERY assertion below is an anchored WHOLE LINE (`^ {2}… $` with the `m`
+    // flag), never a substring. That is not tidiness — a substring match here
+    // is actively unable to discriminate, and #32's review caught this file
+    // getting it wrong. `expect(sdl).toContain("id: ID!")` passes on ANY schema
+    // that has this Query type at all, because the root field's own ARGUMENT
+    // prints as `gallery(id: ID!): Gallery`. It stayed green under the mutation
+    // that reverts `builder.ts`'s `defaultFieldNullability: false`, so the one
+    // assertion most obviously about nullability was the one contributing least
+    // to catching a change in it. Two leading spaces is the indentation
+    // `printSchema` gives a field of an object type; an argument never appears
+    // at the start of a line.
+
     // Non-null: backed by `NOT NULL` columns (see src/lib/db/schema.ts).
-    expect(sdl).toContain("id: ID!");
-    expect(sdl).toContain("title: String!");
-    expect(sdl).toContain("photoCount: Int!");
-    expect(sdl).toContain("assets: [Asset!]!");
+    expect(sdl).toMatch(/^ {2}id: ID!$/m);
+    expect(sdl).toMatch(/^ {2}title: String!$/m);
+    expect(sdl).toMatch(/^ {2}photoCount: Int!$/m);
+    expect(sdl).toMatch(/^ {2}assets: \[Asset!\]!$/m);
     // The frozen commercial terms — always present on a gallery row, which is
     // the whole point of freezing them.
-    expect(sdl).toContain("includedPhotosSnapshot: Int!");
-    expect(sdl).toContain("extraPhotoPriceCopSnapshot: Int!");
+    expect(sdl).toMatch(/^ {2}includedPhotosSnapshot: Int!$/m);
+    expect(sdl).toMatch(/^ {2}extraPhotoPriceCopSnapshot: Int!$/m);
 
     // Genuinely nullable, each carrying its own explicit `nullable: true`:
     // an unsubmitted selection, an unedited asset, a client who never gave a
-    // name. Asserted as whole lines so a stray `!` cannot hide inside a
-    // substring match.
+    // name.
     expect(sdl).toMatch(/^ {2}selectionSubmittedAt: String$/m);
     expect(sdl).toMatch(/^ {2}finalKey: String$/m);
     expect(sdl).toMatch(/^ {2}name: String$/m);
 
     // The two refusal-carrying root fields stay nullable: `null` IS how this
-    // schema refuses (see ./types/query.ts's header).
-    expect(sdl).toContain("gallery(id: ID!): Gallery\n");
-    expect(sdl).toContain("galleryBySlug(publicSlug: String!): Gallery\n");
+    // schema refuses (see ./types/query.ts's header). Anchored the same way,
+    // which also pins that their arguments stay required.
+    expect(sdl).toMatch(/^ {2}gallery\(id: ID!\): Gallery$/m);
+    expect(sdl).toMatch(/^ {2}galleryBySlug\(publicSlug: String!\): Gallery$/m);
   });
 
   it("graphql() refuses a client who does not own the gallery — same gate as route.test.ts, exercised without HTTP", async () => {

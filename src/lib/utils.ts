@@ -41,10 +41,48 @@ export const APP_FONT_SIZES = [
   "app-title",
 ] as const;
 
-const twMerge = extendTailwindMerge({
+/**
+ * WHY THIS IS ITS OWN GROUP AND NOT AN EXTENSION OF `font-size`.
+ *
+ * The obvious fix — appending the scale to tailwind-merge's built-in
+ * `font-size` group — fixes the colour collision above and immediately
+ * introduces its mirror image, because that group also carries
+ * `conflictingClassGroups: { "font-size": ["leading"] }`. In stock Tailwind
+ * that rule is CORRECT: `text-sm` emits a font size AND a line height, so a
+ * `leading-*` written before it is genuinely superseded.
+ *
+ *     .text-sm       { font-size: …; line-height: var(--tw-leading, …) }
+ *     .text-app-base { font-size: var(--app-text-base) }
+ *
+ * These aliases emit font-size ONLY. Folded into `font-size` they inherit the
+ * rule anyway, so `cn("leading-6", "text-app-base")` returns `"text-app-base"`
+ * — the line height deleted, and nothing emitted to replace it. Silent, and
+ * order-dependent: the same pair written the other way round keeps both.
+ *
+ * So the group is separate and declared to conflict with `font-size` in BOTH
+ * directions (a real size still replaces an app size and vice versa, which is
+ * what a call site means by writing either), and with nothing else. Measured:
+ * against the shipped alternative this changes exactly one pairing —
+ * `leading-*` before an app size now survives — and leaves every other
+ * combination, including all stock Tailwind behaviour, byte-identical.
+ *
+ * REJECTED ALTERNATIVE: declaring `--text-app-*--line-height` companions in
+ * `@theme` so the utilities really do emit a line height. That would make the
+ * conflict rule honest, but it means choosing a line height per step, and #128
+ * deliberately made `--app-line-height` a SINGLE root-level value the whole
+ * surface inherits. Picking seven of them is a design decision, this slice has
+ * no mandate for it, and applying the one value to all seven would put 1.5 on
+ * `text-app-title` at 26px. Modelling what the CSS actually emits is the
+ * change that carries no design opinion.
+ */
+const twMerge = extendTailwindMerge<"app-font-size">({
   extend: {
     classGroups: {
-      "font-size": [{ text: [...APP_FONT_SIZES] }],
+      "app-font-size": [{ text: [...APP_FONT_SIZES] }],
+    },
+    conflictingClassGroups: {
+      "app-font-size": ["font-size"],
+      "font-size": ["app-font-size"],
     },
   },
 });

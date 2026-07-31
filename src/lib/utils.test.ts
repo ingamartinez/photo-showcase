@@ -41,7 +41,34 @@ describe("cn() keeps the app-surface font sizes out of the colour group", () => 
     expect(cn("bg-app-surface", "bg-app-raised")).toBe("bg-app-raised");
   });
 
+  // The mirror image of the bug above, and the reason the app scale is its own
+  // tailwind-merge class group rather than an extension of `font-size`. See the
+  // comment on `twMerge` in ./utils.ts.
+  it("does not let an app font size delete a leading-* written before it", () => {
+    // Stock `text-sm` emits font-size AND line-height, so `font-size` conflicts
+    // with `leading` for good reason. `text-app-base` emits font-size only, so
+    // inheriting that rule would drop the line height and replace it with
+    // nothing — silently, and only in this order.
+    expect(cn("leading-6", "text-app-base")).toBe("leading-6 text-app-base");
+    expect(cn("text-app-base", "leading-6")).toBe("text-app-base leading-6");
+  });
+
+  it.each([...APP_FONT_SIZES])("keeps leading-* alongside text-%s in either order", (size) => {
+    expect(cn("leading-relaxed", `text-${size}`).split(/\s+/)).toContain("leading-relaxed");
+    expect(cn(`text-${size}`, "leading-relaxed").split(/\s+/)).toContain("leading-relaxed");
+  });
+
+  it("still lets a real Tailwind font size and an app one replace each other", () => {
+    // The separate group must not become an ISLAND: a call site that writes
+    // both means the later one, exactly as it would for two stock sizes.
+    expect(cn("text-sm", "text-app-base")).toBe("text-app-base");
+    expect(cn("text-app-base", "text-sm")).toBe("text-sm");
+  });
+
   it("leaves the stock Tailwind behaviour alone", () => {
+    // Including the conflict this whole block is careful NOT to break: a real
+    // font size DOES supersede a preceding leading-*, because it emits one.
+    expect(cn("leading-6", "text-sm")).toBe("text-sm");
     // Guard against the extension being written as an `override` rather than an
     // `extend`, which would silently drop the built-in scale.
     expect(cn("text-xs", "text-fg-mute")).toBe("text-xs text-fg-mute");

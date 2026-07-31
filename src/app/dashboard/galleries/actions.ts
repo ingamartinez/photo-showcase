@@ -21,6 +21,7 @@ import {
   getGalleryClients,
   isGalleryVisibleToClient,
 } from "@/lib/galleries";
+import { galleryAccessResendKey, galleryAccessResendLimiter } from "@/lib/gallery-access-rate-limiters";
 import { generateGallerySlug } from "@/lib/slug";
 import { authEnv, resendEnv } from "@/lib/env";
 import { computeQuota } from "@/lib/quota";
@@ -1270,6 +1271,193 @@ export async function attachGalleryClients(
       requestedUsers.length === 1
         ? "Cliente agregado y le mandamos el enlace para entrar a la galería."
         : "Clientes agregados y les mandamos el enlace para entrar a la galería.",
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Resend the gallery-access email to an already-attached client (task #101).
+//
+// THE GAP THIS CLOSES: `attachGalleryClients` above sends the access email
+// unconditionally on attach, but if that send fails the client is already
+// ACTIVE by then (the write commits before the email is attempted) — and an
+// active client is filtered OUT of the attach picker's `eligibleClients`
+// (src/app/dashboard/galleries/[galleryId]/page.tsx). Before this action, the
+// only way to give that client a working link was to remove and re-attach
+// them, writing a `removed_at` that gets cleared a moment later — a
+// soft-delete audit entry for something that never actually happened. See
+// `attachGalleryClients`'s own header comment for the fuller account of how
+// this gap was discovered (kanban #97's review) and left open on purpose.
+//
+// DECIDED (owner, 2026-07-30, on kanban #101's task body — do not re-litigate
+// these against alternatives the record already rejected):
+//
+//   1. Resends to ANY active client, unconditionally — never conditioned on
+//      whether the LAST send is known to have failed. The real trigger for
+//      an admin reaching for this button is "the client says it never
+//      arrived", which is not the same event as "the last send failed": mail
+//      can be accepted by Resend and still land in spam, get deleted, or go
+//      to an address the client stopped checking. A button gated on a
+//      recorded failure would be unavailable for the single most common real
+//      reason to press it.
+//   2. No new column, no migration, nothing about a "last failed send" is
+//      recorded ANYWHERE. Falls directly out of (1): an unconditional button
+//      needs nothing to condition itself on. `gallery_clients` stays a
+//      membership table, not a delivery log — same stance schema.ts and
+//      `attachGalleryClients`'s own header take. (Task #74, if it ever
+//      lands, is the place for observability of swallowed send failures —
+//      not this action.)
+//   3. Throttle: reuses `createRateLimiter()` (src/lib/rate-limit.ts) via the
+//      dedicated `src/lib/gallery-access-rate-limiters.ts` module — see that
+//      module's header for the full reasoning on the limit, the window, the
+//      `(galleryId, clientId)` bucket key, and why there is deliberately no
+//      per-IP bucket here.
+//
+// CHECK ORDER, and why it is this order specifically:
+//   requireAdmin() -> schema parse -> gallery exists -> visible-to-client ->
+//   active membership -> throttle -> signIn.
+//
+// The visibility check runs BEFORE the throttle, on purpose: a `draft` (or
+// `archived`) gallery is refused categorically, every single time, by
+// `isGalleryVisibleToClient` — the SAME predicate `attachGalleryClients`
+// already reuses, rather than a second status set that could drift from it.
+// A resend that ignored gallery status would mail a working magic link for a
+// gallery the client cannot even view — the exact "second door into a
+// gallery nobody should be able to open yet" trap `attachGalleryClients`'s
+// own `draft` branch exists to close. Since that refusal never depends on
+// how many times it has already happened, letting it consume throttle budget
+// would only let an admin who mis-clicks against a `draft` gallery a few
+// times accidentally lock themselves out of a LEGITIMATE resend later in the
+// same 15-minute window. `requireAdmin()` plus exactly one admin account
+// (PLAN.md §4) means there is no anonymous principal for the throttle to
+// protect its budget from in the first place, so nothing is lost by letting
+// the categorical, status-only refusal run first and for free.
+//
+// No `revalidatePath` call anywhere in this action: unlike every action
+// above it, this one writes NOTHING to the database (decision 2) — there is
+// no cache entry it could possibly have made stale.
+// ---------------------------------------------------------------------------
+
+export type ResendGalleryAccessEmailState = {
+  status: "idle" | "error" | "resent" | "resend_email_failed" | "throttled";
+  message?: string;
+};
+
+const resendGalleryAccessEmailSchema = z.object({
+  galleryId: z.uuid(),
+  clientId: z.string().trim().min(1, "Cliente inválido."),
+});
+
+export async function resendGalleryAccessEmail(
+  _prevState: ResendGalleryAccessEmailState,
+  formData: FormData,
+): Promise<ResendGalleryAccessEmailState> {
+  // Admin-only surface, checked at the data-access path itself — not only by
+  // the page/row hiding the affordance. See this file's repeated stance on
+  // every other action above and the epic's "every route and action is
+  // admin-only" rule.
+  await requireAdmin();
+
+  const parsed = resendGalleryAccessEmailSchema.safeParse({
+    galleryId: formData.get("galleryId"),
+    clientId: formData.get("clientId"),
+  });
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Datos inválidos.",
+    };
+  }
+
+  const [gallery] = await db
+    .select()
+    .from(galleries)
+    .where(eq(galleries.id, parsed.data.galleryId))
+    .limit(1);
+  if (!gallery) {
+    return { status: "error", message: "La galería no existe." };
+  }
+
+  // Trap A from the DECIDED record: reuse the SAME status predicate
+  // `attachGalleryClients` already uses, rather than inventing a second
+  // status set that could drift from it. Checked BEFORE the throttle — see
+  // this section's own header comment for why that ordering is deliberate.
+  if (!isGalleryVisibleToClient(gallery.status)) {
+    return {
+      status: "error",
+      message: "Esta galería todavía no está visible para el cliente.",
+    };
+  }
+
+  // Resolves the client's own name/email for the email call and the
+  // response message below, AND doubles as the "is this client actually an
+  // ACTIVE member of THIS gallery" check — a removed or never-attached id
+  // simply matches no row here, the same read-based validation
+  // `attachGalleryClients` already relies on for its own client ids.
+  const [membership] = await db
+    .select({ email: users.email, name: users.name })
+    .from(galleryClients)
+    .innerJoin(users, eq(users.id, galleryClients.userId))
+    .where(
+      and(
+        eq(galleryClients.galleryId, gallery.id),
+        eq(galleryClients.userId, parsed.data.clientId),
+        isNull(galleryClients.removedAt),
+      ),
+    )
+    .limit(1);
+  if (!membership) {
+    return {
+      status: "error",
+      message: "Ese cliente ya no está activo en esta galería.",
+    };
+  }
+
+  // Bucket key is (galleryId, CLIENT id) — never the acting admin's id. See
+  // gallery-access-rate-limiters.ts's own header comment for why: an
+  // admin-keyed bucket would pool every client on this gallery into one
+  // shared budget, so resending to one client would eat another client's
+  // own, unrelated allowance.
+  const throttle = galleryAccessResendLimiter.check(
+    galleryAccessResendKey(gallery.id, parsed.data.clientId),
+  );
+  if (!throttle.allowed) {
+    return {
+      status: "throttled",
+      message:
+        `Ya le reenviaste el correo a ${membership.email} varias veces en poco tiempo. ` +
+        "Esperá unos minutos antes de volver a intentar.",
+    };
+  }
+
+  // Reuses the EXACT SAME provider call — and therefore the exact same
+  // `src/lib/gallery-access-email.ts` copy — every other gallery-access send
+  // in this file already makes. Never a second door into the gallery.
+  //
+  // A plain try/catch, NOT the `Promise.allSettled` fan-out
+  // `attachGalleryClients`/`publishGallery`/`deliverGallery` use above: this
+  // action resends to exactly ONE recipient by design (it is a per-row
+  // affordance on `GalleryClientRow`), so there is no list of results to
+  // reconcile.
+  try {
+    await signIn("gallery-access", {
+      email: membership.email,
+      redirect: false,
+      redirectTo: `/galleries/${gallery.publicSlug}`,
+    });
+  } catch (error) {
+    // Same "an unexpected, non-AuthError failure is a genuine bug/outage —
+    // let it crash rather than silently pretend" stance every sibling send
+    // in this file already takes.
+    if (!(error instanceof AuthError)) throw error;
+    return {
+      status: "resend_email_failed",
+      message: `No pudimos reenviarle el correo a ${membership.email}. Intentá de nuevo en un rato.`,
+    };
+  }
+
+  return {
+    status: "resent",
+    message: `Le reenviamos el enlace de acceso a ${membership.email}.`,
   };
 }
 

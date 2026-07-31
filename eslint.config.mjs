@@ -17,9 +17,17 @@ const eslintConfig = defineConfig([
       ],
     },
   },
-  // CLI scripts (migrations, backfills) legitimately write to stdout/stderr.
+  // CLI entry points legitimately write to stdout/stderr. Two directories, and
+  // the distinction between them is load-bearing rather than cosmetic:
+  //  * `scripts/` — OPS scripts (migrations, backfills, seeds). Since task #104
+  //    everything here is staged to the droplet WHOLESALE by
+  //    .github/workflows/deploy.yml and its import graph is verified against the
+  //    release tarball. Putting a dev-only tool here means shipping it.
+  //  * `tooling/` — DEV-time tools, staged by nothing (task #32). See
+  //    tooling/emit-graphql-schema.ts's header for the deploy failure that
+  //    established the split.
   {
-    files: ["scripts/**"],
+    files: ["scripts/**", "tooling/**"],
     rules: {
       "no-console": "off",
     },

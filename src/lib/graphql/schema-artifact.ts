@@ -1,21 +1,32 @@
 // Builds the exact text of `schema.graphql` — the committed SDL snapshot of
 // this app's Pothos schema (task #32).
 //
-// WHY THIS IS A MODULE AND NOT FOUR LINES INSIDE THE SCRIPT: two places need
+// WHY THIS IS A MODULE AND NOT FOUR LINES INSIDE THE TOOL: two places need
 // to agree byte-for-byte on what that file should contain — the writer
-// (`scripts/emit-graphql-schema.ts`, run by `bun run codegen`) and the
+// (`tooling/emit-graphql-schema.ts`, run by `bun run codegen`) and the
 // staleness guard (./schema-sdl.test.ts, run by `bun run test`). If the guard
 // re-derived the expected text on its own it would be comparing the file
 // against a second opinion, and the two opinions would drift the first time
 // anyone edited the header. One function, one answer.
 //
+// IT LIVES UNDER src/lib/ AND THAT HAS A COST WORTH NAMING. src/lib/ is
+// `rsync`ed into the release tarball WHOLESALE (.github/workflows/deploy.yml),
+// so this module reaches the droplet, and it imports bare `graphql`, which the
+// release's hand-curated three-package `node_modules` overlay does not include.
+// Harmless while nothing under `scripts/` imports it — verified by running that
+// workflow's own "Verify ops script import graphs" step locally, not by reading
+// import lines. The day an ops script reaches anything in src/lib/graphql/**,
+// that step fails on `graphql` and this paragraph is why. It stays here anyway
+// because ./schema-sdl.test.ts imports it and a test under src/ importing from
+// tooling/ would be the wrong direction.
+//
 // TAKES THE SCHEMA AS AN ARGUMENT rather than calling `getSchema()` itself,
 // and that is load-bearing rather than stylistic: `./schema.ts` carries
 // `import "server-only"`, which is NOT an installed package in this repo (see
 // vitest.config.ts's own comment on the same problem). A plain `bun run` of
-// the emitter script therefore cannot statically import anything that reaches
-// it — the script registers an inert stub first and then imports `./schema.ts`
-// dynamically. Keeping that dance in the script means this module has no
+// the emitter therefore cannot statically import anything that reaches
+// it — the tool registers an inert stub first and then imports `./schema.ts`
+// dynamically. Keeping that dance in the tool means this module has no
 // server-only import of its own, which is also why it is the one file in
 // src/lib/graphql/ without the marker: it reads no database, no session and no
 // environment, and it is only ever called by a build-time tool and a test.

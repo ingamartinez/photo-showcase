@@ -78,7 +78,7 @@
 import type { CodegenConfig } from "@graphql-codegen/cli";
 
 const config: CodegenConfig = {
-  // The SDL emitted by `scripts/emit-graphql-schema.ts`, NOT a running server
+  // The SDL emitted by `tooling/emit-graphql-schema.ts`, NOT a running server
   // and NOT an introspection URL. Nothing here starts the app, opens a
   // database connection, or reads an application environment variable — the
   // same constraint every route module in this repo lives under, for the same

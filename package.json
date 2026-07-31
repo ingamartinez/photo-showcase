@@ -10,7 +10,7 @@
     "typecheck": "tsc --noEmit",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "codegen": "bun run scripts/emit-graphql-schema.ts && graphql-codegen --config codegen.ts",
+    "codegen": "bun run tooling/emit-graphql-schema.ts && graphql-codegen --config codegen.ts",
     "codegen:check": "bun run codegen && git diff --exit-code HEAD -- schema.graphql src/lib/graphql/generated",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",

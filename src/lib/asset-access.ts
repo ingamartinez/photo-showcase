@@ -23,6 +23,40 @@ import { isGalleryOwner } from "@/lib/gallery-access";
 export type AssetLookupResult =
   { ok: true; asset: Asset; gallery: Gallery } | { ok: false; status: 403 | 404; error: string };
 
+// Statuses in which a gallery's asset SET (which assets exist, their order,
+// which are selected) is considered settled and refuses mutation to EVERY
+// caller, including admins — the single shared definition task #58 replaced
+// three verbatim copies with (the DELETE route, the reorder route, and the
+// client-facing selection-toggle route each carried their own).
+//
+// Once a gallery has moved past `draft`/`proofing`, task #56 (raised by the
+// #20 review) requires this gate: deleting or reordering an asset after the
+// client has SELECTED it would silently change what they already committed
+// to — including the price they accepted, since selection counts and the
+// surcharge are derived from which assets exist and are marked selected
+// (PLAN.md), never stored independently. DELIVERED is worse: the client
+// already has the photos, and a mutation here would move the record of what
+// they were given out from under them. ARCHIVED refuses outright, not
+// merely warns — an archived gallery is a closed historical record, there is
+// no legitimate workflow reason left to mutate it, and "warn but allow"
+// would still let through exactly the mutation this gate exists to stop.
+//
+// Deliberately does NOT include `draft`: an admin is expected to write
+// there (uploading/arranging proofs before publishing) — refusing draft is
+// the job of a SEPARATE, non-admin-only gate (`isGalleryVisibleToClient` in
+// src/lib/galleries.ts), not this one. That gate answers "is this gallery's
+// current status one a non-admin caller is allowed to know exists"; this set
+// answers "is the asset set settled enough that NO ONE may mutate it
+// anymore". Different principals, different questions — do not fold the two
+// into one set just because their status lists overlap today. The
+// client-facing selection route (task #24) applies BOTH gates, in that
+// order: visibility first, then this mutation lock.
+export const ASSET_MUTATION_BLOCKED_STATUSES = new Set<Gallery["status"]>([
+  "selected",
+  "delivered",
+  "archived",
+]);
+
 /**
  * Loads `assetId` and the gallery it belongs to, then checks that `session`
  * is allowed to see it: the gallery's own client, or an admin. Returns a

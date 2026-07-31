@@ -39,13 +39,17 @@ export default defineConfig({
       // the specific modules it means to.
       //
       // WHAT THIS COSTS, stated plainly rather than left to be discovered:
-      // until now a JSDOM suite that forgot to mock a DB-backed module failed
-      // LOUDLY at import time. It no longer does — `@/lib/db` is now
-      // importable from a chrome suite, and while importing it opens no
-      // connection (postgres.js connects lazily, see src/lib/db/index.ts), an
-      // unmocked query from such a suite would reach the developer's real
-      // local Postgres instead of failing to resolve. The marker was never
-      // the mechanism that enforced the server boundary in the first place —
+      // until now a JSDOM suite that forgot to mock a MARKER-CARRYING module
+      // failed LOUDLY at import time. It no longer does. `@/lib/galleries`,
+      // `@/lib/gallery-access` and `@/lib/gallery-selection` are the newly
+      // importable ones that matter here — each carries `import "server-only"`
+      // and each queries Postgres — so a chrome suite that forgets to mock one
+      // now reaches the developer's real local database instead of failing to
+      // resolve. Note what is NOT part of this cost: `@/lib/db` itself carries
+      // no marker and was always importable from a JSDOM suite, alias or not
+      // (and importing it opens no connection either way — postgres.js
+      // connects lazily, see src/lib/db/index.ts). The marker was never the
+      // mechanism that enforced the server boundary in the first place —
       // `next build` is, and CI runs it — but it was a useful accident, and
       // this alias spends it.
       "server-only": path.resolve(__dirname, "./vitest.server-only-stub.ts"),

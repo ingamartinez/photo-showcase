@@ -195,10 +195,19 @@ builder.queryType({
      * function's own header comment documents as having NO admin bypass by
      * design — an admin calling this gets back only galleries where their
      * OWN user id is attached (almost always none), never a studio-wide
-     * listing. That is deliberate for this slice: a studio-wide admin
-     * listing is task #31's job ("move gallery reads to GraphQL"), not this
-     * one — task #30 is the server and the auth context, scoped to "reads
-     * only: galleries and assets for the signed-in user".
+     * listing.
+     *
+     * NO STUDIO-WIDE ADMIN LISTING EXISTS IN THIS SCHEMA AT ALL, and none is
+     * planned by any card that has shipped so far. This paragraph used to say
+     * one was task #31's job; it was not. #31 moved the two CLIENT-facing
+     * reads onto this schema (`galleryBySlug` and `galleryList` above) and
+     * deliberately left the admin workspace on its direct
+     * `getGalleriesWithDetails` read — that is the function with no owner or
+     * visibility filter, and putting it behind a GraphQL field is a decision
+     * about who may ask for every gallery in the studio, not a rewiring. Until
+     * a card takes that on, an admin surface that needs the studio-wide list
+     * calls `getGalleriesWithDetails` directly, as `/dashboard/galleries`
+     * does.
      */
     galleries: t.field({
       type: [GalleryType],

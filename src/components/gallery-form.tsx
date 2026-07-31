@@ -26,11 +26,14 @@ export function GalleryForm({
   //
   // Unlike ClientForm, this one does NOT feed the submitted values back
   // through `defaultValue` after a rejected submit (task #50 added that
-  // there). Not an oversight: `createGallery` has no duplicate-style rejection
-  // a photographer corrects and resubmits, and the expensive field to retype
-  // here is a multi-select of clients rather than three text inputs. Worth
-  // revisiting the day this form grows an error the user is expected to fix
-  // in place.
+  // there). `createGallery` does have errors a photographer corrects and
+  // resubmits — a whitespace-only title, an invalid or withdrawn package, an
+  // unknown client id — so the papercut exists here too. It is simply not
+  // fixed yet, and no task has asked for it: restoring `<select multiple>`
+  // and `<select>` state costs materially more than the three text inputs
+  // ClientForm has, because `defaultValue` on a multi-select is an array of
+  // option values rather than one string. Worth its own slice, not a silent
+  // ride-along on #50.
   return (
     <form action={formAction} className="border-line-2 flex flex-col gap-5 rounded-sm border p-6">
       <span className="label text-fg-mute">Nueva galería</span>

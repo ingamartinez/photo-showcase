@@ -115,7 +115,19 @@ export default defineConfig({
     // it stays untouched: setting `exclude` at all REPLACES vitest's
     // built-in default rather than appending to it, so omitting the spread
     // would silently stop skipping node_modules and .git too.
-    exclude: [...configDefaults.exclude, ".claude/**"],
+    //
+    // `e2e/**` (task #165): Playwright's own spec files under `e2e/` match
+    // vitest's default `include` glob (`**/*.{test,spec}.?(c|m)[jt]s?(x)`)
+    // just as readily as a vitest suite does -- both runners use the same
+    // `*.spec.ts` convention. Without this exclusion, `bun run test` would
+    // try to execute `e2e/dashboard.capture.spec.ts` through vitest, which
+    // knows nothing about `@playwright/test`'s `test()`/`expect()` and would
+    // fail outright, and worse, would trigger `e2e/global-setup.ts` never
+    // (globalSetup is Playwright-specific, vitest wouldn't call it) leaving
+    // the specs to seed nothing and simply throw on missing storage-state
+    // files. `bun run test` and `bun run test:e2e` must stay two entirely
+    // separate suites -- see this task's own hard rule.
+    exclude: [...configDefaults.exclude, ".claude/**", "e2e/**"],
 
     // Task #136: root-causes and fixes the "Cannot use GraphQLObjectType
     // ... from another module or realm" error that #30 hit when it tried to

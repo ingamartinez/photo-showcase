@@ -37,6 +37,15 @@ vi.mock("@/auth", () => ({
   signOut: vi.fn(),
 }));
 
+// The shell's nav is a client component reading `usePathname()` (task #129 —
+// a Server Component layout is never handed the pathname, so marking the
+// current route cannot happen server-side). Rendered outside an app-router
+// tree there is no pathname to read; this mock supplies one. Which route is
+// current is `dashboard-nav.test.tsx`'s subject, not this file's.
+vi.mock("next/navigation", () => ({
+  usePathname: () => "/dashboard",
+}));
+
 beforeEach(() => {
   requireAdminMock.mockReset();
   requireAdminMock.mockResolvedValue({
@@ -52,7 +61,7 @@ afterEach(() => {
 describe("DashboardLayout chrome", () => {
   it("does not render the public site's header/footer", async () => {
     const element = await DashboardLayout({ children: <div>contenido</div> });
-    render(element);
+    const { container } = render(element);
 
     // "Reservar" (SiteHeader's booking CTA) and "@alejo_frames" (SiteFooter's
     // Instagram handle) exist nowhere else in the app — their absence is
@@ -66,5 +75,63 @@ describe("DashboardLayout chrome", () => {
     expect(screen.getByText("Clientes")).toBeDefined();
     expect(screen.getByText("Cerrar sesión")).toBeDefined();
     expect(screen.getByText("contenido")).toBeDefined();
+
+    // Task #129: the marketing `.wrap` (1280px centred column) must not be
+    // what holds a dense work surface. Asserted on the rendered tree rather
+    // than on the source, so it stays true however the shell is refactored.
+    expect(container.querySelector(".wrap")).toBeNull();
+  });
+
+  // The whole point of the shell rebuild: `[data-surface="app"]` is what
+  // switches on the scoped token layer in globals.css (task #128 shipped
+  // every token inert, because nothing set the attribute). If this element
+  // loses the attribute, the panel silently falls back to the public site's
+  // scale and density with no other test noticing.
+  it("puts the dashboard tree on the app surface", async () => {
+    const element = await DashboardLayout({ children: <div>contenido</div> });
+    const { container } = render(element);
+
+    const surface = container.querySelector('[data-surface="app"]');
+    expect(surface).not.toBeNull();
+    // On the ROOT of the shell, so every screen under /dashboard inherits it.
+    expect(surface?.contains(screen.getByText("contenido"))).toBe(true);
+    expect(surface?.contains(screen.getByText("Cerrar sesión"))).toBe(true);
+  });
+
+  // A sidebar makes landmarks meaningful in a way the previous single top bar
+  // did not: nav and content are now two regions a keyboard/screen-reader user
+  // moves between. There must be exactly ONE navigation — the phone tab bar
+  // and the desktop sidebar are one element relocated by CSS (epic #125), and
+  // a second landmark here would be the duplicated-markup bug.
+  it("exposes one navigation landmark and one main landmark", async () => {
+    const element = await DashboardLayout({ children: <div>contenido</div> });
+    render(element);
+
+    expect(screen.getAllByRole("navigation")).toHaveLength(1);
+    expect(screen.getByRole("navigation", { name: "Principal" })).toBeDefined();
+
+    const main = screen.getByRole("main");
+    expect(main.contains(screen.getByText("contenido"))).toBe(true);
+    // The chrome lives OUTSIDE `<main>`: a "skip to content" jump, or a
+    // screen reader's main-landmark shortcut, must not land the user back in
+    // the navigation.
+    expect(main.contains(screen.getByText("Cerrar sesión"))).toBe(false);
+  });
+
+  // The signed-in address is shown in the desktop sidebar, not merely
+  // announced. It shipped `sr-only` at every width — faithful to the mock,
+  // which turned out to be a slip (owner-confirmed 2026-07-31) — and that was
+  // also a REGRESSION against the layout this shell replaced, which showed it
+  // from `sm:` up. Two assertions, because the interesting thing is that it is
+  // BOTH announced everywhere AND visible somewhere: the text alone would be
+  // satisfied by a permanently-hidden span, which is exactly the state being
+  // fixed. jsdom computes no media queries, so `lg:not-sr-only` on the class
+  // list is the honest proxy for "visible at the sidebar breakpoint".
+  it("shows the signed-in admin address in the desktop sidebar", async () => {
+    const element = await DashboardLayout({ children: <div>contenido</div> });
+    render(element);
+
+    const email = screen.getByText("someone@example.com");
+    expect(email.className).toContain("lg:not-sr-only");
   });
 });

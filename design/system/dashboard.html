@@ -162,6 +162,11 @@
     font-size: var(--t-micro); letter-spacing: 0.06em;
     text-transform: uppercase; color: var(--fg-mute);
   }
+  /* Hidden on the phone the same way .brand__sub is — the top bar there
+     holds two things, and a wrapping email address next to the sign-out
+     is not a third. The >=1024px block turns it on for the sidebar, which
+     is where its four style declarations were always aiming. */
+  .account__mail { display: none; }
   .topbar__out {
     background: none; border: none; cursor: pointer;
     min-height: var(--tap); padding: 0 4px;
@@ -509,14 +514,27 @@
     }
     .brand { padding: 4px 10px 0; }
     .brand__sub { display: block; margin-top: 3px; }
-    .topbar__out { text-align: left; min-height: 0; padding: 0; }
+    /* 24px, not 0: the phone's 44px --tap floor relaxes on a pointer device
+       but does not disappear. WCAG 2.2 SC 2.5.8 (AA) wants 24x24 CSS px for
+       any pointer target, and its "inline" exception is for targets inside a
+       sentence of text — a standalone control in a sidebar is not that. This
+       said `min-height: 0` until #129 measured what shipped from it (18px),
+       so any slice reading this block for fidelity inherits the floor now
+       instead of inheriting the bug. */
+    .topbar__out { text-align: left; min-height: 24px; padding: 0; }
 
     /* The tab bar's items become the sidebar nav — same markup, same
-       three destinations, relocated. */
+       three destinations, relocated.
+
+       This block used to end with `order: -1`, which pulled the nav ABOVE
+       the wordmark in the sidebar column — the studio's name sitting
+       underneath its own menu. #129 built the shell to match it faithfully
+       and flagged it; the owner confirmed on 2026-07-31 that it was a slip,
+       not an intention. Source order is the order now: wordmark, nav,
+       account. Do not reintroduce it. */
     .tabbar {
       position: static; display: flex; flex-direction: column; gap: 2px;
       height: auto; padding: 0; background: none; border-top: none;
-      order: -1;
     }
     .tabbar__item {
       flex-direction: row; justify-content: flex-start; gap: 10px;
@@ -627,7 +645,12 @@
     </nav>
 
     <div class="topbar__account">
-      <span class="account__mail vh">alejo@alejoframes.com</span>
+      <!-- Was `class="account__mail vh"`: visually hidden at every width,
+           while the >=1024px block styled it with four properties. Nobody
+           styles the invisible — the author meant it to show in the sidebar
+           and left the utility class on. Owner-confirmed slip, 2026-07-31
+           (#129); the phone still hides it, see `.account__mail` above. -->
+      <span class="account__mail">alejo@alejoframes.com</span>
       <button type="button" class="topbar__out">Cerrar sesión</button>
     </div>
   </header>

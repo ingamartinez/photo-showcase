@@ -62,11 +62,11 @@ export default async function ClientGalleryPage({
     // THE ONE THING GRAPHQL STRUCTURALLY CANNOT TELL THIS PAGE, and the
     // reason these two helpers are still called here. `galleryBySlug`
     // collapses "no such slug", "not yours" and "not visible yet" into a
-    // single `null` on purpose — that is its no-existence-oracle design
-    // (see ./../../api/graphql and src/lib/graphql/types/query.ts). This page
-    // needs the distinction, because it has always answered 403 for a
-    // signed-in non-owner and 404 for an unknown slug, and quietly turning
-    // the former into the latter would change what a client sees.
+    // single `null` on purpose — that is its no-existence-oracle design, see
+    // src/lib/graphql/types/query.ts's header. This page needs the
+    // distinction, because it has always answered 403 for a signed-in
+    // non-owner and 404 for an unknown slug, and quietly turning the former
+    // into the latter would change what a client sees.
     //
     // So the distinction is re-derived HERE, from the same two helpers, and
     // ONLY on the refusal path: a caller who is allowed to see the gallery

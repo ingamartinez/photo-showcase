@@ -66,8 +66,8 @@ function getYoga(): Yoga {
       // collection, and is always the real runtime value once a request
       // actually arrives. Development and CI test runs keep introspection on
       // (`NODE_ENV` is `"test"` under Vitest), which is what lets
-      // `schema.test.ts` query `__schema` directly to prove this switch
-      // itself works.
+      // route.test.ts's "introspection" describe block query `__schema`
+      // directly, in both directions, to prove this switch itself works.
       plugins: [
         disableIntrospectionPlugin({
           isDisabled: () => process.env.NODE_ENV === "production",

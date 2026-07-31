@@ -17,9 +17,17 @@ const eslintConfig = defineConfig([
       ],
     },
   },
-  // CLI scripts (migrations, backfills) legitimately write to stdout/stderr.
+  // CLI entry points legitimately write to stdout/stderr. Two directories, and
+  // the distinction between them is load-bearing rather than cosmetic:
+  //  * `scripts/` — OPS scripts (migrations, backfills, seeds). Since task #104
+  //    everything here is staged to the droplet WHOLESALE by
+  //    .github/workflows/deploy.yml and its import graph is verified against the
+  //    release tarball. Putting a dev-only tool here means shipping it.
+  //  * `tooling/` — DEV-time tools, staged by nothing (task #32). See
+  //    tooling/emit-graphql-schema.ts's header for the deploy failure that
+  //    established the split.
   {
-    files: ["scripts/**"],
+    files: ["scripts/**", "tooling/**"],
     rules: {
       "no-console": "off",
     },
@@ -56,6 +64,29 @@ const eslintConfig = defineConfig([
           ],
         },
       ],
+    },
+  },
+  // Task #32: `src/lib/graphql/generated/**` is written by `bun run codegen`.
+  //
+  // IT IS DELIBERATELY *NOT* IN `globalIgnores` BELOW. Generated or not, that
+  // directory is TypeScript every client page imports, and an ignore entry is
+  // a hole in the lint gate that only ever widens — the same reasoning
+  // codegen.ts records for keeping it inside `format:check`. Everything ESLint
+  // has to say about it is still said.
+  //
+  // What is turned off is one thing and nothing else: the report for an
+  // `/* eslint-disable */` that turned out to disable nothing. The client
+  // preset writes that directive into EVERY file it emits, unconditionally,
+  // and in `graphql.ts` it currently suppresses no actual finding — so ESLint
+  // 9's default `reportUnusedDisableDirectives` warns on a line no human wrote
+  // and no human may edit. (In `gql.ts` the same directive IS load-bearing: it
+  // covers a `(documents as any)[source]` lookup.) Leaving the warning in place
+  // would mean `bun run lint` is permanently noisy, which is how a real
+  // warning gets scrolled past.
+  {
+    files: ["src/lib/graphql/generated/**"],
+    linterOptions: {
+      reportUnusedDisableDirectives: "off",
     },
   },
   globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts", ".claude/**"]),

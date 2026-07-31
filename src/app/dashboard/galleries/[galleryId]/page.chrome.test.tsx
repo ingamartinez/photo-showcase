@@ -101,6 +101,9 @@ vi.mock("@/lib/clients", () => ({
 
 vi.mock("@/lib/r2", () => ({
   getPresignedUrl: (key: string) => `https://r2.example.com/${key}?presigned=1`,
+  // Task #78: identity fake — the page re-attaches the `R2Key` brand to
+  // `asset.proofKey` via `storedKey` before calling `getPresignedUrl`.
+  storedKey: (key: string) => key,
 }));
 
 // Task #92: mocked wholesale for the same jsdom-cannot-resolve-"server-only"

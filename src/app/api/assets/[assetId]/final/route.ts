@@ -64,7 +64,14 @@ import { loadOwnedAsset } from "@/lib/asset-access";
 import { canReadFinalDeliverable } from "@/lib/final-access";
 import { processDisplay, processFinal } from "@/lib/images";
 import { notifyAdminOfMissingFinal } from "@/lib/missing-final-notification-email";
-import { displayKey, finalKey, getPresignedUrl, objectExists, putObject } from "@/lib/r2";
+import {
+  displayKey,
+  finalKey,
+  getPresignedUrl,
+  objectExists,
+  putObject,
+  storedKey,
+} from "@/lib/r2";
 
 export const runtime = "nodejs";
 
@@ -212,7 +219,10 @@ export const GET = withApiSession(async function GET(
   // client-side plumbing, is what makes a phone browser actually download
   // the file instead of opening it inline.
   const filename = buildFinalDownloadFilename(gallery.title, asset.originalFilename);
-  const url = getPresignedUrl(asset.finalKey, {
+  // `asset.finalKey` came off the `assets` table, which loses the `R2Key`
+  // brand on the round trip through Postgres (see `storedKey`'s own comment
+  // in src/lib/r2.ts) — it was originally written by `finalKey()` below.
+  const url = getPresignedUrl(storedKey(asset.finalKey), {
     contentDisposition: `attachment; filename="${filename}"`,
   });
   return NextResponse.json({ url });

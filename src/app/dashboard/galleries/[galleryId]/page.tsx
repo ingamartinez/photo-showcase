@@ -14,7 +14,7 @@ import {
 import { getClientsForPicker } from "@/lib/clients";
 import { formatBytes, formatCop } from "@/lib/format";
 import { getGalleryArchiveSize } from "@/lib/gallery-archive-size";
-import { getPresignedUrl } from "@/lib/r2";
+import { getPresignedUrl, storedKey } from "@/lib/r2";
 import { GalleryWorkspace } from "@/components/gallery-workspace";
 import { PublishGalleryButton } from "@/components/publish-gallery-button";
 import { UnlockSelectionPanel } from "@/components/unlock-selection-panel";
@@ -141,7 +141,10 @@ export default async function GalleryDetailPage({
     proofHeight: asset.proofHeight,
     isSelected: asset.isSelected,
     sortOrder: asset.sortOrder,
-    proofUrl: getPresignedUrl(asset.proofKey),
+    // `asset.proofKey` came off the `assets` table, which loses the `R2Key`
+    // brand on the round trip through Postgres — see `storedKey`'s own
+    // comment in src/lib/r2.ts.
+    proofUrl: getPresignedUrl(storedKey(asset.proofKey)),
     // Task #26: a boolean derived from `finalKey`, never the raw key itself
     // — see <GalleryWorkspace>'s own `WorkspaceAsset.hasFinal` comment.
     hasFinal: asset.finalKey !== null,

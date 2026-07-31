@@ -184,11 +184,47 @@ describe("environment namespacing (task #38)", () => {
   });
 });
 
+describe("nonGalleryKey (task #78)", () => {
+  it("namespaces a non-gallery-shaped key exactly like the builders above, in production", async () => {
+    const { nonGalleryKey } = await import("./r2");
+    expect(nonGalleryKey("_healthcheck/123.txt")).toBe("_healthcheck/123.txt");
+  });
+
+  it("prefixes with dev/ outside production, same as every builder above", async () => {
+    vi.stubEnv("APP_ENV", "development");
+    const { nonGalleryKey } = await import("./r2");
+    expect(nonGalleryKey("_healthcheck/123.txt")).toBe("dev/_healthcheck/123.txt");
+  });
+});
+
+describe("storedKey (task #78)", () => {
+  it("returns the given string unchanged — it re-attaches the brand, it does not namespace", async () => {
+    const { storedKey } = await import("./r2");
+    expect(storedKey("galleries/g/proofs/a.webp")).toBe("galleries/g/proofs/a.webp");
+  });
+
+  // The property `nonGalleryKey` above deliberately does NOT have: a value
+  // read back from the `assets` table was ALREADY namespaced by whichever
+  // `APP_ENV` was active when it was originally written by
+  // `proofKey`/`finalKey`. Re-namespacing it here would double the prefix.
+  it("does NOT re-apply the dev/ prefix to an already-namespaced key, unlike nonGalleryKey", async () => {
+    vi.stubEnv("APP_ENV", "development");
+    const { storedKey } = await import("./r2");
+    expect(storedKey("dev/galleries/g/proofs/a.webp")).toBe("dev/galleries/g/proofs/a.webp");
+  });
+});
+
+// putObject/getPresignedUrl/deleteObject below all take an `R2Key` (task
+// #78), never a bare string — every key in this section is built through
+// `proofKey`/`finalKey` rather than a string literal, the same as any real
+// caller would have to. See the "branding" describe block further down for
+// the compile-time half of this guarantee (a literal DOES fail typecheck).
 describe("putObject", () => {
   it("writes to the given key with the given content type", async () => {
-    const { putObject } = await import("./r2");
-    await putObject("galleries/g/proofs/a.webp", "bytes", { contentType: "image/webp" });
-    expect(write).toHaveBeenCalledWith("galleries/g/proofs/a.webp", "bytes", {
+    const { proofKey, putObject } = await import("./r2");
+    const key = proofKey("g", "a");
+    await putObject(key, "bytes", { contentType: "image/webp" });
+    expect(write).toHaveBeenCalledWith(key, "bytes", {
       type: "image/webp",
     });
   });
@@ -196,10 +232,11 @@ describe("putObject", () => {
 
 describe("getPresignedUrl", () => {
   it("presigns the given key with the named TTL constant", async () => {
-    const { getPresignedUrl, PRESIGNED_URL_TTL_SECONDS } = await import("./r2");
-    const url = getPresignedUrl("galleries/g/finals/a.jpg");
+    const { finalKey, getPresignedUrl, PRESIGNED_URL_TTL_SECONDS } = await import("./r2");
+    const key = finalKey("g", "a");
+    const url = getPresignedUrl(key);
     expect(url).toBe("https://example.com/presigned-url");
-    expect(presign).toHaveBeenCalledWith("galleries/g/finals/a.jpg", {
+    expect(presign).toHaveBeenCalledWith(key, {
       expiresIn: PRESIGNED_URL_TTL_SECONDS,
     });
   });
@@ -216,11 +253,12 @@ describe("getPresignedUrl", () => {
   // client's own `presign()` as `contentDisposition`, which is what actually
   // becomes the signed `response-content-disposition` query parameter.
   it("forwards contentDisposition to the underlying presign call when given", async () => {
-    const { getPresignedUrl, PRESIGNED_URL_TTL_SECONDS } = await import("./r2");
-    getPresignedUrl("galleries/g/finals/a.jpg", {
+    const { finalKey, getPresignedUrl, PRESIGNED_URL_TTL_SECONDS } = await import("./r2");
+    const key = finalKey("g", "a");
+    getPresignedUrl(key, {
       contentDisposition: 'attachment; filename="foto.jpg"',
     });
-    expect(presign).toHaveBeenCalledWith("galleries/g/finals/a.jpg", {
+    expect(presign).toHaveBeenCalledWith(key, {
       expiresIn: PRESIGNED_URL_TTL_SECONDS,
       contentDisposition: 'attachment; filename="foto.jpg"',
     });
@@ -232,9 +270,10 @@ describe("getPresignedUrl", () => {
   // to the presign call at all when it's omitted, not an override set to
   // `undefined`.
   it("omits contentDisposition entirely from the presign call when not given", async () => {
-    const { getPresignedUrl, PRESIGNED_URL_TTL_SECONDS } = await import("./r2");
-    getPresignedUrl("galleries/g/proofs/a.webp");
-    expect(presign).toHaveBeenCalledWith("galleries/g/proofs/a.webp", {
+    const { getPresignedUrl, PRESIGNED_URL_TTL_SECONDS, proofKey } = await import("./r2");
+    const key = proofKey("g", "a");
+    getPresignedUrl(key);
+    expect(presign).toHaveBeenCalledWith(key, {
       expiresIn: PRESIGNED_URL_TTL_SECONDS,
     });
     const callArgs = presign.mock.calls[0]?.[1] as Record<string, unknown>;
@@ -244,9 +283,10 @@ describe("getPresignedUrl", () => {
 
 describe("deleteObject", () => {
   it("deletes the given key", async () => {
-    const { deleteObject } = await import("./r2");
-    await deleteObject("galleries/g/proofs/a.webp");
-    expect(del).toHaveBeenCalledWith("galleries/g/proofs/a.webp");
+    const { deleteObject, proofKey } = await import("./r2");
+    const key = proofKey("g", "a");
+    await deleteObject(key);
+    expect(del).toHaveBeenCalledWith(key);
   });
 });
 
@@ -301,5 +341,40 @@ describe("objectExists", () => {
     exists.mockResolvedValueOnce(false);
     const { objectExists } = await import("./r2");
     await expect(objectExists("galleries/g/display/missing.webp")).resolves.toBe(false);
+  });
+});
+
+// Task #78's acceptance criterion #1, pinned literally: "passing a raw
+// string literal to `putObject` fails `bun run typecheck`". This repo had
+// no prior `@ts-expect-error`-based type-level test to follow as a
+// convention (checked before writing this), so this establishes one.
+//
+// `@ts-expect-error` requires TypeScript to raise a type error on the very
+// next statement — if it does NOT, TS itself reports "Unused
+// '@ts-expect-error' directive" as a compile error. That means this test
+// fails `tsc --noEmit` in BOTH directions: today, because a bare string
+// isn't an `R2Key`, and forever after, because if a future change ever
+// widened `putObject`'s parameter back to `string` (silently un-doing this
+// task), the `@ts-expect-error` comment would stop being needed and `tsc
+// --noEmit` would fail on THAT instead. Either way, `bun run typecheck`
+// cannot pass while this line's error status changes.
+//
+// The runtime assertion below is secondary — branding is fully erased at
+// runtime (`R2Key` really is just `string`), so the call executes exactly
+// like any other `putObject` call once type-stripped. It's here so the test
+// isn't silently skipped/dead code and so `write` being called is itself
+// proof the line actually ran, not just parsed.
+describe("branding (task #78)", () => {
+  it("rejects a bare string literal at compile time — see the @ts-expect-error immediately below", async () => {
+    const { putObject } = await import("./r2");
+
+    // @ts-expect-error — a bare string is not an `R2Key`. Use a builder
+    // (proofKey/finalKey/displayKey) or a named escape hatch
+    // (nonGalleryKey/storedKey) instead.
+    await putObject("galleries/g/proofs/a.webp", "bytes", { contentType: "image/webp" });
+
+    expect(write).toHaveBeenCalledWith("galleries/g/proofs/a.webp", "bytes", {
+      type: "image/webp",
+    });
   });
 });

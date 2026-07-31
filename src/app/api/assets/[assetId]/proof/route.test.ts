@@ -18,6 +18,9 @@ vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 const getPresignedUrlMock = vi.fn();
 vi.mock("@/lib/r2", () => ({
   getPresignedUrl: (...args: unknown[]) => getPresignedUrlMock(...args),
+  // Task #78: identity fake — the route re-attaches the `R2Key` brand to
+  // `asset.proofKey` via `storedKey` before calling `getPresignedUrl`.
+  storedKey: (key: string) => key,
 }));
 
 // A minimal, genuinely-behaving double for `@/lib/db` — real filtering by

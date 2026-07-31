@@ -1,5 +1,5 @@
 import path from "node:path";
-import { defineConfig } from "vitest/config";
+import { configDefaults, defineConfig } from "vitest/config";
 
 // Mirrors the "@/*" -> "./src/*" path mapping in tsconfig.json so unit tests
 // can use the same import alias as the rest of the app.
@@ -42,5 +42,33 @@ export default defineConfig({
     // the tests, not from its `beforeEach`, whose own work is mock resets).
     // A hook that starts needing more than 5s is a signal worth keeping.
     testTimeout: 30_000,
+
+    // Task #117: the agent harness that runs this board creates parallel
+    // slices in git worktrees under .claude/worktrees/agent-<id>/, INSIDE
+    // this repo. Vitest's default `exclude` is only
+    // ["**/node_modules/**", "**/.git/**"] (verified against the installed
+    // v4 `configDefaults` -- it does not skip dot-directories the way
+    // TypeScript's own file matcher does), so a bare `bun run test` in the
+    // main checkout would otherwise collect every sibling agent's test
+    // files too, including code that is mid-implementation and legitimately
+    // broken. That produces a result that depends on what OTHER agents
+    // happen to have on disk, which is worse than a crash: it is a wrong
+    // number that looks equally plausible whether it passed by accident or
+    // failed for a reason that has nothing to do with the slice under test.
+    //
+    // `.claude/**` (not just `.claude/worktrees/**`) is deliberately the
+    // broader match: it is what eslint.config.mjs already excludes for the
+    // same reason, and matching it here means this stays correct if the
+    // harness ever nests worktrees one level deeper under .claude/. The
+    // sibling worktrees the repo's own convention creates on purpose
+    // (/Users/alejo/projects/.photo-worktrees/lane-*) live OUTSIDE the repo
+    // root and are never reachable by these glob patterns in the first
+    // place, so they need no entry here.
+    //
+    // `configDefaults.exclude` is spread in explicitly rather than assuming
+    // it stays untouched: setting `exclude` at all REPLACES vitest's
+    // built-in default rather than appending to it, so omitting the spread
+    // would silently stop skipping node_modules and .git too.
+    exclude: [...configDefaults.exclude, ".claude/**"],
   },
 });

@@ -134,4 +134,54 @@ describe("GalleryForm", () => {
 
     expect(screen.getByRole("button", { name: "Crear galería" })).toHaveProperty("disabled", true);
   });
+
+  // -------------------------------------------------------------------------
+  // `onCreated` (task #131) — the one thing this form learns about being
+  // inside a dialog. Every test above renders WITHOUT it on purpose, which is
+  // what proves the prop is genuinely optional; these two are the other half.
+  //
+  // Review of #131 found this prop shipped with no test at all, and the
+  // interaction it drives (the dialog closing on success) is exactly what took
+  // the form's own "Galería creada." confirmation off the screen before anyone
+  // could perceive it. See dashboard-gallery-create-dialog.test.tsx for the
+  // assertion that the confirmation survives; these two pin the trigger.
+  // -------------------------------------------------------------------------
+
+  async function fillAndSubmit(user: ReturnType<typeof userEvent.setup>) {
+    await user.selectOptions(screen.getByLabelText("Paquete"), "1");
+    await user.type(screen.getByLabelText("Título"), "Boda");
+    await user.type(screen.getByLabelText("Fecha de la sesión"), "2026-08-01");
+    await user.click(screen.getByRole("button", { name: "Crear galería" }));
+  }
+
+  it("calls onCreated exactly once when the action reports success", async () => {
+    createGalleryMock.mockResolvedValue({ status: "created" });
+    const onCreated = vi.fn();
+    const user = userEvent.setup();
+    render(<GalleryForm clients={CLIENTS} packages={PACKAGES} onCreated={onCreated} />);
+
+    await fillAndSubmit(user);
+
+    await screen.findByText("Galería creada.");
+    expect(onCreated).toHaveBeenCalledTimes(1);
+  });
+
+  // The effect keys off a BOOLEAN (`state.status === "created"`), not off the
+  // state object, precisely so a rejected submit — which produces a brand-new
+  // object every time — never fires it. A dialog that closed on a validation
+  // error would throw the photographer's typing away.
+  it("does NOT call onCreated when the action reports an error", async () => {
+    createGalleryMock.mockResolvedValue({
+      status: "error",
+      message: "Ese paquete ya no está disponible.",
+    });
+    const onCreated = vi.fn();
+    const user = userEvent.setup();
+    render(<GalleryForm clients={CLIENTS} packages={PACKAGES} onCreated={onCreated} />);
+
+    await fillAndSubmit(user);
+
+    await screen.findByRole("alert");
+    expect(onCreated).not.toHaveBeenCalled();
+  });
 });

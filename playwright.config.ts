@@ -1,6 +1,6 @@
 // Task #165: the local visual-capture harness. `package.json` has declared
 // `test:e2e` / `test:e2e:install` and installed `@playwright/test` since the
-// project's initial scaffold, but nothing here ever existed until this task
+// project's initial scaffold, but nothing here ever existed until that task
 // -- `bun run test:e2e` failed for lack of config, not for any actual test
 // failure.
 //
@@ -11,42 +11,26 @@
 // file, `e2e/global-setup.ts`, and `e2e/README.md` for the full mechanism,
 // its local-only env prerequisites, and its constraints (never production,
 // no PNGs committed, no auth bypass in `src/`).
+//
+// EVERYTHING THIS FILE DECIDES NOW LIVES IN `tooling/e2e-capture-config.ts`
+// (task #177). That is not indirection for its own sake: three of the values
+// it returns are load-bearing safety guarantees whose PREVIOUS settings each
+// produced a well-formed screenshot of the WRONG thing (a sibling worktree's
+// branch, or a 500 from `next dev` running under Node), and `vitest.config.ts`
+// excludes `e2e/**` but not `tooling/**` -- so that module is the only place
+// `bun run test` can assert them. This file keeps exactly one job: read the
+// ambient facts (`process.cwd()`, `E2E_PORT`) that a pure builder must not
+// read for itself.
 import { defineConfig } from "@playwright/test";
+import { buildCaptureHarnessConfig } from "./tooling/e2e-capture-config";
 
-const PORT = 3300; // package.json:6 -- `next dev -p 3300`.
-const BASE_URL = `http://localhost:${PORT}`;
-
-export default defineConfig({
-  testDir: "./e2e",
-  // NO `workers`/`fullyParallel` override here -- an earlier version of this
-  // config pinned `workers: 1` on the theory that parallel workers would
-  // race each other seeding the two session tokens in `globalSetup`. That
-  // reasoning was WRONG and the #165 review caught it: Playwright always
-  // runs `globalSetup` exactly ONCE per invocation, before any worker
-  // starts, regardless of the configured worker count -- by the time
-  // workers exist, the two `storageState` files are already written and
-  // read-only for the rest of the run. Verified directly: `bunx playwright
-  // test --workers=4 --fully-parallel` passes the same 4 specs Playwright's
-  // own defaults would run serially. Leaving this unset means downstream
-  // lanes (~17 slices across #125/#140) get Playwright's normal
-  // parallelism as this suite grows, instead of inheriting a restriction
-  // that never did anything.
-  reporter: "list",
-  use: {
-    baseURL: BASE_URL,
-  },
-  globalSetup: "./e2e/global-setup.ts",
-  // Reuses whatever `bun run dev` a lane already has open on :3300 instead of
-  // fighting it for the port -- task #165's own instruction, so several
-  // lanes working in parallel worktrees don't each try to bind the same
-  // port. `reuseExistingServer` is unconditional (not gated on `!process.env
-  // .CI`, the usual Playwright template default): this harness is LOCAL-ONLY
-  // by design (see tooling/refuse-on-production.ts) and never runs in CI, so
-  // there is no CI-freshness case to guard against here.
-  webServer: {
-    command: "bun run dev",
-    url: BASE_URL,
-    reuseExistingServer: true,
-    timeout: 120_000,
-  },
-});
+export default defineConfig(
+  buildCaptureHarnessConfig({
+    // `bun run test:e2e` (and a bare `bunx playwright test`) execute from the
+    // package root, which in this repo is the worktree root -- the same anchor
+    // `e2e/lib/fixtures.ts` has always used for `SCREENSHOT_DIR` and the
+    // storage-state paths.
+    worktreeRoot: process.cwd(),
+    portOverride: process.env.E2E_PORT,
+  }),
+);

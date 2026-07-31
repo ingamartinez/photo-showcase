@@ -116,6 +116,24 @@ export function fixtureGalleryPublicSlug(worktreeRoot: string): string {
   return `e2e-visual-capture-gallery-${worktreeTag(worktreeRoot)}`;
 }
 
+/**
+ * One-line summary a capture run prints on startup.
+ *
+ * Everything this harness uses is now derived rather than fixed, which is the
+ * fix -- but it also means a lane can no longer guess its own port or its own
+ * gallery slug, and it needs both (to open the page by hand, to seed extra
+ * rows against the right gallery). Printing them is what keeps the derivation
+ * from being opaque.
+ */
+export function formatCaptureHarnessBanner(worktreeRoot: string, portOverride?: string): string {
+  const port = captureHarnessPort(worktreeRoot, portOverride);
+  return (
+    `[e2e] worktree ${worktreeTag(worktreeRoot)} -> http://localhost:${port} | ` +
+    `admin ${fixtureAdminEmail(worktreeRoot)} | client ${fixtureClientEmail(worktreeRoot)} | ` +
+    `gallery /galleries/${fixtureGalleryPublicSlug(worktreeRoot)}`
+  );
+}
+
 export function fixtureGalleryTitle(worktreeRoot: string): string {
   // Spanish, like every other user-facing string in this app: this title is
   // rendered by `/dashboard/galleries` and by the client gallery header, so it

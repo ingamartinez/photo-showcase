@@ -20,6 +20,7 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 import type { Page } from "@playwright/test";
+import { assertNavigationArrived } from "../tooling/e2e-navigation-arrival";
 import { SCREENSHOT_DIR, VIEWPORTS, type ViewportName } from "./lib/fixtures";
 
 export interface CaptureOptions {
@@ -28,6 +29,28 @@ export interface CaptureOptions {
   /** Route to navigate to, relative to `playwright.config.ts`'s `baseURL`. */
   route: string;
   viewport: ViewportName;
+  /**
+   * Where the navigation is EXPECTED to end up, if that is not `route`'s own
+   * pathname. Only needed for a route that legitimately redirects; leave it
+   * unset and the guard requires arrival at the route that was asked for.
+   * Compared on pathname, so query params, fragments and trailing slashes are
+   * all irrelevant. See `tooling/e2e-navigation-arrival.ts`.
+   */
+  expectPathname?: string;
+  /**
+   * A selector that exists ONLY on the screen being captured, asserted after
+   * navigation and before the PNG is written.
+   *
+   * STRONGLY RECOMMENDED, and it is a different guarantee from the two checks
+   * `captureScreen` runs for free. Status catches an error page rendered at
+   * the requested url (#169); destination catches a redirect that answers 200
+   * somewhere else (#178). Neither can catch a page that is genuinely the
+   * right route and genuinely 200 but is showing a variant the caller did not
+   * mean -- the locked `selected` gallery instead of the `proofing` one is the
+   * live example (#179), and it looks like a perfectly plausible proofing
+   * screen. Only a positive assertion about the DOM separates those.
+   */
+  expectSelector?: string;
   /**
    * Extra readiness gate, run after navigation succeeds and before the
    * screenshot. Defaults to waiting for every `<img>` present on the page to
@@ -64,6 +87,11 @@ export interface CaptureOptions {
   waitFor?: (page: Page) => Promise<void>;
 }
 
+// Deliberately well under Playwright's 30s default test timeout, so a missing
+// `expectSelector` reports THIS error rather than the runner's own generic
+// "test timeout exceeded", which says nothing about what went wrong.
+const EXPECT_TIMEOUT_MS = 10_000;
+
 const DEFAULT_WAIT_FOR = async (page: Page): Promise<void> => {
   await page.waitForFunction(() => [...document.images].every((img) => img.complete));
 };
@@ -73,17 +101,32 @@ const DEFAULT_WAIT_FOR = async (page: Page): Promise<void> => {
  * it to settle, and writes a full-page PNG under `e2e/screenshots/`. Returns
  * the absolute path written, in case a caller wants to log or attach it.
  *
- * Throws instead of writing anything if the navigation itself did not return
- * a 2xx response -- task #165's own review found this harness had been
- * capturing, and reporting as a PASS, a full-page screenshot of a 403 (an
- * authenticated-but-unauthorized session). A URL-only assertion in a calling
- * spec cannot catch that: Next renders `forbidden()`/`notFound()` at the
- * exact url that was requested, so the page never navigates away from where
- * the spec expected it to land. Checking the actual HTTP response status is
- * the one signal that is not fooled by that.
+ * THROWS INSTEAD OF WRITING ANYTHING unless all of the following hold. Each
+ * one exists because the harness once blessed a wrong screenshot without it,
+ * and in every case the artifact and the report looked identical to a correct
+ * one:
+ *
+ *  1. The navigation returned a 2xx (#169: 17 captures of 403 pages). A
+ *     URL-only assertion in the calling spec cannot catch this -- Next renders
+ *     `forbidden()`/`notFound()` at the exact url that was requested, so the
+ *     page never navigates away from where the spec expected it to land.
+ *  2. The navigation ENDED at the expected pathname (#178: a redirect to
+ *     `/login` answers 200, just somewhere else, so check 1 says nothing).
+ *  3. `expectSelector`, when the caller supplies one, is present -- the only
+ *     one of the three that can tell two variants of the same 200 route apart.
+ *
+ * See `tooling/e2e-navigation-arrival.ts` for 1 and 2, which are unit-tested
+ * there because `vitest.config.ts` never looks inside `e2e/**`.
  */
 export async function captureScreen(page: Page, options: CaptureOptions): Promise<string> {
-  const { name, route, viewport, waitFor = DEFAULT_WAIT_FOR } = options;
+  const {
+    name,
+    route,
+    viewport,
+    expectPathname,
+    expectSelector,
+    waitFor = DEFAULT_WAIT_FOR,
+  } = options;
 
   await page.setViewportSize(VIEWPORTS[viewport]);
   // NOT `waitUntil: "networkidle"` -- verified empirically against
@@ -94,22 +137,45 @@ export async function captureScreen(page: Page, options: CaptureOptions): Promis
   // route. `"load"` plus the readiness gate below is what Playwright's own
   // docs recommend instead for pages with any open streaming connection.
   const response = await page.goto(route, { waitUntil: "load" });
-  if (!response || !response.ok()) {
-    throw new Error(
-      `Refusing to capture ${route}: navigation returned ` +
-        `${response ? `${response.status()} ${response.statusText()}` : "no response"}. ` +
-        "A non-2xx response (e.g. a 403 from forbidden() for an unauthorized session, or a " +
-        "404 from notFound()) renders at the SAME url the caller expected, so this check -- " +
-        "not a URL assertion in the calling spec -- is what catches it before a screenshot of " +
-        "an error page gets written and reported as a pass.",
-    );
-  }
+  // `page.url()`, not `response.url()`: for a redirect chain Playwright's
+  // response is the FINAL response, but reading the destination off the page
+  // is what a reader of this code expects "where did we end up" to mean, and
+  // it also covers a client-side navigation that happened during `load`.
+  assertNavigationArrived({
+    route,
+    finalUrl: page.url(),
+    status: response ? response.status() : null,
+    statusText: response?.statusText(),
+    expectPathname,
+  });
 
   // The real readiness gate (default: every <img> finished loading). The
   // fixed delay below is a FLOOR for final paint/animation settling on top
   // of that, never the sole strategy -- see this option's own doc comment on
   // why a bare sleep cannot stand in for it.
   await waitFor(page);
+
+  // Third guard, and the only one that can tell two variants of the same 200
+  // route apart. Run AFTER `waitFor` so a caller can gate on something the
+  // page renders late, and BEFORE the screenshot so a miss refuses to write
+  // rather than writing and letting the spec complain afterwards.
+  if (expectSelector !== undefined) {
+    try {
+      await page.waitForSelector(expectSelector, { state: "attached", timeout: EXPECT_TIMEOUT_MS });
+    } catch {
+      // Playwright's own timeout message names the selector but says nothing
+      // about why anyone cared, and this failure will be read by whoever is
+      // holding a screenshot they were about to attach to a slice.
+      throw new Error(
+        `Refusing to capture ${route}: the page answered 2xx at the expected pathname, but ` +
+          `nothing matching ${JSON.stringify(expectSelector)} appeared within ${EXPECT_TIMEOUT_MS}ms. ` +
+          "That is the same route rendering a different thing than the caller meant -- e.g. the " +
+          "LOCKED variant of a gallery instead of the proofing one, which still looks like a " +
+          "plausible proofing screen (task #179).",
+      );
+    }
+  }
+
   await page.waitForTimeout(300);
 
   await mkdir(SCREENSHOT_DIR, { recursive: true });

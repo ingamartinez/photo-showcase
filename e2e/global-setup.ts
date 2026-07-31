@@ -35,8 +35,11 @@ import {
   E2E_ADMIN_EMAIL,
   E2E_CLIENT_EMAIL,
   E2E_GALLERY_PUBLIC_SLUG,
+  E2E_GALLERY_STATUS,
   E2E_GALLERY_TITLE,
 } from "./lib/fixtures";
+import { type FixtureGalleryStore, ensureFixtureGallery } from "../tooling/e2e-fixture-gallery";
+import { formatCaptureHarnessBanner } from "../tooling/e2e-worktree";
 import { refuseUnlessDevEnvironment } from "../tooling/refuse-on-production";
 
 // A day is generous headroom for a local capture run and short enough that a
@@ -71,6 +74,15 @@ async function upsertUser(
 // Fresh token every run: any session left over from a previous (or crashed)
 // run for this same fixture user is deleted first, so `sessions` never
 // accumulates orphaned rows for these two fixture identities.
+//
+// THE DELETE USED TO BE THE #177 RACE, and it is safe again only because of
+// what changed one file over. The fixture identities were fixed strings shared
+// by every worktree, so this statement wiped the session a CONCURRENT lane was
+// authenticated with, mid-run -- #145 lost its session exactly here and
+// captured a login page for one viewport. `e2e/lib/fixtures.ts` now derives
+// the addresses per worktree, so `userId` below belongs to this run alone.
+// Note what was NOT done: no lock, no queue, no `workers: 1`. Lanes are meant
+// to run at once (#177's own stated trap).
 async function reseedSession(
   db: ReturnType<typeof drizzle<typeof schema>>,
   userId: string,
@@ -86,15 +98,23 @@ async function reseedSession(
 // NOTE FOR WHOEVER RUNS THIS NEXT AND SEES AN EMPTY GRID: this fixture
 // gallery is seeded with ZERO assets, deliberately -- task #165's own scope
 // is the seeding/capture MECHANISM, not a realistic proof grid. A capture of
-// `/galleries/e2e-visual-capture-gallery` shows "Tu fotógrafo todavía no
-// subió fotos para esta galería" and nothing else. Slices #145/#146 (proof
-// grid redesign) need real thumbnails to capture something meaningful and
-// MUST seed their own `assets` rows (or extend this function) before
-// screenshotting that page -- this function does not do it for them.
-async function ensureFixtureGallery(
+// `/galleries/<the per-worktree slug>` shows "Tu fotógrafo todavía no subió
+// fotos para esta galería" and nothing else. Slices #145/#146 (proof grid
+// redesign) need real thumbnails to capture something meaningful and MUST seed
+// their own `assets` rows before screenshotting that page -- nothing here does
+// it for them.
+//
+// THE DECISIONS LIVE IN `tooling/e2e-fixture-gallery.ts`, NOT HERE (task
+// #179). This adapter is only SQL. The bug it exists to keep fixed was a
+// missing write -- `status` was set on INSERT and never corrected on an
+// existing row, so once any run submitted the fixture selection the gallery
+// stayed `selected` and the route rendered the LOCKED variant, which still
+// looks like a plausible proofing screen. `vitest.config.ts` never looks
+// inside `e2e/**` and `bun run test` has no database, so a missing write is
+// only provable in `tooling/`.
+async function makeFixtureGalleryStore(
   db: ReturnType<typeof drizzle<typeof schema>>,
-  clientUserId: string,
-): Promise<void> {
+): Promise<FixtureGalleryStore> {
   const [pkg] = await db
     .select()
     .from(schema.packages)
@@ -110,59 +130,64 @@ async function ensureFixtureGallery(
     );
   }
 
-  const [existingGallery] = await db
-    .select({ id: schema.galleries.id })
-    .from(schema.galleries)
-    .where(eq(schema.galleries.publicSlug, E2E_GALLERY_PUBLIC_SLUG))
-    .limit(1);
-
-  const galleryId =
-    existingGallery?.id ??
-    (
-      await db
+  return {
+    findGalleryByPublicSlug: async (publicSlug) => {
+      const [row] = await db
+        .select({ id: schema.galleries.id, status: schema.galleries.status })
+        .from(schema.galleries)
+        .where(eq(schema.galleries.publicSlug, publicSlug))
+        .limit(1);
+      return row;
+    },
+    insertGallery: async ({ publicSlug, title, status }) => {
+      const [row] = await db
         .insert(schema.galleries)
         .values({
           packageId: pkg.id,
-          title: E2E_GALLERY_TITLE,
+          title,
           sessionDate: new Date().toISOString().slice(0, 10),
-          status: "proofing",
-          publicSlug: E2E_GALLERY_PUBLIC_SLUG,
+          status,
+          publicSlug,
+          // The frozen commercial terms (PLAN.md §3): copied from the package
+          // AT CREATION and never recomputed afterwards, exactly as a real
+          // gallery does it.
           includedPhotosSnapshot: pkg.includedPhotos,
           extraPhotoPriceCopSnapshot: pkg.extraPhotoPriceCop,
         })
-        .returning({ id: schema.galleries.id })
-    )[0].id;
-
-  const [existingMembership] = await db
-    .select({
-      galleryId: schema.galleryClients.galleryId,
-      removedAt: schema.galleryClients.removedAt,
-    })
-    .from(schema.galleryClients)
-    .where(
-      and(
-        eq(schema.galleryClients.galleryId, galleryId),
-        eq(schema.galleryClients.userId, clientUserId),
-      ),
-    )
-    .limit(1);
-
-  if (!existingMembership) {
-    await db.insert(schema.galleryClients).values({ galleryId, userId: clientUserId });
-  } else if (existingMembership.removedAt !== null) {
-    // Reactivate a membership a previous run (or a stray manual edit) removed
-    // -- see schema.ts's own comment on `removedAt`: re-attaching UPDATEs the
-    // same composite-PK row back to NULL rather than inserting a second one.
-    await db
-      .update(schema.galleryClients)
-      .set({ removedAt: null })
-      .where(
-        and(
-          eq(schema.galleryClients.galleryId, galleryId),
-          eq(schema.galleryClients.userId, clientUserId),
-        ),
-      );
-  }
+        .returning({ id: schema.galleries.id });
+      return row.id;
+    },
+    updateGalleryStatus: async (galleryId, status) => {
+      await db.update(schema.galleries).set({ status }).where(eq(schema.galleries.id, galleryId));
+    },
+    findMembership: async (galleryId, userId) => {
+      const [row] = await db
+        .select({ removedAt: schema.galleryClients.removedAt })
+        .from(schema.galleryClients)
+        .where(
+          and(
+            eq(schema.galleryClients.galleryId, galleryId),
+            eq(schema.galleryClients.userId, userId),
+          ),
+        )
+        .limit(1);
+      return row;
+    },
+    insertMembership: async (galleryId, userId) => {
+      await db.insert(schema.galleryClients).values({ galleryId, userId });
+    },
+    reactivateMembership: async (galleryId, userId) => {
+      await db
+        .update(schema.galleryClients)
+        .set({ removedAt: null })
+        .where(
+          and(
+            eq(schema.galleryClients.galleryId, galleryId),
+            eq(schema.galleryClients.userId, userId),
+          ),
+        );
+    },
+  };
 }
 
 function buildStorageState(sessionToken: string, expires: Date): string {
@@ -222,7 +247,12 @@ export default async function globalSetup(): Promise<void> {
     const adminId = await upsertUser(db, E2E_ADMIN_EMAIL, "admin");
     const clientId = await upsertUser(db, E2E_CLIENT_EMAIL, "client");
 
-    await ensureFixtureGallery(db, clientId);
+    await ensureFixtureGallery(await makeFixtureGalleryStore(db), {
+      publicSlug: E2E_GALLERY_PUBLIC_SLUG,
+      title: E2E_GALLERY_TITLE,
+      status: E2E_GALLERY_STATUS,
+      clientUserId: clientId,
+    });
 
     const adminSession = await reseedSession(db, adminId);
     const clientSession = await reseedSession(db, clientId);
@@ -236,6 +266,15 @@ export default async function globalSetup(): Promise<void> {
       CLIENT_STORAGE_STATE_PATH,
       buildStorageState(clientSession.sessionToken, clientSession.expires),
     );
+
+    // `process.stdout.write`, not `console.log`: eslint's `no-console` is an
+    // error everywhere except `scripts/**` and `tooling/**`, and this file is
+    // neither. The banner itself is built in `tooling/e2e-worktree.ts` (pure,
+    // and covered by `bun run test`); only the write happens here. It earns
+    // its place because everything this harness uses is now DERIVED -- a lane
+    // that wants to open its own gallery by hand, or seed extra rows against
+    // it, cannot guess the port or the slug any more.
+    process.stdout.write(`${formatCaptureHarnessBanner(process.cwd(), process.env.E2E_PORT)}\n`);
   } finally {
     // Without this, the pooled connection above keeps `playwright test`'s
     // process alive on an open socket after every spec has finished --

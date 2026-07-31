@@ -9,9 +9,10 @@ vi.mock("server-only", () => ({}));
 
 // `@/auth` is mocked wholesale — BOTH exports this file's transitive imports
 // actually need: `auth()` (via requireAdmin()) and `signIn()` (called
-// directly by deliverGallery, the SAME provider call `publishGallery` makes
-// — see actions.ts's own header comment on `deliverGallery` for why this
-// reuses `signIn("gallery-access", ...)` rather than a bare gallery URL).
+// directly by deliverGallery, the SAME MECHANISM `publishGallery` uses, on
+// its own `gallery-delivery` provider since task #85 — see actions.ts's own
+// header comment on `deliverGallery` for why this is a magic link rather
+// than a bare gallery URL).
 const authMock = vi.fn();
 const signInMock = vi.fn();
 vi.mock("@/auth", () => ({
@@ -452,7 +453,7 @@ describe("deliverGallery validation and guards", () => {
       finalKey: null,
     });
     signInMock.mockResolvedValue(
-      "http://localhost/api/auth/verify-request?provider=gallery-access",
+      "http://localhost/api/auth/verify-request?provider=gallery-delivery",
     );
     const { deliverGallery } = await import("./actions");
 
@@ -469,7 +470,7 @@ describe("deliverGallery success", () => {
   beforeEach(() => {
     authMock.mockResolvedValue(adminSession());
     signInMock.mockResolvedValue(
-      "http://localhost/api/auth/verify-request?provider=gallery-access",
+      "http://localhost/api/auth/verify-request?provider=gallery-delivery",
     );
   });
 
@@ -493,18 +494,18 @@ describe("deliverGallery success", () => {
   });
 
   // "A real email lands, with a working link to the gallery" — this reuses
-  // the SAME `signIn("gallery-access", ...)` mechanism publishGallery uses,
-  // which is what actually GRANTS access on click (a fresh single-use
-  // token + a brand-new database session), rather than a bare URL that
-  // assumes the client's original session from the publish email is still
-  // valid — see actions.ts's own header comment on `deliverGallery` for the
-  // full reasoning.
-  it("emails the client at their own address via the gallery-access provider, with the gallery's own URL", async () => {
+  // the SAME `signIn(...)` MECHANISM `publishGallery` uses, on its own
+  // `gallery-delivery` provider (task #85), which is what actually GRANTS
+  // access on click (a fresh single-use token + a brand-new database
+  // session), rather than a bare URL that assumes the client's original
+  // session from the publish email is still valid — see actions.ts's own
+  // header comment on `deliverGallery` for the full reasoning.
+  it("emails the client at their own address via the gallery-delivery provider, with the gallery's own URL", async () => {
     const { deliverGallery } = await import("./actions");
 
     await deliverGallery({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID }));
 
-    expect(signInMock).toHaveBeenCalledWith("gallery-access", {
+    expect(signInMock).toHaveBeenCalledWith("gallery-delivery", {
       email: CLIENT_EMAIL,
       redirect: false,
       redirectTo: "/galleries/abc123",
@@ -527,11 +528,11 @@ describe("deliverGallery success", () => {
     expect(result).toEqual({ status: "delivered" });
     expect(signInMock).toHaveBeenCalledTimes(2);
     expect(signInMock).toHaveBeenCalledWith(
-      "gallery-access",
+      "gallery-delivery",
       expect.objectContaining({ email: CLIENT_EMAIL }),
     );
     expect(signInMock).toHaveBeenCalledWith(
-      "gallery-access",
+      "gallery-delivery",
       expect.objectContaining({ email: "beto@example.com" }),
     );
   });
@@ -557,11 +558,11 @@ describe("deliverGallery success", () => {
     expect(result).toEqual({ status: "delivered" });
     expect(signInMock).toHaveBeenCalledTimes(1);
     expect(signInMock).toHaveBeenCalledWith(
-      "gallery-access",
+      "gallery-delivery",
       expect.objectContaining({ email: CLIENT_EMAIL }),
     );
     expect(signInMock).not.toHaveBeenCalledWith(
-      "gallery-access",
+      "gallery-delivery",
       expect.objectContaining({ email: "beto@example.com" }),
     );
   });
@@ -606,7 +607,7 @@ describe("deliverGallery — refuses a gallery with no active clients", () => {
   beforeEach(() => {
     authMock.mockResolvedValue(adminSession());
     signInMock.mockResolvedValue(
-      "http://localhost/api/auth/verify-request?provider=gallery-access",
+      "http://localhost/api/auth/verify-request?provider=gallery-delivery",
     );
   });
 
@@ -755,7 +756,7 @@ describe("deliverGallery — client notification failure", () => {
     const { AuthError } = await import("next-auth");
     signInMock.mockImplementation(async (_provider: string, opts: { email: string }) => {
       if (opts.email === "beto@example.com") throw new AuthError("Resend error (500): boom");
-      return "http://localhost/api/auth/verify-request?provider=gallery-access";
+      return "http://localhost/api/auth/verify-request?provider=gallery-delivery";
     });
     const { deliverGallery } = await import("./actions");
 
@@ -775,7 +776,7 @@ describe("deliverGallery — concurrent delivery (the atomic guard)", () => {
   beforeEach(() => {
     authMock.mockResolvedValue(adminSession());
     signInMock.mockResolvedValue(
-      "http://localhost/api/auth/verify-request?provider=gallery-access",
+      "http://localhost/api/auth/verify-request?provider=gallery-delivery",
     );
   });
 

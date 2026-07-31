@@ -67,6 +67,12 @@ vi.mock("@/lib/galleries", () => ({
     activeClientCount > 0 || targetStatus === "draft"
       ? null
       : `no-active-client-violation:${action}`,
+  // Task #101: a plain re-implementation of the real predicate's status set
+  // (draft/archived are NOT client-visible) — same "name every export, prove
+  // the REAL Spanish/rule in galleries.test.ts, prove the page ASKS it and
+  // renders the answer here" stance as `activeClientRuleViolation` above.
+  isGalleryVisibleToClient: (status: string) =>
+    status === "proofing" || status === "selected" || status === "delivered",
 }));
 
 // `formatCop` lives in `@/lib/format` (a plain, DB-free module — see that
@@ -105,15 +111,18 @@ const unlockSelectionMock = vi.fn();
 const deliverGalleryMock = vi.fn();
 // Same reasoning, same file, for <AttachGalleryClientsForm>/<GalleryClientRow>
 // (task #97): their modules import `attachGalleryClients`/
-// `removeGalleryClient` from here too.
+// `removeGalleryClient` from here too. Task #101 adds `resendGalleryAccessEmail`
+// to the same list — <GalleryClientRow>'s module now imports it too.
 const attachGalleryClientsMock = vi.fn();
 const removeGalleryClientMock = vi.fn();
+const resendGalleryAccessEmailMock = vi.fn();
 vi.mock("@/app/dashboard/galleries/actions", () => ({
   publishGallery: (...args: unknown[]) => publishGalleryMock(...args),
   unlockSelection: (...args: unknown[]) => unlockSelectionMock(...args),
   deliverGallery: (...args: unknown[]) => deliverGalleryMock(...args),
   attachGalleryClients: (...args: unknown[]) => attachGalleryClientsMock(...args),
   removeGalleryClient: (...args: unknown[]) => removeGalleryClientMock(...args),
+  resendGalleryAccessEmail: (...args: unknown[]) => resendGalleryAccessEmailMock(...args),
 }));
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
@@ -165,6 +174,8 @@ beforeEach(() => {
   attachGalleryClientsMock.mockResolvedValue({ status: "idle" });
   removeGalleryClientMock.mockReset();
   removeGalleryClientMock.mockResolvedValue({ status: "idle" });
+  resendGalleryAccessEmailMock.mockReset();
+  resendGalleryAccessEmailMock.mockResolvedValue({ status: "idle" });
   getClientsForPickerMock.mockReset();
   getClientsForPickerMock.mockResolvedValue([]);
 });
@@ -607,5 +618,40 @@ describe("GalleryDetailPage — attaching and removing clients (task #97)", () =
     await user.click(screen.getByRole("button", { name: "Confirmar" }));
 
     expect(removeGalleryClientMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Task #101: `resendable` is computed HERE, on the page, off the SAME
+// `isGalleryVisibleToClient` predicate `attachGalleryClients` already uses —
+// never inside <GalleryClientRow>, which cannot import a `server-only`
+// module at all (it is a Client Component). These tests prove the page asks
+// the right question and wires the answer through; the predicate's own
+// Spanish-free status set is proven directly in galleries.test.ts.
+describe("GalleryDetailPage — resend affordance wiring (task #101)", () => {
+  it("shows 'Reenviar acceso' for a client-visible gallery (proofing)", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "proofing" }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByRole("button", { name: /Reenviar acceso/ })).toBeDefined();
+  });
+
+  it("hides 'Reenviar acceso' for a draft gallery — nothing to view yet", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "draft" }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.queryByRole("button", { name: /Reenviar acceso/ })).toBeNull();
+  });
+
+  it("hides 'Reenviar acceso' for an archived gallery", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "archived" }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.queryByRole("button", { name: /Reenviar acceso/ })).toBeNull();
   });
 });

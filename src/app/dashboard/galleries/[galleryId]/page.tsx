@@ -9,6 +9,7 @@ import {
   formatSessionDate,
   getGalleryDetail,
   getGalleryUnlockAudit,
+  isGalleryVisibleToClient,
 } from "@/lib/galleries";
 import { getClientsForPicker } from "@/lib/clients";
 import { formatCop } from "@/lib/format";
@@ -84,6 +85,17 @@ export default async function GalleryDetailPage({
     activeClientCount: gallery.clients.length,
     action: "publish",
   });
+
+  // Task #101: whether "Reenviar acceso" should render on each client row.
+  // The SAME predicate `resendGalleryAccessEmail` itself re-checks server
+  // side — a `draft`/`archived` gallery has nothing a client could view yet,
+  // so a resend control for one would mail a working magic link to a
+  // gallery the client cannot open (see that action's own header comment).
+  // Computed here, not inside <GalleryClientRow>, because that component is
+  // a Client Component and `isGalleryVisibleToClient` lives in a
+  // `server-only`-guarded module it cannot import — same reason `removable`
+  // above is computed on this page rather than in the row itself.
+  const canResendAccess = isGalleryVisibleToClient(gallery.status);
 
   // Task #73: the unlock audit trail (who/when/reason) is a SEPARATE, tiny
   // query — see src/lib/galleries.ts's own comment on
@@ -165,6 +177,7 @@ export default async function GalleryDetailPage({
                 client={client}
                 status={gallery.status}
                 removable={canRemoveAnyClient}
+                resendable={canResendAccess}
               />
             ))
           )}

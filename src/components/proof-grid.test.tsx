@@ -402,6 +402,37 @@ describe("ProofGrid", () => {
       expect(text).toContain("seleccionadas 15");
       expect(text).toContain("extras 2");
     });
+
+    // Task #67: `toggleSelection`'s `pendingIdsRef` early return is the
+    // ACTUAL guard against a same-asset double toggle — the `disabled`
+    // attribute driven off `pendingIds` state (see that ref's own header
+    // comment) lags one render behind, so a test that clicks, awaits, then
+    // clicks again would only ever prove the DOM's disabled attribute works,
+    // never the ref. Both clicks are dispatched inside a single `act()`
+    // instead: React (and this file's own `fireEvent`) only commits state
+    // updates once the OUTERMOST `act()` call returns, so at the moment the
+    // second click event is dispatched, the button element in the DOM is
+    // still exactly as it was before the first click — not yet disabled.
+    // Only `pendingIdsRef.current` (a plain synchronous ref, mutated
+    // immediately, independent of any React commit) can have already
+    // recorded the first click by the time the second one fires. Holding the
+    // response open (never resolving `fetchMock`'s promise) rather than
+    // asserting anything about timing is the acceptance criterion's own
+    // requirement.
+    it("issuing two clicks on the same tile before the first response arrives calls fetch only once", () => {
+      const fetchMock = vi.fn(() => new Promise<Response>(() => {}));
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({ initialAssets: assetsFor([{ isSelected: false }]) });
+      const button = screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" });
+
+      act(() => {
+        fireEvent.click(button);
+        fireEvent.click(button);
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
   });
 
   // Task #25: the lock/submit wiring between <ProofGrid>, <SubmitSelectionPanel>,

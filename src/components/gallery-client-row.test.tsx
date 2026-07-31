@@ -30,6 +30,14 @@ vi.mock("@/app/dashboard/galleries/actions", () => ({
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
 const CLIENT = { id: "u1", name: "Ana Pérez", email: "ana@example.com" };
 
+// Task #133: "Quitar" and "Reenviar acceso" no longer sit on the row as two
+// small, adjacent buttons — they live inside the row's single 44px
+// "Acciones" trigger (a <DropdownMenu>). Every test that needs one of them
+// opens the menu first, the same way a real pointer/keyboard user would.
+async function openActionsMenu(user: ReturnType<typeof userEvent.setup>, name = CLIENT.name) {
+  await user.click(screen.getByRole("button", { name: `Acciones para ${name}` }));
+}
+
 afterEach(() => {
   cleanup();
   removeGalleryClientMock.mockReset();
@@ -54,7 +62,7 @@ describe("GalleryClientRow", () => {
     expect(screen.getByText(/ana@example\.com/)).toBeDefined();
   });
 
-  it("hides the Quitar button entirely when removable is false", () => {
+  it("hides the Acciones trigger entirely when neither removable nor resendable", () => {
     render(
       <GalleryClientRow
         galleryId={GALLERY_ID}
@@ -65,7 +73,7 @@ describe("GalleryClientRow", () => {
       />,
     );
 
-    expect(screen.queryByRole("button", { name: "Quitar" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Acciones para/ })).toBeNull();
   });
 
   it("does not submit until the confirm step, and cancel returns to the initial state", async () => {
@@ -80,13 +88,15 @@ describe("GalleryClientRow", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Quitar" }));
+    await openActionsMenu(user);
+    await user.click(screen.getByRole("menuitem", { name: "Quitar" }));
     expect(screen.getByRole("button", { name: "Confirmar" })).toBeDefined();
     expect(removeGalleryClientMock).not.toHaveBeenCalled();
 
     await user.click(screen.getByRole("button", { name: "Cancelar" }));
     expect(screen.queryByRole("button", { name: "Confirmar" })).toBeNull();
-    expect(screen.getByRole("button", { name: "Quitar" })).toBeDefined();
+    // Back to the initial state: the Acciones trigger is reachable again.
+    expect(screen.getByRole("button", { name: /Acciones para/ })).toBeDefined();
   });
 
   // The task's own explicit requirement: the confirmation must say WHAT is
@@ -104,7 +114,8 @@ describe("GalleryClientRow", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Quitar" }));
+    await openActionsMenu(user);
+    await user.click(screen.getByRole("menuitem", { name: "Quitar" }));
 
     expect(
       screen.getByText(/perder el acceso para ver y descargar las fotos entregadas/),
@@ -124,7 +135,8 @@ describe("GalleryClientRow", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Quitar" }));
+    await openActionsMenu(user);
+    await user.click(screen.getByRole("menuitem", { name: "Quitar" }));
     await user.click(screen.getByRole("button", { name: "Confirmar" }));
 
     expect(removeGalleryClientMock).toHaveBeenCalledTimes(1);
@@ -149,11 +161,12 @@ describe("GalleryClientRow", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Quitar" }));
+    await openActionsMenu(user);
+    await user.click(screen.getByRole("menuitem", { name: "Quitar" }));
     await user.click(screen.getByRole("button", { name: "Confirmar" }));
 
     await screen.findByText(/quitado/);
-    expect(screen.queryByRole("button", { name: "Quitar" })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Acciones para/ })).toBeNull();
   });
 
   it("shows the error message returned by the action, without hiding the row", async () => {
@@ -173,7 +186,8 @@ describe("GalleryClientRow", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: "Quitar" }));
+    await openActionsMenu(user);
+    await user.click(screen.getByRole("menuitem", { name: "Quitar" }));
     await user.click(screen.getByRole("button", { name: "Confirmar" }));
 
     await screen.findByRole("alert");
@@ -184,7 +198,7 @@ describe("GalleryClientRow", () => {
 });
 
 describe("GalleryClientRow — resend affordance (task #101)", () => {
-  it("hides 'Reenviar acceso' entirely when resendable is false", () => {
+  it("hides 'Reenviar acceso' entirely when resendable is false and removable is false", () => {
     render(
       <GalleryClientRow
         galleryId={GALLERY_ID}
@@ -195,10 +209,27 @@ describe("GalleryClientRow — resend affordance (task #101)", () => {
       />,
     );
 
-    expect(screen.queryByRole("button", { name: /Reenviar acceso/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Acciones para/ })).toBeNull();
   });
 
-  it("submits galleryId and clientId through resendGalleryAccessEmail when clicked", async () => {
+  it("offers only Quitar, not Reenviar acceso, when resendable is false", async () => {
+    const user = userEvent.setup();
+    render(
+      <GalleryClientRow
+        galleryId={GALLERY_ID}
+        client={CLIENT}
+        status="draft"
+        removable
+        resendable={false}
+      />,
+    );
+
+    await openActionsMenu(user);
+    expect(screen.queryByRole("menuitem", { name: /Reenviar acceso/ })).toBeNull();
+    expect(screen.getByRole("menuitem", { name: "Quitar" })).toBeDefined();
+  });
+
+  it("submits galleryId and clientId through resendGalleryAccessEmail when selected", async () => {
     resendGalleryAccessEmailMock.mockResolvedValue({
       status: "resent",
       message: `Le reenviamos el enlace de acceso a ${CLIENT.email}.`,
@@ -214,7 +245,8 @@ describe("GalleryClientRow — resend affordance (task #101)", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /Reenviar acceso/ }));
+    await openActionsMenu(user);
+    await user.click(screen.getByRole("menuitem", { name: /Reenviar acceso/ }));
 
     expect(resendGalleryAccessEmailMock).toHaveBeenCalledTimes(1);
     const [, formData] = resendGalleryAccessEmailMock.mock.calls[0] as [
@@ -243,7 +275,8 @@ describe("GalleryClientRow — resend affordance (task #101)", () => {
       />,
     );
 
-    await user.click(screen.getByRole("button", { name: /Reenviar acceso/ }));
+    await openActionsMenu(user);
+    await user.click(screen.getByRole("menuitem", { name: /Reenviar acceso/ }));
 
     await screen.findByRole("alert");
     expect(screen.getByText(/varias veces en poco tiempo/)).toBeDefined();
@@ -252,16 +285,16 @@ describe("GalleryClientRow — resend affordance (task #101)", () => {
   // TRAP B (kanban #101's own re-implementation brief): the button actually
   // at risk of being wrongly disabled by a shared `pending` flag is
   // "Confirmar" (`disabled={removePending}` in the removal form) — NOT
-  // "Quitar", which is `type="button"` with no `disabled` prop at all and so
-  // can never be proven to "stay enabled" by asserting on it (a naive
+  // "Quitar"/the menu trigger, neither of which is `disabled` at all, so
+  // neither can be proven to "stay enabled" by asserting on it (a naive
   // version of this exact test, asserting on "Quitar" instead, passed
   // against this task's own first, lost implementation even after its
   // author deliberately reintroduced the bug it claimed to catch).
   //
   // MUTATION-PROVEN: temporarily editing gallery-client-row.tsx's
   // "Confirmar" button to `disabled={resendPending || removePending}` turns
-  // this test RED (see this task's final report for the captured failure
-  // output) before being reverted.
+  // this test RED — see this task's final report for the captured failure
+  // output.
   it("does not disable 'Confirmar' while an unrelated resend is pending", async () => {
     // Never resolves on its own — keeps the resend form's `pending` state
     // true for the life of this test, the same way a real in-flight
@@ -285,11 +318,13 @@ describe("GalleryClientRow — resend affordance (task #101)", () => {
     );
 
     // Reach the confirming state so "Confirmar" is on the page at all.
-    await user.click(screen.getByRole("button", { name: "Quitar" }));
+    await openActionsMenu(user);
+    await user.click(screen.getByRole("menuitem", { name: "Quitar" }));
     expect(screen.getByRole("button", { name: "Confirmar" })).toBeDefined();
 
     // Put an UNRELATED resend in flight.
-    await user.click(screen.getByRole("button", { name: /Reenviar acceso/ }));
+    await openActionsMenu(user);
+    await user.click(screen.getByRole("menuitem", { name: /Reenviar acceso/ }));
 
     // No jest-dom is wired into this Vitest setup (no setupFiles, no prior
     // usage in this repo) — `toBeDisabled()` would throw as an undefined

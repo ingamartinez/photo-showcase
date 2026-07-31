@@ -14,13 +14,7 @@
 // regressions, but it was pinned to a COPY — rewriting the query in auth.ts
 // would have left it green. Both sides now call this function, so there is a
 // single lookup to change and changing it turns the seam test red.
-//
-// Deliberately NOT `import "server-only"`, unlike src/lib/clients.ts: this
-// module is imported by src/auth.ts, which is in turn imported by route
-// handlers, layouts and server actions across the app. Adding the guard here
-// would inject "server-only" into that whole import graph — a change in blast
-// radius well beyond what sharing one query is worth. The module reaches `db`
-// directly, so it is server-side by construction anyway.
+import "server-only";
 
 import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";

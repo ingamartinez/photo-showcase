@@ -386,6 +386,79 @@ describe("createClient duplicate email", () => {
   });
 });
 
+// Task #50: React 19 blanks a `<form action={fn}>`'s uncontrolled fields on
+// every submit, so a rejected duplicate used to cost the photographer the
+// whole form. The documented way back is for the action to return what was
+// submitted and for the form to feed it into `defaultValue` — see
+// src/components/client-form.tsx and its own test. This is the server half:
+// the values have to actually come back, verbatim, on every error path.
+describe("createClient echoes the submitted values back on error (task #50)", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+  });
+
+  it("returns the values exactly as typed when the email is a duplicate", async () => {
+    const { createClient } = await import("./actions");
+
+    await createClient(
+      { status: "idle" },
+      formDataWith({ name: "Karla", email: "karla@example.com" }),
+    );
+
+    const result = await createClient(
+      { status: "idle" },
+      formDataWith({ name: "  Karla Otra  ", email: "  Karla@Example.com  ", phone: " +57 1 " }),
+    );
+
+    expect(result.status).toBe("error");
+    // Verbatim, NOT `parsed.data`: the photographer gets their own input back
+    // to correct, not a trimmed/lowercased rewrite of it that they never
+    // typed. Trimming here would also silently "fix" the very whitespace they
+    // may be trying to look at.
+    expect(result.values).toEqual({
+      name: "  Karla Otra  ",
+      email: "  Karla@Example.com  ",
+      phone: " +57 1 ",
+    });
+  });
+
+  it("returns the values when validation fails, where there is no parsed data to fall back on", async () => {
+    const { createClient } = await import("./actions");
+
+    const result = await createClient(
+      { status: "idle" },
+      formDataWith({ name: "Lía", email: "not-an-email", phone: "+57 300" }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.values).toEqual({ name: "Lía", email: "not-an-email", phone: "+57 300" });
+  });
+
+  it("reads an omitted field back as an empty string, not null", async () => {
+    const { createClient } = await import("./actions");
+
+    // No `phone` key at all — `FormData#get` returns null for it.
+    const result = await createClient(
+      { status: "idle" },
+      formDataWith({ name: "Mara", email: "still-not-an-email" }),
+    );
+
+    expect(result.values).toEqual({ name: "Mara", email: "still-not-an-email", phone: "" });
+  });
+
+  it("returns no values on success, so the form comes back empty for the next client", async () => {
+    const { createClient } = await import("./actions");
+
+    const result = await createClient(
+      { status: "idle" },
+      formDataWith({ name: "Nico", email: "nico@example.com", phone: "+57 300" }),
+    );
+
+    expect(result).toEqual({ status: "created" });
+    expect(result.values).toBeUndefined();
+  });
+});
+
 describe("createClient — non-unique-violation errors are not swallowed (task #47)", () => {
   beforeEach(() => {
     authMock.mockResolvedValue(adminSession());

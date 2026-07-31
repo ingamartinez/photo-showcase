@@ -23,6 +23,14 @@ export function GalleryForm({
   // Same reset behavior as ClientForm: React 19 blanks uncontrolled fields in
   // a <form action={fn}> synchronously at submit time, success or error
   // alike (see client-form.tsx's comment).
+  //
+  // Unlike ClientForm, this one does NOT feed the submitted values back
+  // through `defaultValue` after a rejected submit (task #50 added that
+  // there). Not an oversight: `createGallery` has no duplicate-style rejection
+  // a photographer corrects and resubmits, and the expensive field to retype
+  // here is a multi-select of clients rather than three text inputs. Worth
+  // revisiting the day this form grows an error the user is expected to fix
+  // in place.
   return (
     <form action={formAction} className="border-line-2 flex flex-col gap-5 rounded-sm border p-6">
       <span className="label text-fg-mute">Nueva galería</span>

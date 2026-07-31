@@ -45,10 +45,44 @@ const createClientSchema = z.object({
     .transform((value) => (value ? value : undefined)),
 });
 
+/** What the photographer actually typed, echoed back verbatim. */
+export type CreateClientValues = {
+  name: string;
+  email: string;
+  phone: string;
+};
+
 export type CreateClientState = {
   status: "idle" | "error" | "created";
   message?: string;
+  // Task #50: present ONLY on `status: "error"`. React 19 blanks the
+  // uncontrolled fields of a `<form action={fn}>` on every submit, so after a
+  // rejected duplicate the photographer would otherwise retype name, email and
+  // phone to fix one character. Returning the submitted values here is the
+  // documented React 19 way to put them back: src/components/client-form.tsx
+  // feeds them into `defaultValue`, which the form reset restores to. See that
+  // file's comment for why `defaultValue` (and not controlled state) is what
+  // this hangs on.
+  //
+  // Deliberately the RAW strings, not `parsed.data`: a validation failure has
+  // no `parsed.data` at all, and on a duplicate the photographer should see
+  // the address as they typed it — showing them a silently trimmed and
+  // lowercased version of their own input while telling them it is taken
+  // invites the reply "but that is not what I entered".
+  values?: CreateClientValues;
 };
+
+// `FormData#get` returns `string | File | null`; every field on this form is a
+// text input, so anything else is "nothing was submitted" and reads back as an
+// empty field rather than the string "null" or "[object File]".
+function submittedValues(formData: FormData): CreateClientValues {
+  const read = (key: string) => {
+    const value = formData.get(key);
+    return typeof value === "string" ? value : "";
+  };
+
+  return { name: read("name"), email: read("email"), phone: read("phone") };
+}
 
 // SQLSTATE for a unique-index violation — matches `postgres`'s own error
 // shape (PostgresError#code), not an HTTP status.
@@ -93,6 +127,7 @@ export async function createClient(
     return {
       status: "error",
       message: parsed.error.issues[0]?.message ?? "Revisá los datos del formulario.",
+      values: submittedValues(formData),
     };
   }
 
@@ -112,11 +147,15 @@ export async function createClient(
       return {
         status: "error",
         message: "Ya existe un cliente con ese correo electrónico.",
+        values: submittedValues(formData),
       };
     }
     throw error;
   }
 
   revalidatePath("/dashboard/clients");
+  // No `values` on success, on purpose: the form is meant to come back empty
+  // and ready for the next client, which is exactly what React 19's own reset
+  // already does.
   return { status: "created" };
 }

@@ -61,9 +61,17 @@
 //    resource category under suspicion, before that investigation has even
 //    measured a baseline. Polling adds no long-lived connection at all: every
 //    tick is a plain HTTP request this route answers and closes immediately.
-//    On redeploy, an in-flight poll is simply dropped like any other
-//    short-lived request — no drain, no `cancel()` handler, nothing for
-//    `server.js`'s shutdown path to wait on or fail to close.
+//    On redeploy, an in-flight poll is NOT simply dropped — verified against
+//    `next/dist/server/lib/start-server.js` (:335-344): `server.close()`
+//    AWAITS every in-flight request before the process exits, the same as
+//    any other short-lived route, and `closeAllConnections()` (which WOULD
+//    force a socket shut) is gated on `isDev` — it never runs in production.
+//    The reason this is still cheap is not "nothing waits for it", it is that
+//    what it waits for is short: one indexed `COUNT` query finishes in
+//    milliseconds, nowhere near the 10s `TimeoutStopSec` (task #173). An SSE
+//    response is the opposite case — it is BY DESIGN a request that never
+//    finishes on its own, which is what actually exhausts that timeout and
+//    forces the `SIGKILL` #173 is investigating; this route never opens one.
 //
 // 3. WHAT THIS BADGE ACTUALLY NEEDS. It is an informational count for a
 //    SINGLE admin (PLAN.md §4), not a collaborative view multiple people

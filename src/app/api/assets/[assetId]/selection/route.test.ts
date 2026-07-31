@@ -9,6 +9,15 @@ vi.mock("server-only", () => ({}));
 const authMock = vi.fn();
 vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 
+// Task #114: this route is one of the three write paths that must signal the
+// shared selection changed. Mocked (not the real `@/lib/db`-backed module)
+// because this suite's whole point is proving the DATABASE write, not the
+// pub/sub plumbing (see selection-events.test.ts for that).
+const notifySelectionChangedMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/selection-events", () => ({
+  notifySelectionChanged: (...args: [string]) => notifySelectionChangedMock(...args),
+}));
+
 // A minimal, genuinely-behaving double for `@/lib/db` — same
 // `eqColumnAndValue` (the CORRECTED version, see
 // src/app/api/galleries/[galleryId]/proofs/route.test.ts's comment) plus a
@@ -215,6 +224,8 @@ function paramsFor(assetId: string) {
 
 beforeEach(async () => {
   authMock.mockReset();
+  notifySelectionChangedMock.mockReset();
+  notifySelectionChangedMock.mockResolvedValue(undefined);
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
 
   const db = await seededDb();
@@ -443,6 +454,33 @@ describe("PATCH /api/assets/[assetId]/selection — persistence and quota recomp
     expect(body.asset.selectedAt).not.toBeNull();
     expect(db.__rows.assets[0]?.isSelected).toBe(true);
     expect(db.__rows.assets[0]?.selectedAt).toBeInstanceOf(Date);
+  });
+
+  // Task #114: every OTHER open session's tray converges off THIS signal —
+  // dropping this call silently degrades the whole product back to a 30s
+  // fallback poll with no test ever noticing, which is exactly the risk
+  // src/lib/selection-events.ts's own header comment names as the tradeoff
+  // of an application call over a database trigger.
+  it("signals the shared-selection change for this asset's OWN gallery, after the write", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
+
+    expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_A_ID);
+  });
+
+  it("still responds 200 even if the change signal itself fails", async () => {
+    // Fire-and-forget, by design (src/lib/selection-events.ts's own header
+    // comment) — the toggle already committed, and a NOTIFY failure must
+    // never turn a successful mutation into a failed response.
+    notifySelectionChangedMock.mockRejectedValue(new Error("notify boom"));
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(200);
   });
 
   it("clears selected_at on deselect", async () => {

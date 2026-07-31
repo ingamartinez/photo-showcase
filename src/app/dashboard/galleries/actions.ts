@@ -24,6 +24,7 @@ import {
 import { generateGallerySlug } from "@/lib/slug";
 import { authEnv, resendEnv } from "@/lib/env";
 import { computeQuota } from "@/lib/quota";
+import { notifySelectionChanged } from "@/lib/selection-events";
 import { sendUnlockNotificationEmail } from "@/lib/unlock-notification-email";
 
 const createGallerySchema = z.object({
@@ -568,6 +569,17 @@ export async function unlockSelection(
     };
   }
   const unlockedGallery = updated[0]!;
+
+  // Task #114 — every open client tab reopens the instant this commits
+  // (proof-grid.tsx's live `status`), rather than waiting up to a poll tick —
+  // the same convergence-in-both-directions this action's own header comment
+  // already promises, now pushed instead of polled. Fire-and-forget, same
+  // reasoning as the two sibling call sites (the PATCH toggle route and the
+  // submit route): the transition above already committed.
+  void notifySelectionChanged(unlockedGallery.id).catch(() => {
+    // Swallowed — see src/lib/selection-events.ts's own header comment; the
+    // 30s fallback poll is the backstop.
+  });
 
   // Task #94: a gallery can have SEVERAL clients now — `unlockedGallery.
   // clientId` is gone entirely (schema.ts), replaced by this join-table

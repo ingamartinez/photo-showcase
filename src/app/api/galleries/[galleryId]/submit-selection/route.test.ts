@@ -37,6 +37,14 @@ vi.mock("@/lib/admin-notification-email", () => ({
     sendSubmissionNotificationEmailMock(...args),
 }));
 
+// Task #114: this route is one of the three write paths that must signal the
+// shared selection changed — the submit lock itself is one of the two things
+// that must converge live (see proof-grid.tsx's own comment on `status`).
+const notifySelectionChangedMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/selection-events", () => ({
+  notifySelectionChanged: (...args: [string]) => notifySelectionChangedMock(...args),
+}));
+
 // A minimal, genuinely-behaving double for `@/lib/db` — real filtering off
 // `eq()`/`and(eq(), eq())` conditions (this route's atomic conditional
 // UPDATE needs the latter; every sibling route test so far has only ever
@@ -247,6 +255,8 @@ beforeEach(async () => {
   );
   sendSubmissionNotificationEmailMock.mockReset();
   sendSubmissionNotificationEmailMock.mockResolvedValue(undefined);
+  notifySelectionChangedMock.mockReset();
+  notifySelectionChangedMock.mockResolvedValue(undefined);
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
   vi.stubEnv("RESEND_API_KEY", "re_test_key");
   vi.stubEnv("EMAIL_FROM", "no-reply@alejoframes.com");
@@ -473,6 +483,18 @@ describe("POST /api/galleries/[galleryId]/submit-selection — success", () => {
     expect(emailArgs.galleryTitle).toBe("Boda Ana y Beto");
     expect(emailArgs.galleryUrl).toContain(`/dashboard/galleries/${GALLERY_ID}`);
     expect(emailArgs.quota).toEqual(body.quota);
+  });
+
+  // Task #114: every open tab's submit lock (proof-grid.tsx's live `status`)
+  // converges off this signal — dropping this call silently degrades to the
+  // 30s fallback poll with no test noticing otherwise.
+  it("signals the shared-selection change for this gallery on the winning submit", async () => {
+    authMock.mockResolvedValue(clientSession());
+    const { POST } = await import("./route");
+
+    await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_ID);
   });
 
   it("lets an admin submit on behalf of the client too", async () => {

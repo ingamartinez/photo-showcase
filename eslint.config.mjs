@@ -2,6 +2,19 @@ import { defineConfig, globalIgnores } from "eslint/config";
 import nextVitals from "eslint-config-next/core-web-vitals";
 import nextTs from "eslint-config-next/typescript";
 import prettier from "eslint-config-prettier/flat";
+import { appUtilityClassPattern } from "./tooling/app-theme-tokens.mjs";
+
+// Built from the `@theme` aliases actually declared in src/app/globals.css, so
+// an alias added there is covered by this rule the moment it exists. Anchored
+// on the TOKEN NAMES rather than on a list of utility prefixes — see
+// tooling/app-theme-tokens.mjs for the five utilities the prefix list missed.
+const APP_UTILITY_PATTERN = appUtilityClassPattern();
+
+// See the `no-restricted-syntax` block near the bottom of this file for why an
+// `app-*` classname outside the dashboard tree is a defect and not a style
+// preference.
+const APP_UTILITY_MESSAGE =
+  'The `app-*` Tailwind utilities (bg-app-raised, text-app-base, …) read tokens declared only under `[data-surface="app"]`, which nothing outside /dashboard carries. A `@theme` entry cannot be scoped, so this class is valid here and paints NOTHING — invalid at computed-value time, no error. Keep it under src/app/dashboard/** or src/components/dashboard-*, or use a brand token (bg-bg-2, text-fg-dim) instead. See task #175 and the comment in src/app/globals.css.';
 
 const eslintConfig = defineConfig([
   ...nextVitals,
@@ -87,6 +100,60 @@ const eslintConfig = defineConfig([
     files: ["src/lib/graphql/generated/**"],
     linterOptions: {
       reportUnusedDisableDirectives: "off",
+    },
+  },
+  // Task #175: the `app-*` utilities are GLOBAL, and this is what pays for that.
+  //
+  // `src/app/globals.css` adds `@theme inline` aliases (`bg-app-raised`,
+  // `text-app-base`, `hover:text-app-danger`, …) over the token layer scoped to
+  // `[data-surface="app"]`. A `@theme` entry cannot be scoped: those classnames
+  // are now valid EVERYWHERE, including the marketing site, where `--app-raised`
+  // is undefined. There the declaration is invalid at computed-value time — the
+  // element renders with a transparent background and no error anywhere. That is
+  // precisely the "one typo away from landing on the public site" hazard
+  // globals.css records as the reason `data-surface` was chosen over a global
+  // utility class in the first place, and accepting the ergonomics without this
+  // rule would be accepting the hazard the attribute exists to prevent.
+  //
+  // So the containment that the CSS can no longer express is expressed here
+  // instead: `app-*` classnames are allowed only in the dashboard tree, and a
+  // leak is a red check rather than a silently invisible element. The other half
+  // of the deal is in src/app/globals.tokens.test.ts, which pins every alias to
+  // a `var(--app-*)` REFERENCE so that a leak is at least inert and greppable.
+  //
+  // Matching is anchored on the TOKEN NAMES parsed out of globals.css, behind
+  // any utility prefix and any Tailwind variants. It deliberately does NOT
+  // enumerate the prefixes it knows about: the first version of this rule did,
+  // and `border-t-app-raised`, `border-x-app-danger`, `ring-offset-app-raised`,
+  // `inset-ring-app-raised` and `inset-shadow-app-raised` all compile to live
+  // rules and all walked straight through it — in a codebase this border-heavy,
+  // the sided `border-{t,b,l,r,x,y,s,e}-*` family was the one that mattered.
+  // Requiring a real token name after `app-` closes that without reintroducing
+  // false positives on strings like `"my-app-name"`. See
+  // tooling/app-theme-tokens.mjs.
+  //
+  // Both `Literal` and `TemplateElement` are covered: `cn()` call sites use
+  // plain strings today, but a template literal is one refactor away and would
+  // slip past a `Literal`-only selector without anyone noticing.
+  //
+  // eslint.config.test.ts asserts this rule by BEHAVIOUR — it runs ESLint over
+  // fixture sources — rather than by inspecting this array. Deleting this block
+  // used to leave `lint` and all 1228 tests green.
+  {
+    files: ["src/**/*.{ts,tsx}"],
+    ignores: ["src/app/dashboard/**", "src/components/dashboard-*"],
+    rules: {
+      "no-restricted-syntax": [
+        "error",
+        {
+          selector: `Literal[value=/${APP_UTILITY_PATTERN}/]`,
+          message: APP_UTILITY_MESSAGE,
+        },
+        {
+          selector: `TemplateElement[value.raw=/${APP_UTILITY_PATTERN}/]`,
+          message: APP_UTILITY_MESSAGE,
+        },
+      ],
     },
   },
   globalIgnores([".next/**", "out/**", "build/**", "next-env.d.ts", ".claude/**"]),

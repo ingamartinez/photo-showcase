@@ -18,6 +18,40 @@
 @source not "../../design";
 
 /*
+  Same rule, second application (task #175): keep the files that TALK ABOUT
+  classnames out of the files that PRODUCE them.
+
+  A test that asserts which utilities are allowed where, or that `cn()` keeps a
+  size and a line height together, has to CONTAIN the class strings it argues
+  about — they are the assertion. Tailwind's scanner cannot tell an assertion
+  from a call site, so it compiled the whole cast of the app-surface lint
+  fixtures into the production stylesheet: +771 bytes of rules that exist only
+  because something argued they must never be used. Measured on this branch,
+  before these directives.
+
+  Nothing excluded here renders markup. `tooling/` is dev-time tools staged by
+  nothing (see eslint.config.mjs for the tooling/ vs scripts/ split), the ESLint
+  config and its test carry fixture strings and rule documentation, and a
+  `*.test.*` file asserts about components rather than being one — every class a
+  component actually needs is in the component, which is still scanned.
+
+  NOTE THAT THIS COMMENT NAMES NO CLASS, and neither should any comment in a
+  scanned file. globals.css cannot exclude itself, and an earlier draft of this
+  very paragraph quoted the utilities it was congratulating itself on removing,
+  which put every one of them straight back. The same trap as the `--radius-sm`
+  note further down, and as the bracket-syntax note in src/lib/utils.ts.
+
+  If a component ever builds a classname dynamically and relies on a test file
+  to make the full string visible to the scanner, THAT is the bug: fix it with
+  `@source inline(...)` naming the real candidates, not by deleting these lines.
+*/
+@source not "../../tooling";
+@source not "../../eslint.config.mjs";
+@source not "../../eslint.config.test.ts";
+@source not "../**/*.test.ts";
+@source not "../**/*.test.tsx";
+
+/*
   Alejo Frames — dark gallery.
   A deliberately single-theme, cinema-black world: cool-biased near-black ground,
   a single tungsten-brass accent used sparingly, high-contrast serif display.
@@ -119,6 +153,72 @@
   --radius-sm: 2px;
   --radius-md: 3px;
   --radius-lg: 4px;
+
+  /* --- App-surface aliases (task #175) -----------------------------------
+     Ergonomics for the `[data-surface="app"]` layer below, NOT a second
+     scope. The arbitrary value `text-app-base` replaces is thirty characters
+     nobody types correctly from memory, and there were already a dozen
+     distinct `var(--app-*)` arbitrary-value strings across two files before
+     #131, #132, #133 and #134 multiplied them. Naming them once is cheaper
+     than un-hardcoding them from four screens later.
+
+     (Those old strings are deliberately not quoted anywhere in this repo's
+     comments any more: Tailwind generates a utility from any candidate it
+     finds in a scanned file, comments included — the same mechanism the
+     --app-radius* note below records for `--radius-sm` — so quoting them
+     kept the dead rules alive in the shipped stylesheet.)
+
+     WHY THIS KEEPS WORKING THROUGH THE SCOPE. Every right-hand side here is
+     a `var()`, so `@theme inline` inlines the REFERENCE, not a value:
+     `.bg-app-raised{background-color:var(--app-raised)}`. The variable is
+     still resolved by the browser, so it still picks up whatever
+     `[data-surface="app"]` (and its min-width blocks) declare. This is the
+     same mechanism `--color-bg-2` uses, and it is the ONLY reason a global
+     utility can serve a scoped token layer. A literal right-hand side would
+     be inlined as the literal and the scope could never reach it — see the
+     --app-radius* comment below for the full argument.
+
+     ONLY THE TWO SCALES THAT REPEAT. Colour and font-size. The one-offs
+     (--app-tabbar-h, --app-sidebar-w, --app-tap, --app-line-height) stay
+     arbitrary values at their single call site: each appears exactly once,
+     and a global utility buys nothing.
+     RADII ARE DELIBERATELY EXCLUDED — `--app-radius*` exists precisely
+     because `--radius-*` are frozen literals, and putting radii in `@theme`
+     reopens that settled argument for nothing.
+
+     THE COST, ACCEPTED WITH OPEN EYES. A `@theme` entry is GLOBAL, so
+     `bg-app-raised` is now a valid class on the marketing site too, where
+     `--app-raised` is undefined — the declaration is then invalid at
+     computed-value time, i.e. SILENTLY TRANSPARENT. That is exactly the
+     "one typo away from landing on the public site" hazard the block below
+     records against a globally-registered utility class. Two guards make it
+     defensible, and the change is not defensible without BOTH:
+       1. src/app/globals.tokens.test.ts compiles this file and asserts every
+          `app-*` utility resolves to `var(--app-*)` — so a leak outside the
+          scope is inert and greppable rather than wrong.
+       2. eslint.config.mjs restricts `app-*` classnames to
+          src/app/dashboard/** and src/components/dashboard-*, turning the
+          leak from a hope into a red check.
+     `[data-surface="app"]` remains the source of truth. These are names. */
+  --color-app-ground: var(--app-ground);
+  --color-app-surface: var(--app-surface);
+  --color-app-raised: var(--app-raised);
+  --color-app-danger: var(--app-danger);
+
+  /* Font sizes. NOTE FOR CALL SITES USING `cn()`: tailwind-merge cannot tell
+     a custom `text-app-*` font size from a `text-*` COLOUR on its own — it
+     classified `text-app-micro` as a colour and dropped it whenever a real
+     colour class followed in the same cn() call. That is why the arbitrary
+     values these replace all carried the explicit `length:` hint. The
+     classification is taught to tailwind-merge in src/lib/utils.ts; see the
+     comment there before adding a name to this list. */
+  --text-app-micro: var(--app-text-micro);
+  --text-app-meta: var(--app-text-meta);
+  --text-app-body: var(--app-text-body);
+  --text-app-base: var(--app-text-base);
+  --text-app-lead: var(--app-text-lead);
+  --text-app-head: var(--app-text-head);
+  --text-app-title: var(--app-text-title);
 }
 
 :root {

@@ -136,4 +136,48 @@ describe("ClientForm", () => {
     expect(emailInput.value).toBe("");
     expect((screen.getByLabelText("Nombre") as HTMLInputElement).value).toBe("");
   });
+
+  // -------------------------------------------------------------------------
+  // `onCreated` (task #132) — the one thing this form learns about being
+  // inside a dialog (src/components/dashboard-client-create-dialog.tsx), same
+  // shape as gallery-form.test.tsx's own pair for task #131. Every test above
+  // renders WITHOUT it, which is what proves the prop is genuinely optional.
+  // -------------------------------------------------------------------------
+
+  async function fillAndSubmit(user: ReturnType<typeof userEvent.setup>) {
+    await user.type(screen.getByLabelText("Nombre"), "Ana Pérez");
+    await user.type(screen.getByLabelText("Correo electrónico"), "ana@example.com");
+    await user.click(screen.getByRole("button", { name: "Agregar cliente" }));
+  }
+
+  it("calls onCreated exactly once when the action reports success", async () => {
+    createClientMock.mockResolvedValue({ status: "created" });
+    const onCreated = vi.fn();
+    const user = userEvent.setup();
+    render(<ClientForm onCreated={onCreated} />);
+
+    await fillAndSubmit(user);
+
+    await screen.findByText("Cliente agregado.");
+    expect(onCreated).toHaveBeenCalledTimes(1);
+  });
+
+  // The effect keys off a BOOLEAN (`state.status === "created"`), not off the
+  // state object, precisely so a rejected submit — which produces a brand-new
+  // object every time — never fires it. A dialog that closed on a validation
+  // error would throw the photographer's typing away.
+  it("does NOT call onCreated when the action reports an error", async () => {
+    createClientMock.mockResolvedValue({
+      status: "error",
+      message: "Ya existe un cliente con ese correo electrónico.",
+    });
+    const onCreated = vi.fn();
+    const user = userEvent.setup();
+    render(<ClientForm onCreated={onCreated} />);
+
+    await fillAndSubmit(user);
+
+    await screen.findByRole("alert");
+    expect(onCreated).not.toHaveBeenCalled();
+  });
 });

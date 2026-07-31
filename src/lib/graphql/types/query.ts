@@ -96,12 +96,15 @@ builder.queryType({
         // Task #138: was `Promise.all(own.map((row) =>
         // getGalleryDetail(row.id)))` — one detail query PER owned gallery,
         // ~1 + 4N queries total for a client with N galleries. Replaced with
-        // one batched query (`getGalleryDetailsByIds`,
-        // ../gallery-details-by-ids.ts) for every id at once, so this field
-        // costs exactly two queries — this one and `getGalleriesForClient`'s
-        // — no matter how many galleries the caller owns. See that module's
-        // own header comment for why the batching logic lives there instead
-        // of alongside `getGalleryDetail` in src/lib/galleries.ts.
+        // one batched query (`getGalleryDetailsByIds`) for every id at once,
+        // so this field costs exactly two queries — this one and
+        // `getGalleriesForClient`'s — no matter how many galleries the
+        // caller owns. Task #154 folded `getGalleryDetailsByIds`'s
+        // implementation into `src/lib/galleries.ts` itself, alongside
+        // `getGalleryDetail` (both now share one `with`/mapping definition);
+        // the `../gallery-details-by-ids` import path below just re-exports
+        // it, kept as a stable indirection so this file and its own
+        // query-count test didn't have to change.
         const own = await getGalleriesForClient(ctx.session.user.id);
         if (own.length === 0) return [];
 

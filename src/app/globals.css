@@ -162,7 +162,8 @@
      public site's ground is --bg, the app surface's is --bg-sunken. */
   --popover: var(--bg-2);
   --popover-foreground: var(--fg);
-  /* Ink on the brass highlight — see the --color-accent-foreground comment. */
+  /* Ink on a deliberate brass FILL, never on a focus wash. 7.85:1 on
+     #c8a15a. See the --color-accent-foreground comment for the full rule. */
   --accent-foreground: #14100a;
   /* THE ONE VALUE NOT DERIVED FROM THE BRAND. The palette has no red, and it
      needs one: the primitives reference `destructive` from their BASE classes

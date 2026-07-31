@@ -2,6 +2,22 @@
 @import "tw-animate-css";
 
 /*
+  Keep the design-system mocks out of Tailwind's source detection.
+
+  Tailwind v4 finds its sources by crawling the repository and skipping whatever
+  .gitignore excludes. design/system/*.html became tracked in task #170 (so that agent
+  worktrees can actually see the approved mock), and that alone grew the production
+  stylesheet from 40537 to 41313 bytes — 776 bytes of utilities generated from
+  candidate strings inside the mocks, shipped to every visitor and read by nobody.
+
+  The mocks are a reference artifact, not app code: they are standalone HTML with
+  their own <style> block and their own :root. Nothing in them should ever reach the
+  bundle. This directive is what keeps "the mock is tracked" from meaning "the mock is
+  compiled".
+*/
+@source not "../../design";
+
+/*
   Alejo Frames — dark gallery.
   A deliberately single-theme, cinema-black world: cool-biased near-black ground,
   a single tungsten-brass accent used sparingly, high-contrast serif display.

@@ -1,0 +1,13 @@
+# Prettier 3 uses .gitignore as an ignore path by default, so this file only needs to
+# name things that ARE tracked but must not be reformatted.
+
+# The design-system mocks (task #170). These are hand-authored reference artifacts, not
+# app code: standalone HTML with their own <style> block and their own :root. They are
+# tracked so agent worktrees can see the approved visual source of truth for epics #125
+# and #140 — see AGENTS.md, "The design mocks are the visual source of truth".
+#
+# Prettier never saw them while /design/ was gitignored. Letting it reformat them now
+# would rewrite the owner's hand-written markup and make every future diff against a
+# fresh export from the design tool unreadable, which defeats the point of tracking
+# them. Read them; do not reformat them.
+design/

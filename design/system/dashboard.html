@@ -1,0 +1,1079 @@
+<!-- @dsCard group="Pages" name="Panel" subtitle="App surface — mobile first: tab bar, filas que se vuelven tabla en escritorio" -->
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Alejo Frames — Panel (mock de referencia)</title>
+
+<style>
+  /* ===================================================================
+     APP SURFACE — reference mock for kanban #126.
+
+     MOBILE FIRST. Every base rule below is the phone layout; every
+     media query is `min-width` and ADDS. There is not a single
+     `max-width` query in this file, on purpose — the previous revision
+     had three, which is what made it a desktop design with the phone
+     subtracted out of it.
+
+     What that means for THIS product specifically: the panel has exactly
+     one user (PLAN.md §4, "Single admin — the photographer"). So the
+     question is not "what does a crowd do on a phone", it is "what does
+     Alejo do standing up, versus sitting down":
+
+       Phone   triage — who is waiting on me, what state is this in,
+               resend access, deliver. Read and decide.
+       Desktop bulk — upload 84 proofs, compare, work through a shoot.
+
+     So the phone layout leads with state and decisions, and the
+     bulk-work surfaces (the asset grid, the wide table columns) are what
+     GROWS at larger widths rather than what gets cut at smaller ones.
+
+     Single-theme on purpose: globals.css declares `color-scheme: dark`
+     and a "deliberately single-theme, cinema-black world".
+
+     BRAND TOKENS (unchanged, from src/app/globals.css:43-59).
+     =================================================================== */
+  :root {
+    --bg:        #0B0B0F;
+    --bg-2:      #131318;
+    --bg-sunken: #070709;
+    --fg:        #ECEAF2;
+    --fg-dim:    #9A97A6;
+    --fg-mute:   #63616E;
+    --line:      rgba(236,234,242,0.10);
+    --line-2:    rgba(236,234,242,0.16);
+    --accent:    #C8A15A;
+    --accent-2:  #E0BE7E;
+
+    --serif: "Didot", "Bodoni 72", "Hoefler Text", Georgia, serif;
+    --sans:  system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono:  "SF Mono", ui-monospace, "Cascadia Code", Menlo, monospace;
+
+    /* App surface: ground/surface inverted relative to the public site —
+       there the page ground is --bg and things sink; here the ground is
+       the sunken black and every working surface LIFTS off it. Same three
+       colours, opposite relationship, no new neutral invented. */
+    --app-ground:  var(--bg-sunken);
+    --app-surface: var(--bg);
+    --app-raised:  var(--bg-2);
+
+    --t-micro: 11px;
+    --t-meta:  12px;
+    --t-body:  13px;
+    --t-base:  14px;
+    --t-lead:  16px;
+    --t-head:  20px;
+    --t-title: 22px;
+
+    /* Density is a phone value first and grows on desktop (see the
+       min-width blocks). A 44px minimum touch target is the floor
+       everywhere, which is why --tap exists at all. */
+    --tap:       44px;
+    --cell-x:    14px;
+    --pad-card:  16px;
+    --gap:       12px;
+    --radius:    8px;
+    --radius-sm: 5px;
+
+    --tabbar-h:  58px;
+    --sidebar-w: 236px;
+
+    /* STATUS PALETTE — semantic, deliberately NOT the brand accent.
+       A gallery is a state machine (PLAN.md §2) and the photographer's
+       real question is "who is this waiting on?". The ramp encodes that,
+       low-saturation and cool-biased so it sits in the cinema-black world.
+
+         draft      no one yet — not published
+         proofing   the CLIENT (slate blue: out of your hands)
+         selected   YOU (brass: the one state that means act now)
+         delivered  no one — done (moss)
+         archived   no one — closed                                   */
+    --st-draft:     #63616E;
+    --st-proofing:  #7E93AD;
+    --st-selected:  #C8A15A;
+    --st-delivered: #7A9B82;
+    --st-archived:  #4A4954;
+    --danger:       #C4756B;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--app-ground);
+    color: var(--fg);
+    font-family: var(--sans);
+    font-size: var(--t-base);
+    line-height: 1.5;
+    -webkit-text-size-adjust: 100%;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; text-decoration: none; }
+  button { font: inherit; color: inherit; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+  ::selection { background: rgba(200,161,90,0.4); }
+  .num { font-variant-numeric: tabular-nums; }
+  .vh {
+    position: absolute; width: 1px; height: 1px; overflow: hidden;
+    clip-path: inset(50%); white-space: nowrap;
+  }
+
+  /* ===================================================================
+     MOCK CHROME — not part of the design. Styled unlike anything in the
+     panel so it can never be mistaken for a real control.
+     =================================================================== */
+  .mockbar {
+    position: sticky; top: 0; z-index: 60;
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px;
+    background: #1B1B22; border-bottom: 1px solid var(--line-2);
+    overflow-x: auto; scrollbar-width: none;
+  }
+  .mockbar::-webkit-scrollbar { display: none; }
+  .mockbar__tag {
+    font-family: var(--mono); font-size: var(--t-micro);
+    letter-spacing: 0.14em; text-transform: uppercase; color: var(--fg-mute);
+    white-space: nowrap; flex: none;
+  }
+  .mockbar__tabs { display: flex; gap: 4px; flex: none; }
+  .mockbar__tab {
+    background: none; border: 1px solid transparent; cursor: pointer;
+    padding: 6px 11px; border-radius: 999px; white-space: nowrap;
+    font-size: var(--t-meta); color: var(--fg-dim);
+  }
+  .mockbar__tab:hover { color: var(--fg); }
+  .mockbar__tab[aria-selected="true"] { background: var(--fg); color: #14100A; }
+
+  /* ===================================================================
+     SHELL — phone: a bottom tab bar in the thumb zone.
+             desktop: a persistent sidebar (added at >=1024px).
+     =================================================================== */
+  .app { min-height: 100vh; }
+
+  .topbar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; padding: 12px 16px;
+    background: var(--app-surface); border-bottom: 1px solid var(--line);
+  }
+  .brand__mark { font-family: var(--serif); font-size: 18px; letter-spacing: -0.01em; }
+  .brand__mark em { font-style: normal; color: var(--accent); }
+  .brand__sub {
+    display: none;
+    font-size: var(--t-micro); letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--fg-mute);
+  }
+  .topbar__out {
+    background: none; border: none; cursor: pointer;
+    min-height: var(--tap); padding: 0 4px;
+    font-size: var(--t-meta); color: var(--fg-mute);
+  }
+  .topbar__out:hover { color: var(--danger); }
+
+  /* Bottom tab bar — three destinations, thumb reach, 44px targets. */
+  .tabbar {
+    position: fixed; inset: auto 0 0 0; z-index: 40;
+    display: grid; grid-template-columns: repeat(3, 1fr);
+    height: var(--tabbar-h);
+    padding-bottom: env(safe-area-inset-bottom, 0);
+    background: var(--app-surface); border-top: 1px solid var(--line-2);
+  }
+  .tabbar__item {
+    display: flex; flex-direction: column; align-items: center; justify-content: center;
+    gap: 3px; position: relative;
+    font-size: var(--t-micro); color: var(--fg-mute);
+  }
+  .tabbar__item[aria-current="page"] { color: var(--fg); }
+  .tabbar__item[aria-current="page"] .tabbar__icon { color: var(--accent); }
+  .tabbar__icon { font-size: 17px; line-height: 1; color: var(--fg-mute); }
+  .tabbar__dot {
+    position: absolute; top: 8px; left: 50%; margin-left: 7px;
+    min-width: 16px; height: 16px; padding: 0 4px;
+    display: grid; place-items: center;
+    background: var(--accent); color: #14100A;
+    border-radius: 999px; font-size: 10px; font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+
+  .content {
+    padding: 18px 16px calc(var(--tabbar-h) + 28px);
+    min-width: 0;
+  }
+  .screen[hidden] { display: none; }
+
+  /* ---------- Page head ------------------------------------------------ */
+  .page-head { margin-bottom: 16px; }
+  .page-head__hello { font-size: var(--t-body); color: var(--fg-mute); margin: 0 0 3px; }
+  .page-head__title {
+    font-size: var(--t-title); font-weight: 500;
+    letter-spacing: -0.015em; margin: 0; text-wrap: balance;
+  }
+  .page-head__sub { font-size: var(--t-body); color: var(--fg-dim); margin: 5px 0 0; }
+  .page-head__act { margin-top: 12px; }
+  .page-head__act .btn { width: 100%; justify-content: center; }
+
+  /* ---------- Buttons -------------------------------------------------- */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 7px;
+    min-height: var(--tap); padding: 0 16px;
+    border-radius: var(--radius-sm); cursor: pointer;
+    font-size: var(--t-base); border: 1px solid var(--line-2); background: transparent;
+    transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+  }
+  .btn:hover { background: var(--app-raised); border-color: var(--fg-mute); }
+  .btn--primary { background: var(--accent); border-color: var(--accent); color: #14100A; font-weight: 600; }
+  .btn--primary:hover { background: var(--accent-2); border-color: var(--accent-2); }
+  .btn--quiet { border-color: transparent; color: var(--fg-dim); }
+  .btn--quiet:hover { color: var(--fg); background: transparent; }
+  .btn--sm { min-height: 36px; padding: 0 12px; font-size: var(--t-body); }
+
+  .eyebrow {
+    font-size: var(--t-micro); letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--fg-mute);
+  }
+
+  /* ---------- The alert: the loudest thing, and first on the phone ------ */
+  .alert {
+    display: grid; gap: 12px;
+    background: linear-gradient(150deg, rgba(200,161,90,0.15), rgba(200,161,90,0.04));
+    border: 1px solid rgba(200,161,90,0.42);
+    border-radius: var(--radius); padding: var(--pad-card);
+    margin-bottom: var(--gap);
+  }
+  .alert__t {
+    display: flex; align-items: center; gap: 9px;
+    font-size: var(--t-lead); color: var(--accent-2);
+  }
+  .alert__t::before {
+    content: ""; width: 8px; height: 8px; border-radius: 999px;
+    background: var(--accent); flex: none;
+  }
+  .alert__s { font-size: var(--t-body); color: var(--fg-dim); margin: 0; }
+  .alert .btn { width: 100%; }
+
+  /* ---------- Stats ---------------------------------------------------- */
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-bottom: var(--gap); }
+  .stat {
+    display: block; background: var(--app-surface); border: 1px solid var(--line);
+    border-radius: var(--radius); padding: 12px;
+    transition: border-color 120ms ease;
+  }
+  a.stat:hover { border-color: var(--line-2); }
+  .stat .eyebrow { display: block; line-height: 1.3; }
+  .stat__n { font-size: 24px; line-height: 1.1; margin-top: 6px; font-variant-numeric: tabular-nums; }
+  .stat__note { display: none; font-size: var(--t-meta); color: var(--fg-mute); margin-top: 4px; }
+
+  /* ---------- Panel ---------------------------------------------------- */
+  .panel {
+    background: var(--app-surface); border: 1px solid var(--line);
+    border-radius: var(--radius); overflow: hidden;
+  }
+  .panel + .panel { margin-top: var(--gap); }
+  .panel__head {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 10px; padding: 10px var(--cell-x);
+    border-bottom: 1px solid var(--line); background: var(--app-raised);
+  }
+  .panel__body { padding: var(--pad-card); }
+
+  /* ===================================================================
+     ROWS — one markup, two shapes.
+
+     Phone: a stacked card. Desktop: a table row, via grid-template-columns
+     at >=1024px plus a header row that only exists there. NOT a table
+     element and NOT two copies of the markup — duplicating it would mean
+     duplicating it in the chrome tests too, and one of the two copies
+     would silently rot.
+     =================================================================== */
+  .rows { list-style: none; margin: 0; padding: 0; }
+  .rowhead { display: none; }
+
+  .row {
+    display: grid; gap: 3px 10px;
+    grid-template-areas:
+      "title  state"
+      "who    who"
+      "meta   n";
+    grid-template-columns: minmax(0,1fr) auto;
+    align-items: center;
+    padding: 12px var(--cell-x);
+    border-bottom: 1px solid var(--line);
+    border-left: 3px solid var(--st, var(--st-draft));
+  }
+  .row:last-child { border-bottom: none; }
+  .row:hover { background: rgba(236,234,242,0.028); }
+  .row[data-state="draft"]     { --st: var(--st-draft); }
+  .row[data-state="proofing"]  { --st: var(--st-proofing); }
+  .row[data-state="selected"]  { --st: var(--st-selected); }
+  .row[data-state="delivered"] { --st: var(--st-delivered); }
+  .row[data-state="archived"]  { --st: var(--st-archived); }
+
+  .row__title { grid-area: title; font-size: var(--t-base); }
+  .row__state { grid-area: state; justify-self: end; }
+  .row__who   { grid-area: who; font-size: var(--t-body); color: var(--fg-dim); }
+  .row__meta  { grid-area: meta; display: flex; gap: 8px; font-size: var(--t-meta); color: var(--fg-mute); }
+  .row__meta > span::after { content: " ·"; color: var(--fg-mute); }
+  .row__meta > span:last-child::after { content: ""; }
+  .row__n     { grid-area: n; justify-self: end; font-size: var(--t-meta); color: var(--fg-mute); font-variant-numeric: tabular-nums; }
+  .row__fallback { color: var(--fg-mute); font-style: italic; }
+
+  /* Clients rows reuse the same machinery with their own areas. */
+  .row--client {
+    grid-template-areas:
+      "title  n"
+      "who    who"
+      "meta   meta";
+    border-left-color: transparent;
+  }
+
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 3px 9px 3px 7px; border-radius: 999px; white-space: nowrap;
+    font-size: var(--t-micro); letter-spacing: 0.03em;
+    color: var(--st, var(--fg-mute));
+    border: 1px solid color-mix(in oklab, var(--st, var(--fg-mute)) 40%, transparent);
+    background: color-mix(in oklab, var(--st, var(--fg-mute)) 12%, transparent);
+  }
+  .badge::before {
+    content: ""; width: 5px; height: 5px; border-radius: 999px;
+    background: currentColor; flex: none;
+  }
+  .badge[data-state="draft"]     { --st: var(--st-draft); }
+  .badge[data-state="proofing"]  { --st: var(--st-proofing); }
+  .badge[data-state="selected"]  { --st: var(--st-selected); font-weight: 600; }
+  .badge[data-state="delivered"] { --st: var(--st-delivered); }
+  .badge[data-state="archived"]  { --st: var(--st-archived); }
+
+  .empty { padding: 32px var(--pad-card); text-align: center; color: var(--fg-dim); font-size: var(--t-body); }
+  .empty__t { color: var(--fg); font-size: var(--t-lead); margin-bottom: 6px; }
+  .empty p { max-width: 46ch; margin: 0 auto; }
+  .empty__acts { display: grid; gap: 8px; margin-top: 16px; }
+
+  /* ---------- Gallery detail ------------------------------------------- */
+  .back {
+    display: inline-flex; align-items: center;
+    min-height: var(--tap); font-size: var(--t-body); color: var(--fg-dim);
+  }
+  .back:hover { color: var(--accent-2); }
+
+  /* The state machine as the progression it actually is (PLAN.md §2).
+     Scrolls horizontally on a phone rather than wrapping into a
+     shape that no longer reads as a sequence. */
+  .steps {
+    display: flex; align-items: center; gap: 0;
+    margin: 12px 0 14px; padding-bottom: 4px;
+    overflow-x: auto; scrollbar-width: none;
+  }
+  .steps::-webkit-scrollbar { display: none; }
+  .step { display: flex; align-items: center; gap: 7px; font-size: var(--t-meta); color: var(--fg-mute); white-space: nowrap; }
+  .step__dot { width: 7px; height: 7px; border-radius: 999px; background: var(--fg-mute); flex: none; }
+  .step--done { color: var(--fg-dim); }
+  .step--done .step__dot { background: var(--st-delivered); }
+  .step--now { color: var(--accent-2); font-weight: 600; }
+  .step--now .step__dot { background: var(--accent); box-shadow: 0 0 0 4px rgba(200,161,90,0.18); }
+  .step__line { width: 20px; height: 1px; background: var(--line-2); margin: 0 8px; flex: none; }
+
+  .clients-list { display: grid; gap: 8px; margin: 14px 0; }
+  .client-item {
+    display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px;
+    background: var(--app-raised); border: 1px solid var(--line);
+    border-radius: var(--radius-sm); padding: 10px 8px 10px 14px;
+  }
+  .client-item__name { font-size: var(--t-body); }
+  .client-item__mail { font-size: var(--t-meta); color: var(--fg-mute); word-break: break-all; }
+  .client-item__more {
+    background: none; border: none; cursor: pointer;
+    width: var(--tap); height: var(--tap); border-radius: var(--radius-sm);
+    color: var(--fg-dim); font-size: 17px;
+  }
+  .client-item__more:hover { background: rgba(236,234,242,0.07); color: var(--fg); }
+
+  .facts { display: grid; grid-template-columns: 1fr auto; gap: 9px 20px; font-size: var(--t-body); margin: 0; }
+  .facts dt { color: var(--fg-mute); }
+  .facts dd { margin: 0; text-align: right; font-variant-numeric: tabular-nums; }
+  .facts__rule { grid-column: 1 / -1; height: 1px; background: var(--line); margin: 3px 0; }
+  .facts dd.over { color: var(--accent-2); }
+
+  /* Sticky action bar: the decision stays reachable after scrolling
+     past 84 thumbnails. Sits above the tab bar, never on top of it. */
+  .actionbar {
+    position: sticky; bottom: calc(var(--tabbar-h) + 8px); z-index: 30;
+    display: grid; gap: 8px;
+    margin: 16px 0 0; padding: 12px;
+    background: rgba(11,11,15,0.92);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--line-2); border-radius: var(--radius);
+  }
+  .actionbar__label { display: none; }
+  .actionbar .btn { width: 100%; }
+
+  /* ---------- Asset workspace ------------------------------------------ */
+  .drop {
+    border: 1px dashed var(--line-2); border-radius: var(--radius);
+    padding: 18px 14px; text-align: center; color: var(--fg-dim); font-size: var(--t-body);
+    background: rgba(236,234,242,0.015);
+  }
+  .drop strong { display: block; color: var(--fg); font-weight: 500; font-size: var(--t-base); margin-bottom: 4px; }
+  /* Copy differs by input, not by width alone: "arrastrá" is meaningless
+     on a touch screen. Both strings ship; CSS picks the true one. */
+  .drop__touch { display: block; }
+  .drop__mouse { display: none; }
+
+  .assets {
+    display: grid; gap: 6px; margin-top: 14px;
+    grid-template-columns: repeat(auto-fill, minmax(92px, 1fr));
+  }
+  .asset { position: relative; border-radius: var(--radius-sm); overflow: hidden; aspect-ratio: 3/2; }
+  .asset__img { position: absolute; inset: 0; }
+  .asset__img::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(to top, rgba(7,7,9,0.75), transparent 55%);
+  }
+  .asset__name {
+    position: absolute; left: 6px; right: 6px; bottom: 5px;
+    font-family: var(--mono); font-size: 9px; color: var(--fg-dim);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  /* Three states, none signalled by colour alone. */
+  .asset--selected { outline: 2px solid var(--accent); outline-offset: -2px; }
+  .asset__flag {
+    position: absolute; top: 5px; left: 5px;
+    display: inline-flex; align-items: center;
+    padding: 2px 6px; border-radius: 999px;
+    font-size: 9px; letter-spacing: 0.04em; text-transform: uppercase;
+    background: var(--accent); color: #14100A; font-weight: 700;
+  }
+  .asset__final {
+    position: absolute; top: 5px; right: 5px;
+    width: 16px; height: 16px; border-radius: 999px;
+    background: var(--st-delivered); color: #08150C;
+    display: grid; place-items: center; font-size: 10px; font-weight: 700;
+  }
+
+  /* Placeholder imagery — this mock judges density and state, not photos.
+     Gradients keep the file self-contained with zero network requests. */
+  .ph-1 { background: linear-gradient(135deg,#2A2733,#4A4051); }
+  .ph-2 { background: linear-gradient(135deg,#23303A,#3C5768); }
+  .ph-3 { background: linear-gradient(135deg,#332A26,#59453A); }
+  .ph-4 { background: linear-gradient(135deg,#262E2A,#3F5A4A); }
+  .ph-5 { background: linear-gradient(135deg,#302430,#523A55); }
+  .ph-6 { background: linear-gradient(135deg,#2B2B33,#474756); }
+
+  /* ===================================================================
+     >= 600px — small tablet / large phone landscape. Rows gain room,
+     stats gain their supporting line, buttons stop being full-bleed.
+     =================================================================== */
+  @media (min-width: 600px) {
+    :root { --cell-x: 16px; --pad-card: 18px; --gap: 14px; }
+
+    .page-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 16px; }
+    .page-head__act { margin-top: 0; flex: none; }
+    .page-head__act .btn { width: auto; }
+
+    .stat__note { display: block; }
+    .stat { padding: 14px 16px; }
+    .stat__n { font-size: 26px; }
+
+    .alert { grid-template-columns: 1fr auto; align-items: center; }
+    .alert__body { grid-column: 1; }
+    .alert .btn { width: auto; grid-column: 2; grid-row: 1 / span 2; }
+
+    .row {
+      grid-template-areas:
+        "title  state n"
+        "who    meta  meta";
+      grid-template-columns: minmax(0,1fr) auto auto;
+      gap: 4px 14px;
+    }
+    .row--client { grid-template-areas: "title n n" "who meta meta"; }
+
+    .empty__acts { display: flex; justify-content: center; }
+    .actionbar { grid-template-columns: repeat(3, auto); justify-content: end; }
+    .actionbar .btn { width: auto; }
+    .assets { grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 8px; }
+  }
+
+  /* ===================================================================
+     >= 1024px — the desk. The sidebar appears, the tab bar retires, and
+     rows finally become the aligned table that only a wide screen can
+     honestly show.
+     =================================================================== */
+  @media (min-width: 1024px) {
+    :root { --t-title: 26px; --pad-card: 20px; --gap: 20px; }
+
+    .app { display: grid; grid-template-columns: var(--sidebar-w) 1fr; }
+
+    .topbar {
+      flex-direction: column; align-items: stretch; justify-content: flex-start;
+      gap: 24px; padding: 18px 12px;
+      border-bottom: none; border-right: 1px solid var(--line);
+    }
+    .brand { padding: 4px 10px 0; }
+    .brand__sub { display: block; margin-top: 3px; }
+    .topbar__out { text-align: left; min-height: 0; padding: 0; }
+
+    /* The tab bar's items become the sidebar nav — same markup, same
+       three destinations, relocated. */
+    .tabbar {
+      position: static; display: flex; flex-direction: column; gap: 2px;
+      height: auto; padding: 0; background: none; border-top: none;
+      order: -1;
+    }
+    .tabbar__item {
+      flex-direction: row; justify-content: flex-start; gap: 10px;
+      min-height: 38px; padding: 0 10px; border-radius: var(--radius-sm);
+      font-size: var(--t-base); color: var(--fg-dim);
+      transition: background 120ms ease, color 120ms ease;
+    }
+    .tabbar__item:hover { background: var(--app-raised); color: var(--fg); }
+    .tabbar__item[aria-current="page"] { background: var(--app-raised); }
+    .tabbar__icon { font-size: 15px; }
+    .tabbar__dot { position: static; margin: 0 0 0 auto; }
+    .topbar__account { margin-top: auto; border-top: 1px solid var(--line); padding-top: 14px; }
+    .account__mail { font-size: var(--t-meta); color: var(--fg-dim); word-break: break-all; display: block; }
+
+    .content { padding: 28px 32px 64px; }
+
+    .stats { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; }
+    .stat__n { font-size: 28px; }
+
+    /* Rows become a real table: a header row appears and every row lays
+       out on one line with matching columns. */
+    .rowhead {
+      display: grid; align-items: center;
+      grid-template-columns: minmax(0,1.4fr) minmax(0,1.1fr) 152px 100px 108px 56px;
+      gap: 14px;
+      padding: 9px var(--cell-x) 9px calc(var(--cell-x) + 3px);
+      background: var(--app-raised); border-bottom: 1px solid var(--line);
+      font-size: var(--t-micro); letter-spacing: 0.06em; text-transform: uppercase;
+      color: var(--fg-mute);
+    }
+    .rowhead > :last-child { text-align: right; }
+
+    .row {
+      grid-template-areas: none;
+      grid-template-columns: minmax(0,1.4fr) minmax(0,1.1fr) 152px 100px 108px 56px;
+      gap: 14px; align-items: center;
+      min-height: 52px; padding: 0 var(--cell-x);
+    }
+    .row > * { grid-area: auto; }
+    .row__title { font-size: var(--t-body); }
+    .row__state { justify-self: start; }
+    /* `display: contents` promotes the two meta values into real grid
+       columns on the desk, while they stay one compact line on a phone. */
+    .row__meta { display: contents; }
+    .row__meta > span::after { content: ""; }
+    .row__n { justify-self: end; }
+
+    .rowhead--client,
+    .row--client { grid-template-columns: minmax(0,1fr) minmax(0,1.2fr) 150px 70px; }
+
+    /* Detail: two columns, and the action bar stops being sticky because
+       nothing is out of reach on a screen this tall. */
+    .detail { display: grid; grid-template-columns: minmax(0,1fr) 300px; gap: var(--gap); align-items: start; }
+    .detail__aside { display: grid; gap: 12px; }
+    .actionbar {
+      position: static; backdrop-filter: none; background: none;
+      border: none; padding: 0; margin: 0;
+      grid-template-columns: 1fr; justify-content: stretch;
+    }
+    .actionbar__label { display: block; margin-bottom: 2px; }
+    .actionbar .btn { width: 100%; }
+
+    .clients-list { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+    .drop__touch { display: none; }
+    .drop__mouse { display: block; }
+    .assets { grid-template-columns: repeat(auto-fill, minmax(122px, 1fr)); }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { transition: none !important; }
+  }
+</style>
+</head>
+<body>
+
+<div class="mockbar">
+  <span class="mockbar__tag">Mock · #126</span>
+  <div class="mockbar__tabs" role="tablist">
+    <button type="button" class="mockbar__tab" role="tab" aria-selected="true"  data-screen="panel">Panel</button>
+    <button type="button" class="mockbar__tab" role="tab" aria-selected="false" data-screen="panel-vacio">Vacío</button>
+    <button type="button" class="mockbar__tab" role="tab" aria-selected="false" data-screen="galerias">Galerías</button>
+    <button type="button" class="mockbar__tab" role="tab" aria-selected="false" data-screen="clientes">Clientes</button>
+    <button type="button" class="mockbar__tab" role="tab" aria-selected="false" data-screen="galeria">Detalle</button>
+  </div>
+</div>
+
+<div class="app" data-surface="app">
+
+  <!-- Phone: top bar (brand + salida). Desktop: this becomes the sidebar. -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand__mark">Alejo <em>Frames</em></div>
+      <span class="brand__sub">Panel</span>
+    </div>
+
+    <nav class="tabbar" aria-label="Principal">
+      <a class="tabbar__item" href="#" aria-current="page" data-nav="panel">
+        <span class="tabbar__icon" aria-hidden="true">▤</span> Panel
+      </a>
+      <a class="tabbar__item" href="#" data-nav="clientes">
+        <span class="tabbar__icon" aria-hidden="true">◍</span> Clientes
+      </a>
+      <a class="tabbar__item" href="#" data-nav="galerias">
+        <span class="tabbar__icon" aria-hidden="true">▦</span> Galerías
+        <span class="tabbar__dot num">2</span>
+        <span class="vh">2 esperando tu revisión</span>
+      </a>
+    </nav>
+
+    <div class="topbar__account">
+      <span class="account__mail vh">alejo@alejoframes.com</span>
+      <button type="button" class="topbar__out">Cerrar sesión</button>
+    </div>
+  </header>
+
+  <main class="content">
+
+    <!-- ============ Panel ============ -->
+    <section class="screen" id="screen-panel">
+      <div class="page-head">
+        <div>
+          <p class="page-head__hello">Hola, Alejo</p>
+          <h1 class="page-head__title">Así está tu estudio</h1>
+        </div>
+      </div>
+
+      <a class="alert" href="#">
+        <span class="alert__body">
+          <span class="alert__t">2 galerías esperando tu revisión</span>
+          <p class="alert__s">Boda Ana y Beto · Cosplay Homura — ya mandaron su selección.</p>
+        </span>
+        <span class="btn btn--primary">Ver</span>
+      </a>
+
+      <div class="stats">
+        <a class="stat" href="#">
+          <span class="eyebrow">Clientes</span>
+          <div class="stat__n">14</div>
+          <div class="stat__note">2 nuevos este mes</div>
+        </a>
+        <a class="stat" href="#">
+          <span class="eyebrow">Galerías</span>
+          <div class="stat__n">23</div>
+          <div class="stat__note">4 en curso · 19 entregadas</div>
+        </a>
+        <a class="stat" href="#">
+          <span class="eyebrow">Esperan</span>
+          <div class="stat__n">2</div>
+          <div class="stat__note">La más vieja hace 3 días</div>
+        </a>
+      </div>
+
+      <div class="panel">
+        <div class="panel__head">
+          <span class="eyebrow">En curso</span>
+          <a class="btn btn--quiet btn--sm" href="#">Ver todas</a>
+        </div>
+        <ul class="rows">
+          <li class="row" data-state="selected">
+            <span class="row__title">Boda Ana y Beto</span>
+            <span class="row__state"><span class="badge">Selección enviada</span></span>
+            <span class="row__who">Ana Pérez · Beto Gómez</span>
+            <span class="row__meta"><span>Estándar</span></span>
+            <span class="row__n">15 / 13</span>
+          </li>
+          <li class="row" data-state="selected">
+            <span class="row__title">Cosplay Homura</span>
+            <span class="row__state"><span class="badge">Selección enviada</span></span>
+            <span class="row__who">Valentina Ríos</span>
+            <span class="row__meta"><span>Básico</span></span>
+            <span class="row__n">7 / 7</span>
+          </li>
+          <li class="row" data-state="proofing">
+            <span class="row__title">Retrato Mariana</span>
+            <span class="row__state"><span class="badge">En selección</span></span>
+            <span class="row__who">Mariana Loaiza</span>
+            <span class="row__meta"><span>Estándar</span></span>
+            <span class="row__n">— / 13</span>
+          </li>
+          <li class="row" data-state="draft">
+            <span class="row__title">Evento Casa Tinta</span>
+            <span class="row__state"><span class="badge">Borrador</span></span>
+            <span class="row__who row__fallback">Todavía sin cliente</span>
+            <span class="row__meta"><span>Premium</span></span>
+            <span class="row__n">— / 20</span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ============ Panel — estado vacío real ============ -->
+    <section class="screen" id="screen-panel-vacio" hidden>
+      <div class="page-head">
+        <div>
+          <p class="page-head__hello">Hola, Alejo</p>
+          <h1 class="page-head__title">Todavía no hay nada acá</h1>
+          <p class="page-head__sub">
+            Cargás un cliente, armás una galería con el paquete que contrató y subís las pruebas.
+          </p>
+        </div>
+      </div>
+
+      <div class="stats">
+        <div class="stat">
+          <span class="eyebrow">Clientes</span>
+          <div class="stat__n">0</div>
+          <div class="stat__note">Todavía no cargaste ninguno</div>
+        </div>
+        <div class="stat">
+          <span class="eyebrow">Galerías</span>
+          <div class="stat__n">0</div>
+          <div class="stat__note">Todavía no armaste ninguna</div>
+        </div>
+        <div class="stat">
+          <span class="eyebrow">Esperan</span>
+          <div class="stat__n">0</div>
+          <div class="stat__note">Nada pendiente</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="empty">
+          <div class="empty__t">Empezá por acá</div>
+          <p>
+            Podés armar la galería antes de tener el cliente cargado — la sesión pasa,
+            los archivos salen de la tarjeta, y el cliente se agrega después.
+          </p>
+          <div class="empty__acts">
+            <button type="button" class="btn btn--primary">Nueva galería</button>
+            <button type="button" class="btn">Nuevo cliente</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ Galerías ============ -->
+    <section class="screen" id="screen-galerias" hidden>
+      <div class="page-head">
+        <div>
+          <h1 class="page-head__title">Galerías</h1>
+          <p class="page-head__sub">23 en total · 2 esperando tu revisión</p>
+        </div>
+        <div class="page-head__act">
+          <button type="button" class="btn btn--primary">Nueva galería</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <ul class="rows">
+          <li class="rowhead" aria-hidden="true">
+            <span>Galería</span><span>Clientes</span><span>Estado</span>
+            <span>Paquete</span><span>Sesión</span><span>Fotos</span>
+          </li>
+
+          <li class="row" data-state="selected">
+            <span class="row__title">Boda Ana y Beto</span>
+            <span class="row__who">Ana Pérez · Beto Gómez</span>
+            <span class="row__state"><span class="badge">Selección enviada</span></span>
+            <span class="row__meta"><span>Estándar</span><span class="num">01/08/2026</span></span>
+            <span class="row__n">84</span>
+          </li>
+          <li class="row" data-state="selected">
+            <span class="row__title">Cosplay Homura</span>
+            <span class="row__who">Valentina Ríos</span>
+            <span class="row__state"><span class="badge">Selección enviada</span></span>
+            <span class="row__meta"><span>Básico</span><span class="num">27/07/2026</span></span>
+            <span class="row__n">41</span>
+          </li>
+          <li class="row" data-state="proofing">
+            <span class="row__title">Retrato Mariana</span>
+            <span class="row__who">Mariana Loaiza</span>
+            <span class="row__state"><span class="badge">En selección</span></span>
+            <span class="row__meta"><span>Estándar</span><span class="num">24/07/2026</span></span>
+            <span class="row__n">62</span>
+          </li>
+          <li class="row" data-state="proofing">
+            <span class="row__title">Brujas — editorial</span>
+            <span class="row__who">Sara Quintero · Nico Vélez</span>
+            <span class="row__state"><span class="badge">En selección</span></span>
+            <span class="row__meta"><span>Premium</span><span class="num">19/07/2026</span></span>
+            <span class="row__n">137</span>
+          </li>
+          <li class="row" data-state="draft">
+            <span class="row__title">Evento Casa Tinta</span>
+            <span class="row__who row__fallback">Todavía sin cliente</span>
+            <span class="row__state"><span class="badge">Borrador</span></span>
+            <span class="row__meta"><span>Premium</span><span class="num">12/08/2026</span></span>
+            <span class="row__n">0</span>
+          </li>
+          <li class="row" data-state="delivered">
+            <span class="row__title">Quince Isabela</span>
+            <span class="row__who">Isabela Ochoa</span>
+            <span class="row__state"><span class="badge">Entregada</span></span>
+            <span class="row__meta"><span>Premium</span><span class="num">28/06/2026</span></span>
+            <span class="row__n">156</span>
+          </li>
+          <li class="row" data-state="delivered">
+            <span class="row__title">Retrato Daniel</span>
+            <span class="row__who">Daniel Arboleda</span>
+            <span class="row__state"><span class="badge">Entregada</span></span>
+            <span class="row__meta"><span>Básico</span><span class="num">14/06/2026</span></span>
+            <span class="row__n">38</span>
+          </li>
+          <li class="row" data-state="archived">
+            <span class="row__title">Cosplay Marzo 2025</span>
+            <span class="row__who">Valentina Ríos</span>
+            <span class="row__state"><span class="badge">Archivada</span></span>
+            <span class="row__meta"><span>Estándar</span><span class="num">03/03/2025</span></span>
+            <span class="row__n">72</span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ============ Clientes ============ -->
+    <section class="screen" id="screen-clientes" hidden>
+      <div class="page-head">
+        <div>
+          <h1 class="page-head__title">Clientes</h1>
+          <p class="page-head__sub">14 en total</p>
+        </div>
+        <div class="page-head__act">
+          <button type="button" class="btn btn--primary">Nuevo cliente</button>
+        </div>
+      </div>
+
+      <div class="panel">
+        <ul class="rows">
+          <li class="rowhead rowhead--client" aria-hidden="true">
+            <span>Cliente</span><span>Correo</span><span>Teléfono</span><span>Galerías</span>
+          </li>
+
+          <li class="row row--client">
+            <span class="row__title">Ana Pérez</span>
+            <span class="row__who">ana.perez@example.com</span>
+            <span class="row__meta"><span class="num">+57 300 123 4567</span></span>
+            <span class="row__n">3</span>
+          </li>
+          <li class="row row--client">
+            <span class="row__title">Valentina Ríos</span>
+            <span class="row__who">valentina@example.com</span>
+            <span class="row__meta"><span class="num">+57 310 987 6543</span></span>
+            <span class="row__n">4</span>
+          </li>
+          <!-- El fallback: cliente sin nombre. Se muestra el correo,
+               marcado como sustituto y no como nombre real. -->
+          <li class="row row--client">
+            <span class="row__title row__fallback">sinnombre@example.com</span>
+            <span class="row__who">sinnombre@example.com</span>
+            <span class="row__meta"><span>—</span></span>
+            <span class="row__n">1</span>
+          </li>
+          <li class="row row--client">
+            <span class="row__title">Mariana Loaiza</span>
+            <span class="row__who">mariana.l@example.com</span>
+            <span class="row__meta"><span>—</span></span>
+            <span class="row__n">2</span>
+          </li>
+          <li class="row row--client">
+            <span class="row__title">Isabela Ochoa</span>
+            <span class="row__who">isa.ochoa@example.com</span>
+            <span class="row__meta"><span class="num">+57 321 555 0198</span></span>
+            <span class="row__n">1</span>
+          </li>
+        </ul>
+      </div>
+    </section>
+
+    <!-- ============ Galería (detalle) ============ -->
+    <section class="screen" id="screen-galeria" hidden>
+      <a class="back" href="#">← Galerías</a>
+
+      <h1 class="page-head__title">Boda Ana y Beto</h1>
+
+      <div class="steps">
+        <span class="step step--done"><span class="step__dot"></span>Borrador</span>
+        <span class="step__line"></span>
+        <span class="step step--done"><span class="step__dot"></span>En selección</span>
+        <span class="step__line"></span>
+        <span class="step step--now"><span class="step__dot"></span>Selección enviada</span>
+        <span class="step__line"></span>
+        <span class="step"><span class="step__dot"></span>Entregada</span>
+      </div>
+
+      <p class="page-head__sub" style="margin-top:0;">Sesión: 01/08/2026</p>
+
+      <div class="detail">
+        <div>
+          <div class="clients-list">
+            <div class="client-item">
+              <span>
+                <span class="client-item__name">Ana Pérez</span><br />
+                <span class="client-item__mail">ana.perez@example.com</span>
+              </span>
+              <button type="button" class="client-item__more" aria-label="Acciones para Ana Pérez">⋯</button>
+            </div>
+            <div class="client-item">
+              <span>
+                <span class="client-item__name">Beto Gómez</span><br />
+                <span class="client-item__mail">beto.gomez@example.com</span>
+              </span>
+              <button type="button" class="client-item__more" aria-label="Acciones para Beto Gómez">⋯</button>
+            </div>
+            <button type="button" class="btn btn--quiet btn--sm">+ Agregar cliente</button>
+          </div>
+
+          <div class="panel">
+            <div class="panel__head">
+              <span class="eyebrow">84 fotos · 15 elegidas</span>
+              <button type="button" class="btn btn--quiet btn--sm">Subir finales</button>
+            </div>
+            <div class="panel__body">
+              <div class="drop">
+                <strong>Subir pruebas</strong>
+                <span class="drop__touch">Tocá para elegir del carrete. Se marcan con agua y se reducen solas.</span>
+                <span class="drop__mouse">Arrastralas acá o hacé clic para elegirlas. Se marcan con agua y se reducen solas.</span>
+              </div>
+
+              <div class="assets">
+                <figure class="asset asset--selected">
+                  <span class="asset__img ph-1"></span>
+                  <span class="asset__flag">Elegida</span>
+                  <span class="asset__final" title="Final subido">✓</span>
+                  <figcaption class="asset__name">DSC_0412.jpg</figcaption>
+                </figure>
+                <figure class="asset asset--selected">
+                  <span class="asset__img ph-2"></span>
+                  <span class="asset__flag">Elegida</span>
+                  <span class="asset__final" title="Final subido">✓</span>
+                  <figcaption class="asset__name">DSC_0418.jpg</figcaption>
+                </figure>
+                <figure class="asset asset--selected">
+                  <span class="asset__img ph-3"></span>
+                  <span class="asset__flag">Elegida</span>
+                  <figcaption class="asset__name">DSC_0423.jpg</figcaption>
+                </figure>
+                <figure class="asset">
+                  <span class="asset__img ph-4"></span>
+                  <figcaption class="asset__name">DSC_0427.jpg</figcaption>
+                </figure>
+                <figure class="asset asset--selected">
+                  <span class="asset__img ph-5"></span>
+                  <span class="asset__flag">Elegida</span>
+                  <figcaption class="asset__name">DSC_0431.jpg</figcaption>
+                </figure>
+                <figure class="asset">
+                  <span class="asset__img ph-6"></span>
+                  <figcaption class="asset__name">DSC_0435.jpg</figcaption>
+                </figure>
+                <figure class="asset">
+                  <span class="asset__img ph-2"></span>
+                  <figcaption class="asset__name">DSC_0440.jpg</figcaption>
+                </figure>
+                <figure class="asset asset--selected">
+                  <span class="asset__img ph-1"></span>
+                  <span class="asset__flag">Elegida</span>
+                  <figcaption class="asset__name">DSC_0444.jpg</figcaption>
+                </figure>
+                <figure class="asset">
+                  <span class="asset__img ph-3"></span>
+                  <figcaption class="asset__name">DSC_0449.jpg</figcaption>
+                </figure>
+                <figure class="asset">
+                  <span class="asset__img ph-4"></span>
+                  <figcaption class="asset__name">DSC_0453.jpg</figcaption>
+                </figure>
+                <figure class="asset asset--selected">
+                  <span class="asset__img ph-6"></span>
+                  <span class="asset__flag">Elegida</span>
+                  <figcaption class="asset__name">DSC_0458.jpg</figcaption>
+                </figure>
+                <figure class="asset">
+                  <span class="asset__img ph-5"></span>
+                  <figcaption class="asset__name">DSC_0462.jpg</figcaption>
+                </figure>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <aside class="detail__aside">
+          <div class="panel">
+            <div class="panel__head"><span class="eyebrow">Paquete</span></div>
+            <div class="panel__body">
+              <dl class="facts">
+                <dt>Paquete</dt><dd>Estándar</dd>
+                <dt>Incluidas</dt><dd class="num">13</dd>
+                <dt>Foto extra</dt><dd class="num">$5.000</dd>
+                <div class="facts__rule"></div>
+                <dt>Subidas</dt><dd class="num">84</dd>
+                <dt>Elegidas</dt><dd class="num">15</dd>
+                <dt>Excedente</dt><dd class="num over">2 × $5.000</dd>
+                <div class="facts__rule"></div>
+                <dt>A cobrar aparte</dt><dd class="num over">$10.000</dd>
+              </dl>
+              <p style="font-size:var(--t-meta); color:var(--fg-mute); margin:14px 0 0;">
+                El excedente se cobra por fuera de la app.
+              </p>
+            </div>
+          </div>
+
+          <div class="panel">
+            <div class="panel__head"><span class="eyebrow">Enlace del cliente</span></div>
+            <div class="panel__body">
+              <p style="font-family:var(--mono); font-size:var(--t-meta); color:var(--fg-dim); word-break:break-all; margin:0 0 10px;">
+                alejoframes.com/galleries/boda-ana-beto-4f2a
+              </p>
+              <button type="button" class="btn btn--sm">Copiar enlace</button>
+            </div>
+          </div>
+
+          <div class="actionbar">
+            <span class="actionbar__label eyebrow">Qué podés hacer ahora</span>
+            <button type="button" class="btn btn--primary">Entregar galería</button>
+            <button type="button" class="btn">Desbloquear selección</button>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+  </main>
+</div>
+
+<script>
+  (function () {
+    var tabs = document.querySelectorAll(".mockbar__tab");
+    var screens = document.querySelectorAll(".screen");
+    var navItems = document.querySelectorAll(".tabbar__item");
+    var navFor = {
+      "panel": "panel",
+      "panel-vacio": "panel",
+      "galerias": "galerias",
+      "clientes": "clientes",
+      "galeria": "galerias"
+    };
+
+    tabs.forEach(function (tab) {
+      tab.addEventListener("click", function () {
+        var target = tab.dataset.screen;
+
+        tabs.forEach(function (t) {
+          t.setAttribute("aria-selected", String(t === tab));
+        });
+        screens.forEach(function (s) {
+          s.hidden = s.id !== "screen-" + target;
+        });
+        navItems.forEach(function (n) {
+          if (n.dataset.nav === navFor[target]) {
+            n.setAttribute("aria-current", "page");
+          } else {
+            n.removeAttribute("aria-current");
+          }
+        });
+        window.scrollTo(0, 0);
+      });
+    });
+  })();
+</script>
+</body>
+</html>

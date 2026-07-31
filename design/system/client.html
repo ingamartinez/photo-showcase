@@ -1,0 +1,1003 @@
+<!-- @dsCard group="Pages" name="Galería del cliente" subtitle="Superficie editorial — selección compartida entre N personas, bandeja-cupo, mobile first" -->
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Alejo Frames — Galería del cliente (mock de referencia)</title>
+
+<style>
+  /* ===================================================================
+     EDITORIAL SURFACE — reference mock for kanban #141.
+
+     This is the only product the paying client ever touches. It is the
+     OPPOSITE problem to the panel (#126): the panel squeezes, this one
+     breathes. The photo is the subject; everything else is scaffolding.
+
+     MOBILE FIRST, and here that is not a nuance — it is the primary case.
+     The client picks their photos from a phone, on a couch, probably at
+     night. The large screen is the rare one. There is not a single
+     `max-width` media query in this file.
+
+     Tokens are the brand's own (:root, globals.css:43-59). There is NO
+     `data-surface="app"` layer here — that one belongs to the panel.
+     Serif display type, banned on the panel, is CORRECT here: this is the
+     editorial world the client bought.
+     =================================================================== */
+  :root {
+    --bg:        #0B0B0F;
+    --bg-2:      #131318;
+    --bg-sunken: #070709;
+    --fg:        #ECEAF2;
+    --fg-dim:    #9A97A6;
+    --fg-mute:   #63616E;
+    --line:      rgba(236,234,242,0.10);
+    --line-2:    rgba(236,234,242,0.16);
+    --accent:    #C8A15A;
+    --accent-2:  #E0BE7E;
+
+    --serif: "Didot", "Bodoni 72", "Hoefler Text", Georgia, serif;
+    --sans:  system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    --mono:  "SF Mono", ui-monospace, "Cascadia Code", Menlo, monospace;
+
+    --t-micro: 11px;
+    --t-meta:  12px;
+    --t-body:  14px;
+    --t-base:  15px;
+    --t-lead:  17px;
+
+    --tap:    48px;
+    --gutter: 16px;
+    --radius: 3px;
+    --bar-h:  76px;
+
+    color-scheme: dark;
+  }
+
+  *, *::before, *::after { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--fg);
+    font-family: var(--sans);
+    font-size: var(--t-base);
+    line-height: 1.55;
+    -webkit-text-size-adjust: 100%;
+    -webkit-font-smoothing: antialiased;
+  }
+  a { color: inherit; text-decoration: none; }
+  button { font: inherit; color: inherit; }
+  img { display: block; max-width: 100%; }
+  :focus-visible { outline: 2px solid var(--accent); outline-offset: 3px; }
+  ::selection { background: rgba(200,161,90,0.4); }
+  .num { font-variant-numeric: tabular-nums; }
+  .vh { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+  /* ---- Mock chrome — not part of the design -------------------------- */
+  .mockbar {
+    position: sticky; top: 0; z-index: 80;
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 12px; background: #1B1B22;
+    border-bottom: 1px solid var(--line-2);
+    overflow-x: auto; scrollbar-width: none;
+  }
+  .mockbar::-webkit-scrollbar { display: none; }
+  .mockbar__tag {
+    font-family: var(--mono); font-size: var(--t-micro); letter-spacing: 0.14em;
+    text-transform: uppercase; color: var(--fg-mute); white-space: nowrap; flex: none;
+  }
+  .mockbar__tabs { display: flex; gap: 4px; flex: none; }
+  .mockbar__tab {
+    background: none; border: none; cursor: pointer; white-space: nowrap;
+    padding: 6px 11px; border-radius: 999px; font-size: var(--t-meta); color: var(--fg-dim);
+  }
+  .mockbar__tab[aria-selected="true"] { background: var(--fg); color: #14100A; }
+
+  /* ===================================================================
+     CHROME — the client does not navigate. They arrive by magic link at
+     one gallery. They need to know whose studio this is, and how to leave.
+     =================================================================== */
+  .siteheader {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 16px; padding: 14px var(--gutter);
+    border-bottom: 1px solid var(--line);
+  }
+  .wordmark { font-family: var(--serif); font-size: 19px; letter-spacing: -0.01em; }
+  .wordmark em { font-style: normal; color: var(--accent); }
+  .signout {
+    background: none; border: none; cursor: pointer; padding: 0 2px;
+    min-height: var(--tap); font-size: var(--t-meta); color: var(--fg-mute);
+  }
+  .signout:hover { color: var(--fg); }
+
+  .screen[hidden] { display: none; }
+  .page { padding: 0 0 calc(var(--bar-h) + 24px); }
+  .pad { padding-inline: var(--gutter); }
+
+  .kicker {
+    font-family: var(--mono); font-size: var(--t-micro);
+    letter-spacing: 0.18em; text-transform: uppercase; color: var(--accent);
+  }
+  .display {
+    font-family: var(--serif); font-weight: 400;
+    font-size: clamp(30px, 8vw, 46px); line-height: 1.06;
+    letter-spacing: -0.015em; margin: 10px 0 0; text-wrap: balance;
+  }
+  .lede { color: var(--fg-dim); font-size: var(--t-body); margin: 12px 0 0; max-width: 46ch; }
+
+  /* ---- Buttons -------------------------------------------------------- */
+  .btn {
+    display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+    min-height: var(--tap); padding: 0 20px; cursor: pointer;
+    border: 1px solid var(--line-2); background: transparent;
+    border-radius: var(--radius); font-size: var(--t-body);
+    letter-spacing: 0.04em; transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+  }
+  .btn:hover { border-color: var(--accent); color: var(--accent-2); }
+  .btn--primary {
+    background: var(--accent); border-color: var(--accent);
+    color: #14100A; font-weight: 600; letter-spacing: 0.02em;
+  }
+  .btn--primary:hover { background: var(--accent-2); border-color: var(--accent-2); color: #14100A; }
+  .btn--wide { width: 100%; }
+
+  /* ===================================================================
+     ÍNDICE — the client's own galleries. PLAN.md §4 promises this as the
+     payoff for having no registration: identity is the email, so their
+     whole history with the studio lands in one place. Most clients have
+     one; a few have six across years.
+     =================================================================== */
+  .gal-list { display: grid; gap: 2px; margin-top: 28px; }
+  .gal-card { position: relative; display: block; overflow: hidden; }
+  .gal-card__img { aspect-ratio: 16 / 10; position: relative; }
+  .gal-card__img::after {
+    content: ""; position: absolute; inset: 0;
+    background: linear-gradient(to top, rgba(7,7,9,0.92) 8%, rgba(7,7,9,0.15) 62%, transparent);
+  }
+  .gal-card__body { position: absolute; inset: auto 0 0 0; padding: 0 var(--gutter) 18px; }
+  .gal-card__t { font-family: var(--serif); font-size: 24px; line-height: 1.1; margin: 6px 0 0; }
+  .gal-card__meta { font-size: var(--t-meta); color: var(--fg-dim); margin-top: 5px; }
+
+  /* State reads as a word, in the client's language — never a system
+     status. They do not know what "proofing" is. */
+  .state {
+    display: inline-flex; align-items: center; gap: 7px;
+    font-family: var(--mono); font-size: var(--t-micro);
+    letter-spacing: 0.16em; text-transform: uppercase;
+  }
+  .state::before { content: ""; width: 5px; height: 5px; border-radius: 999px; background: currentColor; }
+  .state--you  { color: var(--accent-2); }
+  .state--wait { color: var(--fg-dim); }
+  .state--done { color: #8FAE97; }
+
+  /* ===================================================================
+     ELEGIR — the real work, and the only screen where the client works.
+     Two columns on a phone: ~185px tiles, big enough to decide most
+     photos without opening any of them.
+     =================================================================== */
+  .proof-head { padding: 26px var(--gutter) 18px; }
+
+  .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 2px; }
+  .tile { position: relative; aspect-ratio: 2 / 3; overflow: hidden; }
+  .tile__img { position: absolute; inset: 0; }
+  /* Watermark stays in proofing — PLAN.md §5: the system guarantees the
+     protection so the photographer can never forget it. The design works
+     WITH it rather than against it. */
+  .tile__wm {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    font-family: var(--serif); font-size: 15px; letter-spacing: 0.28em;
+    color: rgba(236,234,242,0.16); text-transform: uppercase;
+    transform: rotate(-24deg); pointer-events: none; user-select: none;
+  }
+  .tile__n {
+    position: absolute; top: 8px; left: 9px;
+    font-family: var(--mono); font-size: 10px; color: rgba(236,234,242,0.55);
+  }
+
+  /* THE pick target. 48px, bottom-right, thumb reach, and separate from
+     the photo body so tapping to LOOK and tapping to CHOOSE are never the
+     same gesture. Picking 15 of 84 one-handed is the acceptance test. */
+  .pick {
+    position: absolute; right: 7px; bottom: 7px;
+    width: var(--tap); height: var(--tap); border-radius: 999px;
+    display: grid; place-items: center; cursor: pointer;
+    border: 1px solid rgba(236,234,242,0.5);
+    background: rgba(7,7,9,0.42); backdrop-filter: blur(6px);
+    color: var(--fg); font-size: 17px; line-height: 1;
+    transition: background 160ms ease, border-color 160ms ease, color 160ms ease;
+  }
+  .pick:hover { border-color: var(--accent); }
+  .tile--picked .pick {
+    background: var(--accent); border-color: var(--accent); color: #14100A;
+  }
+  /* Picked is never colour alone: the frame insets and the tile brightens. */
+  .tile--picked { outline: 3px solid var(--accent); outline-offset: -3px; }
+  .tile--picked .tile__img { filter: brightness(1.06) saturate(1.04); }
+
+  /* ===================================================================
+     THE SHARED BOARD — not a decoration, the structure.
+
+     schema.ts:272-273: everyone attached "picks into the SAME shared
+     selection — there is no per-client permission model". One set of
+     picks for the whole gallery.
+
+     proof-grid.tsx:344 names the conflict it was built for: "A deselects
+     a photo while B selects it ... there is no merge ... two people would
+     each be looking at a different 'shared' selection, and one of them
+     would quote the wrong surcharge."
+
+     Three consequences this design owes the client, none of which are
+     served by initials in a corner:
+
+       1. The quota is JOINTLY OWNED. "15 elegidas" is fifteen between the
+          two of them, and the $10.000 is a joint bill. If Ana reads it as
+          "I picked 15" the number is a lie to her.
+       2. Someone can change the board under you, so you need to know
+          whether they are here right now.
+       3. Your own tap can LOSE. Silently reverting a tap on a phone reads
+          as a broken app; it has to be said out loud, gently.
+     =================================================================== */
+  .crew {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-top: 18px;
+  }
+  .crew__av {
+    width: 28px; height: 28px; border-radius: 999px;
+    display: grid; place-items: center; flex: none;
+    font-size: 11px; font-weight: 700;
+    border: 1px solid var(--line-2); background: var(--bg-2); color: var(--fg-dim);
+  }
+  .crew__av.is-you { background: var(--accent); border-color: var(--accent); color: #14100A; }
+  .crew__txt { font-size: var(--t-meta); color: var(--fg-dim); }
+  .crew__txt b { color: var(--fg); font-weight: 500; }
+  /* ===================================================================
+     LA BANDEJA — el pedido original del dueño, textual en
+     selection-tray.tsx:3-6: "when a photo is selected it moves into a
+     list at the TOP of the page, in the same thumbnail style as the grid,
+     saying who chose it, in real time".
+
+     Lo que se CONSERVA porque ya está decidido en ese archivo:
+       · Arriba, siempre visible incluso vacía (líneas 29-35: si aparece
+         recién con la primera elección, empuja la grilla justo cuando el
+         cliente está apuntando a una miniatura).
+       · Atribución de quién eligió cada una.
+       · Tocar una ABRE la foto, no la saca (líneas 170-173: el único
+         control que cambia la selección vive en la miniatura de la
+         grilla, desde #24).
+       · El aviso de conexión perdida, que nunca vacía la lista
+         (líneas 112-119: stale-but-honest).
+
+     Lo que se PROPONE distinto:
+       · Tira horizontal en vez de `flex-wrap`. Hoy 15 elegidas son varias
+         filas de miniaturas con una línea de texto debajo de cada una —
+         en un teléfono eso es un muro que empuja la grilla fuera de
+         pantalla. Alto fijo, scroll lateral.
+       · Se pega arriba, así la ves formarse mientras recorrés 84 fotos.
+       · LA TIRA ES EL CUPO. Arranca con 13 marcos vacíos: eso es lo que
+         incluye el paquete, visible desde antes de elegir la primera.
+         Se van llenando. Pasadas las 13 hay un corte y las extra siguen
+         del otro lado, marcadas. El excedente deja de ser un número que
+         avisa y pasa a ser algo que se ve.
+       · La atribución pasa a una inicial sobre la miniatura en vez de una
+         línea de texto debajo — es lo que hace alta la bandeja actual. El
+         nombre completo sigue en el `aria-label` del botón.
+     =================================================================== */
+  .tray {
+    position: sticky; top: 44px; z-index: 40; /* en la app: top: 0 */
+    background: rgba(11,11,15,0.95); backdrop-filter: blur(14px);
+    border-bottom: 1px solid var(--line);
+    padding: 12px 0;
+  }
+  .tray__head {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 12px; padding: 0 var(--gutter) 10px;
+  }
+  .tray__t { font-family: var(--serif); font-weight: 400; font-size: 16px; margin: 0; }
+  .tray__n { font-size: var(--t-meta); color: var(--fg-mute); font-variant-numeric: tabular-nums; }
+  .tray__n b { color: var(--fg); font-weight: 500; }
+  .tray__n i { color: var(--accent-2); font-style: normal; }
+
+  .tray__strip {
+    display: flex; align-items: center; gap: 5px;
+    overflow-x: auto; scrollbar-width: none;
+    padding: 0 var(--gutter) 2px;
+  }
+  .tray__strip::-webkit-scrollbar { display: none; }
+
+  .slot {
+    position: relative; flex: none;
+    width: 52px; height: 52px; border-radius: 2px; overflow: hidden;
+    background: var(--bg-2);
+  }
+  .slot--ghost { border: 1px dashed var(--line-2); background: rgba(236,234,242,0.02); }
+  .slot__img { position: absolute; inset: 0; }
+  .slot__by {
+    position: absolute; right: 2px; bottom: 2px;
+    width: 16px; height: 16px; border-radius: 999px;
+    display: grid; place-items: center;
+    font-size: 8.5px; font-weight: 700;
+    background: rgba(7,7,9,0.74); border: 1px solid rgba(236,234,242,0.32); color: var(--fg);
+  }
+  .slot__by.is-you { background: var(--accent); border-color: var(--accent); color: #14100A; }
+  /* Una elección cuyo asset no estaba en el render inicial — estado real,
+     no un borde: selection-tray.tsx:178-181. */
+  .slot--pending {
+    display: grid; place-items: center; text-align: center;
+    font-size: 8px; line-height: 1.2; color: var(--fg-mute); padding: 3px;
+  }
+
+  .tray__cut { flex: none; width: 1px; align-self: stretch; background: var(--accent); opacity: 0.55; }
+  .tray__tag {
+    flex: none; font-size: 9px; letter-spacing: 0.12em; text-transform: uppercase;
+    color: var(--accent-2); padding: 0 2px;
+  }
+  .slot--extra { outline: 1px solid var(--accent); outline-offset: -1px; }
+
+  .tray__note { padding: 10px var(--gutter) 0; font-size: var(--t-meta); color: var(--fg-dim); margin: 0; }
+  .tray__stale { padding: 8px var(--gutter) 0; font-size: var(--t-micro); color: #E0796B; margin: 0; }
+
+  /* The losing tap, said out loud. Never a modal — it interrupts a task
+     that is going fine, and the board has already corrected itself. */
+  .toast {
+    position: fixed; left: var(--gutter); right: var(--gutter); z-index: 60;
+    bottom: calc(var(--bar-h) + 34px);
+    display: flex; align-items: center; gap: 10px;
+    padding: 12px 14px; border-radius: var(--radius);
+    background: rgba(19,19,24,0.96); backdrop-filter: blur(12px);
+    border: 1px solid var(--line-2);
+    font-size: var(--t-meta); color: var(--fg-dim);
+  }
+  .toast b { color: var(--fg); font-weight: 500; }
+  .toast__av {
+    width: 22px; height: 22px; border-radius: 999px; flex: none;
+    display: grid; place-items: center; font-size: 10px; font-weight: 700;
+    background: var(--bg-2); border: 1px solid var(--line-2); color: var(--fg-dim);
+  }
+
+  /* Who picked it. On a shared board this is not trivia: it is how you
+     know whether to ask before undoing one. */
+  .who {
+    position: absolute; top: 7px; right: 7px; display: flex; gap: 3px;
+  }
+  .who span {
+    width: 21px; height: 21px; border-radius: 999px;
+    display: grid; place-items: center;
+    font-size: 9.5px; font-weight: 700; letter-spacing: 0.02em;
+    background: rgba(7,7,9,0.6); backdrop-filter: blur(6px);
+    border: 1px solid rgba(236,234,242,0.35); color: var(--fg);
+  }
+  .who span.is-you { background: var(--accent); border-color: var(--accent); color: #14100A; }
+
+  /* ===================================================================
+     THE QUOTA BAR — the hardest design problem in this epic (#147).
+
+     The app NEVER charges (PLAN.md §3). It shows the overage so it can be
+     settled between two people over WhatsApp. So this is not a checkout:
+     it is the setup for a conversation.
+
+     Deliberate call: over quota does NOT turn red and does NOT warn. Red
+     would punish someone for wanting more photos of their own wedding —
+     which is exactly what the photographer wants them to want. It stays
+     brass, states the number plainly, and names a person: "lo arreglás
+     con Alejo". A person, not a cart.
+     =================================================================== */
+  .bar {
+    position: fixed; inset: auto 0 0 0; z-index: 50;
+    padding: 12px var(--gutter) calc(12px + env(safe-area-inset-bottom, 0));
+    background: rgba(11,11,15,0.94); backdrop-filter: blur(14px);
+    border-top: 1px solid var(--line-2);
+    display: grid; grid-template-columns: 1fr auto; gap: 12px; align-items: center;
+  }
+  .bar__count { font-family: var(--serif); font-size: 21px; line-height: 1.15; }
+  .bar__count b { font-weight: 400; color: var(--accent-2); }
+  .bar__note { font-size: var(--t-meta); color: var(--fg-dim); margin-top: 2px; }
+  .bar__note strong { color: var(--accent-2); font-weight: 500; }
+
+  /* Quota as a hairline, not a progress bar racing to a limit. */
+  .meter { grid-column: 1 / -1; height: 2px; background: var(--line); position: relative; }
+  .meter__in { position: absolute; inset: 0 auto 0 0; background: var(--accent); }
+  .meter__over {
+    position: absolute; inset: 0 auto 0 0; height: 2px;
+    background: repeating-linear-gradient(90deg, var(--accent-2) 0 3px, transparent 3px 6px);
+  }
+
+  /* ===================================================================
+     ENVIADA — the longest state in wall-clock time. The client can live
+     here for days. Today it is mostly disabled controls; here it gets its
+     own voice and says what happens next.
+     =================================================================== */
+  .note {
+    border: 1px solid var(--line-2); border-radius: var(--radius);
+    padding: 18px; margin-top: 22px;
+  }
+  .note__t { font-family: var(--serif); font-size: 18px; margin: 0 0 8px; }
+  .note p { margin: 0; font-size: var(--t-body); color: var(--fg-dim); }
+  .note p + p { margin-top: 10px; }
+  .note a { color: var(--accent-2); border-bottom: 1px solid rgba(200,161,90,0.4); }
+
+  .recap { display: grid; gap: 9px; margin-top: 20px; font-size: var(--t-body); }
+  .recap__row { display: flex; justify-content: space-between; gap: 16px; }
+  .recap__row dt { color: var(--fg-mute); }
+  .recap__row dd { margin: 0; font-variant-numeric: tabular-nums; }
+  .recap__row dd.hi { color: var(--accent-2); }
+
+  /* Submit sheet — the irreversible moment on a shared board. Bottom
+     sheet on a phone (thumb zone), centred dialog on the desk. */
+  .sheet-wrap {
+    min-height: 82vh; display: grid; align-items: end;
+    background: rgba(7,7,9,0.62);
+  }
+  .sheet {
+    background: var(--bg-2);
+    border-top: 1px solid var(--line-2);
+    border-radius: 14px 14px 0 0;
+    padding: 24px var(--gutter) calc(24px + env(safe-area-inset-bottom, 0));
+  }
+  .sheet__t { font-family: var(--serif); font-weight: 400; font-size: 26px; margin: 8px 0 0; }
+  .sheet__warn { border-left: 2px solid var(--accent); padding-left: 15px; margin-top: 22px; }
+  .sheet__warn p { margin: 0; font-size: var(--t-body); color: var(--fg-dim); }
+  .sheet__warn p + p { margin-top: 8px; }
+  .sheet__warn b { color: var(--accent-2); font-weight: 500; }
+  .sheet__acts { display: grid; gap: 10px; margin-top: 24px; }
+
+  .lb__by { font-size: var(--t-meta); color: var(--fg-dim); text-align: center; }
+  .lb__by b { color: var(--fg); font-weight: 500; }
+
+  /* ===================================================================
+     ENTREGADA — the delivery moment, and the one place this surface
+     spends its boldness: a full-bleed hero with the title over it. The
+     panel banned this treatment; here it is the whole point. The client
+     paid, and this is what they will reopen in two years.
+     =================================================================== */
+  .hero { position: relative; height: 62vh; min-height: 330px; overflow: hidden; }
+  .hero__img { position: absolute; inset: 0; }
+  .hero__scrim {
+    position: absolute; inset: 0;
+    background:
+      linear-gradient(to top, var(--bg) 3%, transparent 52%),
+      linear-gradient(to right, rgba(11,11,15,0.72) 0%, rgba(11,11,15,0.2) 58%, transparent 88%);
+  }
+  .hero__body { position: absolute; inset: auto 0 0 0; padding: 0 var(--gutter) 26px; }
+
+  .dl { display: grid; gap: 10px; margin-top: 22px; }
+
+  /* No watermark once delivered (#89): the client paid, so it is gone
+     from what they LOOK at, not only from what they download. */
+  .grid--final .tile { aspect-ratio: 3 / 4; }
+  .dl-one {
+    position: absolute; right: 7px; bottom: 7px;
+    width: var(--tap); height: var(--tap); border-radius: 999px;
+    display: grid; place-items: center; cursor: pointer;
+    border: 1px solid rgba(236,234,242,0.45);
+    background: rgba(7,7,9,0.45); backdrop-filter: blur(6px);
+    font-size: 15px;
+  }
+  .dl-one:hover { border-color: var(--accent); color: var(--accent-2); }
+
+  /* The ZIP streams through the droplet (#29, the documented exception).
+     A big gallery takes real time on mobile data — if that time is
+     invisible the client taps three times and starts three downloads. */
+  .zip { border: 1px solid var(--line-2); border-radius: var(--radius); padding: 16px; }
+  .zip__row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .zip__t { font-size: var(--t-body); }
+  .zip__s { font-size: var(--t-meta); color: var(--fg-mute); margin-top: 3px; }
+  .zip__meter { height: 2px; background: var(--line); margin-top: 14px; position: relative; }
+  .zip__meter i { position: absolute; inset: 0 auto 0 0; width: 38%; background: var(--accent); }
+
+  /* ===================================================================
+     LIGHTBOX — on a phone this IS the selection flow. The grid is only
+     the index; the decision happens here.
+     =================================================================== */
+  .lb { position: relative; background: var(--bg-sunken); min-height: 82vh; display: grid; grid-template-rows: auto 1fr auto; }
+  .lb__top {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px var(--gutter);
+  }
+  .lb__count { font-family: var(--mono); font-size: var(--t-meta); color: var(--fg-dim); letter-spacing: 0.1em; }
+  .lb__close {
+    background: none; border: none; cursor: pointer;
+    width: var(--tap); height: var(--tap); font-size: 20px; color: var(--fg-dim);
+  }
+  .lb__close:hover { color: var(--fg); }
+  .lb__stage { position: relative; overflow: hidden; }
+  .lb__img { position: absolute; inset: 0; }
+  .lb__wm {
+    position: absolute; inset: 0; display: grid; place-items: center;
+    font-family: var(--serif); font-size: 26px; letter-spacing: 0.34em;
+    color: rgba(236,234,242,0.14); text-transform: uppercase;
+    transform: rotate(-24deg); pointer-events: none; user-select: none;
+  }
+  .lb__hint {
+    position: absolute; inset: auto 0 12px 0; text-align: center;
+    font-size: var(--t-micro); color: rgba(236,234,242,0.4); letter-spacing: 0.08em;
+  }
+  .lb__foot { padding: 12px var(--gutter) calc(14px + env(safe-area-inset-bottom, 0)); display: grid; gap: 10px; }
+  .lb__name { font-family: var(--mono); font-size: var(--t-micro); color: var(--fg-mute); text-align: center; }
+
+  /* ---- Placeholders: gradients, so the file needs no network ---------- */
+  .p1 { background: linear-gradient(155deg,#3B2E33 0%,#6B4A46 55%,#2A2026 100%); }
+  .p2 { background: linear-gradient(155deg,#22303B 0%,#43626F 55%,#1B252C 100%); }
+  .p3 { background: linear-gradient(155deg,#3A3040 0%,#5E4A66 55%,#231D28 100%); }
+  .p4 { background: linear-gradient(155deg,#33291F 0%,#6A5236 55%,#241D16 100%); }
+  .p5 { background: linear-gradient(155deg,#26302B 0%,#4A6552 55%,#1A211D 100%); }
+  .p6 { background: linear-gradient(155deg,#2E2A34 0%,#514B5E 55%,#201E26 100%); }
+  .p7 { background: linear-gradient(155deg,#3D2B2B 0%,#75504A 55%,#261B1B 100%); }
+  .p8 { background: linear-gradient(155deg,#212E33 0%,#3E5D63 55%,#182124 100%); }
+
+  /* ===================================================================
+     >= 620px — the tablet. More columns, the bar stops being full-bleed.
+     =================================================================== */
+  @media (min-width: 620px) {
+    :root { --gutter: 28px; }
+    .grid { grid-template-columns: repeat(3, 1fr); }
+    .gal-list { grid-template-columns: repeat(2, 1fr); gap: 2px; }
+    .gal-card__img { aspect-ratio: 4 / 5; }
+    .dl { grid-template-columns: repeat(2, auto); justify-content: start; }
+    .lb__foot { grid-template-columns: 1fr auto auto; align-items: center; }
+
+    /* The bottom sheet becomes a centred dialog once there is room. */
+    .sheet-wrap { align-items: center; padding: 24px; }
+    .sheet {
+      max-width: 460px; margin-inline: auto;
+      border: 1px solid var(--line-2); border-radius: 10px;
+      padding-bottom: 24px;
+    }
+    .sheet__acts { grid-template-columns: 1fr 1fr; }
+  }
+
+  /* ===================================================================
+     >= 1024px — the desk. This is the ADDITION, not the origin: more
+     photo per screen, and the quota bar settles into the flow instead of
+     hovering, because on a tall screen nothing is out of reach.
+     =================================================================== */
+  @media (min-width: 1024px) {
+    :root { --gutter: 48px; }
+    .page { padding-bottom: 64px; }
+    .grid { grid-template-columns: repeat(4, 1fr); gap: 3px; }
+    .grid--final { grid-template-columns: repeat(3, 1fr); }
+    .gal-list { grid-template-columns: repeat(3, 1fr); }
+    .hero { height: 76vh; }
+    .proof-head, .pad { max-width: 1280px; margin-inline: auto; }
+
+    .bar {
+      position: sticky; bottom: 0;
+      grid-template-columns: auto 1fr auto; gap: 24px;
+      padding-inline: var(--gutter);
+    }
+    .meter { grid-column: 2; height: 2px; }
+    .lb { min-height: 88vh; }
+    .lb__hint { display: none; }
+  }
+
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+
+<div class="mockbar">
+  <span class="mockbar__tag">Mock · #141</span>
+  <div class="mockbar__tabs" role="tablist">
+    <button type="button" class="mockbar__tab" role="tab" aria-selected="true"  data-screen="indice">Índice</button>
+    <button type="button" class="mockbar__tab" role="tab" aria-selected="false" data-screen="inicio">Inicio</button>
+    <button type="button" class="mockbar__tab" role="tab" aria-selected="false" data-screen="elegir">Elegir</button>
+    <button type="button" class="mockbar__tab" role="tab" aria-selected="false" data-screen="lightbox">Lightbox</button>
+    <button type="button" class="mockbar__tab" role="tab" aria-selected="false" data-screen="enviar">Enviar</button>
+    <button type="button" class="mockbar__tab" role="tab" aria-selected="false" data-screen="enviada">Enviada</button>
+    <button type="button" class="mockbar__tab" role="tab" aria-selected="false" data-screen="entregada">Entregada</button>
+  </div>
+</div>
+
+<header class="siteheader">
+  <a class="wordmark" href="#">Alejo <em>Frames</em></a>
+  <button type="button" class="signout">Cerrar sesión</button>
+</header>
+
+<!-- ============ ÍNDICE ============ -->
+<section class="screen page" id="screen-indice">
+  <div class="pad" style="padding-top:30px;">
+    <span class="kicker">Tus galerías</span>
+    <h1 class="display">Ana, acá está<br />todo tu trabajo<br />con el estudio.</h1>
+    <p class="lede">Tres sesiones desde 2024. Las galerías no vencen: podés volver cuando quieras.</p>
+  </div>
+
+  <div class="gal-list">
+    <a class="gal-card" href="#">
+      <div class="gal-card__img p1"></div>
+      <div class="gal-card__body">
+        <span class="state state--you">Te toca elegir</span>
+        <h2 class="gal-card__t">Boda Ana y Beto</h2>
+        <p class="gal-card__meta">1 de agosto, 2026 · 84 fotos</p>
+      </div>
+    </a>
+    <a class="gal-card" href="#">
+      <div class="gal-card__img p4"></div>
+      <div class="gal-card__body">
+        <span class="state state--wait">Alejo está editando</span>
+        <h2 class="gal-card__t">Sesión de compromiso</h2>
+        <p class="gal-card__meta">14 de marzo, 2026 · 13 elegidas</p>
+      </div>
+    </a>
+    <a class="gal-card" href="#">
+      <div class="gal-card__img p8"></div>
+      <div class="gal-card__body">
+        <span class="state state--done">Lista para descargar</span>
+        <h2 class="gal-card__t">Retrato — invierno</h2>
+        <p class="gal-card__meta">2 de julio, 2024 · 20 fotos</p>
+      </div>
+    </a>
+  </div>
+</section>
+
+<!-- ============ INICIO — antes de la primera elección ============
+     La bandeja se ve vacía, que es una decisión ya tomada
+     (selection-tray.tsx:29-35) y acá gana un motivo más: los 13 marcos
+     dicen cuántas fotos incluye el paquete ANTES de elegir la primera.
+     El cupo deja de ser un número que aparece cuando ya elegiste. -->
+<section class="screen page" id="screen-inicio" hidden>
+  <div class="proof-head">
+    <span class="kicker">Elijan sus fotos</span>
+    <h1 class="display">Boda Ana y Beto</h1>
+    <p class="lede">
+      84 fotos de la sesión. El paquete incluye 13 editadas — pueden elegir
+      más y las extra las arreglan con Alejo.
+    </p>
+    <!-- Sin nombrar a nadie en el encuadre: una galería puede tener
+         muchas personas adjuntas (schema.ts:268-275 — "a couple's own
+         separate logins, a family, two businesses sharing a shoot"), así
+         que la frase tiene que funcionar igual con dos que con seis.
+         Los avatares SÍ son datos reales y escalan; la frase no. -->
+    <div class="crew">
+      <span class="crew__av is-you">A</span>
+      <span class="crew__av">B</span>
+      <span class="crew__av">S</span>
+      <span class="crew__txt"><b>Es una sola selección compartida</b></span>
+    </div>
+  </div>
+
+  <div class="tray">
+    <div class="tray__head">
+      <h2 class="tray__t">Fotos elegidas</h2>
+      <span class="tray__n"><b>0</b> · 13 incluidas</span>
+    </div>
+    <div class="tray__strip">
+      <span class="slot slot--ghost"></span><span class="slot slot--ghost"></span>
+      <span class="slot slot--ghost"></span><span class="slot slot--ghost"></span>
+      <span class="slot slot--ghost"></span><span class="slot slot--ghost"></span>
+      <span class="slot slot--ghost"></span><span class="slot slot--ghost"></span>
+      <span class="slot slot--ghost"></span><span class="slot slot--ghost"></span>
+      <span class="slot slot--ghost"></span><span class="slot slot--ghost"></span>
+      <span class="slot slot--ghost"></span>
+    </div>
+    <p class="tray__note">
+      Las que elijan aparecen acá, con quién las eligió. Se actualiza sola.
+    </p>
+  </div>
+
+  <div class="grid">
+    <figure class="tile">
+      <span class="tile__img p1"></span><span class="tile__wm">Alejo Frames</span>
+      <span class="tile__n num">01</span>
+      <button type="button" class="pick" aria-pressed="false" aria-label="Elegir foto 1"></button>
+    </figure>
+    <figure class="tile">
+      <span class="tile__img p2"></span><span class="tile__wm">Alejo Frames</span>
+      <span class="tile__n num">02</span>
+      <button type="button" class="pick" aria-pressed="false" aria-label="Elegir foto 2"></button>
+    </figure>
+    <figure class="tile">
+      <span class="tile__img p3"></span><span class="tile__wm">Alejo Frames</span>
+      <span class="tile__n num">03</span>
+      <button type="button" class="pick" aria-pressed="false" aria-label="Elegir foto 3"></button>
+    </figure>
+    <figure class="tile">
+      <span class="tile__img p4"></span><span class="tile__wm">Alejo Frames</span>
+      <span class="tile__n num">04</span>
+      <button type="button" class="pick" aria-pressed="false" aria-label="Elegir foto 4"></button>
+    </figure>
+  </div>
+
+  <div class="bar">
+    <div>
+      <div class="bar__count"><b>0</b> elegidas <span style="color:var(--fg-mute);">· 13 incluidas</span></div>
+      <div class="bar__note">Tomate el tiempo que quieras. Se guarda solo.</div>
+    </div>
+    <button type="button" class="btn" disabled style="opacity:.45;">Enviar</button>
+  </div>
+</section>
+
+<!-- ============ ELEGIR ============ -->
+<section class="screen page" id="screen-elegir" hidden>
+  <div class="proof-head">
+    <span class="kicker">Elijan sus fotos</span>
+    <h1 class="display">Boda Ana y Beto</h1>
+    <p class="lede">
+      Tocá una foto para verla grande. El círculo la elige.
+      <strong style="color:var(--fg);font-weight:400;">Es una sola
+      selección compartida</strong> — lo que marque cualquiera cuenta para
+      todos, y cualquiera puede sacar algo que otro puso.
+    </p>
+
+    <!-- El desglose por persona SÍ es dato real (`assets.selectedBy`) y
+         escala: con muchas personas se recorta y el resto se cuenta. -->
+    <div class="crew">
+      <span class="crew__av is-you">A</span>
+      <span class="crew__av">B</span>
+      <span class="crew__av">S</span>
+      <span class="crew__txt"><b>Vos 9</b> · Beto 4 · Sara 2</span>
+    </div>
+  </div>
+
+  <!-- LA BANDEJA. Pegada arriba, siempre visible, y es también el cupo:
+       13 marcos = lo que incluye el paquete. -->
+  <div class="tray">
+    <div class="tray__head">
+      <h2 class="tray__t">Fotos elegidas</h2>
+      <span class="tray__n"><b>15</b> · 13 incluidas <i>+2 extra</i></span>
+    </div>
+    <div class="tray__strip">
+      <span class="slot"><span class="slot__img p1"></span><span class="slot__by is-you">A</span></span>
+      <span class="slot"><span class="slot__img p3"></span><span class="slot__by is-you">A</span></span>
+      <span class="slot"><span class="slot__img p4"></span><span class="slot__by">B</span></span>
+      <span class="slot"><span class="slot__img p7"></span><span class="slot__by is-you">A</span></span>
+      <span class="slot"><span class="slot__img p2"></span><span class="slot__by">B</span></span>
+      <span class="slot"><span class="slot__img p5"></span><span class="slot__by is-you">A</span></span>
+      <span class="slot"><span class="slot__img p8"></span><span class="slot__by">S</span></span>
+      <span class="slot"><span class="slot__img p6"></span><span class="slot__by is-you">A</span></span>
+      <span class="slot"><span class="slot__img p1"></span><span class="slot__by">S</span></span>
+      <span class="slot"><span class="slot__img p3"></span><span class="slot__by is-you">A</span></span>
+      <span class="slot"><span class="slot__img p5"></span><span class="slot__by is-you">A</span></span>
+      <span class="slot slot--pending">Recargá para verla</span>
+      <span class="slot"><span class="slot__img p4"></span><span class="slot__by">B</span></span>
+      <span class="tray__cut" aria-hidden="true"></span>
+      <span class="tray__tag">Extra</span>
+      <span class="slot slot--extra"><span class="slot__img p2"></span><span class="slot__by is-you">A</span></span>
+      <span class="slot slot--extra"><span class="slot__img p7"></span><span class="slot__by">B</span></span>
+    </div>
+    <p class="tray__stale">Se perdió la conexión: esta lista puede estar desactualizada.</p>
+  </div>
+
+  <div class="grid">
+    <figure class="tile tile--picked">
+      <span class="tile__img p1"></span><span class="tile__wm">Alejo Frames</span>
+      <span class="tile__n num">01</span>
+      <span class="who"><span class="is-you">A</span></span>
+      <button type="button" class="pick" aria-pressed="true" aria-label="Quitar foto 1">✓</button>
+    </figure>
+    <figure class="tile">
+      <span class="tile__img p2"></span><span class="tile__wm">Alejo Frames</span>
+      <span class="tile__n num">02</span>
+      <button type="button" class="pick" aria-pressed="false" aria-label="Elegir foto 2"></button>
+    </figure>
+    <figure class="tile tile--picked">
+      <span class="tile__img p3"></span><span class="tile__wm">Alejo Frames</span>
+      <span class="tile__n num">03</span>
+      <span class="who"><span class="is-you">A</span><span>B</span></span>
+      <button type="button" class="pick" aria-pressed="true" aria-label="Quitar foto 3">✓</button>
+    </figure>
+    <figure class="tile tile--picked">
+      <span class="tile__img p4"></span><span class="tile__wm">Alejo Frames</span>
+      <span class="tile__n num">04</span>
+      <span class="who"><span>B</span></span>
+      <button type="button" class="pick" aria-pressed="true" aria-label="Quitar foto 4">✓</button>
+    </figure>
+    <figure class="tile">
+      <span class="tile__img p5"></span><span class="tile__wm">Alejo Frames</span>
+      <span class="tile__n num">05</span>
+      <button type="button" class="pick" aria-pressed="false" aria-label="Elegir foto 5"></button>
+    </figure>
+    <figure class="tile">
+      <span class="tile__img p6"></span><span class="tile__wm">Alejo Frames</span>
+      <span class="tile__n num">06</span>
+      <button type="button" class="pick" aria-pressed="false" aria-label="Elegir foto 6"></button>
+    </figure>
+    <figure class="tile tile--picked">
+      <span class="tile__img p7"></span><span class="tile__wm">Alejo Frames</span>
+      <span class="tile__n num">07</span>
+      <span class="who"><span class="is-you">A</span></span>
+      <button type="button" class="pick" aria-pressed="true" aria-label="Quitar foto 7">✓</button>
+    </figure>
+    <figure class="tile">
+      <span class="tile__img p8"></span><span class="tile__wm">Alejo Frames</span>
+      <span class="tile__n num">08</span>
+      <button type="button" class="pick" aria-pressed="false" aria-label="Elegir foto 8"></button>
+    </figure>
+  </div>
+
+  <!-- Your tap can lose (proof-grid.tsx:344). Reverting it in silence
+       reads as a broken app on a phone. Never a modal: the task is going
+       fine and the board already corrected itself. -->
+  <!-- SIN nombre, a propósito. schema.ts:393-397: al sacar una foto
+       `selectedBy` vuelve a `null`, NO al que la sacó — si no, la columna
+       respondería "quién tocó esta fila" en vez de "quién eligió esta
+       foto". La app no sabe quién la sacó, así que el aviso no puede
+       inventarlo. Saber QUIÉN saca requeriría una tabla de eventos, que
+       #94 dejó explícitamente fuera de alcance. -->
+  <div class="toast">
+    <span class="toast__av" aria-hidden="true">↩</span>
+    <span><b>La 04 ya no está elegida.</b> Podés volver a ponerla si querés.</span>
+  </div>
+
+  <div class="bar">
+    <div>
+      <div class="bar__count">
+        <b>15</b> elegidas entre los dos
+        <span style="color:var(--fg-mute);">· 13 incluidas</span>
+      </div>
+      <div class="bar__note">2 extra · <strong>$10.000</strong> — lo arreglan con Alejo, la app no cobra nada.</div>
+    </div>
+    <button type="button" class="btn btn--primary">Enviar las 15</button>
+    <div class="meter">
+      <i class="meter__in" style="width:60%;"></i>
+      <i class="meter__over" style="left:60%; width:9%;"></i>
+    </div>
+  </div>
+</section>
+
+<!-- ============ ENVIAR — el momento irreversible ============
+     Enviar no es "guardar lo mío": cierra el tablero para los DOS, y
+     solo Alejo puede reabrirlo (#73). Una acción que se toma en nombre
+     de otra persona merece decir eso antes, no después. -->
+<section class="screen" id="screen-enviar" hidden>
+  <div class="sheet-wrap">
+    <div class="sheet">
+      <span class="kicker">Antes de enviar</span>
+      <h2 class="sheet__t">¿Cierran la selección?</h2>
+
+      <dl class="recap" style="margin-top:16px;">
+        <div class="recap__row"><dt>Eligieron entre todos</dt><dd class="num">15 fotos</dd></div>
+        <div class="recap__row"><dt>Vos</dt><dd class="num">9</dd></div>
+        <div class="recap__row"><dt>Beto</dt><dd class="num">4</dd></div>
+        <div class="recap__row"><dt>Sara</dt><dd class="num">2</dd></div>
+        <div class="recap__row"><dt>Extra sobre las 13 incluidas</dt><dd class="num hi">2 × $5.000 = $10.000</dd></div>
+      </dl>
+
+      <!-- Advertencia SIN nombrar a nadie ni afirmar que hay alguien
+           mirando: no hay presencia en el transporte
+           (selection-tray.tsx:16-18). Se advierte la CONSECUENCIA, que
+           siempre es cierta, en vez de un estado que no se puede saber. -->
+      <div class="sheet__warn">
+        <p>
+          <b>La selección se cierra para todos.</b> Si alguien más está
+          eligiendo en este momento, no va a poder seguir.
+        </p>
+        <p>Después solo Alejo puede reabrirla.</p>
+      </div>
+
+      <div class="sheet__acts">
+        <button type="button" class="btn btn--primary btn--wide">Sí, enviar las 15</button>
+        <button type="button" class="btn btn--wide">Seguir eligiendo</button>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ============ LIGHTBOX ============ -->
+<section class="screen" id="screen-lightbox" hidden>
+  <div class="lb">
+    <div class="lb__top">
+      <span class="lb__count num">12 / 84</span>
+      <button type="button" class="lb__close" aria-label="Cerrar">✕</button>
+    </div>
+
+    <div class="lb__stage">
+      <span class="lb__img p7"></span>
+      <span class="lb__wm">Alejo Frames</span>
+      <span class="lb__hint">Deslizá para pasar</span>
+    </div>
+
+    <div class="lb__foot">
+      <button type="button" class="btn btn--primary btn--wide">✓ Elegida</button>
+      <!-- On a shared board, who put it there is not trivia: it is how
+           you know whether to ask before taking it out. -->
+      <p class="lb__by">La eligió <b>Beto</b> · podés sacarla</p>
+      <p class="lb__name">DSC_0444.jpg</p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ ENVIADA ============ -->
+<section class="screen page" id="screen-enviada" hidden>
+  <div class="pad" style="padding-top:34px;">
+    <span class="kicker">Selección enviada</span>
+    <h1 class="display">Listo.<br />Ahora le toca<br />a Alejo.</h1>
+    <!-- "Quién cerró" no existe: schema.ts:209 guarda
+         `selectionSubmittedAt` (cuándo) y no hay `submittedBy`. La frase
+         dice lo que sí se sabe. -->
+    <p class="lede">
+      La selección se cerró el 29 de julio. Alejo ya la recibió y empieza a editar.
+    </p>
+
+    <dl class="recap">
+      <div class="recap__row"><dt>Eligieron entre todos</dt><dd class="num">15 fotos</dd></div>
+      <div class="recap__row"><dt>Vos</dt><dd class="num">9</dd></div>
+      <div class="recap__row"><dt>Beto</dt><dd class="num">4</dd></div>
+      <div class="recap__row"><dt>Sara</dt><dd class="num">2</dd></div>
+      <div class="recap__row"><dt>Incluidas en el paquete</dt><dd class="num">13</dd></div>
+      <div class="recap__row"><dt>Extra</dt><dd class="num hi">2 × $5.000 = $10.000</dd></div>
+    </dl>
+
+    <div class="note">
+      <h2 class="note__t">¿Qué pasa ahora?</h2>
+      <p>
+        Alejo edita las 15 fotos y las sube en alta resolución, sin marca de agua.
+        Suele tardar entre una y dos semanas. Te avisamos por correo apenas estén.
+      </p>
+      <p>
+        ¿Te arrepentiste de alguna? La selección quedó cerrada, pero
+        <a href="#">escribile a Alejo</a> y él la reabre.
+      </p>
+    </div>
+  </div>
+</section>
+
+<!-- ============ ENTREGADA ============ -->
+<section class="screen page" id="screen-entregada" hidden>
+  <div class="hero">
+    <span class="hero__img p1"></span>
+    <span class="hero__scrim"></span>
+    <div class="hero__body">
+      <span class="kicker">Tus fotos están listas</span>
+      <h1 class="display">Boda<br />Ana y Beto</h1>
+      <p class="lede">15 fotos editadas, en alta resolución y sin marca de agua.</p>
+      <div class="dl">
+        <button type="button" class="btn btn--primary">Descargar todas</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="pad" style="padding-top:26px;">
+    <div class="zip">
+      <div class="zip__row">
+        <div>
+          <div class="zip__t">Preparando tu descarga…</div>
+          <div class="zip__s">15 fotos · 240 MB — no cierres esta pestaña</div>
+        </div>
+      </div>
+      <div class="zip__meter"><i></i></div>
+    </div>
+  </div>
+
+  <div class="grid grid--final" style="margin-top:22px;">
+    <figure class="tile"><span class="tile__img p1"></span>
+      <button type="button" class="dl-one" aria-label="Descargar DSC_0412">↓</button></figure>
+    <figure class="tile"><span class="tile__img p3"></span>
+      <button type="button" class="dl-one" aria-label="Descargar DSC_0423">↓</button></figure>
+    <figure class="tile"><span class="tile__img p4"></span>
+      <button type="button" class="dl-one" aria-label="Descargar DSC_0427">↓</button></figure>
+    <figure class="tile"><span class="tile__img p7"></span>
+      <button type="button" class="dl-one" aria-label="Descargar DSC_0444">↓</button></figure>
+    <figure class="tile"><span class="tile__img p5"></span>
+      <button type="button" class="dl-one" aria-label="Descargar DSC_0431">↓</button></figure>
+    <figure class="tile"><span class="tile__img p2"></span>
+      <button type="button" class="dl-one" aria-label="Descargar DSC_0418">↓</button></figure>
+  </div>
+</section>
+
+<script>
+  (function () {
+    var tabs = document.querySelectorAll(".mockbar__tab");
+    var screens = document.querySelectorAll(".screen");
+
+    tabs.forEach(function (tab) {
+      tab.addEventListener("click", function () {
+        var target = tab.dataset.screen;
+        tabs.forEach(function (t) { t.setAttribute("aria-selected", String(t === tab)); });
+        screens.forEach(function (s) { s.hidden = s.id !== "screen-" + target; });
+        window.scrollTo(0, 0);
+      });
+    });
+
+    // Demo only: the pick button toggles so the two tile states can be
+    // compared by touch instead of by description.
+    document.querySelectorAll(".pick").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        var tile = btn.closest(".tile");
+        var on = tile.classList.toggle("tile--picked");
+        btn.setAttribute("aria-pressed", String(on));
+        btn.textContent = on ? "✓" : "";
+      });
+    });
+  })();
+</script>
+</body>
+</html>

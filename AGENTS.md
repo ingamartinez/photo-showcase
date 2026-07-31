@@ -12,6 +12,38 @@ This project uses **kanban-md** for task management. Always follow the workflow 
 
 Priority order is set by the project owner and overrides the plan's own sequencing: **the admin dashboard first, the public site last.**
 
+### The design mocks are the visual source of truth
+
+`design/system/dashboard.html` and `design/system/client.html` are the approved mocks for
+epics #125 (dashboard design system) and #140 (client gallery). Every slice in those
+epics carries an acceptance criterion that reduces to "matches the mock" — so read the
+mock before writing CSS, and cite it by line when you claim fidelity.
+
+They are **tracked** as of task #170, and that is deliberate. `/design/` used to be
+ignored wholesale, and since `git worktree add` populates only tracked files, no agent
+worktree ever received them. The failure was silent and inconsistent rather than loud:
+#128's implementer read the mock through an absolute path into the main checkout and
+verified token-by-token, while #127's concluded the file "is not in the repo and never
+has been" and substituted a different standard. Same criterion, opposite outcomes, both
+reported in good faith. A criterion that only some agents can evaluate is worse than no
+criterion, because the reports look identical from outside.
+
+Two things about them that are not obvious:
+
+- **Only the three `.html` files are tracked.** `design/assets/` stays ignored: 4.6 MB
+  of JPEGs and Instagram-sourced reference material, which is not ours to redistribute
+  and which would live in git history forever. `dashboard.html` and `client.html` are
+  fully self-contained — no images, no external URLs — so nothing is lost. `home.html`
+  does reference `design/system/assets/`, so its `<img>` tags will not resolve on a
+  fresh clone; read it for markup and CSS, not for photographs.
+- **`globals.css` excludes them from Tailwind with `@source not "../../design"`, and
+  that line is load-bearing.** Tailwind v4 discovers sources by crawling the repo and
+  skipping whatever `.gitignore` excludes, so the moment the mocks became tracked they
+  also became scannable: the production stylesheet grew from 40537 to 41313 bytes,
+  776 bytes of utilities generated from strings inside the mocks and shipped to every
+  visitor. With the directive it is byte-identical to before. Delete that line and you
+  silently reintroduce the bloat.
+
 ## Verification is not optional
 
 Nothing is "done" because it compiles. Before closing a slice:

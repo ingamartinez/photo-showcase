@@ -9,9 +9,9 @@
 // epic's central rule).
 import "server-only";
 
-import { and, count, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { galleries, galleryClients } from "@/lib/db/schema";
+import { assets, galleries, galleryClients } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 
 export type GalleryWithDetails = {
@@ -320,47 +320,94 @@ export type GalleryDetail = {
   selectionSubmittedAt: Date | null;
 };
 
-/** Shared by `getGalleryDetail` (admin, looked up by id) and
- * `getGalleryDetailBySlug` (client, looked up by the unguessable
- * `publicSlug` — see schema.ts's comment on that column for why a gallery
- * URL is keyed on the slug, never the id) below: same `with`/mapping shape,
- * different `where`. Returns `null` when no matching row exists, rather
- * than throwing — both callers' pages turn that into a real 404 via
- * `notFound()`. */
-async function findGalleryDetail(where: ReturnType<typeof eq>): Promise<GalleryDetail | null> {
-  const row = await db.query.galleries.findFirst({
-    where,
-    with: {
-      // Task #94/#97: see `getGalleriesWithDetails`'s own comment on the
-      // identical `galleryClients` shape (including the `removedAt` filter)
-      // above — this powers both the admin detail page AND the client-facing
-      // `/galleries/[publicSlug]` page (via `getGalleryDetailBySlug` below),
-      // neither of which should ever list a removed client as one of the
-      // gallery's own.
-      galleryClients: {
-        where: isNull(galleryClients.removedAt),
-        with: { user: { columns: { id: true, name: true, email: true } } },
-      },
-      package: { columns: { id: true, name: true } },
-      assets: {
-        orderBy: (assetsTable, { asc: assetAsc }) => [assetAsc(assetsTable.sortOrder)],
-        columns: {
-          id: true,
-          originalFilename: true,
-          proofKey: true,
-          proofWidth: true,
-          proofHeight: true,
-          isSelected: true,
-          sortOrder: true,
-          finalKey: true,
-          isEdited: true,
-        },
-      },
+/** The `with` clause for the full gallery-detail projection — shared, as of
+ * task #154, by every reader of that projection: `findGalleryDetail` (single
+ * gallery, below) and `getGalleryDetailsByIds` (batched, below). Both pass
+ * this SAME object to Drizzle rather than each carrying their own copy.
+ *
+ * History worth keeping: task #138 needed a batched read to kill the
+ * `galleries` GraphQL resolver's N+1, but at the time a sibling lane held
+ * this file (the `deliverGallery` region, task #85), so its brief told it to
+ * escalate rather than edit here. It added `src/lib/graphql/gallery-details-
+ * by-ids.ts` with its OWN, independently-typed copy of this exact shape — a
+ * real, temporary duplication of a schema projection, not a difference in
+ * what either caller is allowed to see. That file now just re-exports
+ * `getGalleryDetailsByIds` from here.
+ *
+ * What sharing this constant (and `toGalleryDetail` below) actually buys:
+ * ONE place to edit when the projection's shape changes — a new relation, a
+ * narrowed `columns` list, whatever — so both callers pick up that change
+ * the moment this file compiles, instead of one of them silently keeping the
+ * old shape until someone remembers a second file exists. It does NOT add
+ * any new authorization or runtime enforcement; see `getGalleryDetailsByIds`
+ * below for the auth contract, which this consolidation does not change. See
+ * galleries.test.ts's "a shape change reaches both callers" test, which
+ * demonstrates this rather than asserting it. */
+// `as const` below is load-bearing, not decoration: without it, TypeScript
+// widens `columns: { id: true, ... }`'s `true` literals to plain `boolean`,
+// and Drizzle's relational-query result inference keys off the LITERAL
+// `true`/`false` to decide which columns a row actually carries — a widened
+// `boolean` matches neither branch, and every relation below (`assets`,
+// `galleryClients.user`) silently types as `{}` instead of the real row
+// shape. That failure mode is invisible until a caller tries to read a
+// field off the result, which is exactly why `toGalleryDetail` below reading
+// `row.assets`, `row.galleryClients[i].user.id`, etc. is what caught it.
+const galleryDetailWith = {
+  // Task #94/#97: see `getGalleriesWithDetails`'s own comment on the
+  // identical `galleryClients` shape (including the `removedAt` filter)
+  // above — this powers the admin detail page, the client-facing
+  // `/galleries/[publicSlug]` page (via `getGalleryDetailBySlug` below), AND
+  // the batched GraphQL read (`getGalleryDetailsByIds` below), none of which
+  // should ever list a removed client as one of the gallery's own.
+  galleryClients: {
+    where: isNull(galleryClients.removedAt),
+    with: { user: { columns: { id: true, name: true, email: true } } },
+  },
+  package: { columns: { id: true, name: true } },
+  assets: {
+    // A direct column reference (`asc(assets.sortOrder)`), not the
+    // relational-callback form (`(assetsTable, { asc }) => ...`) the
+    // pre-extraction version of this clause used: the callback form's
+    // parameter types are inferred from the SPECIFIC `db.query.<table>.
+    // find*()` call site it is written inside, and are lost (both resolve to
+    // `{}`) once the clause is lifted into a standalone object shared across
+    // call sites, as this one now is. `assets` (the table, imported above)
+    // is available at module scope regardless of which query uses this
+    // constant, so referencing it directly sidesteps that inference gap
+    // entirely.
+    orderBy: asc(assets.sortOrder),
+    columns: {
+      id: true,
+      originalFilename: true,
+      proofKey: true,
+      proofWidth: true,
+      proofHeight: true,
+      isSelected: true,
+      sortOrder: true,
+      finalKey: true,
+      isEdited: true,
     },
-  });
+  },
+} as const;
 
-  if (!row) return null;
+/** The one query `findGalleryDetail` (single) issues, kept as its own
+ * function so its return type can be reused as `toGalleryDetail`'s parameter
+ * type below without hand-typing a second copy of the row shape. */
+async function fetchGalleryDetailRow(where: ReturnType<typeof eq>) {
+  return db.query.galleries.findFirst({ where, with: galleryDetailWith });
+}
 
+type RawGalleryDetailRow = NonNullable<Awaited<ReturnType<typeof fetchGalleryDetailRow>>>;
+
+/** Row -> `GalleryDetail` mapping, shared by `findGalleryDetail` and
+ * `getGalleryDetailsByIds` below — see `galleryDetailWith`'s own comment
+ * above for why this is one function rather than two. `db.query.galleries.
+ * findMany({ with: galleryDetailWith })`'s rows are structurally the same
+ * shape as `findFirst`'s (the row type is derived from `with`, not from
+ * which of the two methods issued the query), which is what lets
+ * `getGalleryDetailsByIds` pass its rows straight through this same
+ * function. */
+function toGalleryDetail(row: RawGalleryDetailRow): GalleryDetail {
   return {
     id: row.id,
     title: row.title,
@@ -379,6 +426,19 @@ async function findGalleryDetail(where: ReturnType<typeof eq>): Promise<GalleryD
     assets: row.assets,
     selectionSubmittedAt: row.selectionSubmittedAt,
   };
+}
+
+/** Shared by `getGalleryDetail` (admin, looked up by id) and
+ * `getGalleryDetailBySlug` (client, looked up by the unguessable
+ * `publicSlug` — see schema.ts's comment on that column for why a gallery
+ * URL is keyed on the slug, never the id) below: same `with`/mapping shape
+ * (`galleryDetailWith`/`toGalleryDetail` above), different `where`. Returns
+ * `null` when no matching row exists, rather than throwing — both callers'
+ * pages turn that into a real 404 via `notFound()`. */
+async function findGalleryDetail(where: ReturnType<typeof eq>): Promise<GalleryDetail | null> {
+  const row = await fetchGalleryDetailRow(where);
+  if (!row) return null;
+  return toGalleryDetail(row);
 }
 
 /** A single gallery with every detail its admin workspace page
@@ -410,6 +470,43 @@ export async function getGalleryDetail(galleryId: string): Promise<GalleryDetail
  * see that page's own comment. */
 export async function getGalleryDetailBySlug(publicSlug: string): Promise<GalleryDetail | null> {
   return findGalleryDetail(eq(galleries.publicSlug, publicSlug));
+}
+
+/** Every `GalleryDetail` for the given ids, in ONE query regardless of how
+ * many ids are passed — task #138's fix for the `galleries` GraphQL
+ * resolver's N+1 (see `src/lib/graphql/types/query.ts`'s own comment on that
+ * field). Shares `galleryDetailWith`/`toGalleryDetail` above with
+ * `findGalleryDetail` (task #154) — see the comment above
+ * `galleryDetailWith` for why, and for what that sharing does and does not
+ * buy.
+ *
+ * Deliberately does NO authorization filtering of its own: it trusts `ids`
+ * completely. Every caller MUST pre-scope `ids` to exactly what the
+ * signed-in session may see before calling this — today that is
+ * `getGalleriesForClient`'s own ownership subquery plus its
+ * `CLIENT_VISIBLE_STATUSES` filter (both above in this file). Passing an
+ * unscoped id list here would read any gallery in the studio; nothing inside
+ * this function would catch that.
+ *
+ * Returns `[]` immediately, without touching the database at all, for an
+ * empty `ids` array (an `inArray` with no candidates is at best a wasted
+ * round trip and at worst renders `IN ()`, which some drivers reject).
+ *
+ * Row order is NOT guaranteed to match `ids`' order — callers that care
+ * about ordering (the `galleries` resolver, to preserve
+ * `getGalleriesForClient`'s own recency order) must re-sort by `id`
+ * themselves. Silently returns fewer rows than ids requested when some no
+ * longer exist, matching `getGalleryDetail`'s own "not found comes back as
+ * absence, never a thrown error" convention. */
+export async function getGalleryDetailsByIds(ids: readonly string[]): Promise<GalleryDetail[]> {
+  if (ids.length === 0) return [];
+
+  const rows = await db.query.galleries.findMany({
+    where: inArray(galleries.id, [...ids]),
+    with: galleryDetailWith,
+  });
+
+  return rows.map(toGalleryDetail);
 }
 
 export type GalleryClientContact = { id: string; name: string | null; email: string };

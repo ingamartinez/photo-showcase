@@ -31,7 +31,31 @@ function DialogOverlay({
     <DialogPrimitive.Overlay
       data-slot="dialog-overlay"
       className={cn(
-        "data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0 fixed inset-0 isolate z-50 bg-black/10 duration-100 supports-backdrop-filter:backdrop-blur-xs",
+        // DEVIATION FROM THE shadcn/radix-nova PRESET (task #171, deferred
+        // from #127's review, verified — never rendered against a real
+        // consumer, since nothing under src/app imports this file yet).
+        // The generated black overlay sat at a tenth of full opacity, tuned
+        // for a light page: composited over this app's near-black ground
+        // (--bg-sunken #070709) that barely moves the result, so the rest
+        // of the page never reads as inert.
+        //
+        // The opacity below is chosen by the COMPOSITED result, not the
+        // number: over --fg text (#eceaf2) it lands at ~rgb(142,140,145), a
+        // clear drop from "bright" to "muted mid-grey" — legible as dimmed,
+        // not gone. Over the brand accent (#c8a15a) it lands at
+        // ~rgb(120,97,54), still recognisably brass but visibly pulled
+        // back. The original tenth barely moved either value (~8-10%);
+        // going much denser would flatten the depth this cinema-black
+        // system is built on, which is the trap the ticket warns against —
+        // the goal is attenuation, not an opaque curtain.
+        //
+        // Backdrop blur doubled to match the one blurred surface the mock
+        // actually has — the sticky action bar, design/system/dashboard
+        // .html:403-408 (also an 8px blur) — since no dialog exists in the
+        // mock to match directly. Still gated behind
+        // `supports-backdrop-filter` so browsers without it fall back to
+        // the background opacity alone.
+        "data-open:animate-in data-open:fade-in-0 data-closed:animate-out data-closed:fade-out-0 fixed inset-0 isolate z-50 bg-black/30 duration-100 supports-backdrop-filter:backdrop-blur-sm",
         className,
       )}
       {...props}

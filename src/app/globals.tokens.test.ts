@@ -74,6 +74,11 @@ const RAW_PROPERTY_CANDIDATES = [
   "rounded-[min(var(--radius-md),10px)]",
 ];
 
+// Task #172: a real `dark:` call site, taken verbatim from src/components/ui/
+// input.tsx rather than invented, so this pins the utility an actual
+// primitive ships, not a stand-in shaped like one.
+const DARK_VARIANT_CANDIDATE = "dark:bg-input/30";
+
 // --- Task #175: the app-surface @theme aliases -----------------------------
 //
 // GUARD 1 OF TWO, and the change is not defensible without both. A `@theme`
@@ -167,6 +172,7 @@ beforeAll(async () => {
     ...RAW_PROPERTY_CANDIDATES,
     ...APP_ALIAS_CASES.map(([candidate]) => candidate),
     ...APP_FORBIDDEN_CANDIDATES,
+    DARK_VARIANT_CANDIDATE,
   ];
   const pinned = source.replace(
     '@import "tailwindcss";',
@@ -230,6 +236,44 @@ describe("shadcn semantic colour tokens compile to real rules", () => {
 
     expect(root).toMatch(new RegExp(`--accent-foreground:\\s*${INK}`, "i"));
     expect(root).toMatch(new RegExp(`--primary-foreground:\\s*${INK}`, "i"));
+  });
+});
+
+describe("dark: applies unconditionally in this single-theme app (task #172)", () => {
+  // Tailwind v4's default `dark:` variant compiles to
+  // `@media (prefers-color-scheme: dark)`, a mechanism this app's
+  // `color-scheme: dark` declaration does not drive. Without
+  // `@custom-variant dark (&);` in globals.css, a visitor whose OS reports
+  // light loses every dark-prefixed utility the shadcn primitives ship
+  // with. This compiles the real stylesheet (no stubbing) and inspects the
+  // OUTPUT, the same discipline the rest of this file uses, rather than
+  // reading the `@custom-variant` line and trusting what it says it does.
+  it("emits a plain rule for a real dark: call site, not one gated by prefers-color-scheme", () => {
+    // `ruleBody()` above assumes a bare class name; `dark:bg-input/30`
+    // contains `:` and `/`, which the CSS output escapes with a literal
+    // backslash (`.dark\:bg-input\/30`), so this looks the escaped
+    // selector up directly rather than reusing the shared helper.
+    const escapedSelector = ".dark\\:bg-input\\/30";
+    const selectorIndex = css.indexOf(escapedSelector);
+
+    expect(selectorIndex, `Tailwind emitted no rule for .${DARK_VARIANT_CANDIDATE}`).not.toBe(-1);
+
+    const braceStart = css.indexOf("{", selectorIndex);
+    const braceEnd = css.indexOf("}", braceStart);
+    const body = css.slice(braceStart + 1, braceEnd);
+
+    // Tailwind emits both a plain declaration and an `@supports`-gated
+    // `color-mix` enhancement for the same selector (its alpha-opacity
+    // fallback strategy, unrelated to the dark-mode question this test
+    // guards) — either shape still resolves through `--input`.
+    expect(body).toMatch(/background-color:\s*(var\(--input\)|color-mix\(.*var\(--input\).*\))/);
+  });
+
+  it("never wraps any rule in a prefers-color-scheme media query", () => {
+    // The whole stylesheet, not just the one candidate: a single-theme app
+    // has no legitimate reason to branch on the visitor's OS colour scheme
+    // anywhere, so this is a blanket assertion rather than a scoped one.
+    expect(css).not.toContain("prefers-color-scheme");
   });
 });
 

@@ -2,6 +2,25 @@
 @import "tw-animate-css";
 
 /*
+  `dark:` variant, pinned to the single-theme decision (task #172).
+
+  This app has exactly one theme — see the studio comment further down and
+  the `color-scheme: dark` declaration in `:root`. Left at Tailwind v4's
+  default, `dark:` compiles to a `prefers-color-scheme` media query — a
+  mechanism `color-scheme` does NOT drive, so the two disagree. A visitor
+  whose OS reports a light preference then silently loses every one of the
+  shadcn primitives' dark-prefixed utilities (the input's translucent
+  background, the outline button's dark border and background, the
+  invalid-state ring's wider opacity step), even though this product never
+  offered them a choice of theme to begin with.
+
+  `(&)` makes the variant apply unconditionally: no media query, and no
+  `.dark` class on `<html>` for something to toggle later. There is no
+  toggle and there will not be one — a class would imply otherwise.
+*/
+@custom-variant dark (&);
+
+/*
   Keep the design-system mocks out of Tailwind's source detection.
 
   Tailwind v4 finds its sources by crawling the repository and skipping whatever

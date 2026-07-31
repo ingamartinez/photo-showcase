@@ -44,6 +44,12 @@ vi.mock("@/lib/r2", () => ({
 const isGalleryOwnerMock = vi.fn<(galleryId: string, session: Session) => Promise<boolean>>();
 vi.mock("@/lib/gallery-access", () => ({
   isGalleryOwner: (...args: [string, Session]) => isGalleryOwnerMock(...args),
+  // Task #139: a plain re-implementation of the real predicate (admin, full
+  // stop) — this module is mocked wholesale, not via `importActual`, same
+  // reasoning as `isGalleryOwner` above. The real function's own suite is
+  // gallery-access.test.ts; this file's own concern is authorization and the
+  // notFound()/forbidden() branches, not this banner's gate.
+  isAdminPreviewingClientGallery: (session: Session) => session.user.role === "admin",
 }));
 
 // Task #95: the collaborative tray's first paint. Mocked for the same reason

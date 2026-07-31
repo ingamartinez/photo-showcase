@@ -261,3 +261,21 @@ describe("isGalleryOwner", () => {
     await expect(isGalleryOwner(GALLERY_ID, adminSession())).resolves.toBe(true);
   });
 });
+
+// Task #139: an ORIENTATION predicate, not a permission one — see this
+// function's own header comment for why. These tests deliberately do NOT
+// touch the fake db above: the function reads only `session.user.role`, no
+// gallery, no query.
+describe("isAdminPreviewingClientGallery", () => {
+  it("is true for an admin session", async () => {
+    const { isAdminPreviewingClientGallery } = await import("./gallery-access");
+
+    expect(isAdminPreviewingClientGallery(adminSession())).toBe(true);
+  });
+
+  it("is false for a client session, even the gallery's own owning client", async () => {
+    const { isAdminPreviewingClientGallery } = await import("./gallery-access");
+
+    expect(isAdminPreviewingClientGallery(clientSession("client-a"))).toBe(false);
+  });
+});

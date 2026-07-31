@@ -222,6 +222,24 @@ describe("GalleryDetailPage chrome", () => {
     expect(screen.getByText("13")).toBeDefined();
   });
 
+  // Task #139's own core finding: `rg publicSlug src/app/dashboard
+  // src/components` used to return nothing at all — no link from this page
+  // to `/galleries/[publicSlug]` existed anywhere, so reaching the client's
+  // view meant hand-building the URL from the database. This proves the
+  // link is real, points at the RIGHT gallery's slug (not a hardcoded one),
+  // and opens in a new tab rather than navigating the admin away from the
+  // panel.
+  it("links to the client's own view of the gallery, by its publicSlug, opened in a new tab", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ publicSlug: "xyz789" }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    const link = screen.getByRole("link", { name: /Ver como la ve el cliente/ });
+    expect(link.getAttribute("href")).toBe("/galleries/xyz789");
+    expect(link.getAttribute("target")).toBe("_blank");
+  });
+
   // Review finding on task #94: every fixture in this file used to carry a
   // single client, so the plural rendering page.tsx's own comment describes
   // ("Task #94: a gallery can have several clients now — one line per

@@ -167,6 +167,34 @@ export default async function GalleryDetailPage({
           <h1 className="max-w-[24ch] font-serif text-[clamp(28px,4vw,44px)] leading-[1.05] font-normal tracking-[-0.015em] text-balance">
             {gallery.title}
           </h1>
+          {/* Task #139: the ONLY link from the panel to
+              `/galleries/[publicSlug]` anywhere in the codebase — before
+              this, reaching the client's own view meant hand-building the
+              URL from the `publicSlug` column directly in the database (see
+              this task's own body). Opens in a new tab: the admin keeps
+              their dashboard tab, and the new tab is the ACTUAL preview,
+              with the same watermark/visibility rules the client gets
+              (page.tsx:88-95's own comment on why there is no admin
+              carve-out there) — <ClientPreviewBanner> on that page is what
+              tells the admin they landed in preview mode, not impersonation.
+
+              Deliberately NOT `.label` (globals.css's mono, uppercase,
+              0.22em-tracked eyebrow style) — epic #125's own done-when says
+              no mono eyebrow survives under /dashboard, and this is a new
+              control, not a pre-existing one left in place. Plain text
+              instead. `min-h-11` (44px) for the epic's touch-target rule,
+              even though #139 isn't in its enumerated list of slices that
+              rule explicitly binds — this IS a /dashboard control. */}
+          <Link
+            href={`/galleries/${gallery.publicSlug}`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="text-fg-dim hover:text-accent-2 mt-2 inline-flex min-h-11 items-center gap-1 text-sm transition-colors"
+          >
+            Ver como la ve el cliente
+            <span aria-hidden="true">↗</span>
+            <span className="sr-only">(abre en una pestaña nueva)</span>
+          </Link>
           {/* Task #94: a gallery can have several clients now — one line
               per client so each name/email pair stays legible instead of
               being crammed onto one. Task #97: each line is now its own

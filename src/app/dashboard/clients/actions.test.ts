@@ -281,6 +281,72 @@ describe("createClient success + normalization", () => {
   });
 });
 
+// Task #48: `.normalize("NFKC")` landed in #18 round 2 with no test, so
+// removing it left the suite green. The whole point of that call is that the
+// form in which an address is STORED here and the form in which auth.ts looks
+// it up cannot diverge — Auth.js normalizes the address it receives with
+// `.normalize("NFKC").toLowerCase().trim()` before `signIn`'s callback ever
+// runs (see next-auth's Resend/email provider), so an address typed in a
+// non-NFKC-normal form must land on its NFKC form here too.
+//
+// Note on the addresses used below: the criterion's own example pair is
+// "ＡＮＡ@ｅｘａｍｐｌｅ.com" -> "ana@example.com", but `rows` inside the
+// `@/lib/db` double is module-scoped and shared by every test in this file,
+// and the sibling suite above already stores "ana@example.com". Reusing that
+// exact normalized address here would make this test hit the duplicate-email
+// branch instead of the insert path, in either order. The fullwidth->ASCII
+// case being pinned is identical; only the local part and domain differ so
+// this suite stands on its own regardless of what ran before it.
+describe("createClient NFKC email normalization (task #48)", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+  });
+
+  it("stores a fullwidth address in its NFKC-normalized ASCII form", async () => {
+    const { createClient } = await import("./actions");
+    const { db } = (await import("@/lib/db")) as unknown as { db: { __rows: Row[] } };
+
+    const result = await createClient(
+      { status: "idle" },
+      // Fullwidth Latin letters (U+FF21.., U+FF41..) in BOTH the local part
+      // and the domain. NFKC maps each to its ASCII compatibility equivalent,
+      // and only then does `.toLowerCase()` produce "ana@nfkc.example.com".
+      // Without `.normalize("NFKC")` the chain lowercases the fullwidth
+      // letters into their own fullwidth lowercase forms
+      // ("ａｎａ@ｎｆｋｃ.ｅｘａｍｐｌｅ.com"), which `z.email()` then rejects
+      // outright — so dropping it turns this into `status: "error"` with no
+      // row at all.
+      formDataWith({ name: "Ana Fullwidth", email: "ＡＮＡ@ｎｆｋｃ.ｅｘａｍｐｌｅ.com" }),
+    );
+
+    expect(result).toEqual({ status: "created" });
+    const stored = db.__rows.find((r) => r.email === "ana@nfkc.example.com");
+    expect(stored).toMatchObject({ name: "Ana Fullwidth", email: "ana@nfkc.example.com" });
+  });
+
+  // The seam consequence of the test above, stated directly: once the
+  // fullwidth address is stored NFKC-normalized, the plain ASCII address a
+  // client would actually type at /login is the SAME row — it collides
+  // instead of quietly creating a second account for the same person.
+  it("recognizes the plain ASCII form of a stored fullwidth address as the same client", async () => {
+    const { createClient } = await import("./actions");
+
+    const first = await createClient(
+      { status: "idle" },
+      formDataWith({ name: "Julia", email: "ＪＵＬＩＡ@ｅｘａｍｐｌｅ.com" }),
+    );
+    expect(first).toEqual({ status: "created" });
+
+    const second = await createClient(
+      { status: "idle" },
+      formDataWith({ name: "Julia (again)", email: "julia@example.com" }),
+    );
+
+    expect(second.status).toBe("error");
+    expect(second.message).toBe("Ya existe un cliente con ese correo electrónico.");
+  });
+});
+
 describe("createClient duplicate email", () => {
   beforeEach(() => {
     authMock.mockResolvedValue(adminSession());

@@ -33,30 +33,33 @@
 // acceptance criterion is unaffected — only the copy shown to the CLIENT lost
 // that detail.
 //
-// Same plain-fetch-against-Resend approach as gallery-access-email.ts, for
-// the same reasons documented there.
+// Task #153 moved the HTML/text rendering onto the shared CLIENT-facing
+// skeleton in src/lib/email-template.ts and the Resend call onto the shared
+// transport in src/lib/email-transport.ts. See email-template.ts's header
+// comment for the deliverability constraints that shaped the design.
 import { AuthError } from "next-auth";
-
-const RESEND_API_URL = "https://api.resend.com/emails";
+import { sendResendEmail } from "./email-transport";
+import { renderEditorialEmailHtml, renderEditorialEmailText } from "./email-template";
 
 export function galleryUnlockEmailHtml(url: string): string {
-  return [
-    "<p>Hola,</p>",
-    "<p>Tu selección de fotos volvió a estar disponible para editar. Hacé clic en el siguiente " +
-      "enlace para entrar a tu galería:</p>",
-    `<p><a href="${url}">Editar mi selección</a></p>`,
-    "<p>Este enlace es personal — no lo compartas — y deja de funcionar en 48 horas.</p>",
-  ].join("\n");
+  return renderEditorialEmailHtml({
+    messageHtml: [
+      '<p style="margin:0 0 12px 0;">Hola,</p>',
+      '<p style="margin:0;">Tu selección de fotos volvió a estar disponible para editar. Hacé clic en el siguiente ' +
+        "enlace para entrar a tu galería:</p>",
+    ].join("\n"),
+    ctaUrl: url,
+    ctaLabel: "Editar mi selección",
+    footnoteHtml: "Este enlace es personal — no lo compartas — y deja de funcionar en 48 horas.",
+  });
 }
 
 export function galleryUnlockEmailText(url: string): string {
-  return [
-    "Tu selección de fotos volvió a estar disponible para editar.",
-    "",
-    `Entrá a tu galería: ${url}`,
-    "",
-    "Este enlace es personal — no lo compartas — y deja de funcionar en 48 horas.",
-  ].join("\n");
+  return renderEditorialEmailText({
+    messageText: "Tu selección de fotos volvió a estar disponible para editar.",
+    ctaUrl: url,
+    footnoteText: "Este enlace es personal — no lo compartas — y deja de funcionar en 48 horas.",
+  });
 }
 
 /**
@@ -80,29 +83,15 @@ export async function sendGalleryUnlockEmail(params: {
 }): Promise<void> {
   const { apiKey, from, to, url } = params;
 
-  let response: Response;
-  try {
-    response = await fetch(RESEND_API_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from,
-        to,
-        subject: "Podés volver a editar tu selección",
-        html: galleryUnlockEmailHtml(url),
-        text: galleryUnlockEmailText(url),
-      }),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new AuthError(`Failed to reach Resend: ${message}`, { cause: error });
-  }
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new AuthError(`Resend error (${response.status}): ${body}`);
-  }
+  await sendResendEmail(
+    {
+      apiKey,
+      from,
+      to,
+      subject: "Podés volver a editar tu selección",
+      html: galleryUnlockEmailHtml(url),
+      text: galleryUnlockEmailText(url),
+    },
+    (message, cause) => new AuthError(message, { cause }),
+  );
 }

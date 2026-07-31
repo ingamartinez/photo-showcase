@@ -24,30 +24,33 @@
 // delivered — this copy cannot name a title without a second lookup keyed off
 // the URL's own callbackUrl param. Not worth the indirection for this slice.
 //
-// Same plain-fetch-against-Resend approach as gallery-access-email.ts, for
-// the same reasons documented there.
+// Task #153 moved the HTML/text rendering onto the shared CLIENT-facing
+// skeleton in src/lib/email-template.ts and the Resend call onto the shared
+// transport in src/lib/email-transport.ts. See email-template.ts's header
+// comment for the deliverability constraints that shaped the design.
 import { AuthError } from "next-auth";
-
-const RESEND_API_URL = "https://api.resend.com/emails";
+import { sendResendEmail } from "./email-transport";
+import { renderEditorialEmailHtml, renderEditorialEmailText } from "./email-template";
 
 export function galleryDeliveryEmailHtml(url: string): string {
-  return [
-    "<p>Hola,</p>",
-    "<p>Ya terminamos de editar tus fotos y están listas para descargar. Hacé clic en el " +
-      "siguiente enlace para entrar a tu galería:</p>",
-    `<p><a href="${url}">Descargar mis fotos</a></p>`,
-    "<p>Este enlace es personal — no lo compartas — y deja de funcionar en 48 horas.</p>",
-  ].join("\n");
+  return renderEditorialEmailHtml({
+    messageHtml: [
+      '<p style="margin:0 0 12px 0;">Hola,</p>',
+      '<p style="margin:0;">Ya terminamos de editar tus fotos y están listas para descargar. Hacé clic en el ' +
+        "siguiente enlace para entrar a tu galería:</p>",
+    ].join("\n"),
+    ctaUrl: url,
+    ctaLabel: "Descargar mis fotos",
+    footnoteHtml: "Este enlace es personal — no lo compartas — y deja de funcionar en 48 horas.",
+  });
 }
 
 export function galleryDeliveryEmailText(url: string): string {
-  return [
-    "Ya terminamos de editar tus fotos y están listas para descargar.",
-    "",
-    `Entrá a tu galería: ${url}`,
-    "",
-    "Este enlace es personal — no lo compartas — y deja de funcionar en 48 horas.",
-  ].join("\n");
+  return renderEditorialEmailText({
+    messageText: "Ya terminamos de editar tus fotos y están listas para descargar.",
+    ctaUrl: url,
+    footnoteText: "Este enlace es personal — no lo compartas — y deja de funcionar en 48 horas.",
+  });
 }
 
 /**
@@ -71,29 +74,15 @@ export async function sendGalleryDeliveryEmail(params: {
 }): Promise<void> {
   const { apiKey, from, to, url } = params;
 
-  let response: Response;
-  try {
-    response = await fetch(RESEND_API_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from,
-        to,
-        subject: "Tus fotos editadas ya están listas para descargar",
-        html: galleryDeliveryEmailHtml(url),
-        text: galleryDeliveryEmailText(url),
-      }),
-    });
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    throw new AuthError(`Failed to reach Resend: ${message}`, { cause: error });
-  }
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new AuthError(`Resend error (${response.status}): ${body}`);
-  }
+  await sendResendEmail(
+    {
+      apiKey,
+      from,
+      to,
+      subject: "Tus fotos editadas ya están listas para descargar",
+      html: galleryDeliveryEmailHtml(url),
+      text: galleryDeliveryEmailText(url),
+    },
+    (message, cause) => new AuthError(message, { cause }),
+  );
 }

@@ -4,14 +4,16 @@
 // unit-testable in isolation, without booting the whole NextAuth() config
 // factory (which reads env lazily, per src/auth.ts's own header comment).
 //
-// Plain fetch against the Resend REST API — same approach as Auth.js's own
-// built-in "resend" provider (node_modules/@auth/core/providers/resend.js)
-// and scripts/check-resend.ts. The `resend` npm package is a listed
-// dependency but is used nowhere in `src/`; introducing its SDK client here
-// would be a second, inconsistent way of doing the exact same HTTP call.
+// Task #153 moved the HTML/text rendering onto the shared CLIENT-facing
+// skeleton in src/lib/email-template.ts and the Resend call onto the shared
+// transport in src/lib/email-transport.ts. Both are now unified across the
+// three client emails this task owns (this file, gallery-delivery-email.ts,
+// gallery-unlock-email.ts). See email-template.ts's header comment for the
+// deliverability constraints (no images, single link, inline styles, light
+// background) that shaped the design.
 import { AuthError } from "next-auth";
-
-const RESEND_API_URL = "https://api.resend.com/emails";
+import { sendResendEmail } from "./email-transport";
+import { renderEditorialEmailHtml, renderEditorialEmailText } from "./email-template";
 
 // Kept deliberately generic: `sendVerificationRequest` only ever receives
 // the recipient's email and the magic-link URL (see the provider callback
@@ -21,22 +23,23 @@ const RESEND_API_URL = "https://api.resend.com/emails";
 // this slice; the acceptance criterion is "a real email arrives", not
 // "the email names the gallery".
 export function galleryAccessEmailHtml(url: string): string {
-  return [
-    "<p>Hola,</p>",
-    "<p>Tus fotos ya están listas para ver. Hacé clic en el siguiente enlace para entrar a tu galería:</p>",
-    `<p><a href="${url}">Ver mis fotos</a></p>`,
-    "<p>Este enlace es personal — no lo compartas — y deja de funcionar en 48 horas.</p>",
-  ].join("\n");
+  return renderEditorialEmailHtml({
+    messageHtml: [
+      '<p style="margin:0 0 12px 0;">Hola,</p>',
+      '<p style="margin:0;">Tus fotos ya están listas para ver. Hacé clic en el siguiente enlace para entrar a tu galería:</p>',
+    ].join("\n"),
+    ctaUrl: url,
+    ctaLabel: "Ver mis fotos",
+    footnoteHtml: "Este enlace es personal — no lo compartas — y deja de funcionar en 48 horas.",
+  });
 }
 
 export function galleryAccessEmailText(url: string): string {
-  return [
-    "Tus fotos ya están listas para ver.",
-    "",
-    `Entrá a tu galería: ${url}`,
-    "",
-    "Este enlace es personal — no lo compartas — y deja de funcionar en 48 horas.",
-  ].join("\n");
+  return renderEditorialEmailText({
+    messageText: "Tus fotos ya están listas para ver.",
+    ctaUrl: url,
+    footnoteText: "Este enlace es personal — no lo compartas — y deja de funcionar en 48 horas.",
+  });
 }
 
 /**
@@ -69,35 +72,19 @@ export async function sendGalleryAccessEmail(params: {
 }): Promise<void> {
   const { apiKey, from, to, url } = params;
 
-  let response: Response;
-  try {
-    response = await fetch(RESEND_API_URL, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        from,
-        to,
-        subject: "Tus fotos ya están listas",
-        html: galleryAccessEmailHtml(url),
-        text: galleryAccessEmailText(url),
-      }),
-    });
-  } catch (error) {
-    // `AuthError`'s public type (re-exported from "next-auth") only declares
-    // `Error`'s own `(message?: string, options?: ErrorOptions)`
-    // constructor — @auth/core's runtime accepts an `Error` as the first
-    // argument too, but the public .d.ts does not say so. Passing a string
-    // message plus the original error as `cause` is both type-correct and
-    // preserves the original failure for logging.
-    const message = error instanceof Error ? error.message : String(error);
-    throw new AuthError(`Failed to reach Resend: ${message}`, { cause: error });
-  }
-
-  if (!response.ok) {
-    const body = await response.text().catch(() => "");
-    throw new AuthError(`Resend error (${response.status}): ${body}`);
-  }
+  await sendResendEmail(
+    {
+      apiKey,
+      from,
+      to,
+      subject: "Tus fotos ya están listas",
+      html: galleryAccessEmailHtml(url),
+      text: galleryAccessEmailText(url),
+    },
+    // Same `AuthError` public-type caveat noted in the original version of
+    // this function: the constructor's declared type only accepts
+    // `(message?, options?)`, so the original failure goes in as `cause`,
+    // not as the first argument.
+    (message, cause) => new AuthError(message, { cause }),
+  );
 }

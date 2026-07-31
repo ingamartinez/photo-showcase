@@ -56,6 +56,7 @@
 // dead button. Reloading the page is the honest recovery path, the same one
 // a great many native download links in the wild rely on.
 import { useCallback, useState } from "react";
+import { cn } from "@/lib/utils";
 
 export function DownloadAllButton({
   galleryId,
@@ -100,7 +101,20 @@ export function DownloadAllButton({
         rel="noopener"
         aria-disabled={isPending}
         onClick={handleClick}
-        className={`${baseClassName}${isPending ? "opacity-60" : ""}`}
+        // `cn()` (src/lib/utils.ts), not template-string concatenation: a
+        // review caught this exact spot shipping `${baseClassName}${isPending
+        // ? "opacity-60" : ""}` with no separating space, which glues onto the
+        // LAST class of `baseClassName` (`transition-colors` here) and mints
+        // one invalid, unrecognized token —
+        // `transition-colorsopacity-60` — that matches nothing Tailwind
+        // generated. Silent failure, not a crash: the anchor still rendered,
+        // the label still swapped, the click-guard still worked, only the
+        // dimmed "pending" look never painted. `cn()` joins with `clsx`
+        // (always whitespace-separated) before deduping through
+        // `tailwind-merge`, which is exactly the tool this file's own
+        // comment on `cn()` exists to be reached for instead of hand-rolling
+        // string interpolation over Tailwind classes again.
+        className={cn(baseClassName, isPending && "opacity-60")}
       >
         {isPending ? "Preparando tu descarga…" : "Descargar todo"}
       </a>

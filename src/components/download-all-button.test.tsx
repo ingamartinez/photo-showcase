@@ -73,4 +73,24 @@ describe("DownloadAllButton", () => {
 
     expect(screen.getByText(/no cierres esta pestaña/)).toBeDefined();
   });
+
+  // Review finding: `${baseClassName}${isPending ? "opacity-60" : ""}` (plain
+  // template-string concatenation, no separating space) glued the pending
+  // dim class onto the LAST base class instead of appending it as its own
+  // token — `transition-colorsopacity-60`, a single string neither Tailwind
+  // nor anything else recognizes. `.toContain("opacity-60")` would have
+  // passed against that exact bug (the substring is still in there); this
+  // splits the className on whitespace and checks each Tailwind class
+  // survives as its OWN array entry, which is the only assertion shape that
+  // actually distinguishes "two classes" from "one mangled one".
+  it("keeps the pending dim class a separate token from the base classes, not merged into one invalid one", () => {
+    render(<DownloadAllButton galleryId="g1" />);
+    const link = screen.getByRole("link", { name: "Descargar todo" });
+
+    fireEvent.click(link);
+
+    const classes = link.className.split(/\s+/);
+    expect(classes).toContain("transition-colors");
+    expect(classes).toContain("opacity-60");
+  });
 });

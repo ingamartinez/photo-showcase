@@ -217,6 +217,12 @@ describe("GalleryDetailPage chrome", () => {
     expect(screen.getByText("Boda Ana y Beto")).toBeDefined();
     expect(screen.getByText(/Ana Pérez/)).toBeDefined();
     expect(screen.getByText(/01\/08\/2026/)).toBeDefined();
+    // "En pruebas" renders as one of the stepper's four ALWAYS-rendered step
+    // labels — its mere presence proves nothing about the gallery's actual
+    // status (see the dedicated "state stepper" describe block below for the
+    // real discriminating assertion, `aria-current="step"`). Kept here only
+    // as part of this test's broader "does the page render at all" smoke
+    // check.
     expect(screen.getByText("En pruebas")).toBeDefined();
     expect(screen.getByText("Estándar")).toBeDefined();
     expect(screen.getByText("13")).toBeDefined();
@@ -524,6 +530,48 @@ describe("GalleryDetailPage chrome", () => {
       "disabled",
       false,
     );
+  });
+});
+
+// The state stepper's own discriminating signal (task #133, review round 1
+// finding): all FOUR step labels render unconditionally on every gallery, so
+// a test that only checks one of them is present (as the smoke test above
+// does) cannot tell "the right step is marked current" from "the stepper
+// always renders the same way regardless of status" — a bug that silently
+// stopped marking the current step would leave every one of those assertions
+// green. `aria-current="step"` is the ONE thing that actually varies with
+// `gallery.status`, so these two tests assert on THAT, and — because a
+// single case cannot rule out "always current" as easily as "never
+// current" — both use a DIFFERENT status and expect a DIFFERENT step
+// marked, which a one-sided implementation could not satisfy for both.
+describe("GalleryDetailPage — state stepper (task #133)", () => {
+  it("marks 'En pruebas' as the current step for a gallery in proofing, and no other step", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "proofing" }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    const currentStep = screen.getByText("En pruebas").closest("li");
+    expect(currentStep?.getAttribute("aria-current")).toBe("step");
+    // Exactly one step is ever current — not zero, not two.
+    expect(screen.getAllByText(/Borrador|En pruebas|Selección enviada|Entregada/).length).toBe(4);
+    expect(screen.getByText("Borrador").closest("li")?.getAttribute("aria-current")).toBeNull();
+    expect(
+      screen.getByText("Selección enviada").closest("li")?.getAttribute("aria-current"),
+    ).toBeNull();
+    expect(screen.getByText("Entregada").closest("li")?.getAttribute("aria-current")).toBeNull();
+  });
+
+  it("marks 'Entregada' as the current step for a delivered gallery instead", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "delivered" }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    const currentStep = screen.getByText("Entregada").closest("li");
+    expect(currentStep?.getAttribute("aria-current")).toBe("step");
+    // The step that was current for the OTHER test above is not current here.
+    expect(screen.getByText("En pruebas").closest("li")?.getAttribute("aria-current")).toBeNull();
   });
 });
 

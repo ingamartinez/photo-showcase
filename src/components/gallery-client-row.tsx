@@ -143,6 +143,21 @@ export function GalleryClientRow({
                 </DropdownMenuItem>
               )}
               {removable && (
+                // `variant="destructive"` is shadcn's OWN semantic
+                // (`--destructive`, the oklch red #127 wired up for
+                // `aria-invalid` and this exact prop) — a deliberate choice,
+                // not an accident that happens to pair it with this screen's
+                // `#e0796b`/`--app-danger` warning family (epic #125's rule
+                // 2: the two reds must never sit side by side without being
+                // chosen on purpose). They don't here: this menu item is
+                // reachable only via the trigger's OWN popover, never
+                // rendered next to the below-image `#e0796b` confirm warning
+                // at the same time — the destructive-red menu item closes
+                // before that warning ever appears. Using the primitive's
+                // own destructive styling on a shadcn primitive is the
+                // simplest correct choice; inventing a third red to match
+                // `#e0796b` here would be the accident this rule warns
+                // against, not the fix for it.
                 <DropdownMenuItem variant="destructive" onSelect={() => setConfirming(true)}>
                   Quitar
                 </DropdownMenuItem>

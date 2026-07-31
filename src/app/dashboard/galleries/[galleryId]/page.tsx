@@ -217,7 +217,20 @@ export default async function GalleryDetailPage({
               const isDone = currentStepIndex === -1 || index < currentStepIndex;
               const isNow = index === currentStepIndex;
               return (
-                <li key={step} className="flex shrink-0 items-center gap-2">
+                <li
+                  key={step}
+                  // The stepper's own discriminating signal — review finding:
+                  // a horizontal list of all four status words, with no
+                  // programmatic marker for which one is CURRENT, cannot be
+                  // told apart from a decorative list of labels either by a
+                  // screen reader or by a test. `aria-current="step"` is the
+                  // ARIA-sanctioned value for exactly this shape (a step in a
+                  // process) — real, not just a test hook — and it means the
+                  // sr-only "— estado actual" text below is no longer the
+                  // ONLY thing carrying this fact.
+                  aria-current={isNow ? "step" : undefined}
+                  className="flex shrink-0 items-center gap-2"
+                >
                   {index > 0 && <span aria-hidden="true" className="bg-line-2 h-px w-5" />}
                   <span
                     className={cn(

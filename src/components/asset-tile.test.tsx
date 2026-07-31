@@ -280,6 +280,82 @@ describe("AssetTile", () => {
     expect(screen.getByText("Reemplazar")).toBeDefined();
   });
 
+  // Task #134's headline criterion: the three asset states are distinguishable
+  // "at a glance across the whole grid, not one tile at a time" — i.e. ON the
+  // thumbnail itself, not only in the below-image controls a photographer
+  // would have to open one tile at a time to read (already covered above).
+  // These three tests guard the overlay badges specifically, and each one is
+  // a real WORD/GLYPH check, not a class/colour assertion — the failure mode
+  // this criterion exists to prevent is a colour-only distinction that a
+  // colour-blind photographer, or anyone reading a screenshot in greyscale,
+  // cannot see at all.
+  describe("state legibility on the thumbnail itself (task #134)", () => {
+    it("shows no 'Elegida' badge on the thumbnail for an unselected asset", () => {
+      render(
+        <ul>
+          <AssetTile
+            asset={assetFor({ isSelected: false })}
+            isFirst={false}
+            isLast={false}
+            onDeleted={onDeleted}
+            onMoved={onMoved}
+            onFinalUploaded={onFinalUploaded}
+          />
+        </ul>,
+      );
+
+      expect(screen.queryByText("Elegida")).toBeNull();
+    });
+
+    it("shows an 'Elegida' badge on the thumbnail for a selected asset", () => {
+      render(
+        <ul>
+          <AssetTile
+            asset={assetFor({ isSelected: true, hasFinal: false })}
+            isFirst={false}
+            isLast={false}
+            onDeleted={onDeleted}
+            onMoved={onMoved}
+            onFinalUploaded={onFinalUploaded}
+          />
+        </ul>,
+      );
+
+      expect(screen.getByText("Elegida")).toBeDefined();
+    });
+
+    it("shows the '✓' final badge on the thumbnail only once selected AND a final exists, never for a selected asset still missing one", () => {
+      const { rerender } = render(
+        <ul>
+          <AssetTile
+            asset={assetFor({ isSelected: true, hasFinal: false })}
+            isFirst={false}
+            isLast={false}
+            onDeleted={onDeleted}
+            onMoved={onMoved}
+            onFinalUploaded={onFinalUploaded}
+          />
+        </ul>,
+      );
+      expect(screen.queryByTitle("Final subido")).toBeNull();
+
+      rerender(
+        <ul>
+          <AssetTile
+            asset={assetFor({ isSelected: true, hasFinal: true })}
+            isFirst={false}
+            isLast={false}
+            onDeleted={onDeleted}
+            onMoved={onMoved}
+            onFinalUploaded={onFinalUploaded}
+          />
+        </ul>,
+      );
+      const finalBadge = screen.getByTitle("Final subido");
+      expect(finalBadge.textContent).toBe("✓");
+    });
+  });
+
   it("uploads a final and reports it via onFinalUploaded on success", async () => {
     const fetchMock = vi.fn((_input: RequestInfo | URL, init?: RequestInit) => {
       void init;

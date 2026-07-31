@@ -8,12 +8,16 @@ import { CLIENT_STORAGE_STATE_PATH, E2E_GALLERY_PUBLIC_SLUG, VIEWPORT_NAMES } fr
 
 test.use({ storageState: CLIENT_STORAGE_STATE_PATH });
 
-// `formatGalleryStatus("proofing")` in `src/lib/galleries.ts`. Hardcoded
+// `formatClientGalleryCardState("proofing").label` in `src/lib/galleries.ts`
+// -- task #181 moved this page's status badge off `formatGalleryStatus`
+// (the studio's own internal workflow word, "En pruebas") onto the SAME
+// client-facing mapping the `/galleries` index already renders, so the
+// client never sees the studio's own vocabulary here either. Hardcoded
 // rather than imported: that module carries `import "server-only"` and opens
 // a Postgres connection, neither of which belongs inside a Playwright spec.
 // If the copy ever drifts this spec fails loudly, which is the right outcome
 // -- the whole point is that a capture must prove WHICH VARIANT it caught.
-const PROOFING_STATUS_LABEL = "En pruebas";
+const PROOFING_STATUS_LABEL = "Te toca elegir";
 
 for (const viewport of VIEWPORT_NAMES) {
   test(`client gallery renders and captures at ${viewport}`, async ({ page }) => {
@@ -26,8 +30,8 @@ for (const viewport of VIEWPORT_NAMES) {
       // route, with a 200, at the exact url that was asked for -- and it
       // still looks like a plausible proofing screen. Neither the status
       // check (#169) nor the destination check (#178) can see that; the
-      // rendered status label can, because `selected` renders "Selección
-      // enviada" here instead.
+      // rendered status label can, because `selected` renders "Alejo está
+      // editando" here instead (task #181).
       expectSelector: `text="${PROOFING_STATUS_LABEL}"`,
     });
 

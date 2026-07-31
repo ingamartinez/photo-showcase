@@ -39,7 +39,15 @@ export async function captureScreen(page: Page, options: CaptureOptions): Promis
   const { name, route, viewport } = options;
 
   await page.setViewportSize(VIEWPORTS[viewport]);
-  await page.goto(route, { waitUntil: "networkidle" });
+  // NOT `waitUntil: "networkidle"` -- verified empirically against
+  // /galleries/[publicSlug]: that page opens a long-lived SSE connection for
+  // the live collaborative selection tray (src/lib/selection-events.ts's
+  // LISTEN/NOTIFY pub-sub, task #114/#116), which by design never goes idle.
+  // `networkidle` waited out its own 30s test timeout every time on that
+  // route. `"load"` plus a short settle window below is what Playwright's own
+  // docs recommend instead for pages with any open streaming connection.
+  await page.goto(route, { waitUntil: "load" });
+  await page.waitForTimeout(300);
 
   await mkdir(SCREENSHOT_DIR, { recursive: true });
   const filePath = path.join(SCREENSHOT_DIR, `${name}-${viewport}.png`);

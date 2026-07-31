@@ -30,12 +30,36 @@ export interface CaptureOptions {
   viewport: ViewportName;
   /**
    * Extra readiness gate, run after navigation succeeds and before the
-   * screenshot. Defaults to waiting for every `<img>` on the page to finish
-   * loading -- most redesigned screens this harness exists for (the proof
-   * grid, in particular: #145/#146) render `<img>` tags pointed at
-   * short-lived R2 presigned URLs, and a fixed sleep has no way to know
-   * whether those decoded in time. Pass a no-op (`async () => {}`) to opt
-   * out for a route with nothing to wait for.
+   * screenshot. Defaults to waiting for every `<img>` present on the page to
+   * finish loading (`[...document.images].every((img) => img.complete)`).
+   *
+   * WHAT THIS DEFAULT ACTUALLY GUARANTEES, measured (task #169): for an
+   * `<img>` already present in the INITIAL HTML, it adds NOTHING -- `page.goto`
+   * below already uses `waitUntil: "load"`, which itself blocks on every
+   * image the initial HTML declares (2364ms with this default vs. 2347ms with
+   * a no-op `waitFor`, against a 2s-delayed image). The default earns its keep
+   * only for a LATE navigation where `"load"` already fired and something is
+   * still settling.
+   *
+   * THE CASE THIS DEFAULT DOES NOT COVER: an `<img>` that does not exist yet
+   * when this gate runs -- e.g. one a client component injects into the DOM
+   * some time AFTER `load` (a skeleton-then-swap pattern, a tab that mounts
+   * lazily, etc). `[...document.images]` is empty at that point, so
+   * `.every()` is vacuously `true` and the capture fires before the image
+   * exists (measured: 345ms, i.e. it did not wait at all). This default has
+   * no way to know an image is *coming*; it only ever inspects images that
+   * already exist in the DOM.
+   *
+   * Today every screen this harness captures renders its `<img>`s eagerly,
+   * server-side, in the initial HTML (`src/components/asset-tile.tsx`'s proof
+   * thumbnails included), so the vacuous-empty-list case does not currently
+   * bite. It WILL bite the moment a redesign renders a tile after an initial
+   * paint. A caller whose route can inject images after `load` -- #145/#146's
+   * proofing grid redesign is the flagged case -- MUST pass its own `waitFor`
+   * (e.g. `page.waitForSelector` on a rendered tile) rather than rely on this
+   * default; do not assume the default protects you just because it did the
+   * last time. Pass a no-op (`async () => {}`) to opt out entirely for a
+   * route with nothing to wait for.
    */
   waitFor?: (page: Page) => Promise<void>;
 }

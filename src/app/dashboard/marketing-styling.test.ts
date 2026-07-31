@@ -113,15 +113,29 @@ const FILES_UNDER_GUARD = [
   ]),
 ].sort();
 
-/** Strips `/* … *\/` and `// …` comments, so a comment that names a
- * forbidden class to EXPLAIN its absence (this file's own header comment
- * does exactly that, and so do several component comments this task added)
- * is never mistaken for a live call site. Mirrors the `classStrings()`
- * technique `globals.tokens.test.ts` already uses for the same reason,
- * extended to block comments (`/* … *\/`), which line-only filtering does
- * not reach and which JSX's `{/* … *\/}` comments compile down to. */
+/** Strips `/* … *\/` and whole-line `// …` comments, so a comment that
+ * names a forbidden class to EXPLAIN its absence (this file's own header
+ * comment does exactly that, and so do several component comments this
+ * task added) is never mistaken for a live call site. Mirrors the
+ * `classStrings()` technique `globals.tokens.test.ts` already uses for the
+ * same reason, extended to block comments (`/* … *\/`), which line-only
+ * filtering does not reach and which JSX's `{/* … *\/}` comments compile
+ * down to.
+ *
+ * The line-comment half is DELIBERATELY `^[ \t]*\/\/.*$` — a line whose
+ * FIRST non-whitespace characters are `//` — not the blanket `\/\/.*$` an
+ * earlier revision used. A blanket strip does not know about strings: it
+ * deletes everything after the FIRST `//` on a line regardless of whether
+ * that `//` sits inside a quoted value, so a `className="…"` sharing a line
+ * with `// https://…` (an ordinary trailing comment on a `wa.me` link, the
+ * kind of line a dashboard component picks up routinely) would erase the
+ * class value along with the comment — a forbidden class hiding behind a
+ * URL, not behind an untested prop. Every real comment in the files this
+ * guard reads is already its own whole line, so restricting the strip to
+ * that shape costs nothing today and removes the hazard for the next one
+ * that isn't. */
 function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/\/\/.*$/gm, "");
+  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
 }
 
 /**

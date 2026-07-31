@@ -247,6 +247,54 @@ describe("ClientGalleriesPage chrome", () => {
       expect(img?.parentElement?.className).toContain("aspect-[16/10]");
     });
 
+    // Review finding on task #180: Tailwind's `from-*`/`via-*`/`to-*`
+    // gradient utilities compile to FIXED 0%/50%/100% stops, which is NOT
+    // the mock's own 8%/62%/100% (client.html:153-156) and composites to
+    // ~1.04:1 contrast behind the meta line against a bright photo — well
+    // under WCAG 1.4.3. Pinned as the literal gradient string (not just
+    // "contains rgba(7,7,9...)") because the WRONG utility-class shape would
+    // also contain that substring and this test must fail if it regresses
+    // back to it. The real composited-pixel proof (real Chromium, a
+    // blown-out white photo, WCAG relative luminance) lives in this task's
+    // own commit message / PR description — jsdom cannot composite a
+    // gradient over an image, so this is the closest this suite can pin
+    // without a real browser.
+    it("uses the mock's own gradient stops, not Tailwind's default 0/50/100", async () => {
+      getGalleriesForClientMock.mockResolvedValue([
+        galleryListItem({ coverProofKey: "galleries/g1/proofs/a1.webp" }),
+      ]);
+
+      const { container } = render(await ClientGalleriesPage());
+
+      const scrim = container.querySelector('[aria-hidden="true"]');
+      expect(scrim?.className).toContain(
+        "bg-[linear-gradient(to_top,rgba(7,7,9,0.92)_8%,rgba(7,7,9,0.15)_62%,transparent)]",
+      );
+    });
+
+    // The other half of the same review finding: `#143`'s `text-fg-mute`
+    // (correct for its SOLID-background fallback card) was silently shared
+    // onto the photo variant too via one `cardText` fragment, composing to
+    // ~1.04:1 there. Mutation-proof: hardcoding `metaTextClass` back to a
+    // single `"text-fg-mute"` in page.tsx turns the FIRST assertion below
+    // red; hardcoding it to `"text-fg-dim"` turns the SECOND red.
+    it("uses --fg-dim for the meta line over a photo, and --fg-mute for the bordered fallback", async () => {
+      getGalleriesForClientMock.mockResolvedValue([
+        galleryListItem({ id: "g1", coverProofKey: "galleries/g1/proofs/a1.webp" }),
+        galleryListItem({ id: "g2", publicSlug: "s2", coverProofKey: null }),
+      ]);
+
+      const { container } = render(await ClientGalleriesPage());
+      const items = container.querySelectorAll("li");
+      const withCoverMeta = within(items[0] as HTMLElement).getByText(/fotos/);
+      const noCoverMeta = within(items[1] as HTMLElement).getByText(/fotos/);
+
+      expect(withCoverMeta.className).toContain("text-fg-dim");
+      expect(withCoverMeta.className).not.toContain("text-fg-mute");
+      expect(noCoverMeta.className).toContain("text-fg-mute");
+      expect(noCoverMeta.className).not.toContain("text-fg-dim");
+    });
+
     // THE degrade this task's own acceptance criterion demands: no cover
     // picked yet (the ordinary state for a fresh gallery) must not collapse
     // the card or leave a broken hole. Mutation-proof: removing the

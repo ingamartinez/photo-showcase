@@ -16,6 +16,15 @@ import { getPresignedUrl, storedKey } from "@/lib/r2";
 // (#175) this cycle, and `#8FAE97` (the mock's "done" green) has no existing
 // brand token to reuse, so it is an arbitrary Tailwind value here rather than
 // a new custom property.
+//
+// NOT contrast-corrected against the photo variant's scrim (task #180
+// review, measured composited): the `pending` tone comes out ~1.08:1 there,
+// same order as the mock's OWN chip (~1.84:1) — under WCAG 1.4.3 either way.
+// This is inherited design debt from `client.html` itself, not something
+// this slice introduced or is fixing; the owner is tracking it separately
+// with design. Only the title and meta lines (both of which DO pass in the
+// mock and did not in an earlier version of this file) were in scope here —
+// see `metaTextClass` and the gradient stops below.
 const STATE_TONE_CLASS: Record<ReturnType<typeof formatClientGalleryCardState>["tone"], string> = {
   pending: "text-accent-2",
   waiting: "text-fg-dim",
@@ -116,6 +125,22 @@ export default async function ClientGalleriesPage() {
               // `.state`/`.gal-card__t`/`.gal-card__meta`, client.html:607-609
               // — shared between both card variants below so the two never
               // drift into two different renderings of the SAME three facts.
+              //
+              // `metaTextClass` is the ONE exception, and it is deliberate,
+              // not an oversight: review on this task caught that sharing a
+              // single hardcoded `text-fg-mute` here had silently carried
+              // #143's SOLID-BACKGROUND colour choice onto the photo variant
+              // below, where it composites to ~1.04:1 against a bright
+              // photo — DRY across two different backgrounds is not DRY, it
+              // is an unexamined assumption. `--fg-dim` (client.html's own
+              // `.gal-card__meta` colour) is the mock's choice for text over
+              // a photo; `--fg-mute` stays #143's choice for the bordered,
+              // solid-background fallback below. Everything else in this
+              // fragment (the chip's tone colours, the title's default
+              // `--fg`) is intentionally shared as-is — see the gradient
+              // comment below for why the chip's own contrast is inherited
+              // debt, not fixed here.
+              const metaTextClass = coverUrl ? "text-fg-dim" : "text-fg-mute";
               const cardText = (
                 <>
                   <span
@@ -125,7 +150,7 @@ export default async function ClientGalleriesPage() {
                     {state.label}
                   </span>
                   <p className="font-serif text-2xl">{gallery.title}</p>
-                  <p className="text-fg-mute mt-1 text-sm">
+                  <p className={`${metaTextClass} mt-1 text-sm`}>
                     {formatSessionDate(gallery.sessionDate)} · {gallery.photoCount} fotos
                   </p>
                 </>
@@ -167,13 +192,42 @@ export default async function ClientGalleriesPage() {
                           className="absolute inset-0 h-full w-full object-cover"
                         />
                         {/* The mock's own bottom-to-top gradient
-                            (client.html:153-156) — text sits directly on
-                            the photo, so this is what keeps it legible
-                            regardless of what the photo itself looks
-                            like. */}
+                            (client.html:153-156: `rgba(7,7,9,0.92) 8%,
+                            rgba(7,7,9,0.15) 62%, transparent`) — text sits
+                            directly on the photo, so this is what keeps it
+                            legible regardless of what the photo itself
+                            looks like.
+
+                            An ARBITRARY `linear-gradient(...)`, not
+                            Tailwind's `from-*`/`via-*`/`to-*` gradient
+                            utilities: those compile to fixed 0%/50%/100%
+                            stops (verified against this project's own
+                            Tailwind v4.3.3 output, not assumed), which is
+                            NOT the mock's 8%/62%/100% — review on this task
+                            measured the difference directly against a
+                            blown-out white photo, real Chromium, real
+                            composited pixels (WCAG 2.1 relative-luminance
+                            formula, not eyeballed): with the WRONG
+                            (0/50/100) stops, contrast came out 1.08:1 /
+                            2.54:1 / 1.04:1 for chip/title/meta — failing
+                            WCAG 1.4.3 at the title and meta. Re-measured the
+                            same way with THIS literal gradient string:
+                            1.84:1 / 7.08:1 / 5.42:1 — title and meta now
+                            clear 3:1/4.5:1 with margin, and the chip lands
+                            on the SAME 1.84:1 the mock's own gradient
+                            produces (see the note below for why that one is
+                            not fixed here). Re-run by rebuilding
+                            (`bun run build`), pointing a headless Chromium
+                            at a static harness reproducing this exact
+                            markup over a solid-white image, and sampling
+                            the screenshot's own pixels next to (not on) the
+                            text glyphs — never re-derive the ratios by
+                            reasoning about the gradient math by hand, which
+                            is the exact mistake that shipped the 0/50/100
+                            version in the first place. */}
                         <div
                           aria-hidden
-                          className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/15 to-transparent"
+                          className="absolute inset-0 bg-[linear-gradient(to_top,rgba(7,7,9,0.92)_8%,rgba(7,7,9,0.15)_62%,transparent)]"
                         />
                       </div>
                       <div className="absolute inset-x-0 bottom-0 px-6 pb-[18px]">{cardText}</div>

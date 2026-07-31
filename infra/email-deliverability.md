@@ -9,6 +9,10 @@ Everything here was verified against the Cloudflare API and against the public
 resolvers `1.1.1.1`, `8.8.8.8` and `9.9.9.9` on 2026-07-31 (task #152). None of
 it is inferred from a vendor dashboard screenshot.
 
+Where something was **not** measured, it says so in place. Take those caveats
+literally: this file is written to be trusted, so the boundary between "checked"
+and "assumed" is the most load-bearing thing in it.
+
 ## The zone is shared with findash — read this first
 
 `alejoframes.com` is a **single Cloudflare zone** that also contains
@@ -16,7 +20,8 @@ it is inferred from a vendor dashboard screenshot.
 it is a subdomain of this one. Every warning below about "do not break the other
 project" is literal, not precautionary.
 
-Zone id: `69b246d6d3c8d1c4d38f45d9a7198fe5`, plan Free.
+Zone id: `69b246d6d3c8d1c4d38f45d9a7198fe5`, plan Free — both read from the
+Cloudflare API on 2026-07-31.
 
 ## What is published
 
@@ -29,7 +34,16 @@ Zone id: `69b246d6d3c8d1c4d38f45d9a7198fe5`, plan Free.
 
 The Resend domain `alejoframes.com` is in `verified` status, region `us-east-1`.
 
-`EMAIL_FROM` is `no-reply@alejoframes.com` — the **apex**, not `send.`.
+`EMAIL_FROM` is `no-reply@alejoframes.com` — the **apex**, not `send.` — with no
+display name and no angle brackets. Read on 2026-07-31 from the deployed
+`/srv/photoshowcase/env/photoshowcase.env` over SSH, not from `.env.example`,
+and independently confirmed by the `From:` header of a real production email.
+
+**`infra/cron/README.md` and `infra/cron/photoshowcase-backup.sh` used to state
+this value as `Alejo Frames <hi@alejoframes.com>`, and that was stale** — see
+the note now in those files. Their argument (never source a systemd
+`EnvironmentFile` as shell) is unaffected and still correct; only the worked
+example was wrong.
 
 ## Why there is no SPF record at the apex, and why adding one is a mistake
 
@@ -40,8 +54,8 @@ the obvious conclusion — that something is missing — is wrong.
 **SPF authenticates the envelope sender (the `MAIL FROM` / `Return-Path`), not
 the `From:` header the recipient sees.** Resend sets the envelope to a
 per-message address at `send.alejoframes.com`, so that is the domain a receiver
-looks up SPF for. It is published there and it passes. From a real Gmail
-delivery:
+looks up SPF for. It is published there and it passes. From the headers of the
+2026-07-31 verification delivery — the same message as the "after" block below:
 
 ```
 Return-Path: <0100019fb9dcb2d5-…-000000@send.alejoframes.com>
@@ -49,21 +63,39 @@ Received-SPF: pass (google.com: domain of …@send.alejoframes.com
               designates 54.240.14.40 as permitted sender)
 ```
 
-An apex `v=spf1` would not be consulted for these messages at all. It would be
-inert at best, and it carries two real risks:
+(`54.240.14.40` falls inside `54.240.0.0/18`, which `amazonses.com`'s own SPF
+publishes — consistent with the transport this file describes.)
+
+An apex `v=spf1` would not be consulted for these messages at all. Be precise
+about which apex record is a mistake: **a permissive one duplicating Resend's**
+(`v=spf1 include:amazonses.com ~all`) buys nothing here and carries two real
+risks.
 
 1. **A domain must have exactly one SPF record.** Publishing a second one — for
    example because someone later "adds SPF for Resend" without noticing an
    existing record — makes SPF evaluation return `permerror` and **both**
    records stop working. This is the classic way a working setup gets broken by
    a well-intentioned fix.
-2. **findash lives in this zone.** An apex SPF change affects anything sending
-   as `@alejoframes.com`, which is not only this project.
+2. **findash lives in this zone.** An apex change is not scoped to this project.
+   Note the limit of that risk, because it is easy to overstate: **SPF does not
+   descend to subdomains**, so mail with an envelope at
+   `@findash.alejoframes.com` would be unaffected by an apex record either way.
+   The exposure is specifically anything sending with an envelope at the **apex
+   itself**. Whether findash does is **not verified here** — as of 2026-07-31
+   `findash.alejoframes.com` publishes no MX and no TXT, only proxied A records,
+   and nothing in this repo shows it sending mail at all. Confirm before
+   assuming either way.
+
+The one apex record that would _not_ be inert is `v=spf1 -all`, which is
+standard hardening for a domain that never sends: it tells receivers to reject
+anything forging an apex envelope. That is a real, separate improvement rather
+than a duplicate — but it is only safe once risk 2 above is actually verified,
+because it breaks any apex sender that turns out to exist.
 
 If a future change makes the app send with an apex envelope (a different
-provider, or Resend without a custom return-path), then an apex SPF becomes
-correct — but that is a change to make deliberately, after confirming the
-`Return-Path` actually moved, not a gap to fill preemptively.
+provider, or Resend without a custom return-path), then a permissive apex SPF
+becomes correct — but that is a change to make deliberately, after confirming
+the `Return-Path` actually moved, not a gap to fill preemptively.
 
 ## DMARC alignment: both channels align independently
 
@@ -73,7 +105,8 @@ passed **for a domain that aligns with the `From:` header**. Here, both do:
 - **DKIM** — the message carries _two_ signatures. One is `d=amazonses.com`
   (the transport's own) and does **not** align. The one that matters is
   `d=alejoframes.com`, selector `resend`, which does. Without that second
-  signature DMARC would fail no matter how correctly Amazon signed.
+  signature the DKIM channel would not align at all — DMARC would still pass
+  on aligned SPF alone, but with no redundancy left.
 - **SPF** — the envelope domain `send.alejoframes.com` is a subdomain of the
   organizational domain `alejoframes.com`, which matches `header.from`. Under
   DMARC's default relaxed alignment, that aligns.
@@ -121,14 +154,24 @@ a technical blocker.
 pure instrumentation.
 
 **Do not raise it to `p=quarantine` or `p=reject` without reading the
-aggregate reports first.** Under `reject`, any legitimate mail that fails
-alignment is discarded **silently** — it does not bounce and nothing notifies
-anyone. For this product that means a client never learns their photos are
-ready, and the studio never learns the mail was dropped. Two weeks of report
-data first, then harden.
+aggregate reports first.** Under `reject`, legitimate mail that fails alignment
+is lost, and the signals that it was lost are ones nobody currently watches.
+Most receivers, Gmail included, reject at SMTP time with
+`550-5.7.26 … not accepted due to domain's DMARC policy`; SES sees that 5xx and
+records a hard bounce, which travels back through the `send.alejoframes.com`
+return path documented above and surfaces as a bounce/suppression event in
+Resend. The same failures also appear as `dis=reject` counts in the aggregate
+reports this file spends a whole section wiring up. Other receivers discard
+after acceptance instead, with no signal at all.
 
-`sp=NONE` (subdomain policy) is inherited from `p`; no subdomain currently
-sends mail on its own.
+So it is not true that nothing is emitted — but nothing reaches a person. The
+client never learns their photos are ready, the studio never learns the mail
+was dropped, and **nobody is watching Resend's bounce list today**. Two weeks of
+report data first, then harden.
+
+`sp=NONE` (subdomain policy) is inherited from `p`. No subdomain is known to
+send mail on its own — see the caveat about findash above; that has not been
+verified either.
 
 ## The evidence that DMARC was the actual fix
 

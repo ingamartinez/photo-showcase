@@ -11,6 +11,15 @@
 // that proves those counts (tasks #75 and #88) are actually wired into
 // markup, and that "no pending selections"/"nothing loaded yet" render the
 // genuine empty states rather than being permanently shown.
+//
+// `formatPendingSelectionCount` and `formatClientCount` still need a copy
+// here — both stayed in `@/lib/galleries`/`@/lib/clients`, which this file
+// mocks wholesale. `formatStudioGalleryCount` does NOT: task #49/#90 moved
+// it (alongside the per-client `formatGalleryCount`, used on the sibling
+// clients page and renamed `formatClientGalleryCount`) into `@/lib/format`,
+// a plain module this file never mocks — see that module's own
+// header/section comments for why. The REAL `formatStudioGalleryCount`
+// runs here.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { Session } from "next-auth";
@@ -26,23 +35,20 @@ vi.mock("@/lib/galleries", () => ({
   getGalleryCount: () => getGalleryCountMock(),
   // Real pluralization logic, not a mock — this file is what proves the
   // real copy actually reaches the page (src/lib/galleries.test.ts already
-  // proves formatPendingSelectionCount's/formatGalleryCountTotal's own logic
-  // in isolation).
+  // proves formatPendingSelectionCount's own logic in isolation).
   formatPendingSelectionCount: (pendingCount: number) => {
     if (pendingCount <= 0) return null;
     if (pendingCount === 1) return "1 selección esperando";
     return `${pendingCount} selecciones esperando`;
-  },
-  formatGalleryCountTotal: (galleryCount: number) => {
-    if (galleryCount === 1) return "1 galería";
-    return `${galleryCount} galerías`;
   },
 }));
 
 const getClientCountMock = vi.fn<() => Promise<number>>();
 vi.mock("@/lib/clients", () => ({
   getClientCount: () => getClientCountMock(),
-  // Real pluralization logic, same reasoning as formatGalleryCountTotal above.
+  // Real pluralization logic, same reasoning as formatPendingSelectionCount
+  // above — `formatClientCount` did not move (only the per-client
+  // `formatGalleryCount` did, task #49), so it still needs a copy here.
   formatClientCount: (clientCount: number) => {
     if (clientCount === 1) return "1 cliente";
     return `${clientCount} clientes`;
@@ -139,7 +145,14 @@ describe("DashboardPage chrome", () => {
     expect(screen.queryByText("Todavía no armaste ninguna galería.")).toBeNull();
   });
 
-  it("reports a client count with none loaded yet alongside real galleries, and vice versa", async () => {
+  // Task #90: this used to be one test named "...and vice versa" that only
+  // ever exercised the 0-clients/1-gallery direction — the reverse
+  // (1 client, 0 galleries) was claimed by the title but never asserted.
+  // Split into the two directions below so each title matches exactly what
+  // it checks; see the epic-level pattern this guards against in this
+  // file's own reasoning (#73/#26/#84 all shipped a test whose name
+  // overstated its own coverage).
+  it("reports a client count with none loaded yet alongside a real gallery", async () => {
     getClientCountMock.mockResolvedValue(0);
     getGalleryCountMock.mockResolvedValue(1);
 
@@ -151,5 +164,19 @@ describe("DashboardPage chrome", () => {
     expect(screen.queryByText("Todavía no hay nada acá.")).toBeNull();
     expect(screen.getByText("Todavía no cargaste ningún cliente.")).toBeDefined();
     expect(screen.getByText("1 galería")).toBeDefined();
+  });
+
+  it("reports a gallery count with none loaded yet alongside a real client", async () => {
+    getClientCountMock.mockResolvedValue(1);
+    getGalleryCountMock.mockResolvedValue(0);
+
+    const element = await DashboardPage();
+    render(element);
+
+    // Not the genuine first-run empty state — a client already exists — but
+    // the gallery card still tells the truth about having zero galleries.
+    expect(screen.queryByText("Todavía no hay nada acá.")).toBeNull();
+    expect(screen.getByText("Todavía no armaste ninguna galería.")).toBeDefined();
+    expect(screen.getByText("1 cliente")).toBeDefined();
   });
 });

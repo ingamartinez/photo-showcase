@@ -15,3 +15,30 @@ describe("formatCop", () => {
     expect(formatCop(150_000)).not.toContain(",00");
   });
 });
+
+// Moved here from src/lib/clients.test.ts (task #49) — see this file's
+// section comment on `formatClientGalleryCount` for why.
+describe("formatClientGalleryCount", () => {
+  it.each([
+    [0, "Sin galerías todavía"],
+    [1, "1 galería"],
+    [2, "2 galerías"],
+    [13, "13 galerías"],
+  ])("formats %i as %s", async (galleryCount, expected) => {
+    const { formatClientGalleryCount } = await import("./format");
+    expect(formatClientGalleryCount(galleryCount)).toBe(expected);
+  });
+});
+
+// Moved here from src/lib/galleries.test.ts (task #49/#90) — see this file's
+// section comment on `formatStudioGalleryCount` for why.
+describe("formatStudioGalleryCount", () => {
+  it.each([
+    [1, "1 galería"],
+    [2, "2 galerías"],
+    [13, "13 galerías"],
+  ])("formats %i as %s", async (galleryCount, expected) => {
+    const { formatStudioGalleryCount } = await import("./format");
+    expect(formatStudioGalleryCount(galleryCount)).toBe(expected);
+  });
+});

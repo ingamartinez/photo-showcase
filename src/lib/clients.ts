@@ -67,13 +67,6 @@ export async function getClientsForPicker(): Promise<ClientForPicker[]> {
   return [...rows].sort((a, b) => (a.name ?? a.email).localeCompare(b.name ?? b.email));
 }
 
-/** Spanish, pluralized copy for the gallery count shown next to each client. */
-export function formatGalleryCount(count: number): string {
-  if (count === 0) return "Sin galerías todavía";
-  if (count === 1) return "1 galería";
-  return `${count} galerías`;
-}
-
 /** How many clients exist, total. Powers the "Clientes" summary on
  * `/dashboard` (task #88) — a dedicated `count()` query, same reasoning as
  * `getPendingSelectionCount` in src/lib/galleries.ts: the dashboard index
@@ -86,9 +79,10 @@ export async function getClientCount(): Promise<number> {
 }
 
 /** Spanish, pluralized copy for `getClientCount`'s result — the total client
- * count on `/dashboard` (task #88). Distinct from `formatGalleryCount`
- * above, which describes how many galleries belong to ONE client, not how
- * many clients exist across the whole studio. */
+ * count on `/dashboard` (task #88). Distinct from `formatClientGalleryCount`
+ * in `@/lib/format` (moved out of this file by task #49 — see that module's
+ * section comment), which describes how many galleries belong to ONE
+ * client, not how many clients exist across the whole studio. */
 export function formatClientCount(clientCount: number): string {
   if (clientCount === 1) return "1 cliente";
   return `${clientCount} clientes`;

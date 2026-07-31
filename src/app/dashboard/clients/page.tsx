@@ -1,6 +1,7 @@
 import type { Metadata } from "next";
 import { requireAdmin } from "@/lib/auth-guards";
-import { formatGalleryCount, getClientsWithGalleryCount } from "@/lib/clients";
+import { getClientsWithGalleryCount } from "@/lib/clients";
+import { formatClientGalleryCount } from "@/lib/format";
 import { ClientForm } from "@/components/client-form";
 
 export const metadata: Metadata = {
@@ -39,7 +40,7 @@ export default async function ClientsPage() {
                   {client.phone && <p className="text-fg-mute text-sm">{client.phone}</p>}
                 </div>
                 <span className="label text-fg-mute">
-                  {formatGalleryCount(client.galleryCount)}
+                  {formatClientGalleryCount(client.galleryCount)}
                 </span>
               </li>
             ))

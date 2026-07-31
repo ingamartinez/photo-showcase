@@ -144,17 +144,9 @@ describe("getClientsForPicker", () => {
   });
 });
 
-describe("formatGalleryCount", () => {
-  it.each([
-    [0, "Sin galerías todavía"],
-    [1, "1 galería"],
-    [2, "2 galerías"],
-    [13, "13 galerías"],
-  ])("formats %i as %s", async (count, expected) => {
-    const { formatGalleryCount } = await import("./clients");
-    expect(formatGalleryCount(count)).toBe(expected);
-  });
-});
+// formatGalleryCount's tests moved to src/lib/format.test.ts (task #49) — it
+// is no longer exported from this module, see that file's
+// `formatClientGalleryCount`.
 
 describe("getClientCount", () => {
   it("counts users via a dedicated count() query scoped to role = client, not the full list query", async () => {

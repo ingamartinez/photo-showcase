@@ -11,10 +11,14 @@
 // shell that never sourced `release.env`. Every test below that expects a
 // throw for an unset/unexpected `APP_ENV` is a direct regression test for
 // that exact bug.
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DROPLET_ROOT_MARKER, refuseUnlessDevEnvironment } from "./refuse-on-production";
 
 describe("refuseUnlessDevEnvironment", () => {
+  afterEach(() => {
+    vi.unstubAllEnvs();
+  });
+
   describe("the droplet filesystem marker, checked before APP_ENV", () => {
     it(`throws when ${DROPLET_ROOT_MARKER} exists, regardless of a safe-looking APP_ENV`, () => {
       expect(() =>
@@ -70,10 +74,15 @@ describe("refuseUnlessDevEnvironment", () => {
   it("reads process.env.APP_ENV and the real filesystem when no deps are injected", () => {
     // No injected deps at all: exercises the actual default wiring
     // (`process.env.APP_ENV`, `existsSync(DROPLET_ROOT_MARKER)`) rather than
-    // only the injectable seams above. This process's own environment never
-    // sets APP_ENV to an allowlisted value, so this always throws -- on
-    // whichever check fires first depends on this real machine, not on
-    // anything this test controls, so only the fact of throwing is asserted.
+    // only the injectable seams above. `vi.stubEnv` forces APP_ENV to an
+    // unallowlisted value for the duration of this test -- same precedent as
+    // `scripts/lib/assert-app-env.test.ts` -- so this assertion holds
+    // regardless of whatever a developer's own shell happens to export (see
+    // task #169: `deps.appEnv ?? process.env.APP_ENV` used to make an
+    // injected `undefined` indistinguishable from "not injected", which made
+    // THIS test and the one above it turn red on any machine with
+    // APP_ENV=development already exported).
+    vi.stubEnv("APP_ENV", "staging");
     expect(() => refuseUnlessDevEnvironment()).toThrow();
   });
 });

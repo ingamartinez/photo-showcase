@@ -24,6 +24,13 @@ test.describe("captureScreen refuses to write a screenshot of a non-2xx response
     );
 
     const filePath = path.join(SCREENSHOT_DIR, "self-check-403-desktop.png");
+    // Self-isolating: a stale PNG left behind by an earlier run (e.g. someone
+    // manually breaking the guard to poke at it) must not make THIS clean run
+    // fail for the wrong reason -- the assertion below has to prove capture
+    // never wrote the file just now, not merely that the file doesn't exist
+    // for whatever reason.
+    await rm(filePath, { force: true });
+
     await expect(
       captureScreen(page, { name: "self-check-403", route: "/blocked-403", viewport: "desktop" }),
     ).rejects.toThrow(/returned 403/);

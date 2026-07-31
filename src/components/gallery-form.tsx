@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useEffect } from "react";
 import Link from "next/link";
 import { createGallery, type CreateGalleryState } from "@/app/dashboard/galleries/actions";
 import type { ClientForPicker } from "@/lib/clients";
@@ -14,11 +14,29 @@ const inputClass =
 export function GalleryForm({
   clients,
   packages,
+  onCreated,
 }: {
   clients: ClientForPicker[];
   packages: PackageForPicker[];
+  // Task #131 moved this form into a dialog
+  // (src/components/dashboard-gallery-create-dialog.tsx). This is the ONLY
+  // thing the form learns about that move, and it is optional: rendered on its
+  // own — which is how every test in gallery-form.test.tsx renders it — the
+  // component behaves exactly as it did before, success message included.
+  // The ticket's trap, verbatim: "Moving it into a dialog means changing where
+  // it renders, not rewriting it. If it needs to know it is in a dialog (to
+  // close on success), pass that in; do not fork it."
+  onCreated?: () => void;
 }) {
   const [state, formAction, pending] = useActionState(createGallery, initialState);
+
+  // Narrowed to a boolean on purpose: `state` is a fresh object on every
+  // action result, so depending on it directly would re-fire this on an error
+  // -> error transition too. `created` only ever flips false -> true.
+  const created = state.status === "created";
+  useEffect(() => {
+    if (created) onCreated?.();
+  }, [created, onCreated]);
 
   // Same reset behavior as ClientForm: React 19 blanks uncontrolled fields in
   // a <form action={fn}> synchronously at submit time, success or error
@@ -35,9 +53,12 @@ export function GalleryForm({
   // option values rather than one string. Worth its own slice, not a silent
   // ride-along on #50.
   return (
-    <form action={formAction} className="border-line-2 flex flex-col gap-5 rounded-sm border p-6">
-      <span className="label text-fg-mute">Nueva galería</span>
-
+    // Task #131: the card chrome (`border p-6`) and the "Nueva galería"
+    // eyebrow both moved OUT of here — the dialog that now wraps this form
+    // supplies its own padding and its own <DialogTitle> with that exact
+    // wording, and rendering either twice would put a box inside a box and the
+    // same heading above itself.
+    <form action={formAction} className="flex flex-col gap-5">
       <div className="flex flex-col gap-2">
         {/* Task #94: a gallery can belong to several clients at once — a
             couple's own separate logins, a family, two businesses sharing a

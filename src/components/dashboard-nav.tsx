@@ -93,9 +93,21 @@ export const PENDING_COUNT_POLL_INTERVAL_MS = 20_000;
  * isn't true), then the server's own last-reported count. A failed tick
  * — network hiccup, a 401 because the session just expired, anything —
  * leaves the previous count in place rather than resetting to 0 or null:
- * stale-but-honest beats confidently wrong, same stance
- * `use-shared-selection.ts`'s own poll loop takes on the client side of this
- * exact problem.
+ * stale-but-honest beats confidently wrong, the same VALUE
+ * `use-shared-selection.ts`'s own poll loop keeps on a failed tick. That
+ * module's `poll()` (the non-ok branch at :361-368, the throw branch at
+ * :402-404) takes a strictly LARGER stance than this hook does, though, and
+ * this is not claimed to match it: it counts consecutive failures and
+ * escalates to a visible `isStale` flag the tray surfaces
+ * (`STALE_AFTER_CONSECUTIVE_FAILURES`, 2 in a row). This hook never
+ * escalates — it keeps the last value and says nothing, indefinitely.
+ * Deliberately not adopted here: sessions default to a 30-day database
+ * session (`src/auth.ts`, `strategy: "database"`, no `maxAge` override), so a
+ * 401 mid-tab is rare, and this badge is dashboard chrome nobody makes a
+ * quota or delivery decision against — unlike the tray, where a silently
+ * stale submit lock is the exact bug #95 exists to prevent. If that
+ * assumption changes, the fix is copying the escalation, not assuming it is
+ * already here.
  */
 function usePendingSelectionCount(): number | null {
   const [count, setCount] = useState<number | null>(null);
@@ -113,6 +125,16 @@ function usePendingSelectionCount(): number | null {
       inFlightRef.current = true;
       try {
         const response = await fetch("/api/galleries/pending-count");
+        // A RESOLVED response that is not ok — most likely a 401 because the
+        // session expired mid-tab — is a different path than the `catch`
+        // below (a rejected fetch, e.g. offline). Same outcome deliberately:
+        // leave `count` exactly as it was and let the next tick retry, per
+        // this function's own doc comment.
+        // A RESOLVED response that is not ok — most likely a 401 because the
+        // session expired mid-tab — is a different path than the `catch`
+        // below (a rejected fetch, e.g. offline). Same outcome deliberately:
+        // leave `count` exactly as it was and let the next tick retry, per
+        // this function's own doc comment.
         if (!response.ok) return;
         const body = (await response.json()) as { count: number };
         if (!cancelled) setCount(body.count);

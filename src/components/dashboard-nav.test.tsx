@@ -127,4 +127,21 @@ describe("DashboardNav", () => {
     expect(current.className).toContain("lg:hover:bg-[var(--app-raised)]");
     expect(current.className).not.toContain("bg-accent");
   });
+
+  // The sidebar reads in source order: wordmark, nav, account. It briefly did
+  // not — the mock's `order: -1` (owner-confirmed slip, 2026-07-31) put the
+  // nav above the studio's own name, and this component carried
+  // `lg:order-first` to match it.
+  //
+  // Asserted on the class rather than on the DOM, deliberately: the DOM order
+  // never changed, so ANY assertion about element order would have passed
+  // just as happily before the fix as after it — which would make it a test
+  // that reads as if it guards this and does not. `order-*` is CSS-only and
+  // jsdom computes no layout, so the class list is the honest place to say
+  // "nothing here overrides source order".
+  it("does not reorder the sidebar away from source order", () => {
+    render(<DashboardNav />);
+
+    expect(screen.getByRole("navigation").className).not.toMatch(/(^|[:\s])-?order-/);
+  });
 });

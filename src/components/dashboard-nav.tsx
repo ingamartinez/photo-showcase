@@ -68,11 +68,14 @@ export function DashboardNav() {
     <nav
       aria-label="Principal"
       // Phone: fixed to the bottom edge, three equal columns, safe-area aware
-      // (dashboard.html:173-179). Desktop: static, stacked, and ordered ABOVE
-      // the wordmark inside the sidebar column — that is the mock's own
-      // `order: -1` (dashboard.html:520), verified against a render of it, not
-      // an accident of source order here.
-      className="border-line-2 fixed inset-x-0 bottom-0 z-40 grid h-[var(--app-tabbar-h)] grid-cols-3 border-t bg-[var(--app-surface)] pb-[env(safe-area-inset-bottom,0px)] lg:static lg:order-first lg:flex lg:h-auto lg:flex-col lg:gap-[2px] lg:border-t-0 lg:bg-transparent lg:p-0"
+      // (dashboard.html:178-186). Desktop: static and stacked inside the
+      // sidebar column, in SOURCE ORDER — wordmark, then nav, then account.
+      // This carried `lg:order-first` until the owner confirmed (2026-07-31)
+      // that the mock's `order: -1` was a slip; it has been removed from
+      // dashboard.html too, with the reasoning kept there. Nothing here
+      // should reorder the sidebar: the DOM order is the reading order and
+      // the tab order, and they now agree.
+      className="border-line-2 fixed inset-x-0 bottom-0 z-40 grid h-[var(--app-tabbar-h)] grid-cols-3 border-t bg-[var(--app-surface)] pb-[env(safe-area-inset-bottom,0px)] lg:static lg:flex lg:h-auto lg:flex-col lg:gap-[2px] lg:border-t-0 lg:bg-transparent lg:p-0"
     >
       {DASHBOARD_NAV_ITEMS.map(({ href, label, icon: Icon }) => {
         const isCurrent = isNavItemCurrent(pathname, href);

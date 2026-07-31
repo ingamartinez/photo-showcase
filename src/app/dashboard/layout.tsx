@@ -56,12 +56,22 @@ export default async function DashboardLayout({
         <DashboardNav />
 
         <div className="lg:border-line lg:mt-auto lg:border-t lg:pt-3.5">
-          {/* Accessible-only, at every width, exactly as the mock has it
-              (dashboard.html:630 — the `.vh` class is never undone; `:532`
-              only gives it a font size). This panel has one user (PLAN.md §4)
-              who knows their own address: it stays announced for anyone
-              verifying WHICH account is signed in, and it spends no pixels. */}
-          <span className="sr-only">{session.user.email}</span>
+          {/* Visible in the desktop sidebar, announced-only on the phone.
+              The mock had this `.vh` at every width while its >=1024px rule
+              styled it with four properties (font size, colour, word-break,
+              display) — owner-confirmed as a slip, 2026-07-31, and fixed in
+              dashboard.html in the same commit as this. Hiding it outright
+              would also have been a REGRESSION: the layout this shell
+              replaced showed the admin email from `sm:` up.
+
+              Phone keeps it out of the top bar, which holds two things and
+              should not hold a wrapping email address as a third. `sr-only`
+              rather than the mock's `display: none` there, deliberately:
+              it costs no pixels either way, and "which account am I signed
+              in as" is worth answering for a screen reader at every width. */}
+          <span className="text-fg-dim sr-only lg:not-sr-only lg:block lg:text-[length:var(--app-text-meta)] lg:break-all">
+            {session.user.email}
+          </span>
           {/* Stays a real form submission to the `signOutAction` server
               action. Do not turn it into a client-side handler.
 

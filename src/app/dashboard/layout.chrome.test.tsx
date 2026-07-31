@@ -117,4 +117,21 @@ describe("DashboardLayout chrome", () => {
     // the navigation.
     expect(main.contains(screen.getByText("Cerrar sesión"))).toBe(false);
   });
+
+  // The signed-in address is shown in the desktop sidebar, not merely
+  // announced. It shipped `sr-only` at every width — faithful to the mock,
+  // which turned out to be a slip (owner-confirmed 2026-07-31) — and that was
+  // also a REGRESSION against the layout this shell replaced, which showed it
+  // from `sm:` up. Two assertions, because the interesting thing is that it is
+  // BOTH announced everywhere AND visible somewhere: the text alone would be
+  // satisfied by a permanently-hidden span, which is exactly the state being
+  // fixed. jsdom computes no media queries, so `lg:not-sr-only` on the class
+  // list is the honest proxy for "visible at the sidebar breakpoint".
+  it("shows the signed-in admin address in the desktop sidebar", async () => {
+    const element = await DashboardLayout({ children: <div>contenido</div> });
+    render(element);
+
+    const email = screen.getByText("someone@example.com");
+    expect(email.className).toContain("lg:not-sr-only");
+  });
 });

@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState } from "react";
+import { useActionState, useEffect } from "react";
 import { createClient, type CreateClientState } from "@/app/dashboard/clients/actions";
 
 const initialState: CreateClientState = { status: "idle" };
@@ -8,8 +8,26 @@ const initialState: CreateClientState = { status: "idle" };
 const inputClass =
   "border-line-2 focus-visible:border-accent text-fg placeholder:text-fg-mute rounded-sm border bg-transparent px-4 py-3 text-[15px] transition-colors outline-none";
 
-export function ClientForm() {
+export function ClientForm({
+  onCreated,
+}: {
+  // Task #132 moved this form into a "Nuevo cliente" dialog
+  // (src/components/dashboard-client-create-dialog.tsx), the same shape
+  // task #131 used for <GalleryForm>. This is the ONLY thing the form learns
+  // about that move, and it is optional: rendered on its own — every test in
+  // client-form.test.tsx except the two at its bottom does exactly that — the
+  // component behaves exactly as it did before, success message included.
+  onCreated?: () => void;
+} = {}) {
   const [state, formAction, pending] = useActionState(createClient, initialState);
+
+  // Narrowed to a boolean, not the state object, same reasoning as
+  // gallery-form.tsx: `state` is a fresh object on every action result, so a
+  // rejected submit (error -> error) must never re-fire this.
+  const created = state.status === "created";
+  useEffect(() => {
+    if (created) onCreated?.();
+  }, [created, onCreated]);
 
   // No manual reset needed here: for a <form action={fn}> with uncontrolled
   // inputs, React 19 itself calls `requestFormReset` synchronously at submit
@@ -35,9 +53,11 @@ export function ClientForm() {
   const values = state.status === "error" ? state.values : undefined;
 
   return (
-    <form action={formAction} className="border-line-2 flex flex-col gap-5 rounded-sm border p-6">
-      <span className="label text-fg-mute">Nuevo cliente</span>
-
+    // Task #132: the card chrome (`border p-6`) and the "Nuevo cliente"
+    // eyebrow both moved OUT of here — same move task #131 made on
+    // <GalleryForm> — because the dialog that now wraps this form supplies
+    // its own padding and its own <DialogTitle> with that exact wording.
+    <form action={formAction} className="flex flex-col gap-5">
       <div className="flex flex-col gap-2">
         <label htmlFor="name" className="label text-fg-mute">
           Nombre

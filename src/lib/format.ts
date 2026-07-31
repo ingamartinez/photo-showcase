@@ -112,6 +112,27 @@ export function formatPendingSelectionCount(pendingCount: number): string | null
   return `${pendingCount} selecciones esperando`;
 }
 
+/** Bare, locale-grouped digit for a `/dashboard` stat tile's OWN number line
+ * (task #130's follow-up fix, review round 1) — as opposed to
+ * `formatClientCount`/`formatStudioGalleryCount`/`formatPendingSelectionCount`
+ * above, which each return a full Spanish SENTENCE ("14 clientes", "1
+ * selección esperando") for the prose line above the tiles. A tile's own
+ * eyebrow ("CLIENTES") already carries the noun the sentence forms repeat, so
+ * the first pass at the tile redesign called those same sentence formatters
+ * for the tile's number too, except at zero (where it fell back to a literal
+ * `"0"` to avoid the empty-state formatters' own zero-case sentences) — three
+ * tiles in the same grid row each showing a differently-shaped value
+ * (sentence / bare zero / always-bare pending count), caught in review
+ * against `design/system/dashboard.html:655-669`'s uniform eyebrow + bare
+ * `.stat__n` digit. `Intl.NumberFormat` rather than a template-literal
+ * `${count}` for the same reason `formatCop` above reaches for it: digit
+ * grouping matters the moment a studio's client or gallery count crosses
+ * three figures, and there is no reason to leave that bug for a future slice
+ * to find when the module already has the pattern for it. */
+export function formatTileCount(count: number): string {
+  return new Intl.NumberFormat("es-CO").format(count);
+}
+
 /** Human-scale byte count — binary units (1024-based, matching
  * `ZIP32_MAX_TOTAL_BYTES`'s own "~4 GiB" framing in src/lib/zip-stream.ts),
  * labeled the colloquial way ("GB", not "GiB") since this is read by a

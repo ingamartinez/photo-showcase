@@ -67,14 +67,15 @@
 //    graphql-js's `execute()` is typed as returning an untyped `ObjMap`, so
 //    what the cast trusts is the executor honouring the schema — not the
 //    caller's honesty, which is the part that changed.
-//  * a document that is NOT a generated one still type-checks. `TypedDocument
-//    Node`'s type carrier (`__apiType?`) is OPTIONAL, so a plain
+//  * a document that is NOT a generated one still type-checks. The type
+//    carrier on `TypedDocumentNode` (`__apiType?`) is OPTIONAL, so a plain
 //    `parse("...")` result is structurally assignable and simply infers
-//    `TData` as `unknown`. That is deliberate — the tests beside this file
-//    pass raw parsed documents on purpose, to prove the schema-validation
-//    step above rejects them — but it means "the document is typed" is
-//    something a call site earns by importing from `./generated`, not
-//    something this signature enforces.
+//    `TData` as `unknown` (verified, not assumed — see #32's report). That is
+//    wanted rather than tolerated: two tests beside this file pass raw parsed
+//    documents deliberately, one to prove step 2 rejects an unknown field and
+//    one to prove a failing resolver surfaces as a throw. But it does mean
+//    "the document is typed" is something a call site earns by importing from
+//    `./generated`, not something this signature enforces.
 import "server-only";
 
 import type { TypedDocumentNode } from "@graphql-typed-document-node/core";
@@ -133,15 +134,15 @@ export async function executeServerDocument<TData, TVariables extends Record<str
     );
   }
 
-  // Defensive, and no test reaches it. `data: null` from graphql-js means a
-  // non-nullable field's resolver failed and the null propagated to the root
-  // — which always comes WITH `errors`, so the branch above already threw.
-  // (Task #32 made most of this schema's fields non-null, including the
-  // `galleryList`/`galleries` root lists, so that propagation is now possible
-  // where it previously was not; the ordering of these two checks is what
-  // keeps it a thrown error either way.) Asserted rather than cast past,
-  // because `data: null` reaching a page would become `undefined` property
-  // reads several frames from the cause.
+  // Defensive, and no test in this repo reaches it. `data: null` means a
+  // non-nullable field failed and the null propagated all the way to the root,
+  // and the GraphQL spec requires the error that caused it to be in `errors` —
+  // so the branch above has already thrown by then. (Task #32 made most of
+  // this schema's fields non-null, including the `galleryList`/`galleries`
+  // root lists, so that propagation is possible now where it was not before;
+  // the ORDER of these two checks is what keeps it a thrown error either way.)
+  // Asserted rather than cast past, because `data: null` reaching a page would
+  // become `undefined` property reads several frames from the cause.
   if (result.data == null) {
     throw new Error("GraphQL execution returned no data and no errors");
   }

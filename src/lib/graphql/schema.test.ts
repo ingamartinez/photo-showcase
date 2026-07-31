@@ -68,6 +68,48 @@ describe("the schema, imported and executed directly (no HTTP layer)", () => {
     expect(sdl).toContain("galleryList: [GalleryListItem!]");
   });
 
+  // Task #32. This is a printed-SDL assertion, so what it proves is exactly
+  // what `printSchema` renders — the `!` markers on the six fields named
+  // below — and nothing about what a resolver returns at runtime.
+  //
+  // WHY IT IS WORTH PINNING AT ALL: `src/lib/graphql/generated/**` is
+  // generated FROM this schema and committed, and every field's nullability
+  // crosses straight into the TypeScript the client pages read. Reverting
+  // `builder.ts`'s `defaultFieldNullability: false` makes every `!` below
+  // disappear, `bun run codegen` then widens every generated field to
+  // `T | null`, and the pages stop compiling. This test is what turns that
+  // into an immediate, named failure instead of a confusing one two steps
+  // downstream.
+  it("prints `!` on the fields whose backing value cannot be null, and omits it on the three that can", async () => {
+    const { printSchema } = await import("graphql");
+    const { getSchema } = await import("./schema");
+
+    const sdl = printSchema(getSchema());
+
+    // Non-null: backed by `NOT NULL` columns (see src/lib/db/schema.ts).
+    expect(sdl).toContain("id: ID!");
+    expect(sdl).toContain("title: String!");
+    expect(sdl).toContain("photoCount: Int!");
+    expect(sdl).toContain("assets: [Asset!]!");
+    // The frozen commercial terms — always present on a gallery row, which is
+    // the whole point of freezing them.
+    expect(sdl).toContain("includedPhotosSnapshot: Int!");
+    expect(sdl).toContain("extraPhotoPriceCopSnapshot: Int!");
+
+    // Genuinely nullable, each carrying its own explicit `nullable: true`:
+    // an unsubmitted selection, an unedited asset, a client who never gave a
+    // name. Asserted as whole lines so a stray `!` cannot hide inside a
+    // substring match.
+    expect(sdl).toMatch(/^ {2}selectionSubmittedAt: String$/m);
+    expect(sdl).toMatch(/^ {2}finalKey: String$/m);
+    expect(sdl).toMatch(/^ {2}name: String$/m);
+
+    // The two refusal-carrying root fields stay nullable: `null` IS how this
+    // schema refuses (see ./types/query.ts's header).
+    expect(sdl).toContain("gallery(id: ID!): Gallery\n");
+    expect(sdl).toContain("galleryBySlug(publicSlug: String!): Gallery\n");
+  });
+
   it("graphql() refuses a client who does not own the gallery — same gate as route.test.ts, exercised without HTTP", async () => {
     // MUTATION-PROVEN: reverting vitest.config.ts's `server.deps.inline`
     // list makes this whole file fail before this assertion is even

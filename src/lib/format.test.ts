@@ -69,3 +69,24 @@ describe("formatPendingSelectionCount", () => {
     expect(formatPendingSelectionCount(pendingCount)).toBe(expected);
   });
 });
+
+// Task #92: the gallery detail page's archive-size warning
+// (`@/lib/gallery-archive-size`) is the one caller today.
+describe("formatBytes", () => {
+  it.each([
+    [0, "0 B"],
+    [512, "512 B"],
+    [1024, "1.0 KB"],
+    [1536, "1.5 KB"],
+    [20 * 1024 * 1024, "20.0 MB"],
+    [4.1 * 1024 * 1024 * 1024, "4.1 GB"],
+  ])("formats %s bytes as %s", async (bytes, expected) => {
+    const { formatBytes } = await import("./format");
+    expect(formatBytes(bytes)).toBe(expected);
+  });
+
+  it("never scales past GB — the largest unit this app's numbers ever need", async () => {
+    const { formatBytes } = await import("./format");
+    expect(formatBytes(1024 * 1024 * 1024 * 1024)).toBe("1024.0 GB");
+  });
+});

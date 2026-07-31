@@ -27,6 +27,7 @@ import { z } from "zod";
 import { getGalleriesForClient, getGalleryDetail, isGalleryVisibleToClient } from "@/lib/galleries";
 import { isGalleryOwner } from "@/lib/gallery-access";
 import { builder } from "../builder";
+import { getGalleryDetailsByIds } from "../gallery-details-by-ids";
 import { GalleryType } from "./gallery";
 
 const galleryIdSchema = z.uuid();
@@ -92,9 +93,29 @@ builder.queryType({
       resolve: async (_root, _args, ctx) => {
         if (!ctx.session) return [];
 
+        // Task #138: was `Promise.all(own.map((row) =>
+        // getGalleryDetail(row.id)))` — one detail query PER owned gallery,
+        // ~1 + 4N queries total for a client with N galleries. Replaced with
+        // one batched query (`getGalleryDetailsByIds`,
+        // ../gallery-details-by-ids.ts) for every id at once, so this field
+        // costs exactly two queries — this one and `getGalleriesForClient`'s
+        // — no matter how many galleries the caller owns. See that module's
+        // own header comment for why the batching logic lives there instead
+        // of alongside `getGalleryDetail` in src/lib/galleries.ts.
         const own = await getGalleriesForClient(ctx.session.user.id);
-        const details = await Promise.all(own.map((row) => getGalleryDetail(row.id)));
-        return details.filter((detail): detail is NonNullable<typeof detail> => detail !== null);
+        if (own.length === 0) return [];
+
+        const details = await getGalleryDetailsByIds(own.map((row) => row.id));
+        const detailById = new Map(details.map((detail) => [detail.id, detail]));
+
+        // Re-applies `own`'s own order (getGalleriesForClient's recency
+        // ordering) — `getGalleryDetailsByIds` makes no ordering promise of
+        // its own (see that file's header comment) — and drops any id that
+        // no longer resolves to a detail row, same "missing means absent,
+        // not an error" stance the previous implementation took.
+        return own
+          .map((row) => detailById.get(row.id))
+          .filter((detail): detail is NonNullable<typeof detail> => detail !== undefined);
       },
     }),
   }),

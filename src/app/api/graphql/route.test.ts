@@ -35,6 +35,17 @@ vi.mock("@/lib/galleries", () => ({
   isGalleryVisibleToClient: (...args: [string]) => isGalleryVisibleToClientMock(...args),
 }));
 
+// Task #138 — the `galleries` field's batched detail fetch (one query for
+// every owned id, instead of `getGalleryDetail` called once per gallery).
+// Mocked here for the same reason `getGalleryDetail` is above: this suite's
+// job is proving the resolver calls it (once, with every id) and shapes the
+// response off what it returns, not re-proving the query itself — that is
+// src/lib/graphql/gallery-details-by-ids.test.ts's job.
+const getGalleryDetailsByIdsMock = vi.fn();
+vi.mock("@/lib/graphql/gallery-details-by-ids", () => ({
+  getGalleryDetailsByIds: (...args: [string[]]) => getGalleryDetailsByIdsMock(...args),
+}));
+
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
 const OTHER_GALLERY_ID = "22222222-2222-4222-8222-222222222222";
 
@@ -111,6 +122,7 @@ beforeEach(() => {
   isGalleryOwnerMock.mockReset();
   getGalleryDetailMock.mockReset();
   getGalleriesForClientMock.mockReset();
+  getGalleryDetailsByIdsMock.mockReset();
   isGalleryVisibleToClientMock.mockReset();
   isGalleryVisibleToClientMock.mockReturnValue(true);
 });
@@ -247,9 +259,10 @@ describe("POST /api/graphql — the `galleries` field", () => {
   it("lists only the signed-in client's own galleries, resolved to full detail", async () => {
     authMock.mockResolvedValue(clientASession());
     getGalleriesForClientMock.mockResolvedValue([{ id: GALLERY_ID }, { id: OTHER_GALLERY_ID }]);
-    getGalleryDetailMock.mockImplementation(async (id: string) =>
-      galleryDetail({ id, title: id === GALLERY_ID ? "Boda Ana y Beto" : "Quince de Sofía" }),
-    );
+    getGalleryDetailsByIdsMock.mockResolvedValue([
+      galleryDetail({ id: GALLERY_ID, title: "Boda Ana y Beto" }),
+      galleryDetail({ id: OTHER_GALLERY_ID, title: "Quince de Sofía" }),
+    ]);
     const { POST } = await import("./route");
 
     const response = await POST(graphqlRequest(`{ galleries { id title } }`));
@@ -267,15 +280,58 @@ describe("POST /api/graphql — the `galleries` field", () => {
   it("drops a gallery id that no longer resolves to a detail row, rather than erroring", async () => {
     authMock.mockResolvedValue(clientASession());
     getGalleriesForClientMock.mockResolvedValue([{ id: GALLERY_ID }, { id: OTHER_GALLERY_ID }]);
-    getGalleryDetailMock.mockImplementation(async (id: string) =>
-      id === GALLERY_ID ? galleryDetail() : null,
-    );
+    getGalleryDetailsByIdsMock.mockResolvedValue([galleryDetail()]);
     const { POST } = await import("./route");
 
     const response = await POST(graphqlRequest(`{ galleries { id } }`));
 
     const body = await bodyOf(response);
     expect(body.data).toEqual({ galleries: [{ id: GALLERY_ID }] });
+  });
+
+  // Task #138 — MUTATION-PROVEN discriminator for the N+1 this field used to
+  // have: reintroducing `Promise.all(own.map((row) =>
+  // getGalleryDetail(row.id)))` in src/lib/graphql/types/query.ts makes
+  // `getGalleryDetailsByIdsMock` never get called at all (it calls
+  // `getGalleryDetail` instead, unmocked-relevant here since that mock isn't
+  // asserted), and the `toHaveBeenCalledTimes(1)` below would instead see 0
+  // calls — see this task's own report for the observed RED output. THREE
+  // galleries on purpose, matching this repo's own ">= 3 fixture
+  // discriminates N+1" convention (page.test.ts's own comment on its picker
+  // test): with only one or two galleries, "called once with every id" and
+  // "called once per gallery" are not yet distinguishable by a bare call
+  // count on their own — three is the smallest fixture where they diverge in
+  // a way a single `toHaveBeenCalledTimes` assertion can catch.
+  const THIRD_GALLERY_ID = "33333333-3333-4333-8333-333333333333";
+
+  it("resolves the detail fetch in exactly ONE batched call for three owned galleries, not one call per gallery", async () => {
+    authMock.mockResolvedValue(clientASession());
+    getGalleriesForClientMock.mockResolvedValue([
+      { id: GALLERY_ID },
+      { id: OTHER_GALLERY_ID },
+      { id: THIRD_GALLERY_ID },
+    ]);
+    getGalleryDetailsByIdsMock.mockResolvedValue([
+      galleryDetail({ id: GALLERY_ID }),
+      galleryDetail({ id: OTHER_GALLERY_ID }),
+      galleryDetail({ id: THIRD_GALLERY_ID }),
+    ]);
+    const { POST } = await import("./route");
+
+    const response = await POST(graphqlRequest(`{ galleries { id } }`));
+
+    const body = await bodyOf(response);
+    expect(body.data).toEqual({
+      galleries: [{ id: GALLERY_ID }, { id: OTHER_GALLERY_ID }, { id: THIRD_GALLERY_ID }],
+    });
+    expect(getGalleryDetailsByIdsMock).toHaveBeenCalledTimes(1);
+    expect(getGalleryDetailsByIdsMock).toHaveBeenCalledWith([
+      GALLERY_ID,
+      OTHER_GALLERY_ID,
+      THIRD_GALLERY_ID,
+    ]);
+    // The OLD per-gallery path must never fire at all.
+    expect(getGalleryDetailMock).not.toHaveBeenCalled();
   });
 });
 

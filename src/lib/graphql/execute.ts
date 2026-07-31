@@ -48,44 +48,67 @@
 //    every caller is server code executing a document written in this
 //    repository — never a document that arrived from a client. Do not add a
 //    caller that takes its document, or any part of it, from a request.
-//  * It does NOT type-check the result against the document. `TData` is
-//    supplied by the caller and cast into. Until task #32's codegen exists,
-//    those types are hand-written: step 2 above proves the DOCUMENT matches
-//    the SCHEMA, and nothing yet proves the hand-written TypeScript matches
-//    the document. Keep the result types beside their documents (see
-//    ./client-gallery-reads.ts) so the two stay readable together.
 //  * It does NOT batch, cache or dedupe across calls. Two calls issue two
 //    executions.
+//
+// ─── WHERE `TData` COMES FROM (task #32 changed this) ──────────────────────
+// `document` is a `TypedDocumentNode<TData, TVariables>`, so both the result
+// type and the variables type are read OFF THE DOCUMENT rather than named by
+// the caller. Pass a document from `./generated` (built by `bun run codegen`
+// from the same schema this function executes) and there is no result type to
+// write down and no way to name one that does not belong to that document.
+// That closes the gap this file's header used to disclose: until #32, `TData`
+// was a bare type parameter the caller supplied, and the hand-written types in
+// ./client-gallery-reads.ts were checked against the schema (step 2) but never
+// against their own document.
+//
+// TWO THINGS THAT ARE STILL TRUE AND WORTH NOT OVERCLAIMING PAST:
+//  * `result.data` is still CAST to `TData` at the end of this function.
+//    graphql-js's `execute()` is typed as returning an untyped `ObjMap`, so
+//    what the cast trusts is the executor honouring the schema — not the
+//    caller's honesty, which is the part that changed.
+//  * a document that is NOT a generated one still type-checks. The type
+//    carrier on `TypedDocumentNode` (`__apiType?`) is OPTIONAL, so a plain
+//    `parse("...")` result is structurally assignable and simply infers
+//    `TData` as `unknown` (verified, not assumed — see #32's report). That is
+//    wanted rather than tolerated: two tests beside this file pass raw parsed
+//    documents deliberately, one to prove step 2 rejects an unknown field and
+//    one to prove a failing resolver surfaces as a throw. But it does mean
+//    "the document is typed" is something a call site earns by importing from
+//    `./generated`, not something this signature enforces.
 import "server-only";
 
+import type { TypedDocumentNode } from "@graphql-typed-document-node/core";
 import { type DocumentNode, execute, validate } from "graphql";
 import type { Session } from "next-auth";
 import type { GraphQLContext } from "./context";
 import { getSchema } from "./schema";
 
 /** Documents already validated in this process. Keyed on the document OBJECT,
- * so a module-scope `parse(...)` constant is validated exactly once no matter
- * how many times its page renders, while a document built fresh per call would
- * be re-validated every time (correct, just not free). Weak so it can never
- * pin a document that its own module has been discarded with. */
+ * so a module-scope document constant is validated exactly once no matter how
+ * many times its page renders, while a document built fresh per call would be
+ * re-validated every time (correct, just not free). The generated documents
+ * are module-scope constants in ./generated/graphql.ts, so every page sharing
+ * one shares its memo entry too. Weak so it can never pin a document that its
+ * own module has been discarded with. */
 const validatedDocuments = new WeakSet<DocumentNode>();
 
 /**
  * Runs `document` against this app's schema with `session` in the context, and
- * returns its `data` — see this file's header for the full list of what that
- * does and does not include.
+ * returns its `data`, typed by the document itself — see this file's header
+ * for the full list of what that does and does not include.
  *
  * `session` is required rather than optional, and accepts `null` explicitly,
  * so that "this caller has no session" is always a decision somebody wrote
  * down rather than an argument somebody forgot.
  */
-export async function executeServerDocument<TData>({
+export async function executeServerDocument<TData, TVariables extends Record<string, unknown>>({
   document,
   variableValues,
   session,
 }: {
-  document: DocumentNode;
-  variableValues?: Record<string, unknown>;
+  document: TypedDocumentNode<TData, TVariables>;
+  variableValues?: TVariables;
   session: Session | null;
 }): Promise<TData> {
   const schema = getSchema();
@@ -111,11 +134,15 @@ export async function executeServerDocument<TData>({
     );
   }
 
-  // Unreachable while the schema's root fields are all nullable-or-list and
-  // its resolvers never throw (both true today, both checked by the tests
-  // beside this file) — asserted rather than cast past, because `data: null`
-  // with no `errors` would otherwise become `undefined` property reads inside
-  // a page.
+  // Defensive, and no test in this repo reaches it. `data: null` means a
+  // non-nullable field failed and the null propagated all the way to the root,
+  // and the GraphQL spec requires the error that caused it to be in `errors` —
+  // so the branch above has already thrown by then. (Task #32 made most of
+  // this schema's fields non-null, including the `galleryList`/`galleries`
+  // root lists, so that propagation is possible now where it was not before;
+  // the ORDER of these two checks is what keeps it a thrown error either way.)
+  // Asserted rather than cast past, because `data: null` reaching a page would
+  // become `undefined` property reads several frames from the cause.
   if (result.data == null) {
     throw new Error("GraphQL execution returned no data and no errors");
   }

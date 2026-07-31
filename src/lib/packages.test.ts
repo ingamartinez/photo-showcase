@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { eqColumnAndValue } from "@/lib/test/eq-column-and-value";
 
 // `import "server-only"` only resolves inside a real Next.js bundle — see
 // src/lib/auth-guards.test.ts for the same stub, needed here transitively.
@@ -10,22 +11,14 @@ vi.mock("@/lib/db", () => ({
   db: { query: { packages: { findMany: (...args: unknown[]) => findManyMock(...args) } } },
 }));
 
-// Same duck-typing helper as src/lib/clients.test.ts — extracts { column,
-// value } out of a drizzle `eq(column, value)` condition by its query chunks,
-// so the assertion below fails for a REAL reason (wrong column/value, or no
-// filter at all) instead of trusting a mock told what to return.
-function eqColumnAndValue(condition: unknown): { column?: string; value?: unknown } {
-  const chunks = (condition as { queryChunks?: unknown[] }).queryChunks ?? [];
-  let column: string | undefined;
-  let value: unknown;
-  for (const chunk of chunks) {
-    if (chunk && typeof chunk === "object") {
-      if ("name" in chunk && "table" in chunk) column = (chunk as { name: string }).name;
-      if ("value" in chunk && "encoder" in chunk) value = (chunk as { value: unknown }).value;
-    }
-  }
-  return { column, value };
-}
+// Task #119: this used to carry a local copy of `eqColumnAndValue` that read
+// the DB column name straight off the condition and indexed fixture rows
+// with it directly — silently wrong for any column whose JS key and DB name
+// differ. Only worked here by accident, because the assertion below compares
+// `active`, where the two names coincide. Now shared via
+// src/lib/test/eq-column-and-value.ts — see that module's own header comment
+// for the full story, including why it throws instead of returning
+// `undefined` for an unresolved column.
 
 beforeEach(() => {
   findManyMock.mockReset();

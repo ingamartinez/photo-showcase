@@ -20,6 +20,23 @@
 // hardcoding a snake_case<->camelCase transform, keeps this correct for
 // every column — including ones where the JS key and DB name differ — not
 // just the ones where they happen to match.
+//
+// Task #119, on whether this exception stays singular: it doesn't, but the
+// convention isn't retired either. This module was already imported by two
+// call sites before this task (both fixed by #53); #119 added three more
+// (src/lib/packages.test.ts, src/lib/clients.test.ts,
+// src/app/dashboard/clients/actions.test.ts) — every one of them a file that
+// carried the SAME latent bug shape described above, still passing only
+// because its JS keys happened to match its DB column names. The other six
+// files with a locally-corrected `eqColumnAndValue` (e.g.
+// src/lib/asset-access.test.ts) carry no such risk — they already resolve
+// through the table object, same as this one does — so #119 deliberately
+// left them duplicated rather than migrating them for consistency alone.
+// The rule this module is exercising, then, is narrower than "share this
+// helper everywhere": migrate a file's local copy here ONLY when that copy
+// is demonstrably capable of the silent-pass bug this file exists to
+// prevent. A locally-corrected copy is not a reason to touch a file; a
+// locally-BUGGY one is.
 export function eqColumnAndValue(condition: unknown): { column: string; value: unknown } {
   const chunks = (condition as { queryChunks?: unknown[] }).queryChunks ?? [];
   let dbColumnName: string | undefined;

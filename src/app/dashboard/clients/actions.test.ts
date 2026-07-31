@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "next-auth";
+import { eqColumnAndValue } from "@/lib/test/eq-column-and-value";
 
 // `import "server-only"` (transitively, via src/lib/auth-guards.ts) only
 // resolves inside a real Next.js bundle — see src/lib/auth-guards.test.ts.
@@ -32,10 +33,9 @@ vi.mock("next/cache", () => ({
 // block is exercised against the actual wrapped shape it has to unwrap in
 // production, not a shape that only looks similar. `select().from().where()
 // .limit()` really filters by the column/value encoded in the `eq()`
-// condition it's given (duck-typed off drizzle's SQL chunks — a PgColumn-
-// like chunk has `.name` + `.table`, a Param-like chunk has `.value` +
-// `.encoder`; verified against the real shape with a throwaway script
-// before writing this).
+// condition it's given, resolved via the shared `eqColumnAndValue` helper
+// (src/lib/test/eq-column-and-value.ts) — see task #119's note further down
+// for why this file no longer carries its own local copy.
 // Task #47's negative-control sentinel — see the `@/lib/db` mock factory
 // below for what it triggers. Declared with `const` (not `vi.hoisted`)
 // because it is only read INSIDE the (also hoisted) `vi.mock("@/lib/db", ...)`
@@ -46,18 +46,14 @@ const OTHER_SQLSTATE_TRIGGER_EMAIL = "overloaded@example.com";
 
 type Row = Record<string, unknown>;
 
-function eqColumnAndValue(condition: unknown): { column?: string; value?: unknown } {
-  const chunks = (condition as { queryChunks?: unknown[] }).queryChunks ?? [];
-  let column: string | undefined;
-  let value: unknown;
-  for (const chunk of chunks) {
-    if (chunk && typeof chunk === "object") {
-      if ("name" in chunk && "table" in chunk) column = (chunk as { name: string }).name;
-      if ("value" in chunk && "encoder" in chunk) value = (chunk as { value: unknown }).value;
-    }
-  }
-  return { column, value };
-}
+// Task #119: this used to carry a local copy of `eqColumnAndValue` that read
+// the DB column name straight off the condition and indexed fixture rows
+// with it directly — silently wrong for any column whose JS key and DB name
+// differ. Only worked here by accident, because the only column this file
+// filters by is `email`, where the two names coincide. Now shared via
+// src/lib/test/eq-column-and-value.ts, whose version throws (rather than
+// returning `column: undefined`) when a condition can't be resolved — see
+// that module's own header comment for the full story.
 
 vi.mock("@/lib/db", async () => {
   const { PostgresError } = await import("postgres");
@@ -112,7 +108,6 @@ vi.mock("@/lib/db", async () => {
           where: (condition: unknown) => ({
             limit: async (n: number) => {
               const { column, value } = eqColumnAndValue(condition);
-              if (!column) throw new Error("eqColumnAndValue: not an eq() condition");
               return rows.filter((r) => r[column] === value).slice(0, n);
             },
           }),

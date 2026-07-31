@@ -299,6 +299,55 @@ describe("ClientGalleryPage chrome", () => {
     expect(secondWrapper?.getAttribute("style")).toContain("aspect-ratio: 900 / 1600");
   });
 
+  // Task #145: the redesigned pick control is an unlabelled 48px circle
+  // (design/system/client.html:200-208), so the screen has to say once what
+  // it does — the mock's own sentence, at client.html:714. Copy lives with
+  // its test in the same slice, per this epic's standing rule; if this
+  // sentence is ever reworded, this is the assertion that moves with it.
+  describe("the pick control's one instruction (task #145)", () => {
+    const ONE_ASSET = [
+      {
+        id: "a1",
+        originalFilename: "IMG_0001.JPG",
+        proofKey: "galleries/g1/proofs/a1.webp",
+        proofWidth: 1600,
+        proofHeight: 1067,
+        isSelected: false,
+        sortOrder: 0,
+        finalKey: null,
+        isEdited: false,
+      },
+    ];
+
+    it("tells the client what the circle does while the selection is still open", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail({ assets: ONE_ASSET }));
+
+      render(await ClientGalleryPage(paramsFor(SLUG)));
+
+      expect(
+        screen.getByText(/Tocá una foto para verla grande\. El círculo la elige\./),
+      ).toBeDefined();
+    });
+
+    // The negative half: once the selection is submitted every toggle renders
+    // disabled (#25), so there is no circle left to press and the sentence
+    // would be a lie. A regression that renders it unconditionally is exactly
+    // what this catches.
+    it("stops saying it once the selection has been submitted", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(
+        galleryDetail({
+          status: "selected",
+          selectionSubmittedAt: new Date("2026-07-28T12:00:00.000Z"),
+          assets: ONE_ASSET,
+        }),
+      );
+
+      render(await ClientGalleryPage(paramsFor(SLUG)));
+
+      expect(screen.queryByText(/El círculo la elige/)).toBeNull();
+    });
+  });
+
   it("shows a friendly empty state when the gallery has no assets yet", async () => {
     getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail({ assets: [] }));
 

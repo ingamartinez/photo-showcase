@@ -1,0 +1,208 @@
+// @vitest-environment jsdom
+//
+// The VISUAL half of the proof grid, tested on its own — which is the whole
+// point of task #144's split and the reason task #145 could be reviewed as a
+// redesign rather than as a change to the live-synchronisation logic.
+// <ProofTile> holds no state, issues no request and decides nothing, so
+// everything below is a pure input -> markup assertion; the toggling,
+// polling, quota and submit-lock behaviour these props FEED is proven in
+// proof-grid.test.tsx against the real <ProofGrid> and the real
+// `useSharedSelection`, and nothing here duplicates it.
+//
+// WHAT THESE TESTS CAN AND CANNOT SEE: jsdom applies no stylesheet, so a
+// Tailwind class is a string here and nothing more. Where the assertion is
+// really "this class is present", the test says so in its own name rather
+// than claiming a rendered size nobody measured — the measured, at-390px
+// verification of this slice is a Playwright capture, not this file.
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { ProofTile } from "./proof-tile";
+import type { ProofAsset } from "./proof-grid";
+
+const ASSET: ProofAsset = {
+  id: "a1",
+  originalFilename: "IMG_0001.JPG",
+  proofWidth: 1600,
+  proofHeight: 1067,
+  isSelected: false,
+  proofUrl: "https://r2.example.com/proof-1",
+  hasFinal: false,
+  displayUrl: null,
+};
+
+function renderTile(overrides: Partial<Parameters<typeof ProofTile>[0]> = {}) {
+  const props = {
+    asset: ASSET,
+    position: 1,
+    src: "https://r2.example.com/proof-1",
+    isSelected: false,
+    isPending: false,
+    isLocked: false,
+    showDownload: false,
+    onError: vi.fn(),
+    onOpen: vi.fn(),
+    onToggleSelection: vi.fn(),
+    ...overrides,
+  };
+  return { props, ...render(<ProofTile {...props} />) };
+}
+
+function pickButton(): HTMLButtonElement {
+  return screen.getByRole("button", { name: /^(Seleccionar|Quitar de seleccionadas)/ });
+}
+
+afterEach(cleanup);
+
+describe("ProofTile", () => {
+  // Task #145's headline requirement, and the one this whole slice exists
+  // for: "el toggle tiene que ser cómodo con el pulgar. Objetivo táctil de
+  // 44px mínimo". The mock's own figure is 48px (`--tap`,
+  // design/system/client.html:49, applied at :200-202).
+  //
+  // This asserts the CLASSES, not a measured box — jsdom has no layout and
+  // no stylesheet, so it cannot measure one. `h-12 w-12` is Tailwind's 48px,
+  // and that is exactly as much as this file is entitled to claim.
+  it("gives the pick control Tailwind's 48px square classes (h-12/w-12), not the old text pill's padding", () => {
+    renderTile();
+
+    const className = pickButton().className;
+    expect(className).toContain("h-12");
+    expect(className).toContain("w-12");
+    // The pill it replaced: `px-2 py-1 text-xs`, ~24px tall.
+    expect(className).not.toContain("px-2");
+    expect(className).not.toContain("text-xs");
+  });
+
+  // "Elegida/no elegida se distingue de un vistazo y NO DEPENDE SOLO DEL
+  // COLOR" — task #145's acceptance criterion, verbatim. The two channels
+  // that survive greyscale are asserted here: a glyph (shape) inside the pick
+  // control, and an inset frame element (structure) over the photo. The
+  // third, the photo's own brightening, IS colour/luminance and is not what
+  // this test rests on.
+  describe("picked state is legible without colour", () => {
+    it("renders a check glyph in the pick control and an inset frame over a picked photo", () => {
+      const { container } = renderTile({ isSelected: true });
+
+      expect(pickButton().textContent).toContain("✓");
+      expect(container.querySelectorAll("span[aria-hidden='true'].border-accent")).toHaveLength(1);
+    });
+
+    it("renders neither the glyph nor the frame on an unpicked photo", () => {
+      const { container } = renderTile({ isSelected: false });
+
+      expect(pickButton().textContent).not.toContain("✓");
+      expect(container.querySelectorAll("span[aria-hidden='true'].border-accent")).toHaveLength(0);
+    });
+
+    // The machine-readable channel, unchanged by the redesign: the visual
+    // treatment above is what a sighted client reads, `aria-pressed` is what
+    // everyone else reads, and losing it while keeping the ✓ would be an
+    // invisible regression.
+    it.each([true, false])(
+      "carries the same fact in aria-pressed (isSelected=%s)",
+      (isSelected) => {
+        renderTile({ isSelected });
+
+        expect(pickButton().getAttribute("aria-pressed")).toBe(String(isSelected));
+      },
+    );
+  });
+
+  // The accessible names deliberately did NOT move with the pixels: they name
+  // the actual photo, unlike the mock's own "Elegir foto 1", and
+  // proof-grid.test.tsx plus [publicSlug]/page.chrome.test.tsx query by them
+  // in ~20 places.
+  it.each([
+    [false, "Seleccionar: IMG_0001.JPG"],
+    [true, "Quitar de seleccionadas: IMG_0001.JPG"],
+  ])("keeps the pick control's accessible name (isSelected=%s)", (isSelected, name) => {
+    renderTile({ isSelected });
+
+    expect(screen.getByRole("button", { name })).toBeDefined();
+  });
+
+  // Task #145: "tapping to LOOK and tapping to CHOOSE are never the same
+  // gesture" (client.html:197-199). Two separate buttons, and picking must
+  // not also open the lightbox — which is what a nested button, or a missing
+  // `stopPropagation`, would silently produce.
+  it("keeps looking and choosing on two separate controls", () => {
+    const { props } = renderTile();
+
+    fireEvent.click(pickButton());
+    expect(props.onToggleSelection).toHaveBeenCalledTimes(1);
+    expect(props.onOpen).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver IMG_0001.JPG" }));
+    expect(props.onOpen).toHaveBeenCalledTimes(1);
+    expect(props.onToggleSelection).toHaveBeenCalledTimes(1);
+  });
+
+  // Task #25, mirrored here (the real gate is server-side — see
+  // use-shared-selection.ts's `isLockedRef`). A `delivered` gallery is
+  // `isLocked` too, which is why the download case below can assume both.
+  it.each([
+    ["locked", { isLocked: true }],
+    ["pending", { isPending: true }],
+  ])("disables the pick control while %s", (_label, overrides) => {
+    renderTile(overrides);
+
+    expect(pickButton().disabled).toBe(true);
+  });
+
+  // The CLS contract from task #23, restated after the redesign because the
+  // redesign is exactly what could have dropped it: the box is reserved from
+  // the asset's OWN stored proof dimensions, before the <img> loads, and NOT
+  // from the mock's uniform `aspect-ratio: 2 / 3` (client.html:181).
+  it("reserves the box from the asset's own proof dimensions, before the image loads", () => {
+    const { container } = renderTile({
+      asset: { ...ASSET, proofWidth: 900, proofHeight: 1600 },
+    });
+
+    const wrapper = container.querySelector("img")?.parentElement;
+    expect(wrapper?.getAttribute("style")).toContain("aspect-ratio: 900 / 1600");
+  });
+
+  // Task #145's "no se toca" list, first item: a presigned proof URL is good
+  // for PRESIGNED_URL_TTL_SECONDS (5 minutes) and picking 15 of 84 is not a
+  // five-minute job, so the <img>'s own onError is the recovery path and a
+  // restyle may not drop it. The re-signing itself lives in use-proof-urls.ts
+  // and is proven against the real hook in proof-grid.test.tsx; what is
+  // proven here is only that this markup still HAS the hook wired to it.
+  it("still reports an image error upward, so an expired URL can be re-signed", () => {
+    const { container, props } = renderTile();
+
+    const img = container.querySelector("img");
+    expect(img).not.toBeNull();
+    fireEvent.error(img as HTMLImageElement);
+
+    expect(props.onError).toHaveBeenCalledTimes(1);
+  });
+
+  // The mock's `.tile__n` (client.html:192-195), zero-padded so 84 proofs
+  // stay in one visual column of digits.
+  it("renders its 1-based position, zero-padded", () => {
+    renderTile({ position: 4 });
+
+    expect(screen.getByText("04")).toBeDefined();
+  });
+
+  // The collision task #145 created and had to resolve: the pick control took
+  // over the bottom-right corner the download button already occupied, and a
+  // `delivered` gallery renders BOTH (the toggle stays mounted-and-disabled
+  // per #25 rather than being hidden). If these ever share a corner again the
+  // client gets one control stacked invisibly on top of the other.
+  it("keeps the delivered-gallery download button out of the pick control's corner", () => {
+    const { container } = renderTile({ isSelected: true, isLocked: true, showDownload: true });
+
+    const download = screen.getByRole("button", { name: "Descargar: IMG_0001.JPG" });
+    const downloadCorner = download.closest("div.absolute");
+    expect(downloadCorner).not.toBeNull();
+    expect(downloadCorner?.className).toContain("left-2");
+    expect(downloadCorner?.className).not.toContain("right-");
+    expect(pickButton().className).toContain("right-[7px]");
+    // Both really are on the tile at once — the premise of this test, not an
+    // aside: if `delivered` ever stopped rendering the disabled toggle the
+    // assertion above would still pass while guarding nothing.
+    expect(container.querySelectorAll("button")).toHaveLength(3);
+  });
+});

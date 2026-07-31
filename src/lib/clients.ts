@@ -78,12 +78,5 @@ export async function getClientCount(): Promise<number> {
   return row?.value ?? 0;
 }
 
-/** Spanish, pluralized copy for `getClientCount`'s result — the total client
- * count on `/dashboard` (task #88). Distinct from `formatClientGalleryCount`
- * in `@/lib/format` (moved out of this file by task #49 — see that module's
- * section comment), which describes how many galleries belong to ONE
- * client, not how many clients exist across the whole studio. */
-export function formatClientCount(clientCount: number): string {
-  if (clientCount === 1) return "1 cliente";
-  return `${clientCount} clientes`;
-}
+// `formatClientCount` (this count's Spanish copy) moved to `@/lib/format` by
+// task #122 — see that module's section comment for why.

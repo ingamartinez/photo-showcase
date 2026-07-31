@@ -182,17 +182,9 @@ describe("getPendingSelectionCount", () => {
   });
 });
 
-describe("formatPendingSelectionCount", () => {
-  it.each([
-    [0, null],
-    [1, "1 selección esperando"],
-    [2, "2 selecciones esperando"],
-    [5, "5 selecciones esperando"],
-  ])("formats %s as %s", async (pendingCount, expected) => {
-    const { formatPendingSelectionCount } = await import("./galleries");
-    expect(formatPendingSelectionCount(pendingCount)).toBe(expected);
-  });
-});
+// formatPendingSelectionCount's tests moved to src/lib/format.test.ts (task
+// #122) — it is no longer exported from this module, see that file's
+// section comment.
 
 describe("isGalleryVisibleToClient", () => {
   it.each([
@@ -702,6 +694,36 @@ describe("getGalleryCount", () => {
     const { getGalleryCount } = await import("./galleries");
 
     await expect(getGalleryCount()).resolves.toBe(0);
+  });
+});
+
+// Task #121: nothing pinned `GALLERY_COUNT_EXCLUDED_STATUS` against the
+// `gallery_status` enum, so a sixth status added to the enum would be
+// silently counted as "en marcha" with zero test failures — the same shape
+// of defect #90 itself was filed for, a count and the words describing it
+// quietly drifting apart. Mirrors the pattern src/lib/asset-access.test.ts
+// established for `ASSET_MUTATION_BLOCKED_STATUSES` (task #58): rather than
+// asserting the exclusion equals a hand-copied literal list (a second copy
+// that would drift in lockstep with the real one), this filters the LIVE
+// `galleryStatus.enumValues` down to the statuses the count INCLUDES —
+// everything except the real, exported `GALLERY_COUNT_EXCLUDED_STATUS` — and
+// asserts that remainder is exactly what is expected today. A status added
+// to the enum without an explicit decision here changes the filtered
+// remainder and fails this assertion instead of shipping silently.
+describe("getGalleryCount's 'en marcha' exclusion — pinned against the gallery_status enum", () => {
+  it("counts every enum member except GALLERY_COUNT_EXCLUDED_STATUS", async () => {
+    const { galleryStatus } = await import("./db/schema");
+    const { GALLERY_COUNT_EXCLUDED_STATUS } = await import("./galleries");
+
+    const included = galleryStatus.enumValues.filter(
+      (status) => status !== GALLERY_COUNT_EXCLUDED_STATUS,
+    );
+
+    // Today's deliberate decision (task #90): every status except `archived`
+    // counts as "en marcha". A sixth status lands in `included` too (since
+    // it won't equal GALLERY_COUNT_EXCLUDED_STATUS) and fails this exact
+    // assertion until a human decides which side it belongs on.
+    expect([...included].sort()).toEqual(["delivered", "draft", "proofing", "selected"]);
   });
 });
 

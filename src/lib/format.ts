@@ -75,3 +75,39 @@ export function formatStudioGalleryCount(galleryCount: number): string {
   if (galleryCount === 1) return "1 galería";
   return `${galleryCount} galerías`;
 }
+
+// ---------------------------------------------------------------------------
+// Client-count and pending-selection pluralizers (task #122).
+//
+// `formatClientCount` (formerly `@/lib/clients`) and
+// `formatPendingSelectionCount` (formerly `@/lib/galleries`) were left behind
+// when #49/#90 moved the two gallery-count pluralizers above — #49's own
+// scope named the gallery-count collision specifically, and #90's fold-in
+// note scoped itself to `formatGalleryCount`/`formatGalleryCountTotal`. That
+// left `src/app/dashboard/page.chrome.test.tsx` re-implementing both
+// functions' logic inside its whole-module mocks of `@/lib/clients` and
+// `@/lib/galleries` (each pulled in for jsdom `server-only` reasons, same as
+// this file's own header comment), just to assert on them — the exact
+// "wiring test copies the logic it asserts on" smell #49 exists to remove,
+// now closed for the last two survivors too.
+// ---------------------------------------------------------------------------
+
+/** Spanish, pluralized copy for `getClientCount`'s result (`@/lib/clients`)
+ * — the total client count on `/dashboard` (task #88). Distinct from
+ * `formatClientGalleryCount` above, which describes how many galleries
+ * belong to ONE client, not how many clients exist across the whole studio. */
+export function formatClientCount(clientCount: number): string {
+  if (clientCount === 1) return "1 cliente";
+  return `${clientCount} clientes`;
+}
+
+/** Spanish, pluralized copy for `getPendingSelectionCount`'s result
+ * (`@/lib/galleries`). Returns `null` at zero — the dashboard renders
+ * nothing in that case rather than a "0 selecciones esperando" that would
+ * just be noise (same shape as `formatStudioGalleryCount` above, but zero
+ * has no useful sentence here). */
+export function formatPendingSelectionCount(pendingCount: number): string | null {
+  if (pendingCount <= 0) return null;
+  if (pendingCount === 1) return "1 selección esperando";
+  return `${pendingCount} selecciones esperando`;
+}

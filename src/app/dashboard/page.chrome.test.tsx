@@ -12,14 +12,18 @@
 // markup, and that "no pending selections"/"nothing loaded yet" render the
 // genuine empty states rather than being permanently shown.
 //
-// `formatPendingSelectionCount` and `formatClientCount` still need a copy
-// here — both stayed in `@/lib/galleries`/`@/lib/clients`, which this file
-// mocks wholesale. `formatStudioGalleryCount` does NOT: task #49/#90 moved
-// it (alongside the per-client `formatGalleryCount`, used on the sibling
-// clients page and renamed `formatClientGalleryCount`) into `@/lib/format`,
-// a plain module this file never mocks — see that module's own
-// header/section comments for why. The REAL `formatStudioGalleryCount`
-// runs here.
+// `@/lib/galleries` and `@/lib/clients` are mocked WHOLESALE here (not
+// selectively) because BOTH genuinely import `@/lib/db` and therefore
+// Postgres and therefore Node's `tls`, which jsdom cannot resolve — same
+// failure class as this file's own header comment on `server-only`. Only the
+// DB-touching readers (`getPendingSelectionCount`, `getGalleryCount`,
+// `getClientCount`) are mocked below; none of the three Spanish-copy
+// pluralizers this page uses (`formatClientCount`,
+// `formatPendingSelectionCount`, `formatStudioGalleryCount`) live in either
+// module anymore — task #49/#90 moved the first two out already, and task
+// #122 moved the last two survivors — they all now live in `@/lib/format`, a
+// plain module with no `server-only`/`@/lib/db` import that this file never
+// mocks, so the REAL functions run here.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen } from "@testing-library/react";
 import type { Session } from "next-auth";
@@ -33,26 +37,11 @@ const getGalleryCountMock = vi.fn<() => Promise<number>>();
 vi.mock("@/lib/galleries", () => ({
   getPendingSelectionCount: () => getPendingSelectionCountMock(),
   getGalleryCount: () => getGalleryCountMock(),
-  // Real pluralization logic, not a mock — this file is what proves the
-  // real copy actually reaches the page (src/lib/galleries.test.ts already
-  // proves formatPendingSelectionCount's own logic in isolation).
-  formatPendingSelectionCount: (pendingCount: number) => {
-    if (pendingCount <= 0) return null;
-    if (pendingCount === 1) return "1 selección esperando";
-    return `${pendingCount} selecciones esperando`;
-  },
 }));
 
 const getClientCountMock = vi.fn<() => Promise<number>>();
 vi.mock("@/lib/clients", () => ({
   getClientCount: () => getClientCountMock(),
-  // Real pluralization logic, same reasoning as formatPendingSelectionCount
-  // above — `formatClientCount` did not move (only the per-client
-  // `formatGalleryCount` did, task #49), so it still needs a copy here.
-  formatClientCount: (clientCount: number) => {
-    if (clientCount === 1) return "1 cliente";
-    return `${clientCount} clientes`;
-  },
 }));
 
 beforeEach(() => {

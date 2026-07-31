@@ -1,13 +1,13 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { requireAdmin } from "@/lib/auth-guards";
-import { formatClientCount, getClientCount } from "@/lib/clients";
-import { formatStudioGalleryCount } from "@/lib/format";
+import { getClientCount } from "@/lib/clients";
 import {
+  formatClientCount,
   formatPendingSelectionCount,
-  getGalleryCount,
-  getPendingSelectionCount,
-} from "@/lib/galleries";
+  formatStudioGalleryCount,
+} from "@/lib/format";
+import { getGalleryCount, getPendingSelectionCount } from "@/lib/galleries";
 
 export const metadata: Metadata = {
   title: "Panel",

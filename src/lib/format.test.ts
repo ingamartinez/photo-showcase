@@ -42,3 +42,30 @@ describe("formatStudioGalleryCount", () => {
     expect(formatStudioGalleryCount(galleryCount)).toBe(expected);
   });
 });
+
+// Moved here from src/lib/clients.test.ts (task #122) — see this file's
+// section comment on `formatClientCount` for why.
+describe("formatClientCount", () => {
+  it.each([
+    [1, "1 cliente"],
+    [2, "2 clientes"],
+    [13, "13 clientes"],
+  ])("formats %i as %s", async (clientCount, expected) => {
+    const { formatClientCount } = await import("./format");
+    expect(formatClientCount(clientCount)).toBe(expected);
+  });
+});
+
+// Moved here from src/lib/galleries.test.ts (task #122) — see this file's
+// section comment on `formatPendingSelectionCount` for why.
+describe("formatPendingSelectionCount", () => {
+  it.each([
+    [0, null],
+    [1, "1 selección esperando"],
+    [2, "2 selecciones esperando"],
+    [5, "5 selecciones esperando"],
+  ])("formats %s as %s", async (pendingCount, expected) => {
+    const { formatPendingSelectionCount } = await import("./format");
+    expect(formatPendingSelectionCount(pendingCount)).toBe(expected);
+  });
+});

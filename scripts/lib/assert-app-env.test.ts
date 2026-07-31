@@ -1,17 +1,10 @@
-// Covers the APP_ENV guard only (task #104 / #81's trap): a maintenance
-// script run by hand over SSH inherits no environment from systemd, so
-// `namespacedKey()` would silently default to the `dev/` prefix and this
-// script would report success while writing nothing production actually
-// serves. The rest of `main()` (the DB scan, the R2 read/write loop) is
-// exercised end-to-end only on the droplet itself, at the acceptance
-// criteria's request — it needs a real Postgres row and a real final in R2,
-// neither of which a unit test can fake meaningfully here.
-//
-// Importing this module is side-effect-free: `main()` at the bottom of
-// backfill-display-derivatives.ts is gated on `import.meta.main`, which is
-// false for a module reached via `import` rather than run directly by bun.
+// Covers the APP_ENV guard itself (task #81) — see assert-app-env.ts's own
+// header for the full "why". This function has no side effects beyond
+// reading `process.env.APP_ENV` and throwing, so a plain unit test is
+// sufficient; it is exercised end-to-end for real only by whichever ops
+// script calls it, against a real SSH session and a real release dir.
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { assertAppEnvIsSet } from "./backfill-display-derivatives";
+import { assertAppEnvIsSet } from "./assert-app-env";
 
 describe("assertAppEnvIsSet", () => {
   afterEach(() => {

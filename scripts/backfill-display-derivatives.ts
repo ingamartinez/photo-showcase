@@ -56,6 +56,7 @@ import { db } from "../src/lib/db";
 import { assets } from "../src/lib/db/schema";
 import { processDisplay } from "../src/lib/images";
 import { displayKey, getObjectStream, objectExists, putObject } from "../src/lib/r2";
+import { assertAppEnvIsSet } from "./lib/assert-app-env";
 
 type BackfillCounts = {
   scanned: number;
@@ -63,39 +64,6 @@ type BackfillCounts = {
   written: number;
   failed: number;
 };
-
-/** APP_ENV reaches the running app process through systemd's
- * EnvironmentFile (`/srv/photoshowcase/env/photoshowcase.env` +
- * `/srv/photoshowcase/app/current/release.env`) — a script run by hand over
- * SSH inherits none of that unless it is sourced explicitly first. r2.ts's
- * `namespacedKey()` then fails CLOSED for the running app server (unset
- * APP_ENV -> `dev/` prefix, by design), but "fail closed by defaulting" is
- * exactly the wrong behaviour for a maintenance script whose entire job is to
- * write into PRODUCTION: it would silently write every display derivative
- * into the `dev/` namespace, print success, and leave production's real
- * `display` keys untouched — a total no-op that looks identical to a
- * successful run (task #81, task #104). So this script refuses outright
- * instead of defaulting either way: it does not require `APP_ENV=production`
- * specifically (running it against the dev namespace on purpose, e.g. while
- * developing this script, is fine) — only that whoever runs it said which
- * environment they mean. */
-export function assertAppEnvIsSet(): void {
-  if (!process.env.APP_ENV) {
-    throw new Error(
-      "APP_ENV is not set. Refusing to run backfill:display: r2.ts's " +
-        "namespacedKey() silently prefixes every key with dev/ when APP_ENV " +
-        "is unset, so this would write display derivatives into the dev " +
-        "namespace while reporting success, and production would keep " +
-        "404ing on /display (see task #81 and task #104). Source the env " +
-        "files this process needs first, e.g. from the release dir:\n" +
-        "  set -a\n" +
-        "  . /srv/photoshowcase/env/photoshowcase.env\n" +
-        "  . /srv/photoshowcase/app/current/release.env\n" +
-        "  set +a\n" +
-        "then re-run bun run backfill:display.",
-    );
-  }
-}
 
 /** Reads a whole R2 object into memory. Deliberately NOT added to
  * src/lib/r2.ts: that module's read surface is presign (for clients) and
@@ -190,8 +158,9 @@ async function main(): Promise<void> {
 }
 
 // Gated on `import.meta.main` (Bun-native, no polyfill needed) so this file
-// can be imported from a test — to exercise `assertAppEnvIsSet` above — without
-// running the whole backfill as a side effect of the import. `bun run
+// can be imported — e.g. by scripts/ops-r2-guard.test.ts's static scan, or by
+// a future test of this file's own logic — without running the whole
+// backfill as a side effect of the import. `bun run
 // scripts/backfill-display-derivatives.ts` still runs it: `import.meta.main`
 // is only true for the entry module bun was invoked with.
 if (import.meta.main) {

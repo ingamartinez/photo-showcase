@@ -183,6 +183,37 @@ function extractClassNameValues(source: string): string[] {
   return values;
 }
 
+/**
+ * Every string literal assigned to an identifier that LOOKS LIKE a class
+ * list — name ending in `class` or `className` (either case) — the
+ * `const inputClass = "…"` idiom three of the six files this task touched
+ * use to share one class string across several elements. Missing this was
+ * a real gap: `extractClassNameValues` above only ever looks at the
+ * `className=` CALL SITE, so a forbidden class sitting in the CONSTANT one
+ * line above every call site read clean. `inputClass`, `buttonClass` and
+ * similar are exactly the shape this codebase already uses (see
+ * client-form.tsx, gallery-form.tsx, attach-gallery-clients-form.tsx), so
+ * matching the name rather than hand-listing every identifier keeps this
+ * from needing an update every time a new one is added.
+ */
+function extractIdentifierClassValues(source: string): string[] {
+  const clean = stripComments(source);
+  const values: string[] = [];
+  const isClassIdentifier = /[Cc]lass(Name)?$/;
+
+  const literalRe = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"([^"]*)"/g;
+  for (const m of clean.matchAll(literalRe)) {
+    if (isClassIdentifier.test(m[1])) values.push(m[2]);
+  }
+
+  const templateRe = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*`([^`]*)`/g;
+  for (const m of clean.matchAll(templateRe)) {
+    if (isClassIdentifier.test(m[1])) values.push(m[2]);
+  }
+
+  return values;
+}
+
 /** The wordmark's own exact size (`src/app/dashboard/layout.tsx`) — the one
  * pairing `font-serif` is allowed to appear in under /dashboard. */
 const WORDMARK_SIZE_TOKEN = "text-[18px]";
@@ -216,7 +247,11 @@ describe("no surviving marketing styling under /dashboard (task #135)", () => {
 
   it.each(FILES_UNDER_GUARD)("%s", (file) => {
     const source = readFileSync(file, "utf8");
-    const violations = extractClassNameValues(source).flatMap(findViolations);
+    const classValues = [
+      ...extractClassNameValues(source),
+      ...extractIdentifierClassValues(source),
+    ];
+    const violations = classValues.flatMap(findViolations);
 
     expect(violations, violations.join("\n")).toEqual([]);
   });

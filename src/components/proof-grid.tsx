@@ -53,13 +53,15 @@
 // anything to compute in the first place, not by re-deriving the same maths
 // twice and hoping they stay in sync.
 //
-// THE LIVE, COLLABORATIVE LAYER (task #95) lives in this component too, for
-// the same reason selection does: the tray, the grid, the counter and the
-// submit panel are four views of ONE fact — the gallery's shared selection —
-// and this is the only place all four already meet. See the "LIVE SYNC"
-// section further down for the transport, the conflict rule and the submit
-// lock; see `GET /api/galleries/[galleryId]/selection`'s own header comment
-// for why that transport is polling and what it costs the droplet.
+// THE LIVE, COLLABORATIVE LAYER (task #95, transport corrected in task #114)
+// lives in this component too, for the same reason selection does: the tray,
+// the grid, the counter and the submit panel are four views of ONE fact — the
+// gallery's shared selection — and this is the only place all four already
+// meet. See the "LIVE SYNC" section further down for the conflict rule and
+// the submit lock (unchanged since #95) and the "PUSH TRANSPORT" section
+// right after it for task #114's SSE wiring; see
+// `GET /api/galleries/[galleryId]/selection`'s own header comment for the
+// corrected transport decision and what each piece costs the droplet.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { DownloadAllButton } from "@/components/download-all-button";
 import { DownloadFinalButton } from "@/components/download-final-button";
@@ -145,17 +147,26 @@ const SUBMITTED_STATUSES = new Set<GalleryStatus>(["selected", "delivered", "arc
 // single biggest saving in this design and it costs one `Set`.
 const LIVE_SYNC_STATUSES = new Set<GalleryStatus>(["proofing", "selected"]);
 
-// 5 seconds. Chosen against the actual use — two or three people in the same
-// room or on the same call, arguing about which photos to keep — where the
-// gap between "she picked it" and seeing it is already conversational. Faster
-// buys nothing a human notices here; slower starts to feel broken when
-// somebody says "listo, ya la puse". See the route's own header comment for
-// what this cadence costs the droplet.
+// 30 seconds — task #114 changed both the VALUE and the JOB of this constant.
+// Under #95 this WAS the transport: every update, from any session, arrived
+// on the next tick, at most 5s away. Task #114 replaced that with a push
+// transport (see the "PUSH TRANSPORT" section below): the normal case is now
+// "well under a second", carried by an SSE stream fed off Postgres
+// LISTEN/NOTIFY. This constant is now the FALLBACK — a backstop for the one
+// failure mode the stream cannot self-report (a proxy or extension that
+// silently drops an `EventSource` without ever firing its `error` handler),
+// active the whole time the stream is meant to be open, independent of
+// whether it currently is. 30s was chosen, not 5s: the normal case no longer
+// depends on this number's size at all, so there is nothing to buy by
+// keeping it short, and every tick that fires while the stream IS healthy is
+// pure waste — a sixth of #95's own request volume in exactly the case where
+// it still fires for real. See the selection route's own header comment for
+// the full "whether polling survives" reasoning.
 // Exported ONLY so proof-grid.test.tsx can drive the live-sync tests against
 // the real cadence instead of a hand-copied literal that could silently drift
 // from it — the same reason the PATCH selection route exports
 // `SELECTION_LOCKED_STATUSES`.
-export const SELECTION_POLL_INTERVAL_MS = 5_000;
+export const SELECTION_POLL_INTERVAL_MS = 30_000;
 
 // How many polls in a row must fail before the tray admits it is stale. One
 // blip on a phone connection is not news and a red line every time a lift
@@ -350,8 +361,9 @@ export function ProofGrid({
   //
   //   1. If ANY toggle is in flight, the snapshot is dropped entirely. That
   //      request's own response is fresher by construction, and it is about to
-  //      arrive. A dropped tick costs 5 seconds of staleness; a merged one
-  //      costs a wrong tray.
+  //      arrive. A dropped fetch costs one fallback-interval's worth of
+  //      staleness at most (see `requestRefresh` below for why it is usually
+  //      far less); a merged one costs a wrong tray.
   //   2. If the snapshot was ISSUED at or before the clock value at which this
   //      session's last confirmed write landed, it is dropped. Deliberately
   //      over-conservative — a snapshot issued after the write was issued but
@@ -362,16 +374,46 @@ export function ProofGrid({
   // version of this one photo". The snapshot replaces `picks`, `selectionById`,
   // `quota`, `status` and `submittedAt` together, as one consistent view. A
   // half-applied snapshot is how a tray and a counter start disagreeing.
+  //
+  // WHAT "ISSUE CLOCK" MEANS FOR A PUSHED EVENT (task #114, worked out BEFORE
+  // writing the SSE wiring below, per that task's own instruction): NOTHING
+  // NEW. An SSE `changed`/`ready` message is not a snapshot and is never
+  // compared against `lastLocalWriteClockRef` itself — it carries no data at
+  // all (see `src/lib/selection-events.ts`'s own header comment on why the
+  // channel payload is never the selection). All it does is call
+  // `requestRefresh()` below, which — like the old `setInterval` tick it now
+  // shares a code path with — turns into a call to `poll()`, and `poll()`
+  // mints the clock value AT THE MOMENT IT ACTUALLY ISSUES THE FETCH
+  // (`++quotaSequenceRef.current`, unchanged from #95). So a push-triggered
+  // fetch's issue clock is stamped exactly like an interval-triggered one
+  // always was: at fetch-issue time, not at "notification received" time,
+  // not at "server wrote the row" time. Conditions 1 and 2 above therefore
+  // need no new case for "a snapshot that arrived because of a push" — by
+  // the time `applySnapshot` ever sees one, it is indistinguishable from a
+  // snapshot the old 5-second interval would have fetched, just fetched
+  // sooner. Getting this wrong (comparing against, say, the moment the
+  // `changed` event was RECEIVED, or trusting a clock value carried on the
+  // wire) would have reopened exactly the ordering hole #95's two conditions
+  // exist to close; not inventing a second clock concept is what keeps them
+  // closed.
   const lastLocalWriteClockRef = useRef(0);
-  // The tray's honesty flag: how many polls in a row have failed. Not state —
-  // only the derived `isStale` needs to re-render.
+  // The tray's honesty flag: how many FETCHES (interval, visibility-wake, or
+  // push-triggered — all go through `poll()`) in a row have failed. Not
+  // state — only the derived `isStale` needs to re-render.
   const consecutiveFailuresRef = useRef(0);
   const [isStale, setIsStale] = useState(false);
-  // One poll at a time. A tick that lands while the previous request is still
-  // outstanding (a slow connection, a suspended tab waking up) is skipped
-  // rather than queued — the next tick is 5 seconds away and carries strictly
-  // fresher data than the one that would have been queued.
+  // One poll at a time. A trigger that lands while a fetch is still
+  // outstanding does not queue a SECOND concurrent request — see
+  // `requestRefresh` below for what it does instead, which is new in task
+  // #114 (under #95's pure-interval design, the next TICK was always at most
+  // 5s away and a dropped one was cheap; under push, a `changed` event
+  // arriving mid-fetch and being silently dropped would mean waiting for the
+  // NEXT push or the 30s fallback, which is the freshness regression
+  // `requestRefresh` exists to close).
   const pollInFlightRef = useRef(false);
+  // Set when something asked for a refresh WHILE a fetch was already in
+  // flight — see `requestRefresh`.
+  const pendingRefreshRef = useRef(false);
 
   const applySnapshot = useCallback((snapshot: SelectionSnapshot, issuedAtClock: number) => {
     // Condition 1 — see the section comment above.
@@ -404,6 +446,19 @@ export function ProofGrid({
     appliedQuotaSequenceRef.current = issuedAtClock;
     setQuota(snapshot.quota);
   }, []);
+
+  // Holds the LATEST `poll` — see the comment on its own assignment below for
+  // why `poll`'s `finally` block re-triggers itself through this ref rather
+  // than calling `poll()` by name: a `useCallback` that closes over its own
+  // name (`poll` calling `poll()`) is a self-reference the React Compiler
+  // cannot preserve manual memoization through (`react-hooks/preserve-
+  // manual-memoization`, discovered by `bun run lint` failing on exactly
+  // this), even though it is perfectly valid, ordinary JavaScript at
+  // runtime. A ref sidesteps it: `pollRef.current` is a stable identity the
+  // compiler has no opinion about, assigned fresh after every definition of
+  // `poll` below, so the indirection changes nothing about WHEN or WHETHER
+  // the retry fires, only how the compiler sees it.
+  const pollRef = useRef<() => Promise<void>>(async () => {});
 
   const poll = useCallback(async () => {
     if (pollInFlightRef.current) return;
@@ -457,8 +512,41 @@ export function ProofGrid({
       if (consecutiveFailuresRef.current >= STALE_AFTER_CONSECUTIVE_FAILURES) setIsStale(true);
     } finally {
       pollInFlightRef.current = false;
+      // Task #114: something asked for a refresh WHILE this fetch was in
+      // flight (almost always a `changed` push racing the 30s fallback tick,
+      // or two pushes arriving close together) — issue exactly one more
+      // fetch right away rather than making it wait for the next trigger.
+      // Without this, that race would silently fall back to the 30-second
+      // fallback interval for freshness instead of the sub-second push path,
+      // which is the whole point of task #114.
+      if (pendingRefreshRef.current) {
+        pendingRefreshRef.current = false;
+        void pollRef.current();
+      }
     }
   }, [galleryId, applySnapshot]);
+  // Kept current in an effect, not assigned during render: refs must not be
+  // written while rendering (`react-hooks/refs`) — an effect runs in the
+  // commit phase, still well before any async `fetch` this component issues
+  // could resolve and read `pollRef.current`.
+  useEffect(() => {
+    pollRef.current = poll;
+  }, [poll]);
+
+  // The single entry point every trigger — the 30s fallback interval, the
+  // tab-visibility wake-up, and every SSE message below — calls to ask for a
+  // fresh fetch. `poll()` itself already no-ops a second concurrent call
+  // (`pollInFlightRef`); this wraps that with the queue-one-more behavior
+  // task #114 needs (see `pendingRefreshRef`'s own comment above) that plain
+  // polling under #95 never had to care about, because its next trigger was
+  // always just one fixed interval away.
+  const requestRefresh = useCallback(() => {
+    if (pollInFlightRef.current) {
+      pendingRefreshRef.current = true;
+      return;
+    }
+    void poll();
+  }, [poll]);
 
   useEffect(() => {
     // Nothing about the shared selection can change in a terminal status, so
@@ -475,11 +563,11 @@ export function ProofGrid({
       // screen nobody is looking at. The visibility listener below catches
       // them straight back up when they return, so this loses no correctness.
       if (typeof document !== "undefined" && document.hidden) return;
-      void poll();
+      requestRefresh();
     }, SELECTION_POLL_INTERVAL_MS);
 
     const onVisibilityChange = () => {
-      if (!document.hidden) void poll();
+      if (!document.hidden) requestRefresh();
     };
     document.addEventListener("visibilitychange", onVisibilityChange);
 
@@ -487,7 +575,90 @@ export function ProofGrid({
       clearInterval(interval);
       document.removeEventListener("visibilitychange", onVisibilityChange);
     };
-  }, [status, poll]);
+  }, [status, requestRefresh]);
+
+  // ==========================================================================
+  // PUSH TRANSPORT (task #114) — the SSE stream this component listens to,
+  // and what it does with each message
+  // ==========================================================================
+  //
+  // ONE `EventSource` per mounted `<ProofGrid>` (one per browser tab, which is
+  // the correct unit — see src/lib/selection-events.ts's own header comment
+  // for why the SHARING happens server-side, one Postgres LISTEN connection
+  // per app instance feeding every tab, not client-side). Opened whenever the
+  // gallery is in a status the shared selection can still change in (the same
+  // `LIVE_SYNC_STATUSES` gate the fallback interval uses), and left open
+  // regardless of tab visibility — unlike the fallback poll, an idle SSE
+  // connection costs nothing to hold (no request, no response body until a
+  // message actually arrives), and this app's own realistic concurrency (two
+  // to five viewers per gallery, per task #114's own kanban body) makes that
+  // a non-issue even summed across every open tab.
+  //
+  // TWO named events, matching `./stream/route.ts`'s own two `send()` calls,
+  // and nothing else — no generic `onmessage`, because this stream never
+  // sends an anonymous message:
+  //
+  //   `ready` — sent as the FIRST thing on every connection, including every
+  //   automatic reconnect `EventSource` performs on its own after a drop. The
+  //   FIRST `ready` of this component's lifetime is a no-op: the
+  //   server-rendered page already handed this component a fresh snapshot a
+  //   moment earlier, and refetching immediately would be exactly the
+  //   wasted-request-per-mount #95's own polling design was already careful
+  //   to avoid (see the interval effect above). Every SUBSEQUENT `ready` —
+  //   which can only mean the connection just re-established after having
+  //   been down — triggers `requestRefresh()`: a NOTIFY fired while this tab
+  //   was disconnected is gone for good (Postgres NOTIFY is not durable), so
+  //   the only honest thing to do on reconnect is treat it exactly like
+  //   "something may have changed" and re-fetch, per this task's own
+  //   acceptance criterion.
+  //
+  //   `changed` — sent every time the server's own LISTEN connection hears a
+  //   NOTIFY for this gallery. Always triggers `requestRefresh()`
+  //   immediately; this is the whole reason this stream exists.
+  //
+  // `EventSource` itself, not a hand-rolled `fetch` + `ReadableStream` reader:
+  // it is the standard browser API for exactly this (one-way, text, an
+  // established retry protocol), and — the specific reason it earns its
+  // keep here over rolling the reconnect logic by hand — it reconnects with
+  // its own backoff on ANY drop (network blip, server restart, Caddy timeout)
+  // with zero code in this component, which is also precisely why task
+  // #114's acceptance criteria call out testing that path explicitly rather
+  // than trusting it silently: see proof-grid.test.tsx's own "reconnect"
+  // tests, which drive a fake `EventSource` through a `ready`/close/`ready`
+  // sequence to prove the SECOND `ready` refetches and the first did not.
+  useEffect(() => {
+    if (!LIVE_SYNC_STATUSES.has(status)) return;
+    // Defensive, not a real-world branch: every browser this app ships to
+    // supports `EventSource`. Guards a test environment (jsdom has no
+    // built-in `EventSource`) and any future non-browser render target from
+    // throwing on `new EventSource(...)` — in either case this component
+    // still works, just on the 30s fallback poll alone rather than push,
+    // which is a staleness regression, not a correctness one.
+    if (typeof EventSource === "undefined") return;
+
+    let hasReceivedReady = false;
+    const source = new EventSource(`/api/galleries/${galleryId}/selection/stream`);
+
+    source.addEventListener("ready", () => {
+      if (!hasReceivedReady) {
+        // The very first `ready` of this connection's life: the SSR snapshot
+        // is already fresh, so this is deliberately a no-op — see the
+        // section comment above.
+        hasReceivedReady = true;
+        return;
+      }
+      // A SECOND (or later) `ready` can only be a reconnect: `EventSource`
+      // only ever sends one `ready` per underlying connection, and this
+      // stream sends `ready` as the first thing on every connection it
+      // opens.
+      requestRefresh();
+    });
+    source.addEventListener("changed", () => requestRefresh());
+
+    return () => {
+      source.close();
+    };
+  }, [galleryId, status, requestRefresh]);
 
   const toggleSelection = useCallback(async (assetId: string, nextSelected: boolean) => {
     // UX-only mirror of the PATCH route's own server-side lock — a click

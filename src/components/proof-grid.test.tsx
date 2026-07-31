@@ -1292,4 +1292,253 @@ describe("ProofGrid", () => {
       expect(fetchMock).not.toHaveBeenCalled();
     });
   });
+
+  // ==========================================================================
+  // Task #114 — the push transport itself: the SSE wiring, and the two
+  // things its own acceptance criteria call out as easy to leave untested
+  // (EventSource reconnects on its own, which is convenient right up until
+  // it means nobody proves the reconnect path does what it should).
+  // ==========================================================================
+  describe("push transport (SSE, task #114)", () => {
+    /** A minimal double for the browser's own `EventSource` — records every
+     * constructed instance (a fresh gallery id or a status leaving
+     * LIVE_SYNC_STATUSES tears the old one down and, if still live, opens a
+     * new one) and lets a test fire a named event directly, exactly like a
+     * real server-sent `event: ready`/`event: changed` line would. */
+    class FakeEventSource {
+      static instances: FakeEventSource[] = [];
+      url: string;
+      closed = false;
+      private listeners: Record<string, (() => void)[]> = {};
+
+      constructor(url: string) {
+        this.url = url;
+        FakeEventSource.instances.push(this);
+      }
+
+      addEventListener(type: string, callback: () => void) {
+        (this.listeners[type] ??= []).push(callback);
+      }
+
+      close() {
+        this.closed = true;
+      }
+
+      /** Simulates the server sending `event: <type>\ndata: 1\n\n`. */
+      emit(type: string) {
+        for (const callback of this.listeners[type] ?? []) callback();
+      }
+    }
+
+    beforeEach(() => {
+      vi.useFakeTimers();
+      FakeEventSource.instances = [];
+      vi.stubGlobal("EventSource", FakeEventSource);
+    });
+
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("opens a stream at this gallery's own stream endpoint while the selection can still change", () => {
+      vi.stubGlobal("fetch", vi.fn());
+
+      renderGrid({ galleryId: "g1", initialStatus: "proofing" });
+
+      expect(FakeEventSource.instances).toHaveLength(1);
+      expect(FakeEventSource.instances[0]!.url).toBe("/api/galleries/g1/selection/stream");
+    });
+
+    it("never opens a stream for a gallery whose selection can no longer change", () => {
+      vi.stubGlobal("fetch", vi.fn());
+
+      renderGrid({ initialStatus: "delivered" });
+
+      expect(FakeEventSource.instances).toHaveLength(0);
+    });
+
+    it("does NOT refetch on the very first `ready` — the server-rendered page already gave a fresh snapshot", async () => {
+      const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(200, {})));
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid();
+      await act(async () => {
+        FakeEventSource.instances[0]!.emit("ready");
+      });
+
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it("refetches on a SECOND `ready` — that can only mean the stream just reconnected", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(200, {
+            status: "proofing",
+            submittedAt: null,
+            picks: [],
+            quota: computeQuota(0, {
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+            }),
+          }),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid();
+      const source = FakeEventSource.instances[0]!;
+      await act(async () => {
+        source.emit("ready"); // first connect — no-op
+      });
+      expect(fetchMock).not.toHaveBeenCalled();
+
+      await act(async () => {
+        source.emit("ready"); // reconnect — a notification could have been missed
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
+    });
+
+    it("refetches immediately on a `changed` push, without waiting for the fallback interval", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(200, {
+            status: "proofing",
+            submittedAt: null,
+            picks: [
+              {
+                assetId: "a1",
+                selectedAt: "2026-07-30T12:00:00.000Z",
+                pickedBy: { id: "client-b", label: "Beto Ruiz" },
+              },
+            ],
+            quota: computeQuota(1, {
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+            }),
+          }),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({ initialAssets: assetsFor([{}, {}]) });
+
+      await act(async () => {
+        FakeEventSource.instances[0]!.emit("changed");
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
+      expect(screen.getByText("Beto Ruiz")).toBeDefined();
+    });
+
+    it("queues exactly one more fetch when a `changed` push arrives while a fetch is already in flight", async () => {
+      // The race this closes: a fallback tick (or an earlier push) is
+      // mid-flight when a NEW push arrives. Silently dropping it (the way a
+      // plain interval always could, harmlessly, because its next tick was
+      // seconds away regardless) would mean waiting for the NEXT push or the
+      // 30s fallback — a real regression from "well under a second" once
+      // pushes can legitimately arrive close together.
+      let resolveFirst: ((value: Response) => void) | undefined;
+      let callCount = 0;
+      const fetchMock = vi.fn(() => {
+        callCount += 1;
+        if (callCount === 1) {
+          return new Promise<Response>((resolve) => {
+            resolveFirst = resolve;
+          });
+        }
+        return Promise.resolve(
+          jsonResponse(200, {
+            status: "proofing",
+            submittedAt: null,
+            picks: [],
+            quota: computeQuota(0, {
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+            }),
+          }),
+        );
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid();
+      const source = FakeEventSource.instances[0]!;
+
+      // First push — fetch #1 issued, hangs.
+      await act(async () => {
+        source.emit("changed");
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // Second push arrives WHILE #1 is still in flight — queued, not lost.
+      await act(async () => {
+        source.emit("changed");
+      });
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+
+      // #1 finally resolves — the queued refresh fires immediately after.
+      await act(async () => {
+        resolveFirst?.(
+          jsonResponse(200, {
+            status: "proofing",
+            submittedAt: null,
+            picks: [],
+            quota: computeQuota(0, {
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+            }),
+          }),
+        );
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+    });
+
+    it("closes the stream on unmount", () => {
+      vi.stubGlobal("fetch", vi.fn());
+
+      const { unmount } = renderGrid();
+      const source = FakeEventSource.instances[0]!;
+      expect(source.closed).toBe(false);
+
+      unmount();
+
+      expect(source.closed).toBe(true);
+    });
+
+    it("closes the stream and opens no replacement once a push moves the gallery to a terminal status", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(200, {
+            // `archived` is terminal (PLAN.md §2) — not a status the real
+            // polling route would hand this component via a "changed" push
+            // in practice, but this proves the EFFECT's own teardown wiring
+            // reacts to `status` leaving LIVE_SYNC_STATUSES regardless of
+            // how it got there, matching the fallback-poll effect's
+            // identical `if (!LIVE_SYNC_STATUSES.has(status)) return;` gate.
+            status: "archived",
+            submittedAt: "2026-07-30T13:00:00.000Z",
+            picks: [],
+            quota: computeQuota(0, {
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+            }),
+          }),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({ initialStatus: "proofing" });
+      const source = FakeEventSource.instances[0]!;
+      expect(FakeEventSource.instances).toHaveLength(1);
+
+      await act(async () => {
+        source.emit("changed");
+      });
+
+      expect(source.closed).toBe(true);
+      // No SECOND instance opened for the now-terminal status.
+      expect(FakeEventSource.instances).toHaveLength(1);
+    });
+  });
 });

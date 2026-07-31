@@ -605,6 +605,113 @@ describe("getGalleryDetail", () => {
   });
 });
 
+describe("getGalleryDetailsByIds", () => {
+  // Same fixture shape `getGalleryDetail`'s own describe block above uses —
+  // both go through the same `toGalleryDetail` mapper (task #154), so a
+  // fixture that exercises one exercises the other.
+  const galleryRow = {
+    id: "g1",
+    title: "Boda Ana y Beto",
+    publicSlug: "abc123",
+    status: "draft" as const,
+    sessionDate: "2026-08-01",
+    createdAt: new Date("2026-07-01"),
+    galleryClients: [{ user: { id: "u1", name: "Ana Pérez", email: "ana@example.com" } }],
+    package: { id: 2, name: "Estándar" },
+    includedPhotosSnapshot: 13,
+    extraPhotoPriceCopSnapshot: 5_000,
+    assets: [
+      {
+        id: "a1",
+        originalFilename: "IMG_0001.JPG",
+        proofKey: "galleries/g1/proofs/a1.webp",
+        proofWidth: 1600,
+        proofHeight: 1067,
+        isSelected: true,
+        sortOrder: 0,
+        finalKey: `galleries/g1/finals/a1.jpg`,
+        isEdited: true,
+      },
+    ],
+  };
+
+  it("returns [] without touching the database for an empty id list", async () => {
+    const { getGalleryDetailsByIds } = await import("./galleries");
+
+    await expect(getGalleryDetailsByIds([])).resolves.toEqual([]);
+    expect(findManyMock).not.toHaveBeenCalled();
+  });
+
+  it("maps every row for the given ids in ONE query, using the same shape getGalleryDetail uses", async () => {
+    findManyMock.mockResolvedValue([galleryRow]);
+    const { getGalleryDetailsByIds } = await import("./galleries");
+
+    const result = await getGalleryDetailsByIds(["g1"]);
+
+    expect(result).toEqual([
+      {
+        id: "g1",
+        title: "Boda Ana y Beto",
+        publicSlug: "abc123",
+        status: "draft",
+        sessionDate: "2026-08-01",
+        createdAt: new Date("2026-07-01"),
+        clients: [{ id: "u1", name: "Ana Pérez", email: "ana@example.com" }],
+        package: { id: 2, name: "Estándar" },
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+        assets: galleryRow.assets,
+      },
+    ]);
+    expect(findManyMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("asks the DB to filter the joined galleryClients relation to removedAt IS NULL", async () => {
+    findManyMock.mockResolvedValue([]);
+    const { isNull } = await import("drizzle-orm");
+    const { galleryClients } = await import("./db/schema");
+    const { getGalleryDetailsByIds } = await import("./galleries");
+
+    await getGalleryDetailsByIds(["g1"]);
+
+    expect(findManyMock).toHaveBeenCalledTimes(1);
+    const args = findManyMock.mock.calls[0]?.[0] as {
+      with: { galleryClients: { where: unknown } };
+    };
+    expect(args.with.galleryClients.where).toEqual(isNull(galleryClients.removedAt));
+  });
+});
+
+// Task #154 — the actual proof for "a change to the projection shape cannot
+// leave one caller stale", not just a comment asserting it. See
+// galleries.ts's own comment above `galleryDetailWith` for the history.
+describe("the gallery-detail projection is ONE definition, not two (task #154)", () => {
+  it("getGalleryDetail and getGalleryDetailsByIds pass the IDENTICAL `with` config object to Drizzle", async () => {
+    findFirstMock.mockResolvedValue(undefined);
+    findManyMock.mockResolvedValue([]);
+    const { getGalleryDetail, getGalleryDetailsByIds } = await import("./galleries");
+
+    await getGalleryDetail("g1");
+    await getGalleryDetailsByIds(["g1", "g2"]);
+
+    expect(findFirstMock).toHaveBeenCalledTimes(1);
+    expect(findManyMock).toHaveBeenCalledTimes(1);
+    const singleWith = (findFirstMock.mock.calls[0]?.[0] as { with: unknown }).with;
+    const batchedWith = (findManyMock.mock.calls[0]?.[0] as { with: unknown }).with;
+
+    // Reference equality (`toBe`, not `toEqual`): two independently-authored
+    // objects can look identical today and still drift the moment either one
+    // is edited without the other — that is exactly the shape task #154
+    // exists to close. Only literally the SAME object, passed to both
+    // queries, makes that drift structurally impossible rather than merely
+    // unlikely. If `getGalleryDetailsByIds` (or `findGalleryDetail`) ever goes
+    // back to building its own `with` object, this assertion is the one that
+    // catches it — a deep-equal check would stay green right up until the
+    // moment someone actually edited one copy and not the other.
+    expect(singleWith).toBe(batchedWith);
+  });
+});
+
 describe("getGalleryUnlockAudit", () => {
   it("returns null when no gallery with this id exists", async () => {
     const whereMock = vi.fn().mockReturnValue({ limit: async () => [] });

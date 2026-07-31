@@ -30,6 +30,9 @@ vi.mock("@/lib/r2", () => ({
   // this app's route tests.
   displayKey: (galleryId: string, assetId: string) =>
     `galleries/${galleryId}/display/${assetId}.webp`,
+  // Task #78: identity fake — the page re-attaches the `R2Key` brand to
+  // `asset.proofKey` via `storedKey` before calling `getPresignedUrl`.
+  storedKey: (key: string) => key,
 }));
 
 // Task #94: ownership itself moved to src/lib/gallery-access.ts's

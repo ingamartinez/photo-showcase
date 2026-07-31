@@ -9,7 +9,7 @@ import {
 } from "@/lib/galleries";
 import { isGalleryOwner } from "@/lib/gallery-access";
 import { getGallerySelection } from "@/lib/gallery-selection";
-import { displayKey, getPresignedUrl } from "@/lib/r2";
+import { displayKey, getPresignedUrl, storedKey } from "@/lib/r2";
 import { ProofGrid } from "@/components/proof-grid";
 
 export const metadata: Metadata = {
@@ -112,7 +112,10 @@ export default async function ClientGalleryPage({
       proofWidth: asset.proofWidth,
       proofHeight: asset.proofHeight,
       isSelected: asset.isSelected,
-      proofUrl: getPresignedUrl(asset.proofKey),
+      // `asset.proofKey` came off the `assets` table, which loses the
+      // `R2Key` brand on the round trip through Postgres — see
+      // `storedKey`'s own comment in src/lib/r2.ts.
+      proofUrl: getPresignedUrl(storedKey(asset.proofKey)),
       hasFinal,
       // Task #89. Presigned from `displayKey` — a pure function of
       // (galleryId, assetId), which is exactly why this needs no new column

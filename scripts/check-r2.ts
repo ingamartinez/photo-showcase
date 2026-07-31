@@ -21,8 +21,17 @@
 
 import { S3Client } from "bun";
 import { r2Env } from "../src/lib/env";
+import { nonGalleryKey } from "../src/lib/r2";
 
-const TEST_KEY = `_healthcheck/${Date.now()}.txt`;
+// Task #78: `nonGalleryKey` is the named escape hatch for exactly this case
+// — a legitimate R2 key that isn't shaped like `galleries/{galleryId}/…`.
+// Still funnels through the same dev/prod namespacing as every real key
+// (see its own comment in src/lib/r2.ts), it just isn't produced by this
+// script's own throwaway `S3Client` below, which is deliberately built
+// independent of src/lib/r2.ts's cached client singleton (see this file's
+// own purpose above: proving the raw credentials/bucket work, not r2.ts's
+// caching).
+const TEST_KEY = nonGalleryKey(`_healthcheck/${Date.now()}.txt`);
 const TEST_BODY = "photo-showcase r2 healthcheck";
 
 async function main(): Promise<void> {

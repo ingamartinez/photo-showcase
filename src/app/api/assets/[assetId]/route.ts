@@ -32,7 +32,7 @@ import { db } from "@/lib/db";
 import { assets } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
 import { ASSET_MUTATION_BLOCKED_STATUSES, loadOwnedAsset } from "@/lib/asset-access";
-import { deleteObject } from "@/lib/r2";
+import { deleteObject, storedKey } from "@/lib/r2";
 
 export const runtime = "nodejs";
 
@@ -86,10 +86,12 @@ export const DELETE = withApiSession(async function DELETE(
   await db.delete(assets).where(eq(assets.id, asset.id));
 
   // Best-effort, only after the row is gone — see the file header for
-  // exactly which side leaks if either of these fails.
-  await deleteObject(asset.proofKey).catch(() => {});
+  // exactly which side leaks if either of these fails. Both keys came off
+  // the `assets` table, which loses the `R2Key` brand on the round trip
+  // through Postgres — see `storedKey`'s own comment in src/lib/r2.ts.
+  await deleteObject(storedKey(asset.proofKey)).catch(() => {});
   if (asset.finalKey) {
-    await deleteObject(asset.finalKey).catch(() => {});
+    await deleteObject(storedKey(asset.finalKey)).catch(() => {});
   }
 
   return NextResponse.json({ ok: true });

@@ -45,6 +45,9 @@ vi.mock("@/lib/r2", () => ({
   putObject: (...args: unknown[]) => putObjectMock(...args),
   deleteObject: (...args: unknown[]) => deleteObjectMock(...args),
   objectExists: (...args: [string]) => objectExistsMock(...args),
+  // Task #78: identity fake — the route re-attaches the `R2Key` brand to
+  // `asset.finalKey` via `storedKey` before calling `getPresignedUrl`.
+  storedKey: (key: string) => key,
 }));
 
 // Task #93: the "photographer finds out" side effect — mocked at this

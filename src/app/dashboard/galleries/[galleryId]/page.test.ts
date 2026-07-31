@@ -58,6 +58,9 @@ vi.mock("@/lib/clients", () => ({
 const getPresignedUrlMock = vi.fn();
 vi.mock("@/lib/r2", () => ({
   getPresignedUrl: (...args: unknown[]) => getPresignedUrlMock(...args),
+  // Task #78: identity fake — the page re-attaches the `R2Key` brand to
+  // `asset.proofKey` via `storedKey` before calling `getPresignedUrl`.
+  storedKey: (key: string) => key,
 }));
 
 // Task #92: mocked so this suite's fixtures (every one of them ships

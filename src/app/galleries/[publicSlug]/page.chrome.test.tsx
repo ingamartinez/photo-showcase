@@ -54,6 +54,9 @@ vi.mock("@/lib/r2", () => ({
   // environment-namespaced format is r2.test.ts's own business.
   displayKey: (galleryId: string, assetId: string) =>
     `galleries/${galleryId}/display/${assetId}.webp`,
+  // Task #78: identity fake — the page re-attaches the `R2Key` brand to
+  // `asset.proofKey` via `storedKey` before calling `getPresignedUrl`.
+  storedKey: (key: string) => key,
 }));
 
 // Task #94: `@/lib/gallery-access` is server-only (transitively via

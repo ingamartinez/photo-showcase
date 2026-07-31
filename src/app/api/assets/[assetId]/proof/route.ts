@@ -28,7 +28,7 @@ import { z } from "zod";
 import { withApiSession } from "@/lib/auth-guards";
 import { loadOwnedAsset } from "@/lib/asset-access";
 import { isGalleryVisibleToClient } from "@/lib/galleries";
-import { getPresignedUrl } from "@/lib/r2";
+import { getPresignedUrl, storedKey } from "@/lib/r2";
 
 export const runtime = "nodejs";
 
@@ -70,6 +70,9 @@ export const GET = withApiSession(async function GET(
     return errorResponse("gallery_not_visible", 404);
   }
 
-  const url = getPresignedUrl(asset.proofKey);
+  // `asset.proofKey` came off the `assets` table, which loses the `R2Key`
+  // brand on the round trip through Postgres — see `storedKey`'s own
+  // comment in src/lib/r2.ts.
+  const url = getPresignedUrl(storedKey(asset.proofKey));
   return NextResponse.json({ url });
 });

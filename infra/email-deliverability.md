@@ -232,6 +232,12 @@ Resend as delivery.
   `@hotmail.com` address. Outlook applies different content rules and keeps its
   own sender reputation, so a Gmail pass does not transfer.
 - **Placement**, as described above.
+- **DMARC aggregate reports.** The `rua=` address is published and authorized,
+  but no report has been read yet — the first ones arrive roughly 24h after the
+  record went live. Until at least two weeks of them have been reviewed, the
+  claim "nothing else is sending as this domain" is an expectation, not a
+  measurement, and `p=none` stays. This is the gate on moving to
+  `p=quarantine`, not a formality.
 - **Content scoring for HTML mail.** The verification message was `text/plain`.
   Real mail is `multipart/alternative`. Content filtering is a separate axis
   from authentication — see task #153, which carries the constraint that the

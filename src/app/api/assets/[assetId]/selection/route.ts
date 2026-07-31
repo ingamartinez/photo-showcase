@@ -59,6 +59,7 @@ import { withApiSession } from "@/lib/auth-guards";
 import { loadOwnedAsset } from "@/lib/asset-access";
 import { isGalleryVisibleToClient } from "@/lib/galleries";
 import { computeQuota } from "@/lib/quota";
+import { notifySelectionChanged } from "@/lib/selection-events";
 
 export const runtime = "nodejs";
 
@@ -157,6 +158,19 @@ export const PATCH = withApiSession(async function PATCH(
     .update(assets)
     .set({ isSelected, selectedAt, selectedBy })
     .where(eq(assets.id, asset.id));
+
+  // Task #114 — push the shared selection to every OTHER open session,
+  // instead of making them wait for their next poll tick. Fire-and-forget on
+  // purpose (never `await`ed into this response): the write above already
+  // committed, and a slow or failed NOTIFY must never add latency to, or
+  // fail, a toggle that otherwise fully succeeded. See
+  // src/lib/selection-events.ts's own header comment for the full design —
+  // this is one of the three call sites, not a trigger, deliberately.
+  void notifySelectionChanged(gallery.id).catch(() => {
+    // Swallowed on purpose, same stance as the comment above: the fallback
+    // poll (proof-grid.tsx, 30s) is the backstop for a signal that never
+    // arrives, so a failure here degrades staleness, not correctness.
+  });
 
   // Re-read every sibling's flag AFTER the write above, so the count this
   // response reports already reflects the toggle that just happened — see

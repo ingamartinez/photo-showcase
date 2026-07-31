@@ -40,6 +40,7 @@ import { isGalleryOwner } from "@/lib/gallery-access";
 import { authEnv, resendEnv } from "@/lib/env";
 import { sendSubmissionNotificationEmail } from "@/lib/admin-notification-email";
 import { computeQuota, type QuotaResult } from "@/lib/quota";
+import { notifySelectionChanged } from "@/lib/selection-events";
 
 export const runtime = "nodejs";
 
@@ -196,6 +197,16 @@ export const POST = withApiSession(async function POST(
 
   // We won the race. The selection is durably locked in the database at
   // this point, full stop — nothing below this line ever changes that.
+
+  // Task #114 — every OTHER open session's submit lock (proof-grid.tsx's
+  // live `status`) converges the instant this commits, instead of waiting up
+  // to a poll tick. Fire-and-forget, same reasoning as the sibling PATCH
+  // route's own call: the status transition above already committed, and
+  // this must never delay or fail a response that already succeeded.
+  void notifySelectionChanged(submittedGallery.id).catch(() => {
+    // Swallowed — see src/lib/selection-events.ts's own header comment; the
+    // 30s fallback poll is the backstop.
+  });
   //
   // The notification is best-effort, not part of the transaction. The
   // recovery path for a missed email is the photographer noticing the

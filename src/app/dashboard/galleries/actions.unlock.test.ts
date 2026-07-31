@@ -39,6 +39,15 @@ vi.mock("@/lib/unlock-notification-email", () => ({
   sendUnlockNotificationEmail: (...args: unknown[]) => sendUnlockNotificationEmailMock(...args),
 }));
 
+// Task #114: `unlockSelection` is one of the three write paths that must
+// signal the shared selection changed — this is the direction #73's own
+// "converges BOTH ways" promise depends on: an admin unlock has to reopen
+// every open client tab live, not just close one.
+const notifySelectionChangedMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/selection-events", () => ({
+  notifySelectionChanged: (...args: [string]) => notifySelectionChangedMock(...args),
+}));
+
 // A minimal, genuinely-behaving double for `@/lib/db` supporting BOTH a
 // plain `eq()` and an `and(eq(), eq())` condition (this action's atomic
 // conditional UPDATE needs the latter) — same `flattenChunks`/`eqConditions`
@@ -294,6 +303,8 @@ beforeEach(async () => {
   revalidatePathMock.mockReset();
   sendUnlockNotificationEmailMock.mockReset();
   sendUnlockNotificationEmailMock.mockResolvedValue(undefined);
+  notifySelectionChangedMock.mockReset();
+  notifySelectionChangedMock.mockResolvedValue(undefined);
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
   vi.stubEnv("RESEND_API_KEY", "re_test_key");
   vi.stubEnv("EMAIL_FROM", "no-reply@alejoframes.com");
@@ -424,6 +435,8 @@ describe("unlockSelection success", () => {
     // (task #75 made it the dashboard's sort key).
     expect(db.__rows.galleries[0]!.selectionSubmittedAt).toBe(submittedAt);
     expect(revalidatePathMock).toHaveBeenCalledWith(`/dashboard/galleries/${GALLERY_ID}`);
+    // Task #114 — every open client tab reopens live off this signal.
+    expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_ID);
     expect(revalidatePathMock).toHaveBeenCalledWith("/dashboard/galleries");
   });
 

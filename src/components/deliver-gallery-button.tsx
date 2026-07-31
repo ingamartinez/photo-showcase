@@ -64,7 +64,7 @@ export function DeliverGalleryButton({
       <button
         type="submit"
         disabled={pending || blockedByMissingFinals}
-        className="border-line-2 hover:border-accent hover:text-accent-2 rounded-sm border px-[18px] py-[12px] text-[13px] tracking-[0.1em] uppercase transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+        className="border-line-2 hover:border-accent hover:text-accent-2 min-h-11 rounded-[6px] border px-[18px] py-[12px] text-[13px] tracking-[0.1em] uppercase transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-6"
       >
         {pending ? "Entregando…" : "Entregar galería"}
       </button>

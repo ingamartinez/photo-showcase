@@ -37,7 +37,10 @@ export function UnlockSelectionPanel({ galleryId }: { galleryId: string }) {
 
   return (
     <form action={formAction} className="flex w-full max-w-xs flex-col items-end gap-2">
-      <label htmlFor="unlock-reason" className="label text-fg-dim w-full text-left">
+      {/* Task #133: no `.label` (globals.css's mono, uppercase,
+          0.22em-tracked eyebrow style) survives under /dashboard — epic
+          #125's own done-when. Plain text instead. */}
+      <label htmlFor="unlock-reason" className="text-fg-dim w-full text-left text-xs">
         Nota (opcional)
       </label>
       <textarea
@@ -51,7 +54,7 @@ export function UnlockSelectionPanel({ galleryId }: { galleryId: string }) {
       <button
         type="submit"
         disabled={pending}
-        className="border-line-2 hover:border-accent hover:text-accent-2 rounded-sm border px-[18px] py-[12px] text-[13px] tracking-[0.1em] uppercase transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+        className="border-line-2 hover:border-accent hover:text-accent-2 min-h-11 rounded-[6px] border px-[18px] py-[12px] text-[13px] tracking-[0.1em] uppercase transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-6"
       >
         {pending ? "Desbloqueando…" : "Desbloquear selección"}
       </button>

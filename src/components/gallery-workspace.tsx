@@ -113,11 +113,50 @@ export function GalleryWorkspace({
   }, []);
 
   return (
-    <div className="flex flex-col gap-10">
+    <div className="flex flex-col gap-6">
       <ProofUploader galleryId={galleryId} onUploaded={handleUploaded} />
 
+      {/* Task #134: density. The grid starts at the mock's `minmax(92px,1fr)`
+          (3-4 columns on a phone) and GROWS to `minmax(122px,1fr)` on the
+          desk — epic #125's own rule that a volume surface grows when it has
+          room, rather than being cropped when it doesn't
+          (design/system/dashboard.html:426-429, :603). */}
+      {sorted.length === 0 ? (
+        <p className="text-fg-dim text-[15px] leading-relaxed">
+          Todavía no subiste fotos de esta sesión — usá el selector de arriba.
+        </p>
+      ) : (
+        <ul className="grid grid-cols-[repeat(auto-fill,minmax(92px,1fr))] gap-1.5 sm:gap-2 lg:grid-cols-[repeat(auto-fill,minmax(122px,1fr))]">
+          {sorted.map((asset, index) => (
+            <AssetTile
+              key={asset.id}
+              asset={asset}
+              isFirst={index === 0}
+              isLast={index === sorted.length - 1}
+              onDeleted={handleDeleted}
+              onMoved={handleMoved}
+              onFinalUploaded={handleFinalUploaded}
+            />
+          ))}
+        </ul>
+      )}
+
+      {/* Task #133's mobile-first note, LA decisión de esta pantalla: after
+          scrolling past 84 thumbnails, "Entregar galería" still has to be
+          reachable — `position: sticky` just above the bottom tab bar
+          (`--app-tabbar-h`, set by <DashboardNav>) on a phone, and back to a
+          normal static block once the desk has no scroll problem to solve
+          (design/system/dashboard.html:401-412, :592-598).
+
+          SOURCE ORDER, ON PURPOSE: this renders AFTER the asset grid above,
+          not before it — sticky positioning is a paint-time effect, it does
+          not move where this sits in the DOM/reading/tab order.
+
+          Task #86's own fix stays intact: <DeliverGalleryButton> is not a
+          sibling fed a server snapshot, it reads `pendingFinalsCount`
+          straight off this component's own live state, one render below. */}
       {(selectedCount > 0 || canDeliver) && (
-        <div className="flex flex-wrap items-start justify-between gap-4">
+        <div className="bg-bg/90 border-line-2 sticky bottom-[calc(var(--app-tabbar-h)+8px)] z-20 flex flex-wrap items-center justify-between gap-4 rounded-[6px] border p-3 backdrop-blur-sm lg:static lg:border-none lg:bg-transparent lg:p-0 lg:backdrop-blur-none">
           {selectedCount > 0 && (
             <p className="text-fg-dim text-sm">
               {pendingFinalsCount > 0
@@ -142,26 +181,6 @@ export function GalleryWorkspace({
             />
           )}
         </div>
-      )}
-
-      {sorted.length === 0 ? (
-        <p className="text-fg-dim text-[15px] leading-relaxed">
-          Todavía no subiste fotos de esta sesión — usá el selector de arriba.
-        </p>
-      ) : (
-        <ul className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4">
-          {sorted.map((asset, index) => (
-            <AssetTile
-              key={asset.id}
-              asset={asset}
-              isFirst={index === 0}
-              isLast={index === sorted.length - 1}
-              onDeleted={handleDeleted}
-              onMoved={handleMoved}
-              onFinalUploaded={handleFinalUploaded}
-            />
-          ))}
-        </ul>
       )}
     </div>
   );

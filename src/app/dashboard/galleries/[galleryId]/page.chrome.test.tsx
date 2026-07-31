@@ -217,6 +217,12 @@ describe("GalleryDetailPage chrome", () => {
     expect(screen.getByText("Boda Ana y Beto")).toBeDefined();
     expect(screen.getByText(/Ana Pérez/)).toBeDefined();
     expect(screen.getByText(/01\/08\/2026/)).toBeDefined();
+    // "En pruebas" renders as one of the stepper's four ALWAYS-rendered step
+    // labels — its mere presence proves nothing about the gallery's actual
+    // status (see the dedicated "state stepper" describe block below for the
+    // real discriminating assertion, `aria-current="step"`). Kept here only
+    // as part of this test's broader "does the page render at all" smoke
+    // check.
     expect(screen.getByText("En pruebas")).toBeDefined();
     expect(screen.getByText("Estándar")).toBeDefined();
     expect(screen.getByText("13")).toBeDefined();
@@ -527,6 +533,48 @@ describe("GalleryDetailPage chrome", () => {
   });
 });
 
+// The state stepper's own discriminating signal (task #133, review round 1
+// finding): all FOUR step labels render unconditionally on every gallery, so
+// a test that only checks one of them is present (as the smoke test above
+// does) cannot tell "the right step is marked current" from "the stepper
+// always renders the same way regardless of status" — a bug that silently
+// stopped marking the current step would leave every one of those assertions
+// green. `aria-current="step"` is the ONE thing that actually varies with
+// `gallery.status`, so these two tests assert on THAT, and — because a
+// single case cannot rule out "always current" as easily as "never
+// current" — both use a DIFFERENT status and expect a DIFFERENT step
+// marked, which a one-sided implementation could not satisfy for both.
+describe("GalleryDetailPage — state stepper (task #133)", () => {
+  it("marks 'En pruebas' as the current step for a gallery in proofing, and no other step", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "proofing" }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    const currentStep = screen.getByText("En pruebas").closest("li");
+    expect(currentStep?.getAttribute("aria-current")).toBe("step");
+    // Exactly one step is ever current — not zero, not two.
+    expect(screen.getAllByText(/Borrador|En pruebas|Selección enviada|Entregada/).length).toBe(4);
+    expect(screen.getByText("Borrador").closest("li")?.getAttribute("aria-current")).toBeNull();
+    expect(
+      screen.getByText("Selección enviada").closest("li")?.getAttribute("aria-current"),
+    ).toBeNull();
+    expect(screen.getByText("Entregada").closest("li")?.getAttribute("aria-current")).toBeNull();
+  });
+
+  it("marks 'Entregada' as the current step for a delivered gallery instead", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "delivered" }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    const currentStep = screen.getByText("Entregada").closest("li");
+    expect(currentStep?.getAttribute("aria-current")).toBe("step");
+    // The step that was current for the OTHER test above is not current here.
+    expect(screen.getByText("En pruebas").closest("li")?.getAttribute("aria-current")).toBeNull();
+  });
+});
+
 describe("GalleryDetailPage — archive-size warning (task #92)", () => {
   it("renders nothing about archive size when there is no deliverable final yet", async () => {
     getGalleryDetailMock.mockResolvedValue(galleryDetail());
@@ -643,7 +691,13 @@ describe("GalleryDetailPage — attaching and removing clients (task #97)", () =
     expect(screen.getByText(/Ya agregaste a todos los clientes disponibles/)).toBeDefined();
   });
 
+  // Task #133: "Quitar" and "Reenviar acceso" no longer sit on the row as
+  // two adjacent small buttons — they live behind the row's own 44px
+  // "Acciones" trigger (<GalleryClientRow>'s <DropdownMenu>). Opening it is
+  // now part of reaching either affordance, the same way a real
+  // pointer/keyboard user would.
   it("shows a Quitar affordance for each active client when there is more than one", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
     getGalleryDetailMock.mockResolvedValue(
       galleryDetail({
         clients: [
@@ -655,14 +709,21 @@ describe("GalleryDetailPage — attaching and removing clients (task #97)", () =
 
     const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
     render(element);
+    const user = userEvent.setup();
 
-    expect(screen.getAllByRole("button", { name: "Quitar" })).toHaveLength(2);
+    await user.click(screen.getByRole("button", { name: "Acciones para Ana Pérez" }));
+    expect(screen.getByRole("menuitem", { name: "Quitar" })).toBeDefined();
+    await user.keyboard("{Escape}");
+
+    await user.click(screen.getByRole("button", { name: "Acciones para Beto Ruiz" }));
+    expect(screen.getByRole("menuitem", { name: "Quitar" })).toBeDefined();
   });
 
   // The last-active-client guard's UI half: hiding "Quitar" is UX only —
   // removeGalleryClient() itself re-checks activeClientRuleViolation()
   // server-side (src/lib/galleries.ts) regardless of what this page renders.
   it("hides the Quitar affordance for the ONLY active client on a non-draft gallery", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
     getGalleryDetailMock.mockResolvedValue(
       galleryDetail({
         status: "proofing",
@@ -672,14 +733,20 @@ describe("GalleryDetailPage — attaching and removing clients (task #97)", () =
 
     const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
     render(element);
+    const user = userEvent.setup();
 
-    expect(screen.queryByRole("button", { name: "Quitar" })).toBeNull();
+    // The trigger itself still renders — "Reenviar acceso" is still offered
+    // for a `proofing` gallery (task #101) — only "Quitar" is missing from
+    // what it opens.
+    await user.click(screen.getByRole("button", { name: "Acciones para Ana Pérez" }));
+    expect(screen.queryByRole("menuitem", { name: "Quitar" })).toBeNull();
   });
 
   // Task #97's own reversal of part of the invariant: a DRAFT gallery may
   // legitimately reach zero active clients — `removeGalleryClient` is what
   // gets it there — so "Quitar" must NOT be hidden even for the only one.
   it("shows the Quitar affordance for the ONLY active client on a DRAFT gallery", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
     getGalleryDetailMock.mockResolvedValue(
       galleryDetail({
         status: "draft",
@@ -689,8 +756,10 @@ describe("GalleryDetailPage — attaching and removing clients (task #97)", () =
 
     const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
     render(element);
+    const user = userEvent.setup();
 
-    expect(screen.getByRole("button", { name: "Quitar" })).toBeDefined();
+    await user.click(screen.getByRole("button", { name: "Acciones para Ana Pérez" }));
+    expect(screen.getByRole("menuitem", { name: "Quitar" })).toBeDefined();
   });
 
   // The confirmation copy must say WHAT is about to happen, not just ask
@@ -713,7 +782,8 @@ describe("GalleryDetailPage — attaching and removing clients (task #97)", () =
     render(element);
     const user = userEvent.setup();
 
-    await user.click(screen.getAllByRole("button", { name: "Quitar" })[0]!);
+    await user.click(screen.getByRole("button", { name: "Acciones para Ana Pérez" }));
+    await user.click(screen.getByRole("menuitem", { name: "Quitar" }));
 
     expect(
       screen.getByText(/perder el acceso para ver y descargar las fotos entregadas/),
@@ -737,7 +807,8 @@ describe("GalleryDetailPage — attaching and removing clients (task #97)", () =
     render(element);
     const user = userEvent.setup();
 
-    await user.click(screen.getAllByRole("button", { name: "Quitar" })[0]!);
+    await user.click(screen.getByRole("button", { name: "Acciones para Ana Pérez" }));
+    await user.click(screen.getByRole("menuitem", { name: "Quitar" }));
     await user.click(screen.getByRole("button", { name: "Confirmar" }));
 
     expect(removeGalleryClientMock).toHaveBeenCalledTimes(1);
@@ -752,29 +823,42 @@ describe("GalleryDetailPage — attaching and removing clients (task #97)", () =
 // Spanish-free status set is proven directly in galleries.test.ts.
 describe("GalleryDetailPage — resend affordance wiring (task #101)", () => {
   it("shows 'Reenviar acceso' for a client-visible gallery (proofing)", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
     getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "proofing" }));
 
     const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
     render(element);
+    const user = userEvent.setup();
 
-    expect(screen.getByRole("button", { name: /Reenviar acceso/ })).toBeDefined();
+    await user.click(screen.getByRole("button", { name: "Acciones para Ana Pérez" }));
+    expect(screen.getByRole("menuitem", { name: /Reenviar acceso/ })).toBeDefined();
   });
 
+  // A draft gallery's single client still gets the Acciones trigger (task
+  // #97's "Quitar" is available even for the only active client on a
+  // draft), it just doesn't offer "Reenviar acceso" behind it — nothing to
+  // view yet.
   it("hides 'Reenviar acceso' for a draft gallery — nothing to view yet", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
     getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "draft" }));
 
     const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
     render(element);
+    const user = userEvent.setup();
 
-    expect(screen.queryByRole("button", { name: /Reenviar acceso/ })).toBeNull();
+    await user.click(screen.getByRole("button", { name: "Acciones para Ana Pérez" }));
+    expect(screen.queryByRole("menuitem", { name: /Reenviar acceso/ })).toBeNull();
   });
 
-  it("hides 'Reenviar acceso' for an archived gallery", async () => {
+  // Unlike the draft case above, an archived gallery's only client has
+  // NEITHER affordance (not resendable, and the last-active-client guard
+  // blocks removal too) — the Acciones trigger itself never renders.
+  it("hides the Acciones trigger entirely for an archived gallery", async () => {
     getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "archived" }));
 
     const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
     render(element);
 
-    expect(screen.queryByRole("button", { name: /Reenviar acceso/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Acciones para/ })).toBeNull();
   });
 });

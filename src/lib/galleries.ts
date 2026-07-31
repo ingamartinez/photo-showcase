@@ -609,6 +609,19 @@ export async function getGalleryUnlockAudit(galleryId: string): Promise<GalleryU
 // clients and galleries. See src/app/dashboard/page.tsx's header comment.
 // ---------------------------------------------------------------------------
 
+/** The one status `getGalleryCount()` excludes from its "en marcha" tally —
+ * see that function's own comment below for the reasoning. Exported (task
+ * #121) so this file's own pinning test (galleries.test.ts) can assert
+ * against the ACTUAL value the query filters on, not a second, hand-typed
+ * copy of the string `"archived"` that could silently drift from it — same
+ * "one copy, not two" concern `ASSET_MUTATION_BLOCKED_STATUSES`
+ * (src/lib/asset-access.ts, task #58) exists to close for its own
+ * denylist. Unlike that denylist, this is a single status rather than a
+ * `Set`, because `getGalleryCount()`'s `ne()` filter can only ever exclude
+ * one value at a time — the day a second status needs excluding, this
+ * becomes a `Set` and the query becomes `notInArray`, together. */
+export const GALLERY_COUNT_EXCLUDED_STATUS: Gallery["status"] = "archived";
+
 /** How many galleries are currently "en marcha" — every status EXCEPT
  * `archived`. Powers the "Galerías" summary on `/dashboard` (task #88) and
  * the sentence right above it ("Tenés N clientes y M galerías en marcha.")
@@ -630,11 +643,20 @@ export async function getGalleryUnlockAudit(galleryId: string): Promise<GalleryU
  * number. The two (this query and the sentence in
  * src/app/dashboard/page.tsx) must keep agreeing — see this function's own
  * test in galleries.test.ts, which asserts the `archived` exclusion
- * directly rather than trusting a mock's return value. */
+ * directly rather than trusting a mock's return value.
+ *
+ * Task #121: `GALLERY_COUNT_EXCLUDED_STATUS` above is pinned in
+ * galleries.test.ts against the live `gallery_status` enum — a sixth status
+ * added to that enum without updating this exclusion now fails a test
+ * instead of silently being counted as "en marcha". This is a cheap
+ * hardening, not a correction of #90: see that task's own body for why a
+ * denylist is the right shape here (an admin-facing display metric), unlike
+ * `CLIENT_VISIBLE_STATUSES`'s allowlist (a client-facing authorization-
+ * adjacent gate, where default-deny is the correct posture). */
 export async function getGalleryCount(): Promise<number> {
   const [row] = await db
     .select({ value: count() })
     .from(galleries)
-    .where(ne(galleries.status, "archived"));
+    .where(ne(galleries.status, GALLERY_COUNT_EXCLUDED_STATUS));
   return row?.value ?? 0;
 }

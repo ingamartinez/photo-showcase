@@ -253,7 +253,7 @@ export function ProofLightbox({
         >
           {/* `.lb__top` (:492-495): position on the left, the way out on the
               right, both inside the gutter (16 / 28 / 48px — :50, :531, :554). */}
-          <div className="flex items-start justify-between gap-3 px-4 py-[10px] sm:px-7 lg:px-12">
+          <div className="flex items-center justify-between gap-3 px-4 py-[10px] sm:px-7 lg:px-12">
             <div className="min-w-0">
               {/* `.lb__count` (:496/:878). Three text nodes in ONE element on
                   purpose: proof-grid.test.tsx matches `/2 \/ 3/` against this
@@ -278,7 +278,7 @@ export function ProofLightbox({
               type="button"
               onClick={onClose}
               aria-label="Cerrar"
-              className="text-fg-dim hover:text-fg -mr-2 grid h-12 w-12 shrink-0 place-items-center text-[20px] leading-none transition-colors motion-reduce:transition-none"
+              className="text-fg-dim hover:text-fg grid h-12 w-12 shrink-0 place-items-center text-[20px] leading-none transition-colors motion-reduce:transition-none"
             >
               ✕
             </button>

@@ -33,6 +33,50 @@
 // appear there; and a tray that materialises on the first pick would shove
 // the entire grid down the page at the exact moment the client is aiming at
 // a thumbnail.
+//
+// STICKY TO THE TOP (task #147, design/system/client.html's own `.tray`,
+// `position: sticky; top: 0` in the app — the mock's own comment at :286
+// offsets it under its demo chrome, which this app has none of). "Se pega
+// arriba, así la ves formarse mientras recorrés 84 fotos" — the tray is
+// where the shared pick, and therefore the surcharge, is building up, and
+// scrolling it out of view while browsing 84 photos is exactly the "the
+// client reaches the end surprised" failure #147 exists to close. `z-30`,
+// below the lightbox's `z-50` (proof-lightbox.tsx) and the sticky bottom
+// bar's `z-40` (proof-grid.tsx) — the tray must never sit on top of either.
+//
+// DECLARED DEVIATION FROM THE MOCK: this file does NOT build the tray-IS-
+// the-quota treatment client.html proposes for this exact screen — 13
+// dashed `.slot--ghost` placeholders pre-filling as photos are picked
+// (:663-669), a `.tray__cut` divider plus an "Extra" `.tray__tag` once the
+// count passes the included quota (:751-754), and per-slot avatar-initial
+// attribution (`.slot__by`) replacing the name printed under each thumbnail
+// here. That whole treatment was SEEN, not missed: it is the mock's own
+// answer to #147's hardest problem (making the surcharge impossible to not
+// see), and it is a genuinely different, richer design than what shipped.
+//
+// It was scoped OUT of this slice, not deferred by oversight, for two
+// reasons. First, cost against what #147's actual acceptance criteria need:
+// the surcharge already cannot be missed via the mechanism this slice DID
+// build — <ProofGrid>'s sticky bottom bar keeps <SelectionCounter>'s
+// "seleccionadas N · extras E × price = surcharge — se coordina por fuera de
+// la app" pinned to the viewport for the entire session, which is a lower-
+// risk way to satisfy "visible before submitting, on the phone" than
+// reshaping this component's slot model to double as a progress meter.
+// Second, blast radius: turning the tray into a quota widget changes what a
+// "slot" IS (a pick today; a pick-or-an-empty-quota-seat under the mock)
+// and would touch every test in selection-tray.test.tsx plus the shared
+// attribution model #145's own review already flagged as delicate (see this
+// task's kanban body, "El mock contradice el schema" — a single-avatar-per-
+// tile decision the OWNER had to make explicitly, in writing, before any
+// visual work proceeded). Re-doing that same kind of identity-model
+// judgment for the tray's own avatars, inside the same slice that already
+// touches the counter, the bar and both grid states, was judged too much
+// surface for one pass.
+//
+// Revisit if the owner wants the progressive "watch the quota fill up"
+// feeling specifically — the sticky bar already covers the letter of "never
+// miss the surcharge," but not the mock's particular way of making it feel
+// earned rather than announced.
 import {
   pickerLabelFor,
   type SelectionPick,
@@ -93,7 +137,7 @@ export function SelectionTray({
   return (
     <section
       aria-label="Fotos elegidas"
-      className="border-bg-2 mb-6 rounded-sm border p-4"
+      className="border-bg-2 bg-bg/95 sticky top-0 z-30 mb-6 rounded-sm border p-4 backdrop-blur-md"
       // Announced politely: a pick landing from ANOTHER session is a change
       // the client did not cause, which is precisely the case a screen reader
       // user would otherwise never learn about. `polite`, not `assertive` —

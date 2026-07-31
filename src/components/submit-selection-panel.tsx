@@ -8,10 +8,26 @@
 // Confirmation step, deliberately a native `window.confirm()`: this mirrors
 // the ONE other irreversible, confirmation-gated action already in this
 // codebase (`<AssetTile>`'s delete, src/components/asset-tile.tsx) rather
-// than introducing a bespoke modal component for a single button. The
-// dialog's own text is the task's explicit acceptance criterion — "states
-// what happens next, including that extras are settled outside the app" —
-// spelled out plainly rather than assumed obvious.
+// than introducing a bespoke modal component for a single button. Task #147
+// re-examined this decision against the mock's own bottom-sheet confirmation
+// (design/system/client.html:840-872, `screen-enviar`) and kept it: the
+// sheet's CONTENT is what this task owns, and every fact it states —
+// irreversible, closes for everyone, extras settle outside the app — is
+// already carried by `confirmationMessage` below; building a bespoke sheet
+// component to re-skin a dialog this codebase already has a working,
+// reviewed pattern for was judged not worth the risk this pass, given how
+// much of this same slice already touches the tray, the counter and the
+// grid's layout. Revisit if the owner wants a bottom-sheet's PIXELS
+// specifically, not just its words.
+//
+// The dialog's own text is the task's explicit acceptance criterion —
+// "states what happens next, including that extras are settled outside the
+// app" — spelled out plainly rather than assumed obvious. Task #147 widened
+// it to the SHARED-BOARD framing `confirmationMessage` below carries: this
+// button closes the selection for every client attached to the gallery
+// (task #94), not only the one tapping it, matching the mock's own warning
+// (client.html:858-863) without inventing presence data this app does not
+// have (no viewer list — selection-tray.tsx's own "NO PRESENCE" stance).
 //
 // This confirmation is UX, not the gate: `POST
 // /api/galleries/[galleryId]/submit-selection` re-checks everything itself
@@ -36,8 +52,18 @@ export type SubmitSelectionOutcome = {
 
 function confirmationMessage(quota: QuotaResult): string {
   const lines = [
-    `¿Enviar tu selección de ${quota.selected} foto${quota.selected === 1 ? "" : "s"}?`,
-    "Una vez enviada, no vas a poder modificarla vos mismo — si necesitás cambiarla, escribile a tu fotógrafo.",
+    `¿Cerrar la selección de ${quota.selected} foto${quota.selected === 1 ? "" : "s"}?`,
+    // Task #147: the shared-board framing (schema.ts:272-273 — one selection,
+    // not one per client), restated here rather than assumed. "Tu selección"
+    // was accurate before task #94 let a gallery have several attached
+    // clients; on a shared board it understates what this button actually
+    // does — it closes the board for everyone still picking, not just the
+    // person tapping it. Same warning content the mock's own `enviar` sheet
+    // states out loud (design/system/client.html:858-863), without naming
+    // anyone or claiming presence data this app does not have (no viewer
+    // list — selection-tray.tsx's own "NO PRESENCE" stance).
+    "La selección se cierra para todos los que la están eligiendo con vos — si alguien más está eligiendo en este momento, no va a poder seguir.",
+    "Una vez enviada, no se puede modificar sola — si hace falta cambiarla, hay que escribirle a tu fotógrafo para que la reabra.",
   ];
   // Always states the extras/surcharge situation, even at zero — matching
   // <SelectionCounter>'s own "always show all three parts" stance

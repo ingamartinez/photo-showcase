@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { groupPicksByPicker, SelectionTray } from "./selection-tray";
 import type { SelectionPick } from "@/lib/selection-snapshot";
@@ -338,6 +338,147 @@ describe("SelectionTray — collapsible tray with a height-capped list (task #20
     const { container: fewContainer } = renderTray({ picks: manyPicks(3) });
     const fewScrollContainer = fewContainer.querySelector(".overflow-y-auto") as HTMLElement;
     expect(fewScrollContainer.style.maxHeight).toBe(`${expectedMaxHeightPx}px`);
+  });
+
+  // Task #206, criterion 8, the governing constraint: with 50 picks and NONE
+  // of them marked original, the cap this task fixed must land on the exact
+  // SAME number it did before this slice existed — an extra type line on
+  // every item would grow the measured row height and, with it, the cap.
+  it("does not change the measured cap for 50 picks when nobody marked an original (criterion 8)", () => {
+    const rowHeightPx = 120;
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      height: rowHeightPx,
+      width: 96,
+      top: 0,
+      left: 0,
+      right: 96,
+      bottom: rowHeightPx,
+      x: 0,
+      y: 0,
+      toJSON() {
+        return {};
+      },
+    });
+
+    const { container } = renderTray({ picks: manyPicks(50) });
+
+    const scrollContainer = container.querySelector(".overflow-y-auto") as HTMLElement;
+    expect(scrollContainer.style.maxHeight).toBe(`${rowHeightPx * 2 + 12}px`);
+  });
+});
+
+describe("SelectionTray — the type line (task #206)", () => {
+  it("renders no type line at all when nobody in the gallery marked an original (criterion 8)", () => {
+    renderTray({
+      picks: [
+        pick({ assetId: "a1", selectionKind: "edited" }),
+        pick({ assetId: "a2", selectionKind: "edited" }),
+      ],
+    });
+
+    // Not "no text says Original" alone — that would also pass if the whole
+    // tray failed to render. Positive control first, then the negative.
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.queryByText("Editada")).toBeNull();
+    expect(screen.queryByText("Original")).toBeNull();
+  });
+
+  it("shows every item's own type once ANY pick in the gallery is original", () => {
+    renderTray({
+      picks: [
+        pick({ assetId: "a1", selectionKind: "edited" }),
+        pick({ assetId: "a2", selectionKind: "original" }),
+      ],
+    });
+
+    const items = screen.getAllByRole("listitem");
+    expect(items).toHaveLength(2);
+    // Both items carry their OWN type, not just the original one — the
+    // design decision recorded in selection-tray.tsx's own comment (uniform
+    // item height once the line is on at all).
+    expect(within(items[0]!).getByText("Editada")).toBeDefined();
+    expect(within(items[1]!).getByText("Original")).toBeDefined();
+  });
+
+  it("marks the type line's own accessible name too, only once the gallery has any original", () => {
+    renderTray({
+      picks: [
+        pick({
+          assetId: "a1",
+          pickedBy: { id: "client-b", label: "Beto" },
+          selectionKind: "original",
+        }),
+      ],
+    });
+
+    expect(
+      screen.getByRole("button", { name: "Ver IMG_0001.JPG, elegida por Beto, original" }),
+    ).toBeDefined();
+  });
+
+  it("does not change the accessible name at all when nobody marked an original", () => {
+    renderTray({
+      picks: [
+        pick({
+          assetId: "a1",
+          pickedBy: { id: "client-b", label: "Beto" },
+          selectionKind: "edited",
+        }),
+      ],
+    });
+
+    expect(
+      screen.getByRole("button", { name: "Ver IMG_0001.JPG, elegida por Beto" }),
+    ).toBeDefined();
+  });
+
+  // Criterion 7 — the type line must not silently reintroduce #203's bug for
+  // a gallery that DOES have originals: 50 picks, some original, still caps
+  // at two rows.
+  it("still caps the scrollable list to two rows worth of height with 50 picks, some of them original", () => {
+    const rowHeightPx = 132; // stand-in for one real item + label + type line
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      height: rowHeightPx,
+      width: 96,
+      top: 0,
+      left: 0,
+      right: 96,
+      bottom: rowHeightPx,
+      x: 0,
+      y: 0,
+      toJSON() {
+        return {};
+      },
+    });
+    const picks = Array.from({ length: 50 }, (_, index) =>
+      pick({
+        assetId: `asset-${index}`,
+        pickedBy: { id: "client-b", label: "Beto Ruiz" },
+        selectionKind: index % 5 === 0 ? "original" : "edited",
+      }),
+    );
+
+    const { container } = renderTray({ picks });
+
+    expect(screen.getAllByRole("listitem")).toHaveLength(50);
+    const scrollContainer = container.querySelector(".overflow-y-auto") as HTMLElement;
+    expect(scrollContainer.style.maxHeight).toBe(`${rowHeightPx * 2 + 12}px`);
+  });
+
+  it("shows the type line in by-person mode too, per item within each group", () => {
+    renderTray({
+      mode: "by-person",
+      viewerId: "client-a",
+      picks: [
+        pick({
+          assetId: "a1",
+          pickedBy: { id: "client-a", label: "Ana" },
+          selectionKind: "original",
+        }),
+      ],
+    });
+
+    expect(screen.getByText("Original")).toBeDefined();
   });
 });
 

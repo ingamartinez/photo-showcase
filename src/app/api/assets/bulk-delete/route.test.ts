@@ -171,10 +171,23 @@ const context = { params: Promise.resolve({}) };
 beforeEach(async () => {
   authMock.mockReset();
   deleteObjectMock.mockReset();
-  deleteObjectMock.mockResolvedValue(undefined);
+  const db = await seededDb();
+  // The default implementation pushes onto the SAME `__deleteCallOrder`
+  // array `db.delete().where()` already pushes `db_delete:<id>` onto — see
+  // that mock's own line above. This is what lets the ordering tests below
+  // assert the real interleaving from the TEST BODY, where a failed
+  // `expect()` actually fails the test, instead of from inside this mock's
+  // own implementation: the route wraps every `deleteObject()` call in its
+  // own `.catch(() => {})` (route.ts's documented best-effort R2 delete),
+  // which silently swallows an exception thrown from in here — including
+  // one thrown by a failing `expect()`. Code review (2026-07-31) found the
+  // previous shape of this exact test asserted from inside this mock and
+  // could not fail even when the route's real order was reversed.
+  deleteObjectMock.mockImplementation(async (key: string) => {
+    db.__deleteCallOrder.push(`r2_delete:${key}`);
+  });
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
 
-  const db = await seededDb();
   db.__rows.galleries.length = 0;
   db.__rows.assets.length = 0;
   db.__deleteCallOrder.length = 0;
@@ -316,22 +329,49 @@ describe("POST /api/assets/bulk-delete — per-id lookup, not per-request", () =
 });
 
 describe("POST /api/assets/bulk-delete — orphan avoidance ordering", () => {
+  // The order itself, asserted from THIS test's own body against
+  // `__deleteCallOrder` — not from an `expect()` planted inside
+  // `deleteObjectMock`'s implementation, which the route's own
+  // `.catch(() => {})` around every `deleteObject()` call (see the file
+  // header) would silently swallow, making that shape of assertion
+  // unable to fail regardless of the real order. Mutation-proven: swapping
+  // route.ts's own two calls (R2 delete before `db.delete()`) turns this
+  // red — see this slice's own commit message / PR description for the
+  // observed failure.
   it("deletes each asset's DB row BEFORE attempting its own R2 delete", async () => {
     authMock.mockResolvedValue(adminSession());
     const db = await seededDb();
-    deleteObjectMock.mockImplementation(async (key: string) => {
-      // At the instant deleteObject runs for ASSET_1, its own row must
-      // already be gone — regardless of which other ids are in the batch.
-      if (key.includes(ASSET_1_ID)) {
-        expect(db.__rows.assets.some((r) => r.id === ASSET_1_ID)).toBe(false);
-      }
-    });
     const { POST } = await import("./route");
 
     const response = await POST(requestFor([ASSET_1_ID]), context);
 
     expect(response.status).toBe(200);
     expect(deleteObjectMock).toHaveBeenCalledTimes(1);
+    expect(db.__deleteCallOrder).toEqual([
+      `db_delete:${ASSET_1_ID}`,
+      `r2_delete:galleries/${GALLERY_A_ID}/proofs/${ASSET_1_ID}.webp`,
+    ]);
+  });
+
+  // The per-ASSET half of the same guarantee: each asset's own DB delete
+  // commits before ITS OWN R2 delete is even attempted, interleaved across
+  // the batch — not "every DB delete, then every R2 delete" (the shape a
+  // well-intentioned `Promise.all` refactor of the sequential loop could
+  // silently produce, and still pass the single-asset test above).
+  it("interleaves DB-then-R2 per asset across a multi-asset batch, not batched by phase", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor([ASSET_1_ID, ASSET_2_ID]), context);
+
+    expect(response.status).toBe(200);
+    expect(db.__deleteCallOrder).toEqual([
+      `db_delete:${ASSET_1_ID}`,
+      `r2_delete:galleries/${GALLERY_A_ID}/proofs/${ASSET_1_ID}.webp`,
+      `db_delete:${ASSET_2_ID}`,
+      `r2_delete:galleries/${GALLERY_A_ID}/proofs/${ASSET_2_ID}.webp`,
+    ]);
   });
 
   it("still reports an asset as deleted when its compensating R2 delete fails", async () => {

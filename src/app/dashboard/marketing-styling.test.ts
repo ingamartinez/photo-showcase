@@ -167,17 +167,59 @@ function stripComments(source: string): string {
 }
 
 /**
+ * Every `const`/`let`/`var` string (or template-literal) declaration in the
+ * file, keyed by identifier name — regardless of what the name looks like.
+ * Exists so a BARE IDENTIFIER referenced inside a `className={…}` expression
+ * (`DESK_COLUMNS`, `inputClass`, …) can be resolved back to the string it
+ * holds, by USAGE rather than by guessing a naming convention. Built once
+ * per file and shared by every `className={…}` expression in it, since more
+ * than one call site can reference the same shared constant — which is
+ * this codebase's own reason `DESK_COLUMNS` exists at all
+ * (`src/app/dashboard/clients/page.tsx`'s own comment: "one constant so the
+ * two can never drift apart").
+ *
+ * TWO PRIOR REVISIONS of this idea guessed a NAME shape instead — first
+ * `/Class(Name)?$/`, which missed `DESK_COLUMNS` (a real, currently-guarded
+ * constant in two files, applied to header row and every data row of the
+ * two densest screens in the panel) entirely; widening the name regex to
+ * also accept SCREAMING_SNAKE was considered and rejected, because the next
+ * constant will be named something else again — a name filter is always
+ * one guess behind the codebase. Resolving by USAGE (below, in
+ * `extractClassNameValues`) instead of by NAME is what makes this
+ * exhaustive rather than the third guess in a row.
+ */
+function collectStringConstants(clean: string): Map<string, string> {
+  const constants = new Map<string, string>();
+
+  for (const m of clean.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"([^"]*)"/g)) {
+    constants.set(m[1], m[2]);
+  }
+  for (const m of clean.matchAll(/\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*`([^`]*)`/g)) {
+    constants.set(m[1], m[2]);
+  }
+
+  return constants;
+}
+
+/**
  * Every string a `className` attribute contributes to the rendered class
- * list, whether written as a plain literal (`className="…"`) or inside an
- * expression (`className={cn("…", cond && "…")}`). Restricted to
- * `className` specifically — not a blanket word search over the whole
- * file — because "label" and "wrap" are both otherwise-ordinary English/HTML
- * words (the `<label>` element, `aria-label`, `flex-wrap`) that a bare
- * `\blabel\b` search would flag on sight for reasons having nothing to do
- * with the eyebrow class this guards against.
+ * list: a plain literal (`className="…"`), a string/template literal inside
+ * an expression (`className={cn("…", cond && "…")}`), OR a bare identifier
+ * referenced inside that expression (`className={cn(x, DESK_COLUMNS, y)}`,
+ * or `className={inputClass}` on its own) — resolved against
+ * `collectStringConstants()` above, not against a hand-picked name shape.
+ * Restricted to what a `className` attribute actually reads — not a blanket
+ * word search over the whole file — because "label" and "wrap" are both
+ * otherwise-ordinary English/HTML words (the `<label>` element,
+ * `aria-label`, `flex-wrap`) that a bare `\blabel\b` search would flag on
+ * sight for reasons having nothing to do with the eyebrow class this
+ * guards against, and because a constant that merely EXISTS in the file
+ * (an email-notice string, say) but is never read by a `className` is not
+ * this guard's business even if it happened to contain one of these words.
  */
 function extractClassNameValues(source: string): string[] {
   const clean = stripComments(source);
+  const constants = collectStringConstants(clean);
   const values: string[] = [];
 
   for (const m of clean.matchAll(/\bclassName\s*=\s*"([^"]*)"/g)) {
@@ -187,7 +229,8 @@ function extractClassNameValues(source: string): string[] {
   // `className={…}` — walk to the MATCHING closing brace by depth (a plain
   // regex cannot do this across a multi-line `cn(…)` call, which is most of
   // them in this codebase), then pull every quoted/template string out of
-  // the expression inside.
+  // the expression inside, PLUS every bare identifier in it that resolves
+  // to a known string constant.
   const braceOpen = /\bclassName\s*=\s*\{/g;
   while (braceOpen.exec(clean)) {
     const start = braceOpen.lastIndex - 1;
@@ -206,37 +249,19 @@ function extractClassNameValues(source: string): string[] {
     const expr = clean.slice(start + 1, end);
     for (const s of expr.matchAll(/"([^"]*)"/g)) values.push(s[1]);
     for (const s of expr.matchAll(/`([^`]*)`/g)) values.push(s[1]);
-  }
 
-  return values;
-}
-
-/**
- * Every string literal assigned to an identifier that LOOKS LIKE a class
- * list — name ending in `class` or `className` (either case) — the
- * `const inputClass = "…"` idiom three of the six files this task touched
- * use to share one class string across several elements. Missing this was
- * a real gap: `extractClassNameValues` above only ever looks at the
- * `className=` CALL SITE, so a forbidden class sitting in the CONSTANT one
- * line above every call site read clean. `inputClass`, `buttonClass` and
- * similar are exactly the shape this codebase already uses (see
- * client-form.tsx, gallery-form.tsx, attach-gallery-clients-form.tsx), so
- * matching the name rather than hand-listing every identifier keeps this
- * from needing an update every time a new one is added.
- */
-function extractIdentifierClassValues(source: string): string[] {
-  const clean = stripComments(source);
-  const values: string[] = [];
-  const isClassIdentifier = /[Cc]lass(Name)?$/;
-
-  const literalRe = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*"([^"]*)"/g;
-  for (const m of clean.matchAll(literalRe)) {
-    if (isClassIdentifier.test(m[1])) values.push(m[2]);
-  }
-
-  const templateRe = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*`([^`]*)`/g;
-  for (const m of clean.matchAll(templateRe)) {
-    if (isClassIdentifier.test(m[1])) values.push(m[2]);
+    // Blank out the quoted spans first, so a class STRING that happens to
+    // contain a substring shaped like an identifier (it never does today,
+    // but nothing stops it) is never itself mistaken for one — only what is
+    // left over (bare code: `cn(`, `DESK_COLUMNS`, `,`, `cond &&`, …) is
+    // scanned for identifiers. Anything that is not a KNOWN string constant
+    // (`cn`, a boolean condition, …) simply fails to resolve and is
+    // dropped; nothing here needs to know which identifiers are "real".
+    const withoutStrings = expr.replace(/"[^"]*"/g, " ").replace(/`[^`]*`/g, " ");
+    for (const m of withoutStrings.matchAll(/\b[A-Za-z_$][\w$]*\b/g)) {
+      const resolved = constants.get(m[0]);
+      if (resolved !== undefined) values.push(resolved);
+    }
   }
 
   return values;
@@ -296,11 +321,7 @@ describe("no surviving marketing styling under /dashboard (task #135)", () => {
 
   it.each(FILES_UNDER_GUARD)("%s", (file) => {
     const source = readFileSync(file, "utf8");
-    const classValues = [
-      ...extractClassNameValues(source),
-      ...extractIdentifierClassValues(source),
-    ];
-    const violations = classValues.flatMap(findViolations);
+    const violations = extractClassNameValues(source).flatMap(findViolations);
 
     expect(violations, violations.join("\n")).toEqual([]);
   });

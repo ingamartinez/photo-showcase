@@ -71,7 +71,8 @@
 @source not "../**/*.test.tsx";
 
 /*
-  Alejo Frames — one brand, two surfaces (epic #125).
+  Alejo Frames — one brand, two CSS surfaces, three reference mocks
+  (epics #125 and #140).
 
   This file used to describe a single world: the public portfolio and the
   client gallery, both editorial — cool-biased near-black ground, a single
@@ -92,18 +93,37 @@
   (`[data-surface="app"]`) that scopes it so it cannot leak into the
   editorial world above.
 
+  Epic #140 closed the third leg of the same argument for the CLIENT
+  GALLERY (`/galleries/**`) rather than merging it into either existing
+  surface: it is the OPPOSITE problem to `/dashboard` (the panel squeezes
+  for one operator; the gallery breathes for the client who paid, mostly on
+  a phone) and, unlike `/dashboard`, its answer is to STAY on the editorial
+  system rather than leave it — serif display type and a fluid `clamp()`
+  headline scale are correct there on purpose. See
+  design/system/client.html for ITS OWN reference mock: same `:root` tokens
+  as `home.html`, its own chrome (a one-link header, no nav — the client
+  arrives by magic link at one gallery and does not browse), and its own
+  hard mobile-first rule (no `max-width` media query anywhere in it, because
+  the phone is the primary case here, not the degraded one — see that mock's
+  own header comment and `src/app/galleries/marketing-styling.test.ts`,
+  task #149's guard).
+
   THE BOUNDARY, PLAINLY: everything above the "APP SURFACE" block, and
   every rule with no `[data-surface="app"]` ancestor, belongs to the
   editorial system — the public portfolio (`/`, `/work/[slug]`, `/about`,
-  `/contact`) AND the client gallery (`/galleries/[publicSlug]`), which
-  deliberately stays editorial on purpose (the epic's own scope boundary:
-  the paying client sees cinema-black, the photographer's own work tool
-  does not). Only `/dashboard/**` reads the second block, because only
-  `src/app/dashboard/layout.tsx` ever sets the attribute that turns it on.
+  `/contact`) AND the client gallery (`/galleries/[publicSlug]`), both
+  living directly on `:root`'s own tokens with no scoping attribute of their
+  own, because between them there is nothing to scope AWAY from — both are
+  the editorial brand at full strength, just two different pages of it. Only
+  `[data-surface="app"]` carves out an exception, and only `/dashboard/**`
+  ever sets it (`src/app/dashboard/layout.tsx`), because only `/dashboard`
+  needs a genuinely different system (a working density, not a seduction) to
+  scope itself away from the editorial world every other route already
+  lives in by default.
 
   A future surface would extend this same shape — its own reference mock,
-  its own scoping attribute if its tokens need to differ from both of the
-  above — rather than a third description bolted onto this one.
+  its own scoping attribute if its tokens need to differ from the editorial
+  default — rather than a fourth description bolted onto this one.
 */
 
 @theme inline {

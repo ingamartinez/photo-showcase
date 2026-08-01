@@ -296,7 +296,21 @@ export function AssetTile({
             `src/app/dashboard/**`/`src/components/dashboard-*`, which this
             file's own name is neither — even though it only ever renders
             inside the dashboard. See the file header for why this is
-            `isMarked`/`onToggleMarked`, never `selected`. */}
+            `isMarked`/`onToggleMarked`, never `selected`.
+
+            SIZE AND CONTRAST, fixed after code review: `size-6` (24px), not
+            the original `size-4` (16px) — matching the "Mover antes"/
+            "Mover después" `min-h-6 min-w-6` controls in the same tile,
+            below. 16px was smaller than every other control on this
+            component, sitting on a grid whose tiles run as small as ~92px
+            wide, with the ENTIRE rest of the tile behind it wired to open
+            the full-screen viewer instead — a near-miss tap there opens a
+            photo rather than marking it, on the path that ends in an
+            irreversible bulk delete. The unmarked state is also more
+            opaque now (`bg-black/60`, `border-fg-dim` at full opacity
+            instead of `/70`) — a control the photographer has to notice in
+            order to use needed better contrast against an arbitrary
+            photograph than a faint outline. */}
         <button
           type="button"
           onClick={() => onToggleMarked(asset.id)}
@@ -307,18 +321,18 @@ export function AssetTile({
               : `Marcar ${asset.originalFilename} para borrar`
           }
           className={cn(
-            "absolute bottom-1.5 left-1.5 flex size-4 items-center justify-center rounded-[3px] border transition-colors",
+            "absolute bottom-1 left-1 flex size-6 items-center justify-center rounded-[3px] border transition-colors",
             isMarked
               ? "border-[#e0796b] bg-[#e0796b] text-[#1a0d0a]"
-              : "border-fg-dim/70 bg-black/40 text-transparent hover:border-[#e0796b]",
+              : "border-fg-dim bg-black/60 text-transparent hover:border-[#e0796b]",
           )}
         >
-          <span aria-hidden="true" className="text-[10px] leading-none font-bold">
+          <span aria-hidden="true" className="text-xs leading-none font-bold">
             ✓
           </span>
         </button>
         <p
-          className="text-fg-dim pointer-events-none absolute right-1.5 bottom-1 left-7 truncate font-mono text-[9px]"
+          className="text-fg-dim pointer-events-none absolute right-1.5 bottom-1.5 left-9 truncate font-mono text-[9px]"
           title={asset.originalFilename}
         >
           {asset.originalFilename}

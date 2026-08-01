@@ -194,6 +194,25 @@ describe("AdminAssetViewer", () => {
     // #184's own open debt on exactly this substitution). This asserts the
     // one fact a loop-only test cannot: after tabbing past the dialog's own
     // last control, the element BEHIND the dialog never receives focus.
+    // Mutation-proven against a REAL trap failure, not merely a
+    // never-autofocuses one: replacing `<DialogPrimitive.Content>` with a
+    // bare `<div role="dialog">` first failed this test's own PREAMBLE
+    // (`document.activeElement` was never `close` to begin with, since a
+    // plain div never autofocuses) rather than the trap assertion below it
+    // — red for the wrong reason proves nothing, the same as green. Adding
+    // `autoFocus` to the "Cerrar" button on top of the bare-div mutation is
+    // what actually reached the assertion this test exists for and failed
+    // there, on "the element behind received focus".
+    //
+    // SCOPE, STATED EXPLICITLY: this covers the TAB vector only. Setting
+    // `modal={false}` on `<DialogPrimitive.Root>` does NOT break this test
+    // — Radix's `FocusScope` keeps `loop` behaviour even with
+    // `trapped={false}` in this version, so a regression that only
+    // disables `modal` (which also drops the background `aria-hidden`,
+    // covered by a separate test above) would slip past a Tab-only check
+    // like this one. A future change to pointer-based or programmatic
+    // focus escape (`element.focus()` called directly on a background
+    // node, say) is NOT exercised here either.
     it("never lets focus escape to a control behind the dialog while tabbing through it", async () => {
       const user = userEvent.setup();
       render(

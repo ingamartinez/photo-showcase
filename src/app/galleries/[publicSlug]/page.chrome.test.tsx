@@ -137,6 +137,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     package: { id: 1, name: "Estándar" },
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
+    termsOverridden: false,
     assets: [],
     selectionSubmittedAt: null,
     ...overrides,
@@ -321,6 +322,52 @@ describe("ClientGalleryPage chrome", () => {
 
       expect(screen.queryByText(studioWord)).toBeNull();
     });
+  });
+
+  // Task #193 — the owner's decision, checked end to end through the REAL
+  // client page (not just the isolated <SelectionCounter> unit): a client
+  // must never see the bound package's name anywhere on their own gallery,
+  // on a gallery that was NEVER overridden — this is where the name used to
+  // exist (`gallery.package.name`, page.tsx's own removed `packageName`
+  // prop) and is being taken away, so THIS is the case that actually proves
+  // the removal, not the overridden case.
+  //
+  // THE TRAP THIS TEST GUARDS AGAINST (this task's own named defect, #176):
+  // a bare `not.toContain("Estándar")` would pass even if <ProofGrid> never
+  // rendered its counter at all. The positive assertion below — the real
+  // "incluidas 13 · seleccionadas 0" text — has to pass FIRST, proving the
+  // counter genuinely mounted, before the negative assertion means anything.
+  it("never renders the bound package's name on the client's own gallery page", async () => {
+    getGalleryDetailBySlugMock.mockResolvedValue(
+      galleryDetail({
+        status: "proofing",
+        package: { id: 1, name: "Estándar" },
+        assets: [
+          {
+            id: "a1",
+            originalFilename: "IMG_0001.JPG",
+            proofKey: "galleries/g1/proofs/a1.webp",
+            proofWidth: 1600,
+            proofHeight: 1067,
+            isSelected: false,
+            sortOrder: 0,
+            finalKey: null,
+            isEdited: false,
+          },
+        ],
+      }),
+    );
+
+    const element = await ClientGalleryPage(paramsFor(SLUG));
+    render(element);
+
+    // Positive control first: the live quota counter genuinely mounted with
+    // its real numbers.
+    expect(screen.getByText(/incluidas 13/)).toBeDefined();
+    expect(screen.getByText(/seleccionadas 0/)).toBeDefined();
+
+    expect(screen.queryByText(/Estándar/)).toBeNull();
+    expect(document.body.textContent).not.toContain("Estándar");
   });
 
   it("renders every asset's proof by its presigned URL, with a uniform tile box reserved before load", async () => {

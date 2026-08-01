@@ -146,11 +146,23 @@ export function SubmitSelectionPanel({
 
   return (
     <div className="flex flex-col items-end gap-2">
+      {/* Task #149's own sweep: this used to be the marketing CTA's own
+          shape — `uppercase tracking-[0.1em] text-[13px]` bordered — the
+          exact device `src/app/galleries/layout.tsx`'s header comment
+          already named as removed from "Cerrar sesión" and found surviving
+          elsewhere. `design/system/client.html`'s own "Enviar" action is
+          `.btn.btn--primary` (:828, :867: `<button class="btn btn--primary">
+          Enviar las 15</button>`), NOT uppercase, tracked at 0.02em — filled
+          with `--accent`, 48px tall (`--tap`), 3px radius. Same translation
+          `proof-lightbox.tsx`'s own picked-state pick button already uses
+          for this exact mock shape (that file's own comment on
+          `.btn.btn--primary.btn--wide`), reused here rather than invented a
+          second time. */}
       <button
         type="button"
         onClick={() => void handleSubmit()}
         disabled={pending || quota.selected === 0}
-        className="border-line-2 hover:border-accent hover:text-accent-2 rounded-sm border px-[18px] py-[12px] text-[13px] tracking-[0.1em] uppercase transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+        className="border-accent bg-accent hover:border-accent-2 hover:bg-accent-2 inline-flex min-h-12 items-center justify-center rounded-[3px] border px-5 text-sm font-semibold tracking-[0.02em] text-[#14100a] transition-colors disabled:cursor-not-allowed disabled:opacity-50"
       >
         {pending ? "Enviando…" : "Enviar selección"}
       </button>

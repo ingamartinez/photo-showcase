@@ -30,9 +30,15 @@ export function ClientPreviewBanner({ dashboardHref }: { dashboardHref: string }
         Estás viendo esto <strong className="text-fg font-medium">como lo ve el cliente</strong> —
         lo que toques acá se guarda en la selección real del cliente, a tu nombre.
       </span>
+      {/* Task #149's own sweep: NOT globals.css's `.label` (0.22em, the
+          marketing homepage's own `.kicker` value under a different name).
+          This surface's own eyebrow/small-caps device, per
+          `design/system/client.html`'s `.kicker` (:117-120), sits at 0.18em —
+          inlined rather than the shared class so it cannot drift back to the
+          marketing value silently. */}
       <Link
         href={dashboardHref}
-        className="label text-accent hover:text-accent-2 shrink-0 transition-colors"
+        className="text-accent hover:text-accent-2 shrink-0 font-mono text-[11px] tracking-[0.18em] uppercase transition-colors"
       >
         Volver al panel
       </Link>

@@ -140,20 +140,25 @@ const FILES_UNDER_GUARD = [
  * filtering does not reach and which JSX's `{/* … *\/}` comments compile
  * down to.
  *
- * The line-comment half is DELIBERATELY `^[ \t]*\/\/.*$` — a line whose
- * FIRST non-whitespace characters are `//` — not the blanket `\/\/.*$` an
- * earlier revision used. A blanket strip does not know about strings: it
- * deletes everything after the FIRST `//` on a line regardless of whether
- * that `//` sits inside a quoted value, so a `className="…"` sharing a line
- * with `// https://…` (an ordinary trailing comment on a `wa.me` link, the
- * kind of line a dashboard component picks up routinely) would erase the
- * class value along with the comment — a forbidden class hiding behind a
- * URL, not behind an untested prop. Every real comment in the files this
- * guard reads is already its own whole line, so restricting the strip to
- * that shape costs nothing today and removes the hazard for the next one
- * that isn't. */
+ * BOTH halves are anchored to a LEGITIMATE OPENER — a line whose first
+ * non-whitespace characters are `//`, or (optionally through a JSX `{`)
+ * `/*` — not the blanket `\/\/.*$` / `\/\*[\s\S]*?\*\/` an earlier revision
+ * used for each. A blanket strip does not know about strings: it treats
+ * ANY `//` or `/*` on a line as a real comment opener, including one that
+ * sits inside a quoted value or an attribute. That is exactly what bit the
+ * BLOCK half after the line half was fixed: `attach-gallery-clients-form.tsx`
+ * and `deliver-gallery-button.tsx` both explain in prose that they live
+ * under `` `src/app/dashboard/**` `` — the `/*` inside `dashboard/**` opened
+ * a phantom comment that swallowed everything up to the next real `*\/}`,
+ * `const inputClass` included — and `proof-uploader.tsx`'s
+ * `accept="image/*"` did the same starting from a live JSX attribute.
+ * Requiring the opener to sit at the true start of its line (whitespace and
+ * at most one `{` before it) is what every genuine comment in these files
+ * already does, so restricting both strips to that shape costs nothing
+ * today and closes the class of hazard — a forbidden class hiding behind
+ * either comment style — that a blanket strip of either kind reopens. */
 function stripComments(source: string): string {
-  return source.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^[ \t]*\/\/.*$/gm, "");
+  return source.replace(/^[ \t]*\{?\/\*[\s\S]*?\*\//gm, "").replace(/^[ \t]*\/\/.*$/gm, "");
 }
 
 /**

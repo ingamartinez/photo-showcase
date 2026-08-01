@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProofGrid, SELECTION_POLL_INTERVAL_MS } from "./proof-grid";
 import type { GalleryStatus, ProofAsset } from "./proof-grid";
@@ -1190,6 +1190,97 @@ describe("ProofGrid", () => {
 
       expect(screen.queryByText("Beto Ruiz")).toBeNull();
       expect(screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" })).toBeDefined();
+    });
+
+    // Task #206, criterion 5 — the type travels the SAME channel a pick
+    // already does: a snapshot reporting somebody ELSE's type change reaches
+    // this session's tray without a reload, exactly like a pick or a
+    // deselect already does above.
+    it("shows a type change made by ANOTHER session in the tray, without a reload", async () => {
+      const fetchMock = liveFetch({
+        snapshots: [
+          snapshot({
+            picks: [{ ...pickBy("a1", "client-b", "Beto Ruiz"), selectionKind: "original" }],
+          }),
+        ],
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }]),
+        initialPicks: [pickBy("a1", "client-b", "Beto Ruiz")],
+      });
+      // Scoped to the TRAY specifically — the grid tile's own type control
+      // (task #206) renders the word "Original" on every selected tile
+      // regardless of the CURRENT kind (it is a control, not a label), so an
+      // unscoped query would find it before this pick is ever marked original.
+      const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+      expect(within(tray).queryByText("Original")).toBeNull();
+
+      await onePollTick();
+
+      expect(within(tray).getByText("Original")).toBeDefined();
+    });
+
+    // Task #206, criterion 5's own named trap — the race condition. Reuses
+    // `pendingIdsRef` (use-shared-selection.ts's own mechanism), so a type
+    // change in flight must block a live snapshot from overwriting it, THE
+    // SAME as an in-flight toggle already does (condition 1 of the LIVE SYNC
+    // section) — proven here for `setSelectionKind` specifically, not
+    // assumed just because `toggleSelection` already has a test for it.
+    it("drops a live snapshot that arrives while THIS session's own type change is still in flight", async () => {
+      const typeChangeResolvers: ((value: Response) => void)[] = [];
+      const fetchMock = vi.fn((url: string) => {
+        if (url.startsWith("/api/galleries/")) {
+          // A snapshot claiming a wildly different count — if this were
+          // ever applied, `counterText()` below would show it.
+          return Promise.resolve(jsonResponse(200, snapshot({ selectedCount: 99 })));
+        }
+        return new Promise<Response>((resolve) => {
+          typeChangeResolvers.push(resolve);
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }]),
+        initialPicks: [pickBy("a1", "client-a", "Ana")],
+      });
+
+      await clickAndSettle(
+        screen.getByRole("button", { name: "Marcar como original: IMG_0001.JPG" }),
+      );
+      expect(typeChangeResolvers).toHaveLength(1);
+
+      // The poll tick's own snapshot resolves immediately (queued above) —
+      // but the type change is still pending, so condition 1 must drop it.
+      await onePollTick();
+      expect(counterText()).not.toContain("seleccionadas 99");
+
+      // Now let the type change itself resolve — its own quota is what the
+      // counter must show.
+      await act(async () => {
+        typeChangeResolvers[0]!(
+          jsonResponse(200, {
+            asset: {
+              id: "a1",
+              isSelected: true,
+              selectedAt: "2026-07-30T12:00:00.000Z",
+              pickedBy: { id: "client-a", label: "Ana" },
+              selectionKind: "original",
+            },
+            quota: computeQuota(0, 1, {
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+              originalPhotoPriceCopSnapshot: 2_000,
+            }),
+          }),
+        );
+      });
+
+      expect(counterText()).toContain("seleccionadas 1");
+      const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+      expect(within(tray).getByText("Original")).toBeDefined();
     });
 
     it("replaces the counter with the SERVER's recomputed quota on every accepted snapshot", async () => {

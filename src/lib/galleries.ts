@@ -438,6 +438,12 @@ export type GalleryDetail = {
   // detail page uses this to label the terms below as overridden or
   // inherited; nothing client-facing ever reads this field.
   termsOverridden: boolean;
+  // Task #204 — which layout the client's "Fotos elegidas" tray uses for
+  // THIS gallery. Read straight off `galleries.selection_tray_mode`
+  // (schema.ts's own comment on that column) — never derived, and never
+  // gated behind gallery status: it is a presentation choice the admin can
+  // flip at any point in the workflow.
+  selectionTrayMode: Gallery["selectionTrayMode"];
   assets: GalleryDetailAsset[];
   // `Date | null`, not optional (task #25's own review): `findGalleryDetail`
   // below populates this UNCONDITIONALLY off the row's own column, so an
@@ -556,6 +562,7 @@ function toGalleryDetail(row: RawGalleryDetailRow): GalleryDetail {
     extraPhotoPriceCopSnapshot: row.extraPhotoPriceCopSnapshot,
     originalPhotoPriceCopSnapshot: row.originalPhotoPriceCopSnapshot,
     termsOverridden: row.termsOverridden,
+    selectionTrayMode: row.selectionTrayMode,
     assets: row.assets,
     selectionSubmittedAt: row.selectionSubmittedAt,
   };

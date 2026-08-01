@@ -22,6 +22,9 @@ function renderTray(overrides: Partial<ComponentProps<typeof SelectionTray>> = {
       urls={{ a1: "https://r2.example.com/a1", a2: "https://r2.example.com/a2" }}
       filenamesByAssetId={{ a1: "IMG_0001.JPG", a2: "IMG_0002.JPG" }}
       viewerId="client-a"
+      // Task #204 — default to `flat`, today's only behavior. The by-person
+      // describe block below overrides this explicitly per test.
+      mode="flat"
       isLocked={false}
       isStale={false}
       onOpenAsset={() => {}}
@@ -252,6 +255,7 @@ describe("SelectionTray — collapsible tray with a height-capped list (task #20
         urls={{ a1: "https://r2.example.com/a1", a2: "https://r2.example.com/a2" }}
         filenamesByAssetId={{ a1: "IMG_0001.JPG", a2: "IMG_0002.JPG" }}
         viewerId="client-a"
+        mode="flat"
         isLocked={false}
         isStale={false}
         onOpenAsset={() => {}}

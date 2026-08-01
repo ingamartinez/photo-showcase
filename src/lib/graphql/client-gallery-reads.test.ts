@@ -50,6 +50,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     extraPhotoPriceCopSnapshot: 5_000,
     originalPhotoPriceCopSnapshot: 2_000,
     termsOverridden: false,
+    selectionTrayMode: "flat",
     assets: [
       {
         id: "a1",
@@ -150,6 +151,11 @@ describe("readClientGalleryBySlug", () => {
       selectionSubmittedAt: "2026-07-28T12:00:00.000Z",
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      // The WIRE value, not the Postgres one — graphql-js serializes an enum
+      // field to the MEMBER NAME (`"FLAT"`), not the `value` this schema
+      // maps it from (`"flat"`, ./types/selection-tray-mode.ts). The page
+      // itself converts this back via `selectionTrayModeFromWire`.
+      selectionTrayMode: "FLAT",
       package: { name: "Estándar" },
       assets: [
         {
@@ -183,6 +189,7 @@ describe("readClientGalleryBySlug", () => {
       "includedPhotosSnapshot",
       "package",
       "selectionSubmittedAt",
+      "selectionTrayMode",
       "sessionDate",
       "status",
       "title",

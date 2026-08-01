@@ -57,6 +57,9 @@ function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
       viewerId="client-a"
       includedPhotosSnapshot={13}
       extraPhotoPriceCopSnapshot={5_000}
+      // Task #204 — default to `flat`, today's only behavior; the tray's own
+      // test file covers `by-person` grouping directly.
+      selectionTrayMode="flat"
       {...overrides}
     />,
   );

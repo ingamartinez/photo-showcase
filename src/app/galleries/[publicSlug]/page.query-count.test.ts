@@ -65,6 +65,7 @@ function galleryRow(assetCount: number) {
     createdAt: new Date("2026-07-01T00:00:00.000Z"),
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
+    selectionTrayMode: "flat" as const,
     selectionSubmittedAt: new Date("2026-07-28T12:00:00.000Z"),
     galleryClients: [{ user: { id: "client-a", name: "Ana Pérez", email: "ana@example.com" } }],
     package: { id: 1, name: "Estándar" },

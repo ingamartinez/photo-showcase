@@ -18,6 +18,7 @@ import { AssetType } from "./asset";
 import { GalleryClientType } from "./gallery-client";
 import { GalleryStatusType } from "./gallery-status";
 import { PackageType } from "./package";
+import { SelectionTrayModeType } from "./selection-tray-mode";
 
 export const GalleryType = builder.objectRef<GalleryDetail>("Gallery").implement({
   fields: (t) => ({
@@ -35,6 +36,7 @@ export const GalleryType = builder.objectRef<GalleryDetail>("Gallery").implement
     package: t.field({ type: PackageType, resolve: (gallery) => gallery.package }),
     includedPhotosSnapshot: t.exposeInt("includedPhotosSnapshot"),
     extraPhotoPriceCopSnapshot: t.exposeInt("extraPhotoPriceCopSnapshot"),
+    selectionTrayMode: t.expose("selectionTrayMode", { type: SelectionTrayModeType }),
     assets: t.field({ type: [AssetType], resolve: (gallery) => gallery.assets }),
   }),
 });

@@ -30,6 +30,7 @@ type Gallery {
   package: Package!
   publicSlug: String!
   selectionSubmittedAt: String
+  selectionTrayMode: SelectionTrayMode!
   sessionDate: String!
   status: GalleryStatus!
   title: String!
@@ -69,4 +70,9 @@ type Query {
   gallery(id: ID!): Gallery
   galleryBySlug(publicSlug: String!): Gallery
   galleryList: [GalleryListItem!]!
+}
+
+enum SelectionTrayMode {
+  BY_PERSON
+  FLAT
 }

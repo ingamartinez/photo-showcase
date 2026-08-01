@@ -113,12 +113,126 @@
 // lands (hostile under a moving finger, and the grid tile + header counter
 // already give feedback) and no reordering of picks (would reshuffle a list
 // the client is actively looking at).
-import { useEffect, useId, useRef, useState } from "react";
+// TASK #204 — FLAT vs. BY-PERSON MODE, AND WHY THE HEIGHT CAP HAD TO BE
+// RE-DECIDED, NOT REUSED. #203 (above) capped the flat list by measuring its
+// own first `<li>` — that works only because every item in a FLAT list is
+// uniform. `by-person` groups the SAME picks under one header per picker, and
+// those groups are NOT uniform: a group of 20 photos and a group of 1 would
+// otherwise produce wildly different "two rows" caps depending on which
+// picker happened to render first, which is not what "two rows" is supposed
+// to mean.
+//
+// RESOLUTION (this file's own decision, task body's first option): the cap
+// is a PIXEL BUDGET equivalent to flat mode's, not "two rows of groups" —
+// switching modes must not change how much of the screen the tray occupies,
+// which is almost certainly what the photographer setting this expects, and
+// it sidesteps "two rows of WHAT" entirely for a shape that has no uniform
+// row. The budget is still MEASURED, never hardcoded, from a REAL rendered
+// `<TrayItem>` inside the grouped list (same 96px image + one-line label
+// markup flat mode uses — see the effect below), so it tracks the exact same
+// arithmetic #203 already established, just applied to a different ref.
+//
+// THIS DOES NOT TOUCH #203'S OWN MECHANISM. The flat branch below (`mode ===
+// "flat"`) is byte-for-byte what #203 shipped: same `listRef`, same
+// `maxListHeightPx` state, same effect, same JSX. A second, independent ref/
+// state/effect trio exists purely for the `by-person` branch — reusing (or
+// generalizing) the flat measurement here was deliberately rejected: a
+// "generalize the selector" refactor would touch code that also runs for
+// `flat`, and the app's own constraint on this slice is that flat's current
+// behavior must not depend on a mechanism shared with a mode it didn't have
+// yesterday, even if the two happen to compute the same number today.
+import { useEffect, useId, useMemo, useRef, useState } from "react";
+import type { Gallery } from "@/lib/db/schema";
 import {
   pickerLabelFor,
   type SelectionPick,
   UNATTRIBUTED_PICKER_LABEL,
 } from "@/lib/selection-snapshot";
+
+/** One picker's row in `by-person` mode: a label, a count, and — deliberately
+ * `SelectionPick[]`, not just a count — the picker's own picks, IN THE ORDER
+ * `getGallerySelection()` returned them (oldest first). Grouping never
+ * reorders within a group; see `groupPicksByPicker`'s own comment. */
+export type PickGroup = {
+  /** `pickedBy.id`, or the sentinel below for the unattributed group. Used as
+   * the React key and as the identity a viewer/alphabetical sort compares
+   * against — never the label, which two different people can share. */
+  key: string;
+  /** From `pickerLabelFor`, same function (and same "Vos" convention) every
+   * individual thumbnail in this file already uses — see `groupPicksByPicker`
+   * for why the viewer's OWN group header also reads "Vos" rather than their
+   * real name. */
+  label: string;
+  picks: SelectionPick[];
+};
+
+/** Not a real picker id (those are `users.id`, uuids) — a sentinel so the
+ * unattributed group can be told apart from a real group without comparing
+ * against `null` in three different places. */
+const UNATTRIBUTED_GROUP_KEY = "__unattributed__";
+
+/**
+ * Groups a gallery's picks by who picked them, for `by-person` mode —
+ * PRESENTATION only (task #204's own acceptance criterion 9):
+ * `getGallerySelection()` still returns one flat, oldest-first list, and
+ * grouping it is this component's job, not the query's.
+ *
+ * ORDERING, in the exact priority the task body specifies:
+ *  1. The VIEWER's own group first — matched by `pickedBy.id === viewerId`,
+ *     NEVER by comparing labels (two different people can share a display
+ *     name; only the id is a safe identity check).
+ *  2. Everyone else, ALPHABETICAL by label. Deliberately NOT by count: the
+ *     tray updates live, and sorting by count would make a row jump position
+ *     the instant someone (possibly mid-tap) adds a pick — alphabetical is
+ *     the one order that never moves as picks arrive.
+ *  3. The unattributed group (`pickedBy === null` — a real, reachable state:
+ *     a picker whose `users` row was later deleted, `onDelete: "set null"`)
+ *     LAST, in its own group, never merged into anyone else's.
+ *
+ * WITHIN a group, picks keep the order they arrived in — this function never
+ * reorders `picks` itself, only partitions it.
+ */
+export function groupPicksByPicker(picks: SelectionPick[], viewerId: string | null): PickGroup[] {
+  const groups = new Map<string, PickGroup>();
+
+  for (const pick of picks) {
+    // The id, never the label — see this function's own header comment on
+    // why grouping by name would silently merge two different people who
+    // share one.
+    const key = pick.pickedBy?.id ?? UNATTRIBUTED_GROUP_KEY;
+    const existing = groups.get(key);
+    if (existing) {
+      existing.picks.push(pick);
+      continue;
+    }
+    groups.set(key, {
+      key,
+      label: pickerLabelFor(pick.pickedBy, viewerId),
+      picks: [pick],
+    });
+  }
+
+  const viewerGroup: PickGroup[] = [];
+  const namedGroups: PickGroup[] = [];
+  const unattributedGroup: PickGroup[] = [];
+
+  for (const group of groups.values()) {
+    if (group.key === UNATTRIBUTED_GROUP_KEY) {
+      unattributedGroup.push(group);
+    } else if (viewerId !== null && group.key === viewerId) {
+      viewerGroup.push(group);
+    } else {
+      namedGroups.push(group);
+    }
+  }
+
+  // `es-CO` — same locale the dashboard's own unlock-audit date already uses
+  // (page.tsx's `toLocaleDateString("es-CO")`) — so an accented name (e.g.
+  // "Ángela") sorts the way a Spanish speaker expects, not by raw code point.
+  namedGroups.sort((a, b) => a.label.localeCompare(b.label, "es-CO"));
+
+  return [...viewerGroup, ...namedGroups, ...unattributedGroup];
+}
 
 // Two rows of picks stay visible before the list scrolls on its own axis.
 const VISIBLE_ROWS = 2;
@@ -145,6 +259,7 @@ export function SelectionTray({
   urls,
   filenamesByAssetId,
   viewerId,
+  mode,
   isLocked,
   isStale,
   onOpenAsset,
@@ -165,6 +280,11 @@ export function SelectionTray({
    * than required, so this component stays renderable without a session in
    * tests. */
   viewerId: string | null;
+  /** Task #204 — `flat` (one list, today's only behavior) or `by-person`
+   * (one row per picker, see `groupPicksByPicker`). Set by the admin on the
+   * gallery itself (`galleries.selection_tray_mode`, schema.ts), never by
+   * this component or by anything the client can control. */
+  mode: Gallery["selectionTrayMode"];
   /** Whether the selection is closed. Mirrors `<ProofGrid>`'s `isLocked`,
    * which converges on the SERVER's gallery status every tick — the tray is
    * where a collaborator finds out that somebody else already submitted. */
@@ -240,6 +360,58 @@ export function SelectionTray({
     return () => observer.disconnect();
   }, [hasPicks]);
 
+  // `by-person` mode's OWN grouping (task #204) — computed here, not by
+  // `getGallerySelection()`, per that function's own header comment and this
+  // slice's acceptance criterion 9: the query returns one flat list, and
+  // partitioning it by picker is a presentation decision this component
+  // owns. Recomputed on every `picks`/`viewerId` change — `useMemo` only to
+  // avoid re-sorting on an unrelated re-render (a lightbox open/close, a
+  // toggled `isStale`), not because the computation is expensive.
+  const groups = useMemo(() => groupPicksByPicker(picks, viewerId), [picks, viewerId]);
+
+  // `by-person`'s OWN height cap — a SEPARATE ref/state/effect from the flat
+  // trio above, not a generalization of it. See this file's header comment
+  // ("TASK #204 — FLAT vs. BY-PERSON MODE...") for why: the flat effect above
+  // is untouched, and this one only ever measures something when the
+  // `by-person` branch below is actually mounted (`groupedListRef.current`
+  // is `null` while `mode === "flat"`, so this effect is a no-op then).
+  const groupedListRef = useRef<HTMLDivElement>(null);
+  const [groupedMaxHeightPx, setGroupedMaxHeightPx] = useState<number | null>(null);
+
+  useEffect(() => {
+    const container = groupedListRef.current;
+    // The first REAL `<TrayItem>` `<li>`, wherever it lands — the first
+    // picker's group is whichever one `groupPicksByPicker` put first (the
+    // viewer's, if they have any picks), not necessarily the biggest or the
+    // smallest. Its dimensions are identical to flat mode's own item (same
+    // component, same classes), which is exactly what makes "the same pixel
+    // budget as flat" a measured fact rather than an assumption.
+    const firstItem = container?.querySelector("li") ?? null;
+    if (!firstItem) return;
+
+    const measure = () => {
+      const itemHeight = firstItem.getBoundingClientRect().height;
+      if (itemHeight <= 0) return;
+      // The gap between a GROUP'S OWN items, read off the `<ul>` that
+      // actually wraps them (`gap-3`, same class as flat's list) — not the
+      // outer `groupedListRef` div, whose own gap separates GROUPS from each
+      // other, a different number for a different purpose.
+      const itemsList = firstItem.closest("ul");
+      const parsedRowGapPx = itemsList
+        ? parseFloat(window.getComputedStyle(itemsList).rowGap)
+        : NaN;
+      const rowGapPx = Number.isFinite(parsedRowGapPx) ? parsedRowGapPx : FALLBACK_ROW_GAP_PX;
+      setGroupedMaxHeightPx(itemHeight * VISIBLE_ROWS + rowGapPx * (VISIBLE_ROWS - 1));
+    };
+
+    measure();
+
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(firstItem);
+    return () => observer.disconnect();
+  }, [mode, hasPicks]);
+
   return (
     <section
       aria-label="Fotos elegidas"
@@ -301,11 +473,60 @@ export function SelectionTray({
         {picks.length === 0 ? (
           // No scroll chrome for the empty state (task #203 acceptance
           // criterion #7) — an empty scrollable box reads as broken, not as
-          // "nothing here yet".
+          // "nothing here yet". Shared by BOTH modes: zero picks means zero
+          // groups either way, so there is nothing `by-person` would show
+          // differently here.
           <p className="text-fg-dim text-[15px] leading-relaxed">
             Todavía no eligieron ninguna foto. Las que elijan van a aparecer acá, con el nombre de
             quién las eligió.
           </p>
+        ) : mode === "by-person" ? (
+          // Task #204 — one row per picker, viewer first, alphabetical rest,
+          // unattributed last (`groupPicksByPicker` above). Same
+          // `overflow-y-auto overscroll-contain` + measured cap discipline as
+          // flat mode, on a SEPARATE ref (`groupedListRef`/
+          // `groupedMaxHeightPx`) — see this file's header comment for why
+          // that pair is not shared with flat's own.
+          <div
+            ref={groupedListRef}
+            className="flex flex-col gap-4 overflow-y-auto overscroll-contain"
+            style={{ maxHeight: groupedMaxHeightPx ?? PRE_MEASURE_MAX_HEIGHT_PX }}
+          >
+            {groups.map((group) => (
+              <div key={group.key}>
+                {/* "alejandro (5)" — the task's own example copy. The count
+                    is plain text, not a separate `aria-hidden`/`sr-only`
+                    pair: a screen reader reads this exactly as sighted users
+                    see it, same as the header's own pick counter above.
+                    Deliberately NOT `uppercase`: this surface's own styling
+                    guard (marketing-styling.test.ts, task #149) reserves
+                    `uppercase` for ONE sanctioned kicker treatment
+                    (`tracking-[0.18em]`) and forbids it everywhere else under
+                    /galleries — a picker's own name is not that. */}
+                <p
+                  className={`text-fg-dim mb-2 text-sm font-medium ${
+                    group.key === UNATTRIBUTED_GROUP_KEY ? "italic" : ""
+                  }`}
+                >
+                  {group.label}{" "}
+                  <span className="text-fg-mute font-normal">({group.picks.length})</span>
+                </p>
+                <ul className="flex flex-wrap gap-3">
+                  {group.picks.map((pick) => (
+                    <TrayItem
+                      key={pick.assetId}
+                      pick={pick}
+                      src={urls[pick.assetId]}
+                      originalFilename={filenamesByAssetId[pick.assetId]}
+                      viewerId={viewerId}
+                      onOpen={() => onOpenAsset(pick.assetId)}
+                      onError={() => onImageError(pick.assetId)}
+                    />
+                  ))}
+                </ul>
+              </div>
+            ))}
+          </div>
         ) : (
           // `overscroll-contain`: without it, a finger scrolling this list to
           // its end on a phone chains into scrolling the PAGE — the exact

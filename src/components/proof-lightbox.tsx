@@ -67,6 +67,7 @@ import { Dialog as DialogPrimitive } from "radix-ui";
 import { DownloadFinalButton } from "@/components/download-final-button";
 import type { ProofAsset } from "@/components/proof-grid";
 import type { QuotaResult } from "@/lib/quota";
+import type { SelectionKind } from "@/lib/selection-snapshot";
 
 export function ProofLightbox({
   assets,
@@ -80,6 +81,8 @@ export function ProofLightbox({
   pendingAssetIds,
   isLocked,
   isDelivered,
+  selectionKindById,
+  onSetSelectionKind,
 }: {
   assets: ProofAsset[];
   // Keyed by asset id. <ProofGrid> owns this state and shares it with the
@@ -113,6 +116,17 @@ export function ProofLightbox({
   // into a single boolean prop) because which asset is "current" changes on
   // every ←/→/swipe navigation within this same mounted component.
   isDelivered: boolean;
+  // Task #206 — every currently-selected asset's own type, keyed by id, the
+  // SAME map <ProofGrid> builds off `picks` and hands to <ProofTile> too — a
+  // second source for this would risk the tile and the lightbox disagreeing
+  // about the same photo's type mid-session. An asset not selected has no
+  // entry (see <ProofTile>'s own comment on why that is never actually read).
+  selectionKindById: Record<string, SelectionKind>;
+  // Task #24's own pattern, restated for the type: the SAME handler
+  // <ProofGrid> passes to <ProofTile>, generic over `assetId` here (unlike
+  // the tile's own already-bound version) because this component iterates
+  // over `assets` by `index`, not one asset per mounted instance.
+  onSetSelectionKind: (assetId: string, kind: SelectionKind) => void;
 }) {
   const asset = assets[index];
   const touchStartX = useRef<number | null>(null);
@@ -173,6 +187,10 @@ export function ProofLightbox({
   const src = urls[asset.id] ?? asset.proofUrl;
   const isSelected = asset.isSelected;
   const isPickDisabled = pendingAssetIds.has(asset.id) || isLocked;
+  // Task #206 — only meaningful while `isSelected`; the control below is
+  // gated on that same condition, matching <ProofTile>'s own "a photo that
+  // isn't picked has no type" stance.
+  const selectionKind = selectionKindById[asset.id] ?? "edited";
 
   // The gesture the mock names out loud (`.lb__hint`, :885 "Deslizá para
   // pasar"). Bound to the dialog surface as a whole rather than to the stage:
@@ -411,6 +429,53 @@ export function ProofLightbox({
                 ›
               </button>
             </div>
+
+            {/* Task #206 — the SAME type control <ProofTile>'s own comment
+                explains at length (the "appears only once picked, not a
+                second always-visible control" decision, and why): here it
+                sits directly under the pick button rather than beside it,
+                since `.lb__foot`'s own row is already `auto 1fr auto` for
+                prev/pick/next and has no fourth slot. Same gate as the tile's
+                own — `isSelected && !isLocked` — and the same two explicit
+                buttons rather than a single flip, for the identical reason:
+                the PATCH route's body shape is `selectionKind: "edited" |
+                "original"`, never a toggle. */}
+            {isSelected && !isLocked && (
+              <div
+                role="group"
+                aria-label={`Tipo de foto: ${asset.originalFilename}`}
+                className="border-line-2 mx-auto flex w-full max-w-[460px] overflow-hidden rounded-[3px] border"
+              >
+                <button
+                  type="button"
+                  onClick={() => onSetSelectionKind(asset.id, "edited")}
+                  aria-pressed={selectionKind === "edited"}
+                  aria-label={`Marcar como editada: ${asset.originalFilename}`}
+                  disabled={isPickDisabled}
+                  className={`flex-1 py-2 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none ${
+                    selectionKind === "edited"
+                      ? "bg-accent font-semibold text-[#14100a]"
+                      : "text-fg hover:text-accent-2"
+                  }`}
+                >
+                  Editada
+                </button>
+                <button
+                  type="button"
+                  onClick={() => onSetSelectionKind(asset.id, "original")}
+                  aria-pressed={selectionKind === "original"}
+                  aria-label={`Marcar como original: ${asset.originalFilename}`}
+                  disabled={isPickDisabled}
+                  className={`flex-1 py-2 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none ${
+                    selectionKind === "original"
+                      ? "bg-accent font-semibold text-[#14100a]"
+                      : "text-fg hover:text-accent-2"
+                  }`}
+                >
+                  Original
+                </button>
+              </div>
+            )}
 
             {/* Task #28's per-asset download, re-derived on every navigation
                 (see `isDelivered`'s own prop comment). Only its PLACEMENT is

@@ -42,6 +42,10 @@ function renderTile(overrides: Partial<Parameters<typeof ProofTile>[0]> = {}) {
     onError: vi.fn(),
     onOpen: vi.fn(),
     onToggleSelection: vi.fn(),
+    // Task #206 — the domain's own default; the tests exercising the type
+    // control override these explicitly.
+    selectionKind: "edited" as const,
+    onSetSelectionKind: vi.fn(),
     ...overrides,
   };
   return { props, ...render(<ProofTile {...props} />) };
@@ -229,5 +233,71 @@ describe("ProofTile", () => {
     // aside: if `delivered` ever stopped rendering the disabled toggle the
     // assertion above would still pass while guarding nothing.
     expect(container.querySelectorAll("button")).toHaveLength(3);
+  });
+
+  // Task #206's own criterion 8 / the design decision this file's comment
+  // spells out: the type control does not exist for an asset nobody picked.
+  describe("the type control (task #206)", () => {
+    it("does not render for an unselected photo", () => {
+      const { container } = renderTile({ isSelected: false });
+
+      expect(screen.queryByRole("button", { name: /Marcar como/ })).toBeNull();
+      // Two buttons only: open the viewer, and the pick control.
+      expect(container.querySelectorAll("button")).toHaveLength(2);
+    });
+
+    it("does not render once the selection is locked, even for a selected photo", () => {
+      renderTile({ isSelected: true, isLocked: true });
+
+      expect(screen.queryByRole("button", { name: /Marcar como/ })).toBeNull();
+    });
+
+    it("renders both type buttons for a selected, unlocked photo, with the current kind pressed", () => {
+      renderTile({ isSelected: true, selectionKind: "original" });
+
+      const edited = screen.getByRole("button", { name: "Marcar como editada: IMG_0001.JPG" });
+      const original = screen.getByRole("button", { name: "Marcar como original: IMG_0001.JPG" });
+      expect(edited.getAttribute("aria-pressed")).toBe("false");
+      expect(original.getAttribute("aria-pressed")).toBe("true");
+    });
+
+    it("calls onSetSelectionKind with the tapped kind, without touching onToggleSelection", () => {
+      const { props } = renderTile({ isSelected: true, selectionKind: "edited" });
+
+      fireEvent.click(screen.getByRole("button", { name: "Marcar como original: IMG_0001.JPG" }));
+
+      expect(props.onSetSelectionKind).toHaveBeenCalledWith("original");
+      expect(props.onToggleSelection).not.toHaveBeenCalled();
+    });
+
+    it("disables both type buttons while pending, mirroring the pick control's own gate", () => {
+      renderTile({ isSelected: true, isPending: true });
+
+      expect(
+        screen
+          .getByRole("button", { name: "Marcar como editada: IMG_0001.JPG" })
+          .hasAttribute("disabled"),
+      ).toBe(true);
+      expect(
+        screen
+          .getByRole("button", { name: "Marcar como original: IMG_0001.JPG" })
+          .hasAttribute("disabled"),
+      ).toBe(true);
+    });
+
+    // The crowding trap the task body names explicitly: the new control must
+    // not starve the pick control of its own space, or turn one tap into the
+    // other. The type control sits bottom-LEFT, the pick control bottom-
+    // RIGHT — different corners, never overlapping classes.
+    it("shares the tile with the pick control without occupying its corner", () => {
+      const { container } = renderTile({ isSelected: true });
+
+      const typeGroup = screen.getByRole("group", { name: "Tipo de foto: IMG_0001.JPG" });
+      expect(typeGroup.className).toContain("left-2");
+      expect(typeGroup.className).not.toContain("right-");
+      expect(pickButton().className).toContain("right-[7px]");
+      // Open, pick, editada, original — four controls, none nested.
+      expect(container.querySelectorAll("button")).toHaveLength(4);
+    });
   });
 });

@@ -38,7 +38,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SubmitSelectionOutcome } from "@/components/submit-selection-panel";
 import { computeQuota, type QuotaResult } from "@/lib/quota";
-import type { SelectionPick, SelectionPicker } from "@/lib/selection-snapshot";
+import type { SelectionKind, SelectionPick, SelectionPicker } from "@/lib/selection-snapshot";
 
 // Hand-rolled, not imported from `@/lib/db/schema`'s `Gallery["status"]`:
 // even a type-only import is erased at compile time and technically safe
@@ -107,6 +107,10 @@ type SelectionResponse = {
     // Task #95: who the server recorded as the picker, straight from the
     // route that just wrote it — see that route's own comment.
     pickedBy: SelectionPicker | null;
+    // Task #206 — the type the route just recorded, whether this response
+    // came from a select/deselect (which resets it to `edited`) or a
+    // type-only change.
+    selectionKind: SelectionKind;
   };
   quota: QuotaResult;
 };
@@ -612,9 +616,11 @@ export function useSharedSelection({
       // it, not one poll interval later — waiting up to 5 seconds to see your
       // OWN click take effect would read as the app being broken. Every field
       // written here comes from the response (`isSelected`, `selectedAt`,
-      // `pickedBy`), never guessed: this is the same row the route just wrote,
-      // reported back by the route that wrote it. The next accepted snapshot
-      // replaces the whole list anyway.
+      // `pickedBy`, `selectionKind`), never guessed: this is the same row the
+      // route just wrote, reported back by the route that wrote it (task
+      // #206's own "always `edited` on a fresh select" rule lives in that
+      // route, not here). The next accepted snapshot replaces the whole list
+      // anyway.
       //
       // Removed-then-appended on select rather than sorted: the server orders
       // by `selected_at` ascending, and a pick made now IS the newest, so
@@ -629,9 +635,7 @@ export function useSharedSelection({
             assetId: body.asset.id,
             selectedAt: body.asset.selectedAt,
             pickedBy: body.asset.pickedBy,
-            // Task #206 — a fresh select always starts `edited` (criterion 2:
-            // deselecting and re-selecting returns a pick to `edited`).
-            selectionKind: "edited",
+            selectionKind: body.asset.selectionKind,
           },
         ];
       });
@@ -644,6 +648,65 @@ export function useSharedSelection({
       // The server's own recomputed quota — only applied if no LATER-issued
       // toggle's response (or accepted snapshot) has already been applied. See
       // the header comment on `quotaSequenceRef` above.
+      if (sequence > appliedQuotaSequenceRef.current) {
+        appliedQuotaSequenceRef.current = sequence;
+        setQuota(body.quota);
+      }
+    } catch {
+      setToggleError("No se pudo conectar.");
+    } finally {
+      pendingIdsRef.current.delete(assetId);
+      setPendingIds(new Set(pendingIdsRef.current));
+    }
+  }, []);
+
+  // Task #206 — set an ALREADY-selected pick's type, reusing every mechanism
+  // `toggleSelection` above already built rather than inventing a second
+  // channel (the task body's own instruction): the same `pendingIdsRef` guard
+  // (so a type change and a toggle can never race on the SAME asset — both
+  // key off `assetId`), the same `quotaSequenceRef`/`appliedQuotaSequenceRef`
+  // ordering (so a type change and a live snapshot, or two type changes,
+  // apply in issue order and never let a stale one win), and the same
+  // `lastLocalWriteClockRef` stamp (so a snapshot issued before this commit
+  // cannot flip the tray's local view back for one interval). The ONLY
+  // difference from `toggleSelection` is the request body and which fields
+  // of the response this writes back.
+  const setSelectionKind = useCallback(async (assetId: string, kind: SelectionKind) => {
+    // Same UX-only mirror of the server-side lock as `toggleSelection` — see
+    // that callback's own comment.
+    if (isLockedRef.current) return;
+    if (pendingIdsRef.current.has(assetId)) return;
+    pendingIdsRef.current.add(assetId);
+    setPendingIds(new Set(pendingIdsRef.current));
+    setToggleError(null);
+
+    const sequence = ++quotaSequenceRef.current;
+    try {
+      const response = await fetch(`/api/assets/${assetId}/selection`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ selectionKind: kind }),
+      });
+      if (!response.ok) {
+        setToggleError("No se pudo actualizar el tipo de foto.");
+        return;
+      }
+      const body = (await response.json()) as SelectionResponse;
+
+      // `isSelected` is unchanged by a type-only write (the route's own
+      // guarantee — see its `asset_not_selected` guard), but writing it back
+      // here costs nothing and keeps this handler symmetric with
+      // `toggleSelection`'s own "trust only the response" stance.
+      setSelectionById((prev) => ({ ...prev, [body.asset.id]: body.asset.isSelected }));
+      setPicks((prev) =>
+        prev.map((pick) =>
+          pick.assetId === body.asset.id
+            ? { ...pick, selectionKind: body.asset.selectionKind }
+            : pick,
+        ),
+      );
+
+      lastLocalWriteClockRef.current = quotaSequenceRef.current;
       if (sequence > appliedQuotaSequenceRef.current) {
         appliedQuotaSequenceRef.current = sequence;
         setQuota(body.quota);
@@ -691,6 +754,7 @@ export function useSharedSelection({
     toggleError,
     isStale,
     toggleSelection,
+    setSelectionKind,
     handleSubmitted,
   };
 }

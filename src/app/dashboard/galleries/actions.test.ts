@@ -594,6 +594,59 @@ describe("createGallery success + frozen terms", () => {
     expect(stored).toMatchObject({ termsOverridden: false });
   });
 
+  // Task #193 — REVIEW FINDING: the test above never actually posts the two
+  // override fields at all (`formDataWith` skips `undefined` entries
+  // entirely), so it only ever exercised `null || undefined`, which behaves
+  // identically under `??`. It could not have caught the bug this test
+  // exists for. THIS test posts an EXPLICIT `""` for both fields — what a
+  // real, untouched `<input type="number">` actually posts — and pins the
+  // exact spot where blank-vs-typed is decided.
+  //
+  // MUTATION-PROVEN, TWO WAYS:
+  //
+  // 1. `optionalNonNegativeInt`'s own trim-and-collapse `.transform` is now
+  //    what decides "empty" — moved there FROM the call site's
+  //    `formData.get(...) || undefined`, which used to be the only place
+  //    deciding it (see that function's own header comment). Removing that
+  //    transform's `|| trimmed === ""` clause AND flipping the call site's
+  //    `||` to `??` at the same time (reproducing the exact pre-fix shape:
+  //    correctness resting on that one operator, with the schema doing
+  //    nothing to catch it) turns this test red with
+  //    `includedPhotosSnapshot: 0`, `extraPhotoPriceCopSnapshot: 0`,
+  //    `termsOverridden: true` — `"" ?? undefined` stays `""`, `Number("")`
+  //    is `0`, and a `0` survives `??` against the package's own value like
+  //    any other override would.
+  //
+  // 2. Flipping ONLY the call site's `||` to `??`, with the schema's own fix
+  //    left intact, stays GREEN — verified directly, not assumed. That is
+  //    the fix working as intended, not a gap: correctness no longer rests
+  //    on that operator at all, so mutating it alone is now a no-op. The
+  //    schema's own trim-and-collapse is what has to be removed (as in
+  //    #1 above) to reach red again.
+  it("treats an explicitly blank override field the same as an untouched one — inherits the package, never overridden", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda con campos en blanco",
+        sessionDate: "2026-08-01",
+        includedPhotos: "",
+        extraPhotoPriceCop: "",
+      }),
+    );
+
+    const stored = db.__rows.galleries.find((g) => g.title === "Boda con campos en blanco");
+    expect(stored).toMatchObject({
+      includedPhotosSnapshot: 13,
+      extraPhotoPriceCopSnapshot: 5_000,
+      termsOverridden: false,
+    });
+  });
+
   // Task #193 — both override fields typed together replace BOTH snapshots,
   // and the gallery is flagged as overridden.
   it("writes the manually typed override values instead of the package's own terms, and flags the gallery as overridden", async () => {
@@ -705,12 +758,25 @@ describe("createGallery success + frozen terms", () => {
   // Task #193 extended this in place (rather than adding a sibling test)
   // with a SECOND, overridden gallery bound to the same package: the frozen-
   // terms guarantee has to hold for an overridden gallery exactly as it
-  // already held for a normal one, and a derived-from-comparison
-  // `termsOverridden` (the trap this task's own ticket names) would be
-  // exposed by the SAME live-package mutation this test already performs.
+  // already held for a normal one.
+  //
+  // REVIEW FINDING, FIXED: this comment used to also claim a
+  // derived-from-comparison `termsOverridden` (the trap this task's own
+  // ticket names) "would be exposed by the SAME live-package mutation this
+  // test already performs" — false. `getGalleriesWithDetails` returns
+  // `GalleryWithDetails` (src/lib/galleries.ts), which has no
+  // `termsOverridden` field at all; the assertions below it only ever
+  // checked the four snapshot numbers, never that flag, so a comparison-
+  // based derivation could ship right through this test undetected. Fixed
+  // by reading BOTH galleries a second time through `getGalleryDetailsByIds`
+  // instead — it shares the identical `toGalleryDetail` mapper `getGalleryDetail`
+  // (the admin page's own read) uses, and its `GalleryDetail` type DOES carry
+  // `termsOverridden` — and asserting the flag directly, AFTER the same
+  // live-package mutation, so a comparison-based derivation would now
+  // actually flip these assertions the way the comment always claimed.
   it("keeps a gallery's displayed terms unmoved after the bound package's price/quota are edited afterward — normal and overridden alike", async () => {
     const { createGallery } = await import("./actions");
-    const { getGalleriesWithDetails } = await import("@/lib/galleries");
+    const { getGalleriesWithDetails, getGalleryDetailsByIds } = await import("@/lib/galleries");
     const db = await seededDb();
 
     const created = await createGallery(
@@ -765,6 +831,22 @@ describe("createGallery success + frozen terms", () => {
     expect(overriddenGallery).toBeDefined();
     expect(overriddenGallery?.includedPhotosSnapshot).toBe(20);
     expect(overriddenGallery?.extraPhotoPriceCopSnapshot).toBe(9_000);
+
+    // `termsOverridden` itself, read through `getGalleryDetailsByIds` (the
+    // one projection that carries it) — the actual fix for this comment's
+    // own review finding above. A derivation that compared these frozen
+    // snapshots against the package's CURRENT row (still sitting at
+    // `includedPhotos: 1` / `extraPhotoPriceCop: 999_999` from the mutation
+    // above) would call the FIRST gallery overridden (13 ≠ 1) and the
+    // SECOND one NOT overridden by coincidence only if the admin had typed
+    // exactly the live values — neither matches what this asserts.
+    const galleryId = db.__rows.galleries.find((g) => g.title === "Boda Ana y Beto")!.id as string;
+    const overriddenGalleryId = db.__rows.galleries.find((g) => g.title === "Boda Overrideada")!
+      .id as string;
+    const details = await getGalleryDetailsByIds([galleryId, overriddenGalleryId]);
+
+    expect(details.find((d) => d.id === galleryId)?.termsOverridden).toBe(false);
+    expect(details.find((d) => d.id === overriddenGalleryId)?.termsOverridden).toBe(true);
   });
 
   it("rejects a client id that does not exist (foreign key violation), with a friendly message", async () => {

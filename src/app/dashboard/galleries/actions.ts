@@ -36,21 +36,36 @@ import {
 import { generateGallerySlug } from "@/lib/slug";
 import { notifySelectionChanged } from "@/lib/selection-events";
 
-// Task #193 — a manual override of a snapshot's value. `value` arrives here
-// already normalized: the call site turns `""` (an untouched, genuinely
-// empty field) into `undefined` before this schema ever sees it — the SAME
-// `formData.get(...) || undefined` normalization `unlockSelection`'s own
-// `reason` field already relies on above (this file's `unlockSelection`).
-// That is the ONLY place emptiness is decided. From here on `undefined`
-// means "inherit from the package" and any string value — INCLUDING `"0"` —
-// is a value the admin actually typed and must be parsed and kept, never
-// treated as absent. `Number("")` being `0` and `override || pkg.value`
-// silently discarding a real `0` are exactly the two traps this shape is
-// built to avoid; see the `??` used against these parsed values below.
+// Task #193 — a manual override of a snapshot's value.
+//
+// EMPTINESS IS DECIDED RIGHT HERE, not at the call site. A review of this
+// slice found the decision living ENTIRELY in the call site's own
+// `formData.get(...) || undefined` (below) — the same normalization
+// `unlockSelection`'s `reason` field already uses — with nothing re-checking
+// it here. That meant correctness rested on ONE operator at ONE call site:
+// flipping that `||` to `??` (a mutation test proved this) let a genuinely
+// empty `""` sail straight through as a "typed" value, and `Number("")` is
+// `0` — an untouched field would silently write `includedPhotosSnapshot: 0`
+// / `extraPhotoPriceCopSnapshot: 0` and `termsOverridden: true`. The
+// `.transform` below trims and re-collapses an empty (or whitespace-only —
+// same fix closes that case too) string to `undefined` REGARDLESS of what
+// the call site handed over, so the call site's own `|| undefined` is now a
+// second, redundant layer ("cinturón y tiradores"), never the only one.
+//
+// From here on `undefined` means "inherit from the package" and any
+// non-empty string — INCLUDING `"0"` — is a value the admin actually typed
+// and must be parsed and kept, never treated as absent: `Number("")` being
+// `0` and `override || pkg.value` silently discarding a real `0` are the two
+// traps this shape exists to avoid; see the `??` used against these parsed
+// values further down in `createGallery` itself.
 function optionalNonNegativeInt(message: string) {
   return z
     .string()
     .optional()
+    .transform((value) => {
+      const trimmed = value?.trim();
+      return trimmed === undefined || trimmed === "" ? undefined : trimmed;
+    })
     .refine(
       (value) => value === undefined || (Number.isInteger(Number(value)) && Number(value) >= 0),
       { message },
@@ -138,13 +153,13 @@ export async function createGallery(
     packageId: formData.get("packageId"),
     title: formData.get("title"),
     sessionDate: formData.get("sessionDate"),
-    // `|| undefined`, not `?? undefined` — same normalization
-    // `unlockSelection`'s own `reason` field already uses below: a `<input
-    // type="number">` left untouched posts `""` (a non-null, empty string),
-    // which `||` collapses to `undefined` exactly as intended. A typed `"0"`
-    // is a non-empty string and stays `"0"` — `||` only ever discards the
-    // EMPTY string here, never a real value, no matter what number it parses
-    // to.
+    // `|| undefined` here only normalizes `formData.get`'s possible `null`
+    // (a field genuinely absent from the form) into `undefined` for the
+    // schema's `.optional()` to accept — it is NOT what decides "empty vs a
+    // real value" anymore. `optionalNonNegativeInt`'s own trim-and-collapse
+    // transform (above) is what makes that call now, on whatever string
+    // reaches it, so this line staying `||` instead of `??` is redundant
+    // defense, not the load-bearing check it used to be.
     includedPhotosOverride: formData.get("includedPhotos") || undefined,
     extraPhotoPriceCopOverride: formData.get("extraPhotoPriceCop") || undefined,
   });

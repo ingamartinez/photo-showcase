@@ -693,6 +693,13 @@ describe("ProofGrid", () => {
   // blocks or scolds going over quota" — had NO test anywhere in this suite
   // that would go red if it were broken. These three do.
   describe("task #24 invariant: never blocks or scolds over quota", () => {
+    // Task #206, round-3 review — the initial quota (whether extras is
+    // already > 0 on first paint) comes from `initialPicks` alone since this
+    // slice's own fix; a fixture that seeds only `initialAssets` renders
+    // `renderGrid`'s empty `initialPicks: []` default, so `quota.extras` is
+    // silently 0 and this describe block's whole premise ("already over
+    // quota, before any toggle") never actually holds. Every test below now
+    // seeds matching `initialPicks` for the two already-selected assets.
     it("keeps an unpicked tile's toggle enabled once the shared selection already exceeds the included quota", () => {
       renderGrid({
         initialAssets: assetsFor([
@@ -700,6 +707,10 @@ describe("ProofGrid", () => {
           { isSelected: true },
           { isSelected: false },
         ]),
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+          { assetId: "a2", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+        ],
         includedPhotosSnapshot: 1,
         extraPhotoPriceCopSnapshot: 5_000,
       });
@@ -715,6 +726,10 @@ describe("ProofGrid", () => {
     it("never renders any scolding, warning or limit copy while the selection is over the included quota", () => {
       renderGrid({
         initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }]),
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+          { assetId: "a2", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+        ],
         includedPhotosSnapshot: 1,
         extraPhotoPriceCopSnapshot: 5_000,
       });
@@ -749,6 +764,10 @@ describe("ProofGrid", () => {
           { isSelected: true },
           { isSelected: false },
         ]),
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+          { assetId: "a2", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+        ],
         includedPhotosSnapshot: 1,
         extraPhotoPriceCopSnapshot: 5_000,
       });
@@ -1391,6 +1410,69 @@ describe("ProofGrid", () => {
 
       expect(counterText()).toContain("seleccionadas 1");
       const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+      expect(within(tray).getByText("Original")).toBeDefined();
+    });
+
+    // Task #206, round-3 review — condition 2 of the LIVE SYNC section (a
+    // snapshot ISSUED at or before this session's last CONFIRMED write must
+    // not undo that write), proven for `setSelectionKind` specifically. The
+    // existing "does NOT let a snapshot older than a confirmed local write
+    // undo that write" test above only ever exercised this for
+    // `toggleSelection`; `setSelectionKind` shares the same
+    // `lastLocalWriteClockRef` stamp, but nothing forced it until now.
+    it("does NOT let a snapshot older than a confirmed type change undo that change", async () => {
+      let resolvePoll: ((value: unknown) => void) | undefined;
+      const fetchMock = vi.fn((url: string) => {
+        if (url.startsWith("/api/galleries/")) {
+          // The poll issued BEFORE the type change below — held open, so it
+          // resolves AFTER the type change has already been confirmed.
+          return new Promise((resolve) => {
+            resolvePoll = resolve;
+          });
+        }
+        // The type-only PATCH — resolves immediately, confirming `original`.
+        return Promise.resolve(
+          jsonResponse(200, {
+            asset: {
+              id: "a1",
+              isSelected: true,
+              selectedAt: "2026-07-30T12:00:00.000Z",
+              pickedBy: { id: "client-a", label: "Ana" },
+              selectionKind: "original",
+            },
+            quota: computeQuota(0, 1, {
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+              originalPhotoPriceCopSnapshot: 2_000,
+            }),
+          }),
+        );
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }]),
+        initialPicks: [pickBy("a1", "client-a", "Ana")],
+      });
+
+      // Poll issued and hangs — this is the "photograph of the past" whose
+      // own issue clock is OLDER than the type change about to happen.
+      await onePollTick();
+
+      await clickAndSettle(
+        screen.getByRole("button", { name: "Marcar como original: IMG_0001.JPG" }),
+      );
+      const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+      expect(within(tray).getByText("Original")).toBeDefined();
+
+      // The stale snapshot finally lands, still reporting `edited` (the
+      // state BEFORE the type change committed).
+      await act(async () => {
+        resolvePoll?.(jsonResponse(200, snapshot({ picks: [pickBy("a1", "client-a", "Ana")] })));
+      });
+
+      // Must still show "Original" — the older-issued snapshot must be
+      // dropped, not applied over the confirmed write.
       expect(within(tray).getByText("Original")).toBeDefined();
     });
 

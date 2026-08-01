@@ -928,6 +928,13 @@ describe("PATCH /api/assets/[assetId]/selection — setting the type (task #206)
     const db = await seededDb();
     db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
     db.__rows.assets[0] = assetRow({ isSelected: true, selectedBy: "deleted-user" });
+    // A DECOY row, deliberately NOT matching "deleted-user" — round-3 review
+    // finding: without this, `db.__rows.users` stays empty (only ever pushed
+    // to by the PREVIOUS test), and an unseeded table can't distinguish "the
+    // lookup ran and found nothing" from "the lookup never ran at all". This
+    // row proves the `users` table genuinely has rows in it and the query
+    // still, correctly, finds none matching this asset's `selected_by`.
+    db.__rows.users.push({ id: "client-a", name: "Ana Pérez", email: "a@example.com" });
     const { PATCH } = await import("./route");
 
     const response = await PATCH(

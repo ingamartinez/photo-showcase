@@ -113,12 +113,14 @@ export const POST = withApiSession(async function POST(
   const failed: { id: string; error: string }[] = [];
 
   // SEQUENTIAL, not `Promise.all`: each iteration's own status-gate check and
-  // DB delete must observe a consistent world, and — same reasoning
-  // reorder/route.ts gives for its own two UPDATEs not needing a
-  // transaction — the assets table carries no invariant across DIFFERENT
-  // assets' rows that a concurrent batch of independent single-row deletes
-  // could violate. Sequential is simply the easiest shape to reason about
-  // and to test the ordering guarantee (point 2 above) against.
+  // DB delete must observe a consistent world, and the assets table carries
+  // no invariant ACROSS DIFFERENT assets' rows that a concurrent batch of
+  // independent single-row deletes could violate — unlike
+  // ../../galleries/[galleryId]/reorder/route.ts's whole-list write, which
+  // DOES need a transaction because ITS invariant (a coherent `sort_order`
+  // sequence) spans every row in the gallery at once. Sequential is simply
+  // the easiest shape to reason about and to test the ordering guarantee
+  // (point 2 above) against.
   for (const assetId of assetIds) {
     const lookup = await loadOwnedAsset(assetId, session);
     if (!lookup.ok) {

@@ -270,8 +270,29 @@ export function GalleryWorkspace({
   // look like a drag bug — it would look like "the handle sometimes does
   // nothing." `distance: 8` is dnd-kit's own documented starting point for
   // telling an intentional drag apart from a tap's incidental finger
-  // movement; verified by hand at 390px width, the dashboard epic's own
-  // mobile reference (#125), not only on a desktop pointer.
+  // movement.
+  //
+  // THE PRIMARY DEFENSE IS STRUCTURAL, NOT THIS CONSTRAINT: the open-viewer
+  // button (`absolute inset-0`, asset-tile.tsx) carries no drag listeners at
+  // all, only the handle does, so a tap anywhere on the photo cannot become
+  // a drag regardless of how `distance` is tuned. This constraint only
+  // matters for taps ON the handle itself.
+  //
+  // AT 390PX (the dashboard epic's own mobile reference, #125): the control
+  // row (this handle + "Eliminar") was measured, not eyeballed — a real
+  // Chromium instance rendering the exact JSX/compiled Tailwind output at a
+  // 390px viewport, three tiles per row (the actual column count `grid-
+  // cols-[repeat(auto-fill,minmax(92px,1fr))]` produces once `main`'s own
+  // `px-4` is subtracted, per PLAN.md's mobile reference), measured
+  // ~101px of usable tile width against a combined ~69px for the handle
+  // (24px) + "Eliminar" (~45px) — roughly 30px of slack, no overflow, no
+  // wrap. That check was NOT run through the committed `e2e/` capture
+  // harness: `global-setup.ts`'s fixture-gallery seeding currently fails
+  // against this dev database independently of this slice (task #100's
+  // `galleries_active_client_check` trigger rejects the gallery insert
+  // before a client is attached in the same transaction) — a pre-existing
+  // gap this task does not own and did not introduce, reported separately
+  // rather than patched here.
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
     // Criterion #6: reordering must work with a keyboard, not only a

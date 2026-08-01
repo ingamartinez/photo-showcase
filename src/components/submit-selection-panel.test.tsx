@@ -40,6 +40,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked
         submittedAt="2026-07-28T12:00:00.000Z"
         onSubmitted={vi.fn()}
+        allowsOriginalSelection={false}
       />,
     );
 
@@ -64,6 +65,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
+        allowsOriginalSelection={false}
       />,
     );
 
@@ -78,6 +80,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
+        allowsOriginalSelection={false}
       />,
     );
 
@@ -102,6 +105,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
+        allowsOriginalSelection={false}
       />,
     );
 
@@ -129,6 +133,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
+        allowsOriginalSelection={false}
       />,
     );
 
@@ -162,6 +167,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={onSubmitted}
+        allowsOriginalSelection={false}
       />,
     );
 
@@ -191,6 +197,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
+        allowsOriginalSelection={false}
       />,
     );
 
@@ -217,6 +224,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={onSubmitted}
+        allowsOriginalSelection={false}
       />,
     );
 
@@ -243,6 +251,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
+        allowsOriginalSelection={false}
       />,
     );
 
@@ -265,6 +274,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
+        allowsOriginalSelection={false}
       />,
     );
 
@@ -277,7 +287,13 @@ describe("SubmitSelectionPanel", () => {
 });
 
 describe("SubmitSelectionPanel — the two-tariff confirmation (task #206)", () => {
-  async function openConfirmation(quota: ReturnType<typeof computeQuota>): Promise<string> {
+  // Task #214 — defaults ON: every test in this describe block exercises a
+  // confirmation with real originals present, which needs the switch on to
+  // render at all.
+  async function openConfirmation(
+    quota: ReturnType<typeof computeQuota>,
+    allowsOriginalSelection = true,
+  ): Promise<string> {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     vi.stubGlobal("fetch", vi.fn());
     const user = userEvent.setup();
@@ -289,6 +305,7 @@ describe("SubmitSelectionPanel — the two-tariff confirmation (task #206)", () 
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
+        allowsOriginalSelection={allowsOriginalSelection}
       />,
     );
 
@@ -343,5 +360,14 @@ describe("SubmitSelectionPanel — the two-tariff confirmation (task #206)", () 
     const message = await openConfirmation(computeQuota(5, 2, SNAPSHOT));
 
     expect(message).toMatch(/se coordina por fuera de la app/);
+  });
+
+  // Task #214 — same "absent, not zeroed" governing constraint as the
+  // counter and the tray: a genuinely non-zero originals count must not
+  // surface here while the gallery's own switch is off.
+  it("never mentions originals when the switch is off, even with a real originals count", async () => {
+    const message = await openConfirmation(computeQuota(5, 2, SNAPSHOT), false);
+
+    expect(message).not.toMatch(/original/i);
   });
 });

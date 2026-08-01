@@ -51,6 +51,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     originalPhotoPriceCopSnapshot: 2_000,
     termsOverridden: false,
     selectionTrayMode: "flat",
+    allowsOriginalSelection: false,
     assets: [
       {
         id: "a1",
@@ -159,6 +160,9 @@ describe("readClientGalleryBySlug", () => {
       // maps it from (`"flat"`, ./types/selection-tray-mode.ts). The page
       // itself converts this back via `selectionTrayModeFromWire`.
       selectionTrayMode: "FLAT",
+      // Task #214 — the switch itself, exposed as a plain boolean (no wire
+      // enum to convert back, unlike `selectionTrayMode` above).
+      allowsOriginalSelection: false,
       package: { name: "Estándar" },
       assets: [
         {
@@ -186,6 +190,7 @@ describe("readClientGalleryBySlug", () => {
     const gallery = await readClientGalleryBySlug(SLUG, session());
 
     expect(Object.keys(gallery ?? {}).sort()).toEqual([
+      "allowsOriginalSelection",
       "assets",
       "extraPhotoPriceCopSnapshot",
       "id",

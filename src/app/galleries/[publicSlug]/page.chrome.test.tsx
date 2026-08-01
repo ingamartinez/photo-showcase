@@ -140,6 +140,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     originalPhotoPriceCopSnapshot: 2_000,
     termsOverridden: false,
     selectionTrayMode: "flat",
+    allowsOriginalSelection: false,
     assets: [],
     selectionSubmittedAt: null,
     ...overrides,
@@ -363,6 +364,11 @@ describe("ClientGalleryPage chrome", () => {
           includedPhotosSnapshot: 2,
           extraPhotoPriceCopSnapshot: 5_000,
           originalPhotoPriceCopSnapshot: 2_000,
+          // Task #214 — this test's own picks include originals, so the
+          // switch has to be ON for the two-tariff breakdown below to render
+          // at all; see this file's own "the switch is OFF" test for the
+          // complementary case.
+          allowsOriginalSelection: true,
           assets: Array.from({ length: 5 }, (_unused, index) => ({
             id: `a${index + 1}`,
             originalFilename: `IMG_000${index + 1}.JPG`,

@@ -83,6 +83,7 @@ export function ProofLightbox({
   isDelivered,
   selectionKindById,
   onSetSelectionKind,
+  allowsOriginalSelection,
 }: {
   assets: ProofAsset[];
   // Keyed by asset id. <ProofGrid> owns this state and shares it with the
@@ -127,6 +128,11 @@ export function ProofLightbox({
   // the tile's own already-bound version) because this component iterates
   // over `assets` by `index`, not one asset per mounted instance.
   onSetSelectionKind: (assetId: string, kind: SelectionKind) => void;
+  /** Task #214 — the SAME gate <ProofTile>'s own prop of this name applies,
+   * mirrored here: `false` (the default for every gallery, schema.ts's own
+   * comment on `galleries.allowsOriginalSelection`) hides this screen's type
+   * control entirely, regardless of `isSelected`/`isLocked`. */
+  allowsOriginalSelection: boolean;
 }) {
   const asset = assets[index];
   const touchStartX = useRef<number | null>(null);
@@ -440,7 +446,7 @@ export function ProofLightbox({
                 buttons rather than a single flip, for the identical reason:
                 the PATCH route's body shape is `selectionKind: "edited" |
                 "original"`, never a toggle. */}
-            {isSelected && !isLocked && (
+            {isSelected && !isLocked && allowsOriginalSelection && (
               <div
                 role="group"
                 aria-label={`Tipo de foto: ${asset.originalFilename}`}

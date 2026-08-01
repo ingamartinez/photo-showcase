@@ -128,6 +128,7 @@ const CLIENT_GALLERY_DETAIL_DOCUMENT = graphql(`
       extraPhotoPriceCopSnapshot
       originalPhotoPriceCopSnapshot
       selectionTrayMode
+      allowsOriginalSelection
       package {
         name
       }

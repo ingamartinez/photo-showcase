@@ -451,6 +451,15 @@ export type GalleryDetail = {
   // gated behind gallery status: it is a presentation choice the admin can
   // flip at any point in the workflow.
   selectionTrayMode: Gallery["selectionTrayMode"];
+  // Task #214 — whether THIS gallery's client may pick `original` at all
+  // (task #206's own per-photo control). Read straight off
+  // `galleries.allows_original_selection` (schema.ts's own comment on that
+  // column has the full reasoning) — never derived from
+  // `originalPhotoPriceCopSnapshot` being non-zero or from whether any asset
+  // already carries `selectionKind: "original"`. `false` for every gallery
+  // that existed before this column did, which is what restores this app's
+  // pre-#206 behavior for all of them (see `proof-tile.tsx`'s own gate).
+  allowsOriginalSelection: boolean;
   assets: GalleryDetailAsset[];
   // `Date | null`, not optional (task #25's own review): `findGalleryDetail`
   // below populates this UNCONDITIONALLY off the row's own column, so an
@@ -573,6 +582,7 @@ function toGalleryDetail(row: RawGalleryDetailRow): GalleryDetail {
     originalPhotoPriceCopSnapshot: row.originalPhotoPriceCopSnapshot,
     termsOverridden: row.termsOverridden,
     selectionTrayMode: row.selectionTrayMode,
+    allowsOriginalSelection: row.allowsOriginalSelection,
     assets: row.assets,
     selectionSubmittedAt: row.selectionSubmittedAt,
   };

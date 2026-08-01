@@ -51,6 +51,7 @@ export function ProofTile({
   onToggleSelection,
   selectionKind,
   onSetSelectionKind,
+  allowsOriginalSelection,
 }: {
   asset: ProofAsset;
   /** 1-based position in the grid, rendered in the tile's corner
@@ -75,10 +76,21 @@ export function ProofTile({
   onToggleSelection: () => void;
   /** Task #206 — meaningless while `!isSelected` (schema.ts's own comment on
    * `assets.selectionKind`), and this tile only ever RENDERS the control
-   * while `isSelected && !isLocked` (see below) — so a caller passing this
-   * for an unselected asset is passing a value nothing here reads. */
+   * while `isSelected && !isLocked && allowsOriginalSelection` (task #214,
+   * see below) — so a caller passing this for an unselected asset, or a
+   * gallery with the switch off, is passing a value nothing here reads. */
   selectionKind: SelectionKind;
   onSetSelectionKind: (kind: SelectionKind) => void;
+  /** Task #214 — the gallery's own switch, gating whether this control may
+   * render AT ALL, regardless of `isSelected`/`isLocked`. `false` is the
+   * default for every gallery (schema.ts's own comment on
+   * `galleries.allowsOriginalSelection`), which is what makes a gallery with
+   * the switch off render EXACTLY as this tile did before task #206 shipped
+   * — no type control, ever, not even for an asset some earlier session or a
+   * data anomaly left marked `selectionKind: "original"`. See this file's own
+   * comment on the render gate below for why this is ANDed in rather than
+   * checked separately. */
+  allowsOriginalSelection: boolean;
 }) {
   return (
     <li className="relative">
@@ -322,7 +334,7 @@ export function ProofTile({
           ceiling. NOT confirmed in a real Chromium render at 390×844 (this
           slice's own declared gap — see the kanban report); revisit with an
           actual capture before trusting the margin further. */}
-      {isSelected && !isLocked && (
+      {isSelected && !isLocked && allowsOriginalSelection && (
         <div
           role="group"
           aria-label={`Tipo de foto: ${asset.originalFilename}`}

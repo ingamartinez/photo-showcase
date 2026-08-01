@@ -139,6 +139,7 @@ export function ProofGrid({
   extraPhotoPriceCopSnapshot,
   originalPhotoPriceCopSnapshot,
   selectionTrayMode,
+  allowsOriginalSelection,
 }: {
   // Task #25's submit route is keyed on this — see that route's own header
   // comment for why the internal id, not the page's `publicSlug`, is the
@@ -196,6 +197,21 @@ export function ProofGrid({
   // (src/app/dashboard/galleries/actions.ts's `updateSelectionTrayMode`);
   // this component makes no decision about it, only threads it through.
   selectionTrayMode: Gallery["selectionTrayMode"];
+  // Task #214 — the per-gallery switch that gates whether this gallery's
+  // client may pick `original` at all (task #206's own per-photo control).
+  // `false` for every gallery that existed before this column did — the
+  // default that restores this app's pre-#206 behavior everywhere this flows
+  // (schema.ts's own comment on `galleries.allowsOriginalSelection`). Threaded
+  // straight through to every surface that renders a type control or an
+  // originals line — <ProofTile>, <ProofLightbox>, <SelectionTray>,
+  // <SelectionCounter> and <SubmitSelectionPanel> — none of which derive it
+  // from `quota.originals` or from anything else already in hand: a gallery
+  // with the flag off but a data anomaly leaving a stray `selectionKind:
+  // "original"` row (should never happen once `updateAllowsOriginalSelection`
+  // ships, but a display surface has to be robust to it, not just to the
+  // happy path) must still render as if no originals exist at all — "absent,
+  // not zeroed" applies to the FLAG's own truth, not only to the count.
+  allowsOriginalSelection: boolean;
 }) {
   // One map of presigned URLs, shared by the tray, every grid tile and the
   // lightbox — see use-proof-urls.ts's own header comment for why it is one
@@ -319,6 +335,7 @@ export function ProofGrid({
           mode={selectionTrayMode}
           isLocked={isLocked}
           isStale={isStale}
+          allowsOriginalSelection={allowsOriginalSelection}
           onOpenAsset={openAssetInLightbox}
           // The SAME `refreshUrl` the grid tiles and the lightbox use, sharing
           // the same `refreshedAssetIds` dedupe — see <SelectionTray>'s own
@@ -336,7 +353,7 @@ export function ProofGrid({
           nothing left to act on. */}
       {!isDelivered && isLocked && (
         <div className="mb-4">
-          <SelectionCounter quota={quota} />
+          <SelectionCounter quota={quota} allowsOriginalSelection={allowsOriginalSelection} />
         </div>
       )}
 
@@ -402,6 +419,7 @@ export function ProofGrid({
               // asset's `"edited"` fallback here is never actually shown.
               selectionKind={selectionKindById[asset.id] ?? "edited"}
               onSetSelectionKind={(kind) => void setSelectionKind(asset.id, kind)}
+              allowsOriginalSelection={allowsOriginalSelection}
             />
           );
         })}
@@ -434,7 +452,7 @@ export function ProofGrid({
       {!isDelivered && !isLocked && (
         <div className="border-line-2 bg-bg/95 fixed inset-x-0 bottom-0 z-40 border-t px-4 pt-3 pb-[calc(12px+env(safe-area-inset-bottom,0px))] backdrop-blur-md min-[620px]:px-7 lg:px-12">
           <div className="mx-auto flex max-w-[1280px] flex-wrap items-center justify-between gap-3">
-            <SelectionCounter quota={quota} />
+            <SelectionCounter quota={quota} allowsOriginalSelection={allowsOriginalSelection} />
             <div className="flex items-center gap-3">
               {toggleError && <p className="text-xs text-[#e0796b]">{toggleError}</p>}
               <SubmitSelectionPanel
@@ -443,6 +461,7 @@ export function ProofGrid({
                 isLocked={isLocked}
                 submittedAt={submittedAt}
                 onSubmitted={handleSubmitted}
+                allowsOriginalSelection={allowsOriginalSelection}
               />
             </div>
           </div>
@@ -463,6 +482,7 @@ export function ProofGrid({
             isLocked={isLocked}
             submittedAt={submittedAt}
             onSubmitted={handleSubmitted}
+            allowsOriginalSelection={allowsOriginalSelection}
           />
         </div>
       )}
@@ -490,6 +510,7 @@ export function ProofGrid({
           isDelivered={isDelivered}
           selectionKindById={selectionKindById}
           onSetSelectionKind={(assetId, kind) => void setSelectionKind(assetId, kind)}
+          allowsOriginalSelection={allowsOriginalSelection}
         />
       )}
     </>

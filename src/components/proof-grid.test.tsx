@@ -65,6 +65,12 @@ function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
       // Task #204 — default to `flat`, today's only behavior; the tray's own
       // test file covers `by-person` grouping directly.
       selectionTrayMode="flat"
+      // Task #214 — default ON: most tests in this file predate the switch
+      // and exercise `selectionKind`/the type control directly, which needs
+      // it true to render at all. The tests that specifically exercise the
+      // switch itself (the "allowsOriginalSelection is OFF" describe block)
+      // override this explicitly.
+      allowsOriginalSelection={true}
       {...overrides}
     />,
   );
@@ -602,6 +608,63 @@ describe("ProofGrid", () => {
         expect(within(tray).getByText("Caro Ruiz")).toBeDefined();
       });
       expect(within(tray).queryByText("Beto Ruiz")).toBeNull();
+    });
+  });
+
+  // Task #214 — the gate MEASURED IN THE DOM, not by asserting the flag's own
+  // value (this task's own governing constraint: "un test que assertea
+  // allowsOriginalSelection === false nombra una condición sin medir un
+  // resultado"). A gallery with the switch off has to render EXACTLY as it
+  // did before task #206 shipped: no type buttons on the tile, no type line
+  // in the tray, no originals row in the counter — even with a real
+  // `original` pick already in the fixture (the "should never happen but a
+  // display surface has to be robust to it" case this file's own header
+  // comment on the prop names explicitly).
+  describe("allowsOriginalSelection is OFF (task #214)", () => {
+    it("renders no type buttons on a selected tile, even though the asset is selected", () => {
+      renderGrid({
+        allowsOriginalSelection: false,
+        initialAssets: assetsFor([{ isSelected: true }]),
+      });
+
+      expect(
+        screen.queryByRole("button", { name: "Marcar como editada: IMG_0001.JPG" }),
+      ).toBeNull();
+      expect(
+        screen.queryByRole("button", { name: "Marcar como original: IMG_0001.JPG" }),
+      ).toBeNull();
+    });
+
+    // The counter's own absence, with an ORIGINAL pick genuinely present in
+    // the fixture — this is criterion 3 of this task's own mutation-proof
+    // list, and the case a careless `quota.originals > 0` check alone would
+    // get wrong: the row must stay ABSENT because the SWITCH is off, not
+    // because there happen to be zero originals.
+    it("shows no originals row in the counter even with a real original pick in the fixture", () => {
+      renderGrid({
+        allowsOriginalSelection: false,
+        initialAssets: assetsFor([{ isSelected: true }]),
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "original" },
+        ],
+      });
+
+      expect(screen.queryByText(/originales \d+ ×/)).toBeNull();
+      expect(screen.queryByText(/^total \$/)).toBeNull();
+    });
+
+    it("shows no type line in the tray, even though a pick is genuinely original", () => {
+      renderGrid({
+        allowsOriginalSelection: false,
+        initialAssets: assetsFor([{ isSelected: true }]),
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "original" },
+        ],
+      });
+
+      const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+      expect(within(tray).queryByText("Original")).toBeNull();
+      expect(within(tray).queryByText("Editada")).toBeNull();
     });
   });
 

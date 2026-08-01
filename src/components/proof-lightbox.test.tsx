@@ -72,6 +72,11 @@ function lightboxProps(
     // override it explicitly.
     selectionKindById: {},
     onSetSelectionKind,
+    // Task #214 — default ON, same reasoning as proof-grid.test.tsx's own
+    // `renderGrid` default: most tests here predate the switch and exercise
+    // the type control directly. The tests exercising the switch itself
+    // override this explicitly.
+    allowsOriginalSelection: true,
     ...overrides,
   };
 }
@@ -631,6 +636,20 @@ describe("ProofLightbox", () => {
           .getByRole("button", { name: "Marcar como editada: IMG_0001.JPG" })
           .hasAttribute("disabled"),
       ).toBe(true);
+    });
+
+    // Task #214 — the SAME gate <ProofTile>'s own tests measure, mirrored
+    // here: a selected, unlocked photo still shows no type control at all
+    // once the gallery's switch is off.
+    it("does not render when allowsOriginalSelection is off, even for a selected, unlocked photo", () => {
+      renderLightbox({
+        assets: assetsFor(1, [{ isSelected: true }]),
+        index: 0,
+        selectionKindById: { a1: "original" },
+        allowsOriginalSelection: false,
+      });
+
+      expect(screen.queryByRole("button", { name: /Marcar como/ })).toBeNull();
     });
   });
 });

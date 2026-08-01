@@ -262,6 +262,7 @@ export function SelectionTray({
   mode,
   isLocked,
   isStale,
+  allowsOriginalSelection,
   onOpenAsset,
   onImageError,
 }: {
@@ -293,6 +294,13 @@ export function SelectionTray({
    * the last snapshot it got and says so — stale-but-honest beats
    * silently-wrong, task #95's own acceptance criterion. */
   isStale: boolean;
+  /** Task #214 — the gallery's own switch. `false` (every gallery's default,
+   * schema.ts's own comment on `galleries.allowsOriginalSelection`) hides the
+   * type line below EVEN IF `hasAnyOriginal` would otherwise be true (a data
+   * anomaly, not a reachable state once `updateAllowsOriginalSelection` ships
+   * — but this component does not trust its callers to guarantee that; see
+   * `showType`'s own computation below). */
+  allowsOriginalSelection: boolean;
   onOpenAsset: (assetId: string) => void;
   /** `<ProofGrid>`'s own `refreshUrl` — the SAME one-shot re-sign the grid
    * tiles and the lightbox already use, sharing the same `refreshedAssetIds`
@@ -335,6 +343,14 @@ export function SelectionTray({
   // false again, in a smaller, easier-to-miss way than #204's own by-person
   // bug (task #208's own warning about this exact class of mistake).
   const hasAnyOriginal = picks.some((pick) => pick.selectionKind === "original");
+  // Task #214 — the ADDITIONAL gate: even with a real `original` pick in the
+  // list, the type line stays absent while the gallery's own switch is off.
+  // "Absent, not zeroed" (task #214's own governing constraint) applies to
+  // this FLAG, not only to the derived `hasAnyOriginal` above — a gallery
+  // that never turned the switch on must render byte-identically to one that
+  // has zero originals, even in the narrow, should-never-happen case of a
+  // stray `selectionKind: "original"` row surviving past a switch flip.
+  const showType = allowsOriginalSelection && hasAnyOriginal;
 
   // Measures the ACTUAL rendered height of one row rather than hardcoding a
   // pixel figure — see this file's header comment for why a hand-computed
@@ -535,7 +551,7 @@ export function SelectionTray({
                       viewerId={viewerId}
                       onOpen={() => onOpenAsset(pick.assetId)}
                       onError={() => onImageError(pick.assetId)}
-                      showType={hasAnyOriginal}
+                      showType={showType}
                     />
                   ))}
                 </ul>
@@ -561,7 +577,7 @@ export function SelectionTray({
                   viewerId={viewerId}
                   onOpen={() => onOpenAsset(pick.assetId)}
                   onError={() => onImageError(pick.assetId)}
-                  showType={hasAnyOriginal}
+                  showType={showType}
                 />
               ))}
             </ul>

@@ -44,6 +44,11 @@ export const GalleryType = builder.objectRef<GalleryDetail>("Gallery").implement
     // snapshot column, never the live `packages` row.
     originalPhotoPriceCopSnapshot: t.exposeInt("originalPhotoPriceCopSnapshot"),
     selectionTrayMode: t.expose("selectionTrayMode", { type: SelectionTrayModeType }),
+    // Task #214 — whether this gallery's client may pick `original` at all
+    // (task #206's own per-photo control, gated by this flag as of this
+    // task). A plain `exposeBoolean` off `GalleryDetail.allowsOriginalSelection`
+    // (src/lib/galleries.ts), never derived here.
+    allowsOriginalSelection: t.exposeBoolean("allowsOriginalSelection"),
     assets: t.field({ type: [AssetType], resolve: (gallery) => gallery.assets }),
   }),
 });

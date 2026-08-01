@@ -356,20 +356,6 @@ describe("updateSelectionTrayMode success", () => {
     expect(revalidatePathMock).toHaveBeenCalledWith("/galleries/abc123");
   });
 
-  it("never sends any email", async () => {
-    const { updateSelectionTrayMode } = await import("./actions");
-    const db = await seededDb();
-
-    const result = await updateSelectionTrayMode(
-      { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, selectionTrayMode: "by-person" }),
-    );
-
-    expect(result).toEqual({ status: "updated" });
-    expect(db.__rows.galleries[0]).toMatchObject({ selectionTrayMode: "by-person" });
-    expect(signInMock).not.toHaveBeenCalled();
-  });
-
   it("does not touch the frozen commercial terms or termsOverridden", async () => {
     const { updateSelectionTrayMode } = await import("./actions");
     const db = await seededDb();

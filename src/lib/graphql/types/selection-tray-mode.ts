@@ -33,7 +33,31 @@ export const SelectionTrayModeType = builder.enumType("SelectionTrayMode", {
  * type for every non-GraphQL consumer in the app. Converting here, once, at
  * the boundary that actually has both representations, is cheaper and safer
  * than widening every downstream prop to also accept the wire spelling.
+ *
+ * AN EXHAUSTIVE `switch`, not `wireValue === "BY_PERSON" ? ... : "flat"` —
+ * review finding: the ternary's `: "flat"` branch is a SILENT fallback,
+ * indistinguishable from "the feature is genuinely off" for every value that
+ * is not exactly `"BY_PERSON"`, including a typo, a stale wire format, or a
+ * third mode added to the Postgres enum without this function being updated.
+ * Today the two-member union type makes that unreachable at the TYPE level,
+ * but that only means the compiler is the guard — nothing stops a caller
+ * from widening the parameter, and the `default` arm below throws rather
+ * than quietly returning the flat default, so a real drift fails loudly
+ * instead of rendering the wrong tray and reporting success.
  */
 export function selectionTrayModeFromWire(wireValue: "FLAT" | "BY_PERSON"): "flat" | "by-person" {
-  return wireValue === "BY_PERSON" ? "by-person" : "flat";
+  switch (wireValue) {
+    case "FLAT":
+      return "flat";
+    case "BY_PERSON":
+      return "by-person";
+    default: {
+      // Exhaustiveness check: if a third member is ever added to the wire
+      // enum without updating this `switch`, `wireValue` stops being `never`
+      // here and `bun run typecheck` fails at this line — not a runtime
+      // guess away.
+      const exhaustive: never = wireValue;
+      throw new Error(`selectionTrayModeFromWire: unknown wire value "${String(exhaustive)}"`);
+    }
+  }
 }

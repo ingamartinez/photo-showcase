@@ -565,18 +565,47 @@ describe("SelectionTray — by-person mode (task #204)", () => {
   // Criterion 7 — the height cap MUST NOT depend on how lopsided the groups
   // are: 40 picks in one group and 5 each in two others would blow the cap
   // wide open if the implementation measured a whole GROUP's stacked height
-  // instead of a single item's. Same mocked-`getBoundingClientRect`
-  // technique #203's own suite established, sanctioned by the task body for
-  // exactly this reason (jsdom does no real layout).
-  it("caps by-person's list to the SAME pixel budget as flat — measured, not assumed, and independent of how lopsided the groups are", () => {
-    const rowHeightPx = 120;
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
-      height: rowHeightPx,
+  // instead of a single item's.
+  //
+  // MOCKED PER ELEMENT TYPE, not uniformly — review finding (BLOCKING 2): an
+  // earlier version of this test mocked `HTMLElement.prototype` itself, so
+  // EVERY element (a single `<li>` thumbnail and a whole group's own stacked
+  // `<div>` wrapper alike) reported the identical fake height. That made the
+  // exact regression this test claims to guard against — the effect's
+  // `container?.querySelector("li")` regressing to `querySelector("div")`,
+  // silently measuring the first GROUP'S wrapper instead of one thumbnail —
+  // completely invisible: reviewer applied that one-word mutation and all
+  // 33 tests in this file still passed. Mocking `<li>` and `<div>` to
+  // report DIFFERENT heights is what makes "which element got measured"
+  // an observable fact instead of a comment's unverified claim.
+  it("caps by-person's list from a THUMBNAIL's own height, not a whole group's — measured, not assumed, and independent of how lopsided the groups are", () => {
+    const itemHeightPx = 120; // a single <TrayItem>'s own real height
+    // What a group's own STACKED wrapper `<div>` would report if THAT were
+    // measured instead — implausibly large on purpose, so a wrong-element
+    // regression produces an unmistakably wrong cap rather than a
+    // coincidentally-close one.
+    const groupWrapperHeightPx = 4_000;
+
+    vi.spyOn(HTMLLIElement.prototype, "getBoundingClientRect").mockReturnValue({
+      height: itemHeightPx,
       width: 96,
       top: 0,
       left: 0,
       right: 96,
-      bottom: rowHeightPx,
+      bottom: itemHeightPx,
+      x: 0,
+      y: 0,
+      toJSON() {
+        return {};
+      },
+    });
+    vi.spyOn(HTMLDivElement.prototype, "getBoundingClientRect").mockReturnValue({
+      height: groupWrapperHeightPx,
+      width: 96,
+      top: 0,
+      left: 0,
+      right: 96,
+      bottom: groupWrapperHeightPx,
       x: 0,
       y: 0,
       toJSON() {
@@ -605,9 +634,10 @@ describe("SelectionTray — by-person mode (task #204)", () => {
     expect(scrollContainer.className).toContain("overscroll-contain");
 
     // The SAME formula #203 established for flat mode (two item-heights plus
-    // one row-gap), NOT the height a 40-item group's own stacked div would
-    // report if that were measured instead.
-    const expectedMaxHeightPx = rowHeightPx * 2 + 12;
+    // one row-gap) — 252px. A regression that measured the group wrapper
+    // `<div>` instead would land on 4_000 * 2 + 12 = 8_012px, an order of
+    // magnitude off and impossible to mistake for a rounding difference.
+    const expectedMaxHeightPx = itemHeightPx * 2 + 12;
     expect(scrollContainer.style.maxHeight).toBe(`${expectedMaxHeightPx}px`);
 
     // Distribution flipped (a small group renders first this time) — same

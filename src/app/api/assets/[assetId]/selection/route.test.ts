@@ -204,6 +204,13 @@ function galleryRow(overrides: Partial<Row> = {}): Row {
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
     originalPhotoPriceCopSnapshot: 2_000,
+    // Task #214 — defaults ON: this file predates the switch and exercises
+    // `selectionKind: "original"` writes throughout as the domain's own
+    // established behavior. The "allowsOriginalSelection is OFF" describe
+    // block below overrides this explicitly, which is the ONLY thing that
+    // proves the server gate — see this route's own header comment on why a
+    // UI-only gate is not enough.
+    allowsOriginalSelection: true,
     createdAt: new Date("2026-07-01"),
     selectionSubmittedAt: null,
     deliveredAt: null,
@@ -944,6 +951,96 @@ describe("PATCH /api/assets/[assetId]/selection — setting the type (task #206)
     const body = (await response.json()) as { asset: { pickedBy: unknown } };
 
     expect(body.asset.pickedBy).toBeNull();
+  });
+});
+
+// Task #214 — THE MUTATION THAT MATTERS MOST FOR THIS TASK, per its own
+// kanban body: a gate that only lives in the UI (proof-tile.tsx hiding the
+// type buttons) is not a gate, because this route is reachable directly by
+// any client attached to the gallery regardless of what their own tab
+// currently renders. Every test below sets `allowsOriginalSelection: false`
+// on the gallery row explicitly — the default fixture above is `true`
+// specifically so these are the ONLY tests exercising the OFF gate, and a
+// regression that deleted the gate entirely would turn every one of these
+// red without touching anything else in this file.
+describe("PATCH /api/assets/[assetId]/selection — allowsOriginalSelection is OFF (task #214)", () => {
+  it("refuses a type-only change to original with 409, without touching selection_kind", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ allowsOriginalSelection: false }));
+    db.__rows.assets[0] = assetRow({ isSelected: true, selectionKind: "edited" });
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "originals_not_allowed" });
+    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
+  });
+
+  // The OTHER shape this route's own header comment documents: an atomic
+  // "select AND mark original" in ONE request (`selected` and `selectionKind`
+  // both present). A gate that only covered the type-only branch above would
+  // leave this one reachable — the exact gap this test exists to close.
+  it("refuses an atomic select-and-mark-original combo with 409, without selecting the asset at all", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ allowsOriginalSelection: false }));
+    db.__rows.assets[0] = assetRow({ isSelected: false, selectionKind: "edited" });
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selected: true, selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "originals_not_allowed" });
+    expect(db.__rows.assets[0]?.isSelected).toBe(false);
+    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
+  });
+
+  // The plain select/deselect toggle (no `selectionKind` in the body at all)
+  // must be COMPLETELY unaffected by the switch — this gate only ever
+  // refuses a REQUESTED "original", never an ordinary pick.
+  it("still allows the ordinary select/deselect toggle, unaffected by the switch", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ allowsOriginalSelection: false }));
+    db.__rows.assets[0] = assetRow({ isSelected: false, selectionKind: "edited" });
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assets[0]?.isSelected).toBe(true);
+    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
+  });
+
+  // An explicit `selectionKind: "edited"` request must still succeed while
+  // the switch is off — the gate refuses "original" specifically, not the
+  // whole `selectionKind` field.
+  it("still allows an explicit type-only change to edited, unaffected by the switch", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ allowsOriginalSelection: false }));
+    db.__rows.assets[0] = assetRow({ isSelected: true, selectionKind: "edited" });
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "edited" }),
+      paramsFor(ASSET_1_ID),
+    );
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
   });
 });
 

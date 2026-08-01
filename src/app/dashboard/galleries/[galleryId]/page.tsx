@@ -22,6 +22,7 @@ import { UnlockSelectionPanel } from "@/components/unlock-selection-panel";
 import { GalleryClientRow } from "@/components/gallery-client-row";
 import { AttachGalleryClientsForm } from "@/components/attach-gallery-clients-form";
 import { EditGalleryTermsDialog } from "@/components/edit-gallery-terms-dialog";
+import { AllowsOriginalSelectionControl } from "@/components/allows-original-selection-control";
 import { SelectionTrayModeControl } from "@/components/selection-tray-mode-control";
 import type { Gallery } from "@/lib/db/schema";
 
@@ -424,6 +425,25 @@ export default async function GalleryDetailPage({
               <EditGalleryTermsDialog
                 galleryId={gallery.id}
                 status={gallery.status}
+                includedPhotosSnapshot={gallery.includedPhotosSnapshot}
+                extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}
+                originalPhotoPriceCopSnapshot={gallery.originalPhotoPriceCopSnapshot}
+                selectedEditedCount={selectedEditedCount}
+                selectedOriginalCount={selectedOriginalCount}
+              />
+            </div>
+
+            {/* Task #214 — the switch itself, right after the terms dialog
+                and inside this SAME "Paquete" card, not in
+                <SelectionTrayModeControl>'s own layout card below: the owner
+                was explicit that this decides money (whether a client can
+                even see the cheaper "original" tariff), not presentation.
+                Same `selectedEditedCount`/`selectedOriginalCount` split as
+                the dialog above — never recomputed a third time. */}
+            <div className="border-line-2 mt-3 border-t pt-3">
+              <AllowsOriginalSelectionControl
+                galleryId={gallery.id}
+                allowsOriginalSelection={gallery.allowsOriginalSelection}
                 includedPhotosSnapshot={gallery.includedPhotosSnapshot}
                 extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}
                 originalPhotoPriceCopSnapshot={gallery.originalPhotoPriceCopSnapshot}

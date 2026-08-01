@@ -46,6 +46,10 @@ function renderTile(overrides: Partial<Parameters<typeof ProofTile>[0]> = {}) {
     // control override these explicitly.
     selectionKind: "edited" as const,
     onSetSelectionKind: vi.fn(),
+    // Task #214 — default ON: most tests in this file predate the switch and
+    // exercise the type control directly. The tests exercising the switch
+    // itself override this explicitly.
+    allowsOriginalSelection: true,
     ...overrides,
   };
   return { props, ...render(<ProofTile {...props} />) };
@@ -283,6 +287,22 @@ describe("ProofTile", () => {
           .getByRole("button", { name: "Marcar como original: IMG_0001.JPG" })
           .hasAttribute("disabled"),
       ).toBe(true);
+    });
+
+    // Task #214 — measured in the DOM, not by asserting the flag's own value:
+    // a selected, unlocked photo still shows no type control at all once the
+    // gallery's own switch is off.
+    it("does not render when allowsOriginalSelection is off, even for a selected, unlocked photo", () => {
+      const { container } = renderTile({
+        isSelected: true,
+        selectionKind: "original",
+        allowsOriginalSelection: false,
+      });
+
+      expect(screen.queryByRole("button", { name: /Marcar como/ })).toBeNull();
+      // Two buttons only: open the viewer, and the pick control — same as
+      // the "unselected photo" case above, just for a different reason.
+      expect(container.querySelectorAll("button")).toHaveLength(2);
     });
 
     // The crowding trap the task body names explicitly: the new control must

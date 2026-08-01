@@ -267,6 +267,11 @@ export default async function ClientGalleryPage({
         // comment for why the field arrives as `"FLAT"`/`"BY_PERSON"` here
         // and not the `"flat"`/`"by-person"` every other consumer expects.
         selectionTrayMode={selectionTrayModeFromWire(gallery.selectionTrayMode)}
+        // Task #214 — the switch that gates whether this gallery's client may
+        // pick `original` at all. `false` for every gallery that existed
+        // before this column did — see schema.ts's own comment on
+        // `galleries.allowsOriginalSelection`.
+        allowsOriginalSelection={gallery.allowsOriginalSelection}
       />
     </>
   );

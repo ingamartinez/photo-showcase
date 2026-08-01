@@ -455,6 +455,153 @@ export async function updateGalleryTerms(
 }
 
 // ---------------------------------------------------------------------------
+// Toggle "allows original selection" (task #214) — the per-gallery switch
+// that gates whether the client's own gallery renders task #206's type
+// control at all (proof-tile.tsx's own gate,
+// `isSelected && !isLocked && allowsOriginalSelection`). Lives next to
+// `updateGalleryTerms` above rather than beside `updateSelectionTrayMode`
+// further down — the owner's own framing (kanban #214) is explicit that this
+// is NOT presentation like the tray layout: it decides whether a client can
+// even SEE the cheaper "original" tariff, so it belongs with the commercial
+// terms, not the layout card.
+// ---------------------------------------------------------------------------
+
+export type UpdateAllowsOriginalSelectionState = {
+  status: "idle" | "error" | "updated";
+  message?: string;
+};
+
+const updateAllowsOriginalSelectionSchema = z.object({
+  galleryId: z.uuid(),
+  // A hidden form field, not a checkbox's own on/off presence-in-FormData
+  // trick — this field is always sent, by BOTH the "turn on" and "turn off"
+  // controls (`AllowsOriginalSelectionControl`, src/components/), so the
+  // schema can validate an explicit `"true"`/`"false"` string rather than
+  // inferring intent from whether a key is present at all.
+  allowsOriginalSelection: z.enum(["true", "false"]).transform((value) => value === "true"),
+});
+
+/**
+ * Flips `galleries.allows_original_selection`. No state gate — same as
+ * `updateSelectionTrayMode` below: there is no "too late to change your
+ * mind" moment for this switch, and PLAN.md's frozen-terms rule is about
+ * `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot`/
+ * `originalPhotoPriceCopSnapshot` (what a client OWES), not about whether
+ * they may currently choose between tariffs at all.
+ *
+ * TURNING THIS OFF IS THE ONE CASE WITH A REAL SIDE EFFECT, and it is the
+ * owner's own explicit decision (task #214's kanban body, 2026-08-01):
+ * every asset in this gallery still marked `selectionKind: "original"` is
+ * reset to `"edited"`, IN THE SAME TRANSACTION as flipping the flag to
+ * `false`. Both writes commit together or neither does — an off-switch that
+ * left orphaned `original` picks behind (the flag off, but a photo still
+ * priced as original) is exactly the inconsistent state this decision exists
+ * to prevent; see schema.ts's own comment on
+ * `galleries.allowsOriginalSelection` for the fuller reasoning.
+ *
+ * The reset targets EVERY `original` row regardless of `isSelected` — not
+ * only the currently-selected ones. `selectionKind` is meaningless while
+ * `isSelected` is `false` (schema.ts's own comment on `assets.selectionKind`)
+ * so resetting an unselected row changes nothing observable, but it keeps
+ * the column from silently reading `"original"` on a gallery whose switch
+ * is off, for a photo that could be re-selected later and inherit a stale
+ * value the client never actually chose under the new regime.
+ *
+ * `AllowsOriginalSelectionControl` (src/components/) shows the admin a
+ * before/after preview BEFORE this runs whenever there is something to
+ * reset — that dialog is UX, not the gate: this action performs the reset
+ * unconditionally on every "turn off" request, regardless of whether the
+ * admin saw a preview first, exactly like `updateGalleryTerms`'s own stance
+ * that the server enforces the real behavior and the dialog only informs.
+ *
+ * `revalidatePath` for the SAME two surfaces `updateGalleryTerms`/
+ * `updateSelectionTrayMode` already revalidate, for the identical reason:
+ * the dashboard detail page AND the client's own gallery page, which is
+ * what actually renders (or stops rendering) the type control this flag
+ * gates.
+ *
+ * TASK #114 NOTIFY — DECIDED, NOT OMITTED. Unlike the FLAG itself (see
+ * schema.ts's own comment on `galleries.allowsOriginalSelection` for why
+ * that does NOT travel over this channel), the RESET this action performs
+ * when turning off genuinely rewrites `assets.selection_kind` — the exact
+ * shared-selection column task #114's channel exists to propagate promptly.
+ * An open client tab mid-session would otherwise keep showing a tray "Original"
+ * chip, and the tile's own type buttons (now hidden by the flag on next
+ * reload, but still mounted in an ALREADY-RENDERED tab) for up to the 30s
+ * fallback poll. So this action DOES call `notifySelectionChanged` — a
+ * fourth call site alongside the PATCH toggle route, the submit route and
+ * `unlockSelection` above — but ONLY on the "turn off" branch, since turning
+ * ON never touches `assets` at all and would notify of a change that did not
+ * happen to picks. Fire-and-forget, same reasoning as every sibling call
+ * site: the transaction above already committed, and a slow or failed NOTIFY
+ * must never fail (or delay) a write that otherwise fully succeeded — the
+ * 30s fallback poll is the backstop either way.
+ */
+export async function updateAllowsOriginalSelection(
+  _prevState: UpdateAllowsOriginalSelectionState,
+  formData: FormData,
+): Promise<UpdateAllowsOriginalSelectionState> {
+  // Admin-only, checked at the data-access path itself — not only by the
+  // page above it, per src/lib/auth-guards.ts's header comment.
+  await requireAdmin();
+
+  const parsed = updateAllowsOriginalSelectionSchema.safeParse({
+    galleryId: formData.get("galleryId"),
+    allowsOriginalSelection: formData.get("allowsOriginalSelection"),
+  });
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Revisá los datos del formulario.",
+    };
+  }
+
+  const [gallery] = await db
+    .select({ id: galleries.id, publicSlug: galleries.publicSlug })
+    .from(galleries)
+    .where(eq(galleries.id, parsed.data.galleryId))
+    .limit(1);
+  if (!gallery) {
+    return { status: "error", message: "La galería no existe." };
+  }
+
+  // BOTH writes in ONE transaction — the reset and the flag flip commit
+  // together or neither does. See this function's own header comment for
+  // why an off-switch that left the reset out is exactly the state task
+  // #214 exists to prevent.
+  await db.transaction(async (tx) => {
+    if (!parsed.data.allowsOriginalSelection) {
+      await tx
+        .update(assets)
+        .set({ selectionKind: "edited" })
+        .where(and(eq(assets.galleryId, gallery.id), eq(assets.selectionKind, "original")));
+    }
+    await tx
+      .update(galleries)
+      .set({ allowsOriginalSelection: parsed.data.allowsOriginalSelection })
+      .where(eq(galleries.id, gallery.id));
+  });
+
+  // Task #114 — see this function's own header comment ("TASK #114 NOTIFY")
+  // for why this is scoped to the "turn off" branch specifically: only that
+  // branch touches `assets.selection_kind`, the shared-selection state this
+  // channel exists to propagate. Fire-and-forget, after the transaction
+  // above already committed.
+  if (!parsed.data.allowsOriginalSelection) {
+    void notifySelectionChanged(gallery.id).catch(() => {
+      // Swallowed — see src/lib/selection-events.ts's own header comment;
+      // the 30s fallback poll is the backstop.
+    });
+  }
+
+  revalidatePath(`/dashboard/galleries/${gallery.id}`);
+  revalidatePath("/dashboard/galleries");
+  revalidatePath(`/galleries/${gallery.publicSlug}`);
+
+  return { status: "updated" };
+}
+
+// ---------------------------------------------------------------------------
 // Publish gallery (task #21) — draft -> proofing, plus the client's email.
 // ---------------------------------------------------------------------------
 

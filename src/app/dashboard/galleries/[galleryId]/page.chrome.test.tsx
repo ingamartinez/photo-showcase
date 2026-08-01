@@ -146,6 +146,11 @@ const updateGalleryTermsMock = vi.fn();
 // schema.ts's own comment on `selectionTrayMode` explains); its module
 // imports `updateSelectionTrayMode` from here too.
 const updateSelectionTrayModeMock = vi.fn();
+// Task #214: the page now renders <AllowsOriginalSelectionControl>
+// unconditionally (no status gate — same "no too-late-to-change-your-mind
+// moment" reasoning `updateSelectionTrayMode` above already established);
+// its module imports `updateAllowsOriginalSelection` from here too.
+const updateAllowsOriginalSelectionMock = vi.fn();
 vi.mock("@/app/dashboard/galleries/actions", () => ({
   publishGallery: (...args: unknown[]) => publishGalleryMock(...args),
   unlockSelection: (...args: unknown[]) => unlockSelectionMock(...args),
@@ -155,6 +160,7 @@ vi.mock("@/app/dashboard/galleries/actions", () => ({
   resendGalleryAccessEmail: (...args: unknown[]) => resendGalleryAccessEmailMock(...args),
   updateGalleryTerms: (...args: unknown[]) => updateGalleryTermsMock(...args),
   updateSelectionTrayMode: (...args: unknown[]) => updateSelectionTrayModeMock(...args),
+  updateAllowsOriginalSelection: (...args: unknown[]) => updateAllowsOriginalSelectionMock(...args),
 }));
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
@@ -174,6 +180,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     originalPhotoPriceCopSnapshot: 2_000,
     termsOverridden: false,
     selectionTrayMode: "flat",
+    allowsOriginalSelection: false,
     assets: [],
     selectionSubmittedAt: null,
     ...overrides,
@@ -997,5 +1004,39 @@ describe("GalleryDetailPage — terms-edit preview receives the real edited/orig
     expect(
       within(dialog).getByText("El cliente ve hoy: 13 incluidas · 2 extras · $ 16.000"),
     ).toBeDefined();
+  });
+});
+
+// Task #214's own wiring seam, the SAME class of gap task #210's own describe
+// block above closes for the terms preview: <AllowsOriginalSelectionControl>'s
+// own unit suite proves it renders the right label GIVEN the right prop, never
+// whether THIS page hands it `gallery.allowsOriginalSelection` at all. Without
+// this, the page could hardcode the prop to either boolean, or drop the
+// component from the tree entirely, and nothing here would notice — an admin
+// looking at an OFF gallery would be shown "Deshabilitar…" for a switch that
+// was never on, misreporting a setting that moves money.
+describe("GalleryDetailPage — the allows-original-selection control reflects the gallery's own value (task #214)", () => {
+  it("shows the enable button when the gallery has the switch off", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ allowsOriginalSelection: false }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByRole("button", { name: "Habilitar selección de originales" })).toBeDefined();
+    expect(
+      screen.queryByRole("button", { name: "Deshabilitar selección de originales" }),
+    ).toBeNull();
+  });
+
+  it("shows the disable button when the gallery has the switch on", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ allowsOriginalSelection: true }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(
+      screen.getByRole("button", { name: "Deshabilitar selección de originales" }),
+    ).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Habilitar selección de originales" })).toBeNull();
   });
 });

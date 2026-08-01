@@ -57,6 +57,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     originalPhotoPriceCopSnapshot: 2_000,
     termsOverridden: false,
     selectionTrayMode: "flat",
+    allowsOriginalSelection: false,
     assets: [],
     selectionSubmittedAt: null,
     ...overrides,

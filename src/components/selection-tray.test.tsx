@@ -30,6 +30,10 @@ function renderTray(overrides: Partial<ComponentProps<typeof SelectionTray>> = {
       mode="flat"
       isLocked={false}
       isStale={false}
+      // Task #214 — default ON: most tests in this file predate the switch
+      // and exercise the type line directly. The tests exercising the switch
+      // itself override this explicitly.
+      allowsOriginalSelection={true}
       onOpenAsset={() => {}}
       onImageError={() => {}}
       {...overrides}
@@ -261,6 +265,7 @@ describe("SelectionTray — collapsible tray with a height-capped list (task #20
         mode="flat"
         isLocked={false}
         isStale={false}
+        allowsOriginalSelection={true}
         onOpenAsset={() => {}}
         onImageError={() => {}}
       />,
@@ -560,6 +565,43 @@ describe("SelectionTray — the type line (task #206)", () => {
     });
 
     expect(screen.getByText("Original")).toBeDefined();
+  });
+});
+
+describe("SelectionTray — allowsOriginalSelection is OFF (task #214)", () => {
+  // Criterion 3's own tray counterpart: a REAL `original` pick in the list —
+  // not a data anomaly this component invented — must still show no type
+  // line at all while the gallery's own switch is off. "Absent, not zeroed"
+  // applies to the FLAG, not only to `hasAnyOriginal`.
+  it("renders no type line at all, even with a genuinely original pick, while the switch is off", () => {
+    renderTray({
+      allowsOriginalSelection: false,
+      picks: [
+        pick({ assetId: "a1", selectionKind: "edited" }),
+        pick({ assetId: "a2", selectionKind: "original" }),
+      ],
+    });
+
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.queryByText("Editada")).toBeNull();
+    expect(screen.queryByText("Original")).toBeNull();
+  });
+
+  it("does not change the accessible name, even with a genuinely original pick, while the switch is off", () => {
+    renderTray({
+      allowsOriginalSelection: false,
+      picks: [
+        pick({
+          assetId: "a1",
+          pickedBy: { id: "client-b", label: "Beto" },
+          selectionKind: "original",
+        }),
+      ],
+    });
+
+    expect(
+      screen.getByRole("button", { name: "Ver IMG_0001.JPG, elegida por Beto" }),
+    ).toBeDefined();
   });
 });
 

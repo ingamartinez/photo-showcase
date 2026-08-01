@@ -414,6 +414,81 @@ export const galleries = pgTable(
     // it never touches `assets.isSelected`/`selectedBy` or the snapshot
     // columns, so there is no state gate to enforce.
     selectionTrayMode: selectionTrayMode("selection_tray_mode").notNull().default("flat"),
+    // Task #214 — gates whether THIS gallery's client can pick `original` at
+    // all (task #206's own per-photo control). `notNull().default(false)`
+    // because there are galleries in production, all of them created before
+    // this column existed: the owner's OWN framing (2026-08-01, after
+    // watching #206 ship) is "by default every extra photo is edited, but if
+    // I turn this on, the client can choose which ones are original" — a
+    // `false` default is what makes every EXISTING gallery render exactly as
+    // it did before #206 shipped (see `proof-tile.tsx`'s own gate on this
+    // column, `isSelected && !isLocked && allowsOriginalSelection`), rather
+    // than something that was silently always-on becoming, retroactively,
+    // something an admin has to remember to turn off.
+    //
+    // Deliberately NOT tied to `originalPhotoPriceCopSnapshot` above being
+    // non-zero, and not derived from whether any asset already carries
+    // `selectionKind: "original"` — a gallery can have a perfectly real
+    // frozen original-photo price and this switch OFF at the same time (the
+    // photographer priced it, but hasn't decided to let THIS client choose
+    // yet); that is a valid state, not one this column collapses into "must
+    // be true because the price exists".
+    //
+    // ADMIN-ONLY WRITE, no state gate: `updateAllowsOriginalSelection`
+    // (src/app/dashboard/galleries/actions.ts) can flip this at any point in
+    // the gallery's workflow, same as `selectionTrayMode` above — there is no
+    // "too late to change your mind" moment for a presentation-adjacent
+    // commercial toggle like this one.
+    //
+    // TURNING THIS OFF WITH ORIGINALS ALREADY PICKED is the one case that
+    // needed an explicit owner decision (2026-08-01): reset every asset in
+    // this gallery still marked `selectionKind: "original"` back to
+    // `"edited"`, in the SAME transaction as flipping this flag to `false` —
+    // see `updateAllowsOriginalSelection`'s own header comment for why an
+    // off-switch that leaves orphaned `original` picks is exactly the
+    // inconsistent state this decision exists to prevent, and the dialog that
+    // shows the admin a before/after preview before that reset applies
+    // (`AllowsOriginalSelectionControl`, src/components/).
+    //
+    // LISTEN/NOTIFY, DECIDED EXPLICITLY RATHER THAN LEFT IMPLICIT — TWO
+    // SEPARATE FACTS, NOT ONE, because they turned out to need different
+    // answers:
+    //
+    //   1. THIS COLUMN ITSELF does NOT travel over the `notifySelectionChanged`
+    //      channel task #114 built (src/lib/selection-events.ts). That channel
+    //      exists for the SHARED SELECTION — several clients picking into the
+    //      same gallery at once, where a pick landing within seconds is the
+    //      whole point (PLAN.md §11). This flag is an ADMIN-ONLY setting,
+    //      changed rarely, from the dashboard, not from the client's own page —
+    //      the same category as `includedPhotosSnapshot`/
+    //      `extraPhotoPriceCopSnapshot`/`selectionTrayMode` above, none of
+    //      which push over that channel either. A client with the gallery open
+    //      when the admin flips this sees the change on their NEXT full page
+    //      load of `/galleries/[publicSlug]` (`updateAllowsOriginalSelection`
+    //      already calls `revalidatePath` for that route, same as its
+    //      siblings) — not instantly, mid-session. This is an accepted
+    //      staleness window, not an oversight: the money-safety property that
+    //      actually matters (a client cannot buy an "original" this gallery
+    //      does not allow) is enforced by the SERVER gate on
+    //      `PATCH /api/assets/[assetId]/selection` regardless of what a stale
+    //      tab still renders — see that route's own header comment. Revisit
+    //      only if this flag starts changing mid-session often enough that the
+    //      staleness itself becomes the complaint, which task #214's own
+    //      kanban body gives no evidence of (production has zero galleries
+    //      with any `original` picks at all as of this write).
+    //
+    //   2. THE RESET THIS COLUMN'S OWN OFF-SWITCH TRIGGERS is a DIFFERENT
+    //      question, and the answer is the opposite: turning this off
+    //      genuinely rewrites `assets.selection_kind` for every asset that was
+    //      `"original"` — that IS shared-selection state, the exact thing
+    //      task #114's channel exists to propagate. `updateAllowsOriginalSelection`
+    //      (src/app/dashboard/galleries/actions.ts) DOES call
+    //      `notifySelectionChanged` on that branch, a fourth call site
+    //      alongside the PATCH toggle route, the submit route and
+    //      `unlockSelection` — see that function's own "TASK #114 NOTIFY"
+    //      comment for the full reasoning, including why turning the switch ON
+    //      does not notify (it never touches `assets` at all).
+    allowsOriginalSelection: boolean("allows_original_selection").notNull().default(false),
   },
   (t) => [uniqueIndex("galleries_public_slug_idx").on(t.publicSlug)],
 );

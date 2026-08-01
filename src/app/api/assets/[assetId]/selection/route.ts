@@ -206,6 +206,26 @@ export const PATCH = withApiSession(async function PATCH(
 
   const { selected, selectionKind } = bodyResult.data;
 
+  // Task #214 — THE SERVER GATE, independent of anything the client's own
+  // UI hides. Refuses ANY write that would set `selectionKind` to
+  // `"original"` unless this gallery's own `allowsOriginalSelection` is
+  // true. Covers BOTH shapes the file header above documents: the type-only
+  // branch below (`selected` absent) AND the atomic "select AND mark
+  // original" combo (`selected` present, `selectionKind: "original"` in the
+  // SAME request) — both are a client requesting the cheaper "original"
+  // tariff on a gallery whose photographer never turned that choice on, and
+  // a gate that only covered one of the two shapes would leave the other
+  // reachable. Checked BEFORE either branch runs, using the SAME 409 "state
+  // conflict" shape `SELECTION_LOCKED_STATUSES`/`asset_not_selected` above
+  // already use: the caller IS authorized to act on this asset, the
+  // GALLERY's own settings just refuse this particular value. A UI-only gate
+  // (hiding the tile's type buttons, proof-tile.tsx) is not enough on its
+  // own — this route is reachable by any client attached to the gallery
+  // regardless of what their own tab currently renders.
+  if (selectionKind === "original" && !gallery.allowsOriginalSelection) {
+    return errorResponse("originals_not_allowed", 409);
+  }
+
   let isSelected: boolean;
   let selectedAtIso: string | null;
   let pickedBy: { id: string; label: string } | null;

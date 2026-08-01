@@ -50,7 +50,7 @@ export type SubmitSelectionOutcome = {
   submittedAt: string | null;
 };
 
-function confirmationMessage(quota: QuotaResult): string {
+function confirmationMessage(quota: QuotaResult, allowsOriginalSelection: boolean): string {
   const lines = [
     `¿Cerrar la selección de ${quota.selected} foto${quota.selected === 1 ? "" : "s"}?`,
     // Task #147: the shared-board framing (schema.ts:272-273 — one selection,
@@ -80,7 +80,11 @@ function confirmationMessage(quota: QuotaResult): string {
       `Extras: ${quota.extras} × ${formatCop(quota.extraPhotoPriceCopSnapshot)} = ${formatCop(quota.extrasSurchargeCop)}.`,
     );
   }
-  if (quota.originals > 0) {
+  // Task #214 — ANDed with the gallery's own switch, same "absent, not
+  // zeroed" stance <SelectionCounter> applies to this same line: a gallery
+  // with the switch off must never show this sentence, even in the narrow,
+  // should-never-happen case of `quota.originals` being non-zero anyway.
+  if (allowsOriginalSelection && quota.originals > 0) {
     chargeLines.push(
       `Originales: ${quota.originals} × ${formatCop(quota.originalPhotoPriceCopSnapshot)} = ${formatCop(quota.originalsSurchargeCop)}. Un original nunca cuenta para la cuota incluida — siempre se cobra aparte.`,
     );
@@ -109,6 +113,7 @@ export function SubmitSelectionPanel({
   isLocked,
   submittedAt,
   onSubmitted,
+  allowsOriginalSelection,
 }: {
   galleryId: string;
   quota: QuotaResult;
@@ -121,6 +126,9 @@ export function SubmitSelectionPanel({
   isLocked: boolean;
   submittedAt: string | null;
   onSubmitted: (outcome: SubmitSelectionOutcome) => void;
+  /** Task #214 — threaded through to `confirmationMessage` below, same gate
+   * <SelectionCounter> applies. */
+  allowsOriginalSelection: boolean;
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -137,7 +145,7 @@ export function SubmitSelectionPanel({
 
   async function handleSubmit() {
     if (pending) return;
-    if (!window.confirm(confirmationMessage(quota))) return;
+    if (!window.confirm(confirmationMessage(quota, allowsOriginalSelection))) return;
 
     setPending(true);
     setError(null);

@@ -84,8 +84,22 @@ import type { QuotaResult } from "@/lib/quota";
 // comment on why the omission has to be unconditional, not just for
 // overridden galleries. Only the NUMBERS survive: "incluidas 20 ·
 // seleccionadas 14".
-export function SelectionCounter({ quota }: { quota: QuotaResult }) {
-  const hasOriginals = quota.originals > 0;
+export function SelectionCounter({
+  quota,
+  allowsOriginalSelection,
+}: {
+  quota: QuotaResult;
+  /** Task #214 — the gallery's own switch. `false` (every gallery's default,
+   * schema.ts's own comment on `galleries.allowsOriginalSelection`) hides the
+   * originals breakdown below EVEN IF `quota.originals` is somehow non-zero
+   * (should never happen once `updateAllowsOriginalSelection` ships a reset
+   * in the same transaction as turning the switch off — but this display
+   * surface does not trust that invariant to hold everywhere upstream of it;
+   * "absent, not zeroed" is the governing constraint on the FLAG, not only on
+   * the count). */
+  allowsOriginalSelection: boolean;
+}) {
+  const hasOriginals = allowsOriginalSelection && quota.originals > 0;
 
   return (
     <div aria-live="polite">

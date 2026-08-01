@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "next-auth";
+import { computeQuota } from "@/lib/quota";
 
 // `import "server-only"` (transitively, via src/lib/auth-guards.ts) only
 // resolves inside a real Next.js bundle — see src/lib/auth-guards.test.ts,
@@ -438,6 +439,47 @@ describe("updateGalleryTerms success", () => {
     expect(revalidatePathMock).toHaveBeenCalledWith(`/dashboard/galleries/${GALLERY_ID}`);
     expect(revalidatePathMock).toHaveBeenCalledWith("/dashboard/galleries");
     expect(revalidatePathMock).toHaveBeenCalledWith("/galleries/abc123");
+  });
+
+  // Criterion 5 — the client's own gallery page reads these exact two
+  // columns and hands them to `computeQuota()` (src/lib/quota.ts) with no
+  // extra propagation step in between: `/galleries/[publicSlug]` (page.tsx)
+  // passes `gallery.includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot`
+  // straight through, unmodified. Proven here THROUGH `computeQuota`, not by
+  // re-asserting the raw column values a second time (that would just repeat
+  // the "saves new values" test above under a different name) — this is
+  // what a client actually sees once the row this action wrote is read back.
+  it("changes what the client would see, verified through computeQuota on the written row", async () => {
+    const { updateGalleryTerms } = await import("./actions");
+    const db = await seededDb();
+    // 22 selected against the gallery's own starting terms (13 included,
+    // $5.000/extra) leaves BOTH extras and surchargeCop strictly positive
+    // before AND after the edit below — chosen deliberately so a bug that
+    // wrote only ONE of the two snapshot columns (e.g. dropping
+    // `extraPhotoPriceCopSnapshot` from the UPDATE, leaving the OLD $5.000
+    // in place) still changes the `after` numbers relative to `before`, and
+    // is caught here. A pair of before/after values that both land on 0
+    // (extras clamped by `Math.max(0, …)`, as an all-or-nothing swing to 20
+    // included would) can hide exactly that bug — see this task's own report
+    // for the mutation this test was built to fail on.
+    const selectedCount = 22;
+
+    const before = computeQuota(selectedCount, {
+      includedPhotosSnapshot: db.__rows.galleries[0]!.includedPhotosSnapshot as number,
+      extraPhotoPriceCopSnapshot: db.__rows.galleries[0]!.extraPhotoPriceCopSnapshot as number,
+    });
+    expect(before).toMatchObject({ extras: 9, surchargeCop: 45_000 });
+
+    await updateGalleryTerms(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID, includedPhotos: "20", extraPhotoPriceCop: "2000" }),
+    );
+
+    const after = computeQuota(selectedCount, {
+      includedPhotosSnapshot: db.__rows.galleries[0]!.includedPhotosSnapshot as number,
+      extraPhotoPriceCopSnapshot: db.__rows.galleries[0]!.extraPhotoPriceCopSnapshot as number,
+    });
+    expect(after).toMatchObject({ extras: 2, surchargeCop: 4_000 });
   });
 
   // Criterion 7 — the trap this repo already knows how to get wrong: assert

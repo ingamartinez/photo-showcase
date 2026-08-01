@@ -222,9 +222,13 @@ export function SelectionTray({
       // box to 0) — keep whatever was last measured rather than clobbering it
       // with a bogus cap.
       if (itemHeight <= 0) return;
-      const rowGapPx =
-        parseFloat(window.getComputedStyle(list as HTMLUListElement).rowGap || "") ||
-        FALLBACK_ROW_GAP_PX;
+      // `|| FALLBACK_ROW_GAP_PX` alone would treat a real, legitimate `0px`
+      // gap (e.g. `gap-3` ever gets dropped from the `<ul>` below) as
+      // "unreadable" too, since `0` is falsy — silently overshooting the cap
+      // by 12px. `Number.isFinite` only falls back for the actual unreadable
+      // case (jsdom's empty string parses to `NaN`).
+      const parsedRowGapPx = parseFloat(window.getComputedStyle(list as HTMLUListElement).rowGap);
+      const rowGapPx = Number.isFinite(parsedRowGapPx) ? parsedRowGapPx : FALLBACK_ROW_GAP_PX;
       setMaxListHeightPx(itemHeight * VISIBLE_ROWS + rowGapPx * (VISIBLE_ROWS - 1));
     };
 

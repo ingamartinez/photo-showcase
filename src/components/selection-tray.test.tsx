@@ -238,7 +238,10 @@ describe("SelectionTray — collapsible tray with a height-capped list (task #20
 
     const section = container.querySelector("section") as HTMLElement;
     expect(section.getAttribute("aria-live")).toBe("polite");
-    expect(section.textContent).toContain("1");
+    // Same reasoning as the "2" assertion below: `closest("[hidden]")` is
+    // what proves the counter lives outside the collapsed region, not just
+    // that "1" appears somewhere in the section's (hidden-inclusive) text.
+    expect(screen.getByText("1").closest("[hidden]")).toBeNull();
 
     rerender(
       <SelectionTray
@@ -256,8 +259,13 @@ describe("SelectionTray — collapsible tray with a height-capped list (task #20
       />,
     );
 
-    // The counter changed (this is the announcement)...
-    expect(section.textContent).toContain("2");
+    // The counter changed (this is the announcement)... `textContent`
+    // includes text from `display:none` subtrees, so merely finding "2"
+    // somewhere in the section proves nothing about WHERE it lives — the 50
+    // hidden picks' own labels are in that same string. The real claim is
+    // that the counter that changed is NOT inside the collapsed (`hidden`)
+    // region, i.e. it survived on the still-visible header.
+    expect(screen.getByText("2").closest("[hidden]")).toBeNull();
     // ...while the list itself stayed folded away, exactly as the client
     // left it — a pick from someone else must not force it back open.
     expect(screen.queryByRole("listitem")).toBeNull();
@@ -265,13 +273,18 @@ describe("SelectionTray — collapsible tray with a height-capped list (task #20
 
   it("keeps the stale-connection warning visible even while the tray is collapsed", async () => {
     // Criterion #8: this warning is about trusting what's on screen at all,
-    // which matters MORE while collapsed, not less.
+    // which matters MORE while collapsed, not less. `getByText` alone does
+    // NOT prove that — it matches text inside a `hidden`/`display:none`
+    // subtree just as readily as visible text, so a regression that moved
+    // this warning INSIDE the collapsible region would still pass a bare
+    // `toBeDefined()`. Asserting there is no `[hidden]` ancestor is what
+    // actually pins it outside the fold.
     const user = userEvent.setup();
     renderTray({ picks: [pick()], isStale: true });
 
     await user.click(screen.getByRole("button", { name: "Ocultar" }));
 
-    expect(screen.getByText(/se perdió la conexión/i)).toBeDefined();
+    expect(screen.getByText(/se perdió la conexión/i).closest("[hidden]")).toBeNull();
   });
 
   it("caps the scrollable list to two rows worth of height with 50 picks — not a class check, an actual measured height", () => {

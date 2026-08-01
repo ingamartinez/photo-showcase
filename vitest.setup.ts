@@ -49,6 +49,17 @@ import { afterEach } from "vitest";
 // file's jsdom window is still installed, before Vitest ever gets a chance
 // to tear it down.
 //
+// IF YOU USE FAKE TIMERS, RESTORE THEM IN AN `afterEach`. This hook awaits a
+// REAL `setTimeout`, which never resolves under `vi.useFakeTimers()` without
+// a matching `vi.useRealTimers()` (or advancing the fake clock) beforehand.
+// A test that installs fake timers and leaves them installed when it ends
+// hangs THIS hook for the whole suite: `Error: Hook timed out in 10000ms` at
+// this file's `afterEach`, +10s wall, on whatever test happens to run next.
+// Not currently a live defect -- every fake-timer user in this suite restores
+// in its OWN nested `afterEach`, which runs before this root-level one -- but
+// it is a new failure mode a per-file drain did not have, and it fails loudly
+// enough (naming this exact hook) to be diagnosable rather than mysterious.
+//
 // COST, MEASURED (not assumed) before landing this: full suite wall time,
 // 5 runs each, `bun run test` end to end --
 //   no per-test flush at all (task's pre-fix state):  8539/9281/9215/8861/8548 ms, avg 8889ms
@@ -57,24 +68,29 @@ import { afterEach } from "vitest";
 // macrotask tick is inside ordinary run-to-run noise on this suite, not a
 // measurable cost. Comfortably under the 15% budget this decision was
 // gated on.
-// Task #207. Counts calls so a test can prove the `afterEach` registration
-// below actually fires within a REAL running suite, rather than merely
-// existing as an exported function nobody calls -- see
-// vitest.radix-focus-scope-timer-leak.test.ts's "wiring" describe block.
-// Deleting the `afterEach(flushPendingRealTimers)` line at the bottom of
-// this file (while leaving the export in place) would leave this at 0
-// forever and turn that test red; that is the point of tracking it.
-let flushCallCount = 0;
+//
+// Task #207. `vitest.setup.wiring.test.ts` proves `setupFiles` actually
+// causes vitest to LOAD this file and run the `afterEach` below, as opposed
+// to the export merely existing. That test must NOT import anything from
+// this module: importing a module evaluates it, and evaluating THIS module
+// is exactly what registers `afterEach(flushPendingRealTimers)` -- against
+// whichever file happens to import it. An earlier version of that test
+// imported `getFlushCallCount` from here "just to read a counter," which
+// silently self-registered the very hook it was trying to prove `setupFiles`
+// wires in, and passed with `setupFiles` deleted entirely (`setup: 0ms`,
+// vitest never loaded this file at all). The count is written to a
+// well-known key on `globalThis` instead, specifically so the wiring test
+// can read it with ZERO reference to this file -- the key can only ever
+// move if vitest itself loaded this module via `setupFiles`.
+export const FOCUS_SCOPE_FLUSH_COUNT_GLOBAL_KEY = "__task207FocusScopeFlushCount";
 
 export function flushPendingRealTimers(): Promise<void> {
-  flushCallCount += 1;
+  const g = globalThis as unknown as Record<string, number | undefined>;
+  g[FOCUS_SCOPE_FLUSH_COUNT_GLOBAL_KEY] = (g[FOCUS_SCOPE_FLUSH_COUNT_GLOBAL_KEY] ?? 0) + 1;
+
   return new Promise((resolve) => {
     setTimeout(resolve, 0);
   });
-}
-
-export function getFlushCallCount(): number {
-  return flushCallCount;
 }
 
 afterEach(flushPendingRealTimers);

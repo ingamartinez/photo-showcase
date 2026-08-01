@@ -17,14 +17,18 @@ import { getPresignedUrl, storedKey } from "@/lib/r2";
 // brand token to reuse, so it is an arbitrary Tailwind value here rather than
 // a new custom property.
 //
-// NOT contrast-corrected against the photo variant's scrim (task #180
-// review, measured composited): the `pending` tone comes out ~1.08:1 there,
-// same order as the mock's OWN chip (~1.84:1) — under WCAG 1.4.3 either way.
-// This is inherited design debt from `client.html` itself, not something
-// this slice introduced or is fixing; the owner is tracking it separately
-// with design. Only the title and meta lines (both of which DO pass in the
-// mock and did not in an earlier version of this file) were in scope here —
-// see `metaTextClass` and the gradient stops below.
+// NOT contrast-corrected against the photo variant's scrim. Measured
+// composited over a blown-out white photo at 390px with the real compiled
+// stylesheet (task #180 review, round 2): `pending` 1.84:1, `waiting`
+// 1.16:1, `done` 1.35:1 — all three under WCAG 1.4.3, worst case 1.16:1.
+// These are `client.html`'s own colours at `client.html`'s own position, and
+// the scrim below is now byte-identical to the mock, so `pending` lands on
+// exactly the mock's own 1.84:1. Inherited design debt, not introduced or
+// fixed here; the owner is tracking it separately with design, and 1.16:1 is
+// the number to carry into that conversation. Only the title and meta lines
+// (both of which DO pass in the mock and did not in an earlier version of
+// this file) were in scope here — see `metaTextClass` and the gradient
+// stops below.
 const STATE_TONE_CLASS: Record<ReturnType<typeof formatClientGalleryCardState>["tone"], string> = {
   pending: "text-accent-2",
   waiting: "text-fg-dim",

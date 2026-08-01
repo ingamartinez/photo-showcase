@@ -8,7 +8,7 @@
 // (see gallery-workspace.tsx's header comment for why that matters for a
 // ~100-file upload).
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { GalleryWorkspace, type WorkspaceAsset } from "./gallery-workspace";
 import type { DeliverGalleryState } from "@/app/dashboard/galleries/actions";
@@ -239,5 +239,239 @@ describe("GalleryWorkspace", () => {
     fireEvent.change(finalInput, { target: { files: [file] } });
 
     await waitFor(() => expect(deliverButton()).toHaveProperty("disabled", false));
+  });
+
+  describe("task #195 — full-screen viewer and bulk-delete marking", () => {
+    it("opens the full-screen viewer on the asset whose thumbnail was clicked", async () => {
+      const user = userEvent.setup();
+      render(
+        <GalleryWorkspace
+          galleryId={GALLERY_ID}
+          initialAssets={[
+            assetFor({ id: "a1", originalFilename: "first.jpg" }),
+            assetFor({ id: "a2", originalFilename: "second.jpg", sortOrder: 1 }),
+          ]}
+          clientEmails={[CLIENT_EMAIL]}
+          canDeliver={false}
+        />,
+      );
+
+      expect(screen.queryByRole("dialog")).toBeNull();
+
+      await user.click(screen.getByRole("button", { name: "Ver second.jpg en grande" }));
+
+      const dialog = screen.getByRole("dialog");
+      expect(dialog).toBeDefined();
+      // The viewer's own <img> shows the SAME asset that was clicked, whole
+      // (object-contain) — not just "a dialog opened".
+      const img = within(dialog).getByAltText("second.jpg") as HTMLImageElement;
+      expect(img.className).toContain("object-contain");
+    });
+
+    // The exact scenario the kanban body spells out as its own acceptance
+    // criterion #4: "marcar 3, abrir, navegar a otra, cerrar, y afirmar que
+    // siguen las 3 marcadas". This is the test that PROVES the marked Set
+    // lives above both the grid and the viewer rather than inside either.
+    it("keeps the marked set intact after opening a marked photo full screen, navigating, and closing", async () => {
+      const user = userEvent.setup();
+      render(
+        <GalleryWorkspace
+          galleryId={GALLERY_ID}
+          initialAssets={[
+            assetFor({ id: "a1", originalFilename: "one.jpg", sortOrder: 0 }),
+            assetFor({ id: "a2", originalFilename: "two.jpg", sortOrder: 1 }),
+            assetFor({ id: "a3", originalFilename: "three.jpg", sortOrder: 2 }),
+          ]}
+          clientEmails={[CLIENT_EMAIL]}
+          canDeliver={false}
+        />,
+      );
+
+      // Mark all three from the grid.
+      await user.click(screen.getByRole("button", { name: "Marcar one.jpg para borrar" }));
+      await user.click(screen.getByRole("button", { name: "Marcar two.jpg para borrar" }));
+      await user.click(screen.getByRole("button", { name: "Marcar three.jpg para borrar" }));
+      expect(screen.getByText("3 fotos marcadas para borrar.")).toBeDefined();
+
+      // Open the FIRST one full screen, navigate to the last, then close.
+      await user.click(screen.getByRole("button", { name: "Ver one.jpg en grande" }));
+      const dialog = screen.getByRole("dialog");
+      await user.click(within(dialog).getByRole("button", { name: "Foto siguiente" }));
+      await user.click(within(dialog).getByRole("button", { name: "Foto siguiente" }));
+      await user.click(within(dialog).getByRole("button", { name: "Cerrar" }));
+
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+
+      // All three still marked — the bar's own count is the simplest proof,
+      // and each tile's own checkbox state confirms it individually too.
+      expect(screen.getByText("3 fotos marcadas para borrar.")).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: "Desmarcar one.jpg" }).getAttribute("aria-pressed"),
+      ).toBe("true");
+      expect(
+        screen.getByRole("button", { name: "Desmarcar three.jpg" }).getAttribute("aria-pressed"),
+      ).toBe("true");
+    });
+
+    it("toggling the mark from INSIDE the viewer is reflected on the grid tile after closing", async () => {
+      const user = userEvent.setup();
+      render(
+        <GalleryWorkspace
+          galleryId={GALLERY_ID}
+          initialAssets={[assetFor({ id: "a1", originalFilename: "one.jpg" })]}
+          clientEmails={[CLIENT_EMAIL]}
+          canDeliver={false}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Ver one.jpg en grande" }));
+      const dialog = screen.getByRole("dialog");
+      await user.click(within(dialog).getByRole("button", { name: "Marcar para borrar" }));
+      await user.click(within(dialog).getByRole("button", { name: "Cerrar" }));
+
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(
+        screen.getByRole("button", { name: "Desmarcar one.jpg" }).getAttribute("aria-pressed"),
+      ).toBe("true");
+    });
+
+    it("does not send a bulk-delete request when the confirmation dialog is dismissed", async () => {
+      vi.spyOn(window, "confirm").mockReturnValue(false);
+      const fetchMock = vi.fn();
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      render(
+        <GalleryWorkspace
+          galleryId={GALLERY_ID}
+          initialAssets={[assetFor({ id: "a1", originalFilename: "one.jpg" })]}
+          clientEmails={[CLIENT_EMAIL]}
+          canDeliver={false}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Marcar one.jpg para borrar" }));
+      await user.click(screen.getByRole("button", { name: "Eliminar 1 marcada" }));
+
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(screen.getByText("one.jpg")).toBeDefined();
+    });
+
+    it("bulk-deletes every marked asset, posting their ids in one request and clearing them from the grid and the marked count", async () => {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(jsonResponse(200, { deleted: ["a1", "a2"], failed: [] })),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      render(
+        <GalleryWorkspace
+          galleryId={GALLERY_ID}
+          initialAssets={[
+            assetFor({ id: "a1", originalFilename: "one.jpg", sortOrder: 0 }),
+            assetFor({ id: "a2", originalFilename: "two.jpg", sortOrder: 1 }),
+            assetFor({ id: "a3", originalFilename: "three.jpg", sortOrder: 2 }),
+          ]}
+          clientEmails={[CLIENT_EMAIL]}
+          canDeliver={false}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Marcar one.jpg para borrar" }));
+      await user.click(screen.getByRole("button", { name: "Marcar two.jpg para borrar" }));
+      await user.click(screen.getByRole("button", { name: "Eliminar 2 marcadas" }));
+
+      await waitFor(() => expect(screen.queryByText("one.jpg")).toBeNull());
+      expect(screen.queryByText("two.jpg")).toBeNull();
+      // The unmarked third asset survives untouched.
+      expect(screen.getByText("three.jpg")).toBeDefined();
+      // The bar itself disappears once nothing is marked anymore.
+      expect(screen.queryByText(/marcada/)).toBeNull();
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/assets/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assetIds: ["a1", "a2"] }),
+      });
+    });
+
+    // The reconciliation requirement, proven by MUTATION-worthy behaviour:
+    // an asset the server refused (still marked, still in the grid) must
+    // NOT be treated the same as one it deleted. Grid state matches the
+    // server's own answer, not an optimistic assumption of "all marked ids
+    // are now gone".
+    it("keeps a failed asset both marked and in the grid, while removing the ones that actually deleted", async () => {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(200, {
+            deleted: ["a1"],
+            failed: [{ id: "a2", error: "gallery_locked" }],
+          }),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      render(
+        <GalleryWorkspace
+          galleryId={GALLERY_ID}
+          initialAssets={[
+            assetFor({ id: "a1", originalFilename: "one.jpg", sortOrder: 0 }),
+            assetFor({ id: "a2", originalFilename: "two.jpg", sortOrder: 1 }),
+          ]}
+          clientEmails={[CLIENT_EMAIL]}
+          canDeliver={false}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Marcar one.jpg para borrar" }));
+      await user.click(screen.getByRole("button", { name: "Marcar two.jpg para borrar" }));
+      await user.click(screen.getByRole("button", { name: "Eliminar 2 marcadas" }));
+
+      await waitFor(() => expect(screen.queryByText("one.jpg")).toBeNull());
+      // The failed one survives, in the grid AND still marked.
+      expect(screen.getByText("two.jpg")).toBeDefined();
+      expect(
+        screen.getByRole("button", { name: "Desmarcar two.jpg" }).getAttribute("aria-pressed"),
+      ).toBe("true");
+      expect(screen.getByText("1 foto marcada para borrar.")).toBeDefined();
+    });
+
+    // In real use the underlying grid sits behind the modal's own
+    // `aria-hidden` region (proven separately in admin-asset-viewer.test.tsx)
+    // while the viewer is open, so this reaches the bulk-delete button with
+    // `{ hidden: true }` + `fireEvent` (bypassing the accessibility-tree
+    // filter and pointer simulation, neither of which is what this test is
+    // about) specifically to exercise <GalleryWorkspace>'s own defensive
+    // reconciliation: if the asset the viewer is showing is ever the one a
+    // bulk delete removes, the viewer must not keep pointing at a row that
+    // no longer exists.
+    it("closes the viewer if the asset it was showing gets removed by the bulk delete", async () => {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(jsonResponse(200, { deleted: ["a1"], failed: [] })),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      render(
+        <GalleryWorkspace
+          galleryId={GALLERY_ID}
+          initialAssets={[assetFor({ id: "a1", originalFilename: "one.jpg" })]}
+          clientEmails={[CLIENT_EMAIL]}
+          canDeliver={false}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Marcar one.jpg para borrar" }));
+      await user.click(screen.getByRole("button", { name: "Ver one.jpg en grande" }));
+      expect(screen.getByRole("dialog")).toBeDefined();
+
+      fireEvent.click(screen.getByRole("button", { name: "Eliminar 1 marcada", hidden: true }));
+
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    });
   });
 });

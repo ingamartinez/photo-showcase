@@ -155,24 +155,35 @@ export async function assertTileHasInk(tile: Buffer): Promise<void> {
  * full-photo render).
  *
  * Round 3 (tile size — CURRENT): the owner then looked at 480x240 rendered
- * on an actual full photo (not a crop) and asked for more spacing. That
- * full-photo render put round 2's ~11 estimate at ~14 actual visible marks
- * — the two numbers disagree because round 2's was extrapolated from a
- * crop and round 3's was counted directly off the full render; trust the
- * direct count over the extrapolation if a future reader has to choose
- * between them. 640x320 was rendered next and approved by looking at it:
- * ~9 visible marks on the same 1400x933 reference, down from ~14.
+ * on an actual full photo (not a crop) and asked for more spacing. The
+ * "~14 actual visible marks" figure relayed at the time for 480x240 on
+ * that full photo was an EYEBALLED ESTIMATE, not a verified measurement,
+ * and it is above the hard ceiling: `composite({ tile: true })` starts at
+ * (0,0) and paints one `<text>` per tile instance, so the most tile
+ * instances that can touch a 1400x933 canvas at 480x240 is exactly
+ * `ceil(1400/480) * ceil(933/240) = 3 * 4 = 12`. Round 2's own ~11
+ * crop-extrapolated estimate was the closer of the two. 640x320 was
+ * rendered next and approved by looking at it: `ceil(1400/640) *
+ * ceil(933/320) = 3 * 3 = 9`, which matches the ~9 visible marks counted
+ * on that render.
  *
- * IMPORTANT for whoever revisits this: every visible-mark count above (~8,
- * ~11, ~14, ~9) came from counting BY EYE on an actual rendered image, not
- * from `canvasWidth / tileWidth * canvasHeight / tileHeight`. That grid
- * arithmetic UNDERCOUNTS what a person actually sees, because
- * `composite({ tile: true })` also paints partial, cropped tiles along the
- * canvas's right and bottom edges — a cropped word at the edge still reads
- * as "a mark" to a human looking at the image, even though it is not a
- * complete tile. Do not "correct" a future visual count back to the grid
- * math, and do not derive a target tile size from the grid math either —
- * always render and count, the way every round of this decision was made.
+ * IMPORTANT for whoever revisits this: only two of the visible-mark counts
+ * above are CONFIRMED — 12 at 480x240 and 9 at 640x320, both directly
+ * rendered and both matching `ceil(canvasWidth / tileWidth) *
+ * ceil(canvasHeight / tileHeight)` on the 1400x933 reference exactly. The
+ * earlier figures (~8 at 560x280, ~11 for 480x240 extrapolated from a
+ * crop) were relayed estimates that were never checked against a render or
+ * this formula — treat them as historical color, not ground truth. Naive
+ * FLOOR arithmetic (`floor(w/tile) * floor(h/tile)`) UNDERCOUNTS what a
+ * person actually sees, because `composite({ tile: true })` also paints
+ * partial, cropped tiles along the canvas's right and bottom edges — a
+ * cropped word at an edge still reads as "a mark" to a human looking at the
+ * image, even though it is not a complete tile. Before writing a mark count
+ * down as a measurement, either render and count directly or use the
+ * CEILING formula above as a hard sanity check; do not relay an eyeballed
+ * guess as a verified figure the way this comment once did with a wrong
+ * "~14" — that is exactly the kind of over-claiming this task exists to
+ * catch, and it is what caught it.
  *
  * `tileWidth`/`tileHeight` default to the design size but can be smaller —
  * `processProof` clamps them to the output canvas, since sharp's

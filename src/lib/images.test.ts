@@ -278,15 +278,25 @@ describe("processProof", () => {
 
     // Loose bound: this is about proving broad tiling coverage, not pinning
     // down the exact tile phase against the grid. The ratio was lowered from
-    // 0.6 to 0.45 for task #201 (owner decision, 2026-08-01): the tile grew
-    // from 320x160 to 640x320 across that task's several rounds, so it now
-    // repeats far fewer times across a ~1600px-long-edge proof canvas —
-    // fewer, sparser repetitions legitimately light up fewer of this grid's
-    // 36 cells even though the mark still reaches across the whole image.
-    // Measured directly against the current fixture/tile size: 19/36 cells
-    // (~0.53). 0.45 keeps a real margin below that measured value rather
-    // than pinning to it exactly, while still failing loudly if a future
-    // change collapses coverage back down toward one corner.
+    // 0.6 to 0.45 for task #201 (owner decision, 2026-08-01), and the drop
+    // has TWO causes, not one — attributing it to tile size alone
+    // understates what this assay is actually sensitive to:
+    //   - Mostly the tile size: growing it from 320x160 to 640x320 means far
+    //     fewer repetitions across a ~1600px-long-edge proof canvas, which
+    //     alone (holding opacity at its ORIGINAL 0.35/0.30) drops coverage
+    //     from 36/36 to 22/36. This is the dominant effect.
+    //   - Also the opacity drop: going from 0.35/0.30 down to this task's
+    //     shipped 0.16/0.12 costs 3 more cells on top of that (22/36 ->
+    //     19/36). White fill at 0.16 composited over this fixture's 180-gray
+    //     background lands around 192 — a difference of ~12, just over this
+    //     assay's own +/-10 threshold — so some sampled pixels near a tile's
+    //     fainter edges now fall under it. That is a GOOD property of this
+    //     assay, not a weakness to gloss over: it is exactly what would
+    //     catch a future opacity drop that crosses the threshold outright.
+    // Measured directly against the current fixture/tile/opacity: 19/36
+    // cells (~0.53). 0.45 keeps a real margin below that measured value
+    // rather than pinning to it exactly, while still failing loudly if a
+    // future change collapses coverage back down toward one corner.
     expect(cellsWithInk).toBeGreaterThanOrEqual(Math.ceil(gridSize * gridSize * 0.45));
   });
 
@@ -307,11 +317,22 @@ describe("processProof", () => {
 
   // Regression coverage for a real bug found in review: `composite({ tile:
   // true })` requires the overlay to fit within the canvas on both axes.
-  // Before the fix, any image narrower than WATERMARK_TILE_WIDTH (320) or
-  // shorter than WATERMARK_TILE_HEIGHT (160) made processProof throw an
-  // opaque libvips error — including an ordinary 300x400 portrait crop, not
-  // an exotic input. The existing 400x300 case above sits just above the
-  // threshold on both axes, which is why the bug was invisible until now.
+  // Before the fix, any image narrower than the watermark tile's width or
+  // shorter than its height made processProof throw an opaque libvips error
+  // — including an ordinary 300x400 portrait crop, not an exotic input. That
+  // bug was originally found when the tile was 320x160 (its size at the
+  // time): the "does not upscale..." case above (400x300) sat just above
+  // the threshold on both axes at that size (400>320, 300>160), which is
+  // why a narrower case was needed to catch the bug at all.
+  //
+  // Task #201 (2026-07-31/08-01) grew the tile well past that point. At the
+  // CURRENT 640x320, the 400x300 case above ALSO falls under the tile on
+  // both axes now (400<640, 300<320) — not a bug, `Math.min`'s per-axis
+  // clamp does not care how far under the threshold a dimension is, but it
+  // does mean that case no longer demonstrates "tile fits, no clamp" the
+  // way this comment used to say it did. The 300x400 and 100x100 cases
+  // below are what actually pin the single-axis and both-axes clamp paths
+  // at the current tile size.
   it("watermarks a 300x400 portrait smaller than the watermark tile instead of throwing", async () => {
     const width = 300;
     const height = 400;

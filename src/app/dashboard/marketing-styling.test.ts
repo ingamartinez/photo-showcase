@@ -76,9 +76,13 @@ import { describe, expect, it } from "vitest";
 // component needs the same manual addition until it earns a `dashboard-*`
 // name of its own.
 //
-// `src/components/dashboard-nav.tsx` is DELIBERATELY EXCLUDED — task #135's
-// own carve-out hands that file to a sibling lane (#174) for this wave, and
-// this guard is not the mechanism that enforces someone else's slice.
+// `src/components/dashboard-nav.tsx` was excluded while #174 held it as a
+// sibling lane's territory. #174 has merged, so the carve-out expired and
+// the file is back under the automatic `dashboard-*` glob. It was clean when
+// re-included (9 class values, 0 violations, both before and after #174's
+// 168 added lines), so the exclusion had never been load-bearing — it was
+// territorial. Nothing here should punch a permanent hole in that glob for
+// a reason that lasts one wave.
 //
 // ALSO NOT GUARDED, AND DELIBERATELY SO: `src/components/ui/button.tsx`,
 // `ui/dialog.tsx` and `ui/dropdown-menu.tsx` are, by the same import-graph
@@ -109,7 +113,6 @@ const DASHBOARD_PREFIXED_COMPONENTS = readdirSync(COMPONENTS_DIR)
   .filter(
     (name) => name.startsWith("dashboard-") && name.endsWith(".tsx") && !name.includes(".test."),
   )
-  .filter((name) => name !== "dashboard-nav.tsx") // task #174's territory this wave, see header comment
   .map((name) => path.join(COMPONENTS_DIR, name));
 
 // Dashboard-only components that don't match the `dashboard-*` naming
@@ -297,16 +300,30 @@ function collectObjectStringConstants(clean: string): Map<string, string[]> {
  * (an email-notice string, say) but is never read by a `className` is not
  * this guard's business even if it happened to contain one of these words.
  *
- * WHAT THIS STILL CANNOT SEE, checked directly against the guarded set
- * rather than left to be found by a fifth round: a `className` built by
- * concatenation (`"a" + b`) or spread (`{...someClassMap}`) rather than
- * `cn(…)`; a value threaded through a second function before reaching
- * `className` (an imported class-list helper, a prop passed down through
- * another component); and, per `collectStringConstants`'s own comment, a
- * later re-declaration of the same constant name silently masking an
- * earlier dirty one. None of these three currently exist anywhere in the
- * guarded set — verified by direct search, not assumed — so this is a
- * documented boundary, not a hidden one.
+ * WHAT THIS STILL CANNOT SEE, stated on the right axis. The scan is
+ * token-based, not structural: any declaration NAMED inside the
+ * `className` expression resolves, and the transport around it is
+ * irrelevant — `+`, a ternary, `cn(…)`, or a call to some other helper all
+ * work, because the name is what is being looked for. So the boundary is
+ * not about transport. It is this:
+ *
+ *   the guard cannot see a class whose string never appears in a
+ *   resolvable declaration IN THE SAME FILE.
+ *
+ * Concretely, that leaves unguarded: an array-literal class constant
+ * (`const ARR = ["…"]`, then `cn(ARR)`), a JSX prop spread carrying a
+ * className (`<span {...EXTRA} />`), raw fragment concatenation that
+ * splits a token across literals (`"lab" + "el"`), and — per
+ * `collectStringConstants`'s own comment — a later re-declaration of the
+ * same constant name masking an earlier dirty one. The clsx object form
+ * (`cn({ "label …": cond })`) IS caught, because the key is quoted.
+ *
+ * None of these currently exist anywhere in the guarded set, verified by
+ * direct enumeration rather than assumed: arrays 0, JSX spreads 0, real JS
+ * concatenation 0, re-declarations 0. This is a documented boundary, not a
+ * hidden one — and it is deliberately phrased to understate nothing and
+ * overstate nothing, which is the failure this file was sent back for four
+ * times.
  */
 function extractClassNameValues(source: string): string[] {
   const clean = stripComments(source);

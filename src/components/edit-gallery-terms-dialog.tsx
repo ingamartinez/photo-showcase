@@ -50,16 +50,26 @@ export function EditGalleryTermsDialog({
   status,
   includedPhotosSnapshot,
   extraPhotoPriceCopSnapshot,
+  originalPhotoPriceCopSnapshot,
   // `count(assets where is_selected)` — the SAME number the page already
   // derived for the "Seleccionadas" row (page.tsx's own `selectedCount`),
   // passed straight through rather than recomputed here. This component
   // never counts assets itself.
+  //
+  // Task #205 — this stays a single total, not split into edited/original
+  // counts: nothing in this slice writes `assets.selectionKind` to anything
+  // but `edited` (task #206 is the slice that would let a client pick
+  // `original`), so every selected asset a gallery can have today IS an
+  // edited pick. Passed to `computeQuota` below as the edited count with 0
+  // originals — the same "0 originals" invariant `use-shared-selection.ts`
+  // and the selection routes all currently hold.
   selectedCount,
 }: {
   galleryId: string;
   status: Gallery["status"];
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
+  originalPhotoPriceCopSnapshot: number;
   selectedCount: number;
 }) {
   const [open, setOpen] = useState(false);
@@ -74,12 +84,16 @@ export function EditGalleryTermsDialog({
   const [extraPhotoPriceInput, setExtraPhotoPriceInput] = useState(
     String(extraPhotoPriceCopSnapshot),
   );
+  const [originalPhotoPriceInput, setOriginalPhotoPriceInput] = useState(
+    String(originalPhotoPriceCopSnapshot),
+  );
 
   function handleOpenChange(next: boolean) {
     setOpen(next);
     if (next) {
       setIncludedPhotosInput(String(includedPhotosSnapshot));
       setExtraPhotoPriceInput(String(extraPhotoPriceCopSnapshot));
+      setOriginalPhotoPriceInput(String(originalPhotoPriceCopSnapshot));
     }
   }
 
@@ -97,27 +111,40 @@ export function EditGalleryTermsDialog({
   // server would reject anyway.
   const parsedIncludedPhotos = Number(includedPhotosInput);
   const parsedExtraPhotoPrice = Number(extraPhotoPriceInput);
+  const parsedOriginalPhotoPrice = Number(originalPhotoPriceInput);
   const hasValidPreviewInputs =
     includedPhotosInput.trim() !== "" &&
     extraPhotoPriceInput.trim() !== "" &&
+    originalPhotoPriceInput.trim() !== "" &&
     Number.isInteger(parsedIncludedPhotos) &&
     parsedIncludedPhotos >= 0 &&
     Number.isInteger(parsedExtraPhotoPrice) &&
-    parsedExtraPhotoPrice >= 0;
+    parsedExtraPhotoPrice >= 0 &&
+    Number.isInteger(parsedOriginalPhotoPrice) &&
+    parsedOriginalPhotoPrice >= 0;
 
   // BOTH rows come from `computeQuota()` (src/lib/quota.ts) — the ONE place
   // this app's quota maths lives. This component never subtracts or
   // multiplies anything itself: if it did, it could drift from what
   // `/galleries/[publicSlug]` actually shows the client, which is the only
   // number that matters here.
-  const before = computeQuota(selectedCount, {
+  //
+  // `selectedCount` is passed as the edited count with 0 originals — see
+  // this component's own prop comment above for why. `originalPhotoPriceCopSnapshot`
+  // still flows through `computeQuota` and back out on `before`/`after` (it's
+  // a passthrough field on `QuotaResult`), which is what lets the preview
+  // below show the NEW original price without this component doing its own
+  // arithmetic.
+  const before = computeQuota(selectedCount, 0, {
     includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot,
+    originalPhotoPriceCopSnapshot,
   });
   const after = hasValidPreviewInputs
-    ? computeQuota(selectedCount, {
+    ? computeQuota(selectedCount, 0, {
         includedPhotosSnapshot: parsedIncludedPhotos,
         extraPhotoPriceCopSnapshot: parsedExtraPhotoPrice,
+        originalPhotoPriceCopSnapshot: parsedOriginalPhotoPrice,
       })
     : null;
 
@@ -185,6 +212,29 @@ export function EditGalleryTermsDialog({
             />
           </div>
 
+          <div className="flex flex-col gap-2">
+            <label
+              htmlFor="edit-terms-original-photo-price"
+              className="text-fg-mute text-xs tracking-wide uppercase"
+            >
+              Precio foto original, COP
+            </label>
+            <input
+              id="edit-terms-original-photo-price"
+              name="originalPhotoPriceCop"
+              type="number"
+              min={0}
+              step={1}
+              inputMode="numeric"
+              required
+              value={originalPhotoPriceInput}
+              onChange={(event) => setOriginalPhotoPriceInput(event.target.value)}
+              aria-invalid={state.status === "error"}
+              aria-describedby={state.status === "error" ? "edit-terms-error" : undefined}
+              className={inputClass}
+            />
+          </div>
+
           {showBeforeAfter && (
             <div className="border-line-2 rounded-[6px] border p-3 text-sm">
               <p className="text-fg-mute mb-2 text-xs tracking-wide uppercase">
@@ -195,7 +245,8 @@ export function EditGalleryTermsDialog({
                   never depends on whatever is mid-typed below it. */}
               <p className="text-fg-dim">
                 El cliente ve hoy: {before.includedPhotosSnapshot} incluidas · {before.extras}{" "}
-                extras · {formatCop(before.surchargeCop)}
+                extras · {formatCop(before.surchargeCop)} · original{" "}
+                {formatCop(before.originalPhotoPriceCopSnapshot)}
               </p>
               {/* Conditional on `after` being a valid parse of what is
                   CURRENTLY typed — an empty or malformed field mid-edit
@@ -205,7 +256,8 @@ export function EditGalleryTermsDialog({
               {after && (
                 <p className="text-fg mt-1">
                   Va a ver: {after.includedPhotosSnapshot} incluidas · {after.extras} extras ·{" "}
-                  {formatCop(after.surchargeCop)}
+                  {formatCop(after.surchargeCop)} · original{" "}
+                  {formatCop(after.originalPhotoPriceCopSnapshot)}
                 </p>
               )}
             </div>

@@ -190,9 +190,15 @@ export const PATCH = withApiSession(async function PATCH(
     .where(eq(assets.galleryId, gallery.id));
   const selected = siblings.filter((row) => row.isSelected).length;
 
-  const quota = computeQuota(selected, {
+  // Task #205 — `selected` above is every EDITED pick (this route's PATCH
+  // body has no way to ask for an `original` one yet; that control is task
+  // #206). Passed as the edited count with 0 originals, matching what
+  // `assets.selectionKind`'s own default actually is for every row this
+  // query can return today.
+  const quota = computeQuota(selected, 0, {
     includedPhotosSnapshot: gallery.includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
+    originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,
   });
 
   // `pickedBy` (task #95) is the attribution this route JUST wrote, handed

@@ -170,6 +170,7 @@ function galleryRow(overrides: Row = {}): Row {
     publicSlug: "abc123",
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
+    originalPhotoPriceCopSnapshot: 2_000,
     termsOverridden: false,
     createdAt: new Date("2026-07-01"),
     selectionSubmittedAt: null,
@@ -210,7 +211,12 @@ describe("updateGalleryTerms authorization", () => {
     await expect(
       updateGalleryTerms(
         { status: "idle" },
-        formDataWith({ galleryId: GALLERY_ID, includedPhotos: "20", extraPhotoPriceCop: "0" }),
+        formDataWith({
+          galleryId: GALLERY_ID,
+          includedPhotos: "20",
+          extraPhotoPriceCop: "0",
+          originalPhotoPriceCop: "2000",
+        }),
       ),
     ).rejects.toMatchObject({ digest: "NEXT_HTTP_ERROR_FALLBACK;403" });
 
@@ -225,7 +231,12 @@ describe("updateGalleryTerms authorization", () => {
     await expect(
       updateGalleryTerms(
         { status: "idle" },
-        formDataWith({ galleryId: GALLERY_ID, includedPhotos: "20", extraPhotoPriceCop: "0" }),
+        formDataWith({
+          galleryId: GALLERY_ID,
+          includedPhotos: "20",
+          extraPhotoPriceCop: "0",
+          originalPhotoPriceCop: "2000",
+        }),
       ),
     ).rejects.toMatchObject({ digest: "NEXT_REDIRECT;replace;/login;307;" });
   });
@@ -241,7 +252,12 @@ describe("updateGalleryTerms validation", () => {
 
     const result = await updateGalleryTerms(
       { status: "idle" },
-      formDataWith({ galleryId: "not-a-uuid", includedPhotos: "20", extraPhotoPriceCop: "0" }),
+      formDataWith({
+        galleryId: "not-a-uuid",
+        includedPhotos: "20",
+        extraPhotoPriceCop: "0",
+        originalPhotoPriceCop: "2000",
+      }),
     );
 
     expect(result.status).toBe("error");
@@ -254,7 +270,12 @@ describe("updateGalleryTerms validation", () => {
 
     const result = await updateGalleryTerms(
       { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, includedPhotos: "20", extraPhotoPriceCop: "0" }),
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "20",
+        extraPhotoPriceCop: "0",
+        originalPhotoPriceCop: "2000",
+      }),
     );
 
     expect(result).toEqual({ status: "error", message: "La galería no existe." });
@@ -268,7 +289,12 @@ describe("updateGalleryTerms validation", () => {
 
     const result = await updateGalleryTerms(
       { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, includedPhotos: "", extraPhotoPriceCop: "5000" }),
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "",
+        extraPhotoPriceCop: "5000",
+        originalPhotoPriceCop: "2000",
+      }),
     );
 
     expect(result.status).toBe("error");
@@ -276,6 +302,7 @@ describe("updateGalleryTerms validation", () => {
     expect(db.__rows.galleries[0]).toMatchObject({
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      originalPhotoPriceCopSnapshot: 2_000,
       termsOverridden: false,
     });
   });
@@ -286,7 +313,12 @@ describe("updateGalleryTerms validation", () => {
 
     const result = await updateGalleryTerms(
       { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, includedPhotos: "20", extraPhotoPriceCop: "" }),
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "20",
+        extraPhotoPriceCop: "",
+        originalPhotoPriceCop: "2000",
+      }),
     );
 
     expect(result.status).toBe("error");
@@ -294,6 +326,32 @@ describe("updateGalleryTerms validation", () => {
     expect(db.__rows.galleries[0]).toMatchObject({
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      originalPhotoPriceCopSnapshot: 2_000,
+      termsOverridden: false,
+    });
+  });
+
+  // Task #205 — same emptiness guard, now for the third field.
+  it("rejects an empty original-photo-price field with a message, and writes nothing", async () => {
+    const { updateGalleryTerms } = await import("./actions");
+    const db = await seededDb();
+
+    const result = await updateGalleryTerms(
+      { status: "idle" },
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "20",
+        extraPhotoPriceCop: "5000",
+        originalPhotoPriceCop: "",
+      }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.message).toMatch(/foto original/i);
+    expect(db.__rows.galleries[0]).toMatchObject({
+      includedPhotosSnapshot: 13,
+      extraPhotoPriceCopSnapshot: 5_000,
+      originalPhotoPriceCopSnapshot: 2_000,
       termsOverridden: false,
     });
   });
@@ -303,7 +361,12 @@ describe("updateGalleryTerms validation", () => {
 
     const result = await updateGalleryTerms(
       { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, includedPhotos: "-1", extraPhotoPriceCop: "0" }),
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "-1",
+        extraPhotoPriceCop: "0",
+        originalPhotoPriceCop: "2000",
+      }),
     );
 
     expect(result.status).toBe("error");
@@ -314,7 +377,12 @@ describe("updateGalleryTerms validation", () => {
 
     const result = await updateGalleryTerms(
       { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, includedPhotos: "13.5", extraPhotoPriceCop: "0" }),
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "13.5",
+        extraPhotoPriceCop: "0",
+        originalPhotoPriceCop: "2000",
+      }),
     );
 
     expect(result.status).toBe("error");
@@ -333,13 +401,19 @@ describe("updateGalleryTerms success", () => {
 
     const result = await updateGalleryTerms(
       { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, includedPhotos: "20", extraPhotoPriceCop: "0" }),
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "20",
+        extraPhotoPriceCop: "0",
+        originalPhotoPriceCop: "2000",
+      }),
     );
 
     expect(result).toEqual({ status: "updated" });
     expect(db.__rows.galleries[0]).toMatchObject({
       includedPhotosSnapshot: 20,
       extraPhotoPriceCopSnapshot: 0,
+      originalPhotoPriceCopSnapshot: 2_000,
     });
   });
 
@@ -355,34 +429,46 @@ describe("updateGalleryTerms success", () => {
 
       const result = await updateGalleryTerms(
         { status: "idle" },
-        formDataWith({ galleryId: GALLERY_ID, includedPhotos: "20", extraPhotoPriceCop: "0" }),
+        formDataWith({
+          galleryId: GALLERY_ID,
+          includedPhotos: "20",
+          extraPhotoPriceCop: "0",
+          originalPhotoPriceCop: "2000",
+        }),
       );
 
       expect(result).toEqual({ status: "updated" });
       expect(db.__rows.galleries[0]).toMatchObject({
         includedPhotosSnapshot: 20,
         extraPhotoPriceCopSnapshot: 0,
+        originalPhotoPriceCopSnapshot: 2_000,
         status,
       });
     },
   );
 
-  // Criterion 4, second half: `0` is a LEGITIMATE value in either field
-  // (zero included, or free extras) and must be saved as 0, never rejected
-  // and never confused with an empty field.
-  it("saves 0 in both fields as a legitimate value, not an empty rejection", async () => {
+  // Criterion 4, second half: `0` is a LEGITIMATE value in any field (zero
+  // included, free extras, or a free original) and must be saved as 0, never
+  // rejected and never confused with an empty field.
+  it("saves 0 in all three fields as a legitimate value, not an empty rejection", async () => {
     const { updateGalleryTerms } = await import("./actions");
     const db = await seededDb();
 
     const result = await updateGalleryTerms(
       { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, includedPhotos: "0", extraPhotoPriceCop: "0" }),
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "0",
+        extraPhotoPriceCop: "0",
+        originalPhotoPriceCop: "0",
+      }),
     );
 
     expect(result).toEqual({ status: "updated" });
     expect(db.__rows.galleries[0]).toMatchObject({
       includedPhotosSnapshot: 0,
       extraPhotoPriceCopSnapshot: 0,
+      originalPhotoPriceCopSnapshot: 0,
     });
   });
 
@@ -397,13 +483,19 @@ describe("updateGalleryTerms success", () => {
 
     const result = await updateGalleryTerms(
       { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, includedPhotos: "13", extraPhotoPriceCop: "5000" }),
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "13",
+        extraPhotoPriceCop: "5000",
+        originalPhotoPriceCop: "2000",
+      }),
     );
 
     expect(result).toEqual({ status: "updated" });
     expect(db.__rows.galleries[0]).toMatchObject({
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      originalPhotoPriceCopSnapshot: 2_000,
       termsOverridden: true,
     });
   });
@@ -416,7 +508,12 @@ describe("updateGalleryTerms success", () => {
 
     await updateGalleryTerms(
       { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, includedPhotos: "20", extraPhotoPriceCop: "0" }),
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "20",
+        extraPhotoPriceCop: "0",
+        originalPhotoPriceCop: "2000",
+      }),
     );
 
     const row = db.__rows.galleries[0]!;
@@ -433,7 +530,12 @@ describe("updateGalleryTerms success", () => {
 
     await updateGalleryTerms(
       { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, includedPhotos: "20", extraPhotoPriceCop: "0" }),
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "20",
+        extraPhotoPriceCop: "0",
+        originalPhotoPriceCop: "2000",
+      }),
     );
 
     expect(revalidatePathMock).toHaveBeenCalledWith(`/dashboard/galleries/${GALLERY_ID}`);
@@ -441,45 +543,66 @@ describe("updateGalleryTerms success", () => {
     expect(revalidatePathMock).toHaveBeenCalledWith("/galleries/abc123");
   });
 
-  // Criterion 5 — the client's own gallery page reads these exact two
-  // columns and hands them to `computeQuota()` (src/lib/quota.ts) with no
-  // extra propagation step in between: `/galleries/[publicSlug]` (page.tsx)
-  // passes `gallery.includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot`
-  // straight through, unmodified. Proven here THROUGH `computeQuota`, not by
-  // re-asserting the raw column values a second time (that would just repeat
-  // the "saves new values" test above under a different name) — this is
-  // what a client actually sees once the row this action wrote is read back.
+  // Criterion 5 (task #200) / criterion 4 (task #205, which EXTENDED this
+  // exact test for the third snapshot column rather than writing a parallel
+  // one beside it — see #205's own kanban body) — the client's own gallery
+  // page reads these exact three columns and hands them to `computeQuota()`
+  // (src/lib/quota.ts) with no extra propagation step in between:
+  // `/galleries/[publicSlug]` (page.tsx) passes
+  // `gallery.includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot`/
+  // `originalPhotoPriceCopSnapshot` straight through, unmodified. Proven here
+  // THROUGH `computeQuota`, not by re-asserting the raw column values a
+  // second time (that would just repeat the "saves new values" test above
+  // under a different name) — this is what a client actually sees once the
+  // row this action wrote is read back.
   it("changes what the client would see, verified through computeQuota on the written row", async () => {
     const { updateGalleryTerms } = await import("./actions");
     const db = await seededDb();
-    // 22 selected against the gallery's own starting terms (13 included,
-    // $5.000/extra) leaves BOTH extras and surchargeCop strictly positive
-    // before AND after the edit below — chosen deliberately so a bug that
-    // wrote only ONE of the two snapshot columns (e.g. dropping
-    // `extraPhotoPriceCopSnapshot` from the UPDATE, leaving the OLD $5.000
-    // in place) still changes the `after` numbers relative to `before`, and
-    // is caught here. A pair of before/after values that both land on 0
-    // (extras clamped by `Math.max(0, …)`, as an all-or-nothing swing to 20
-    // included would) can hide exactly that bug — see this task's own report
-    // for the mutation this test was built to fail on.
-    const selectedCount = 22;
+    // 22 edited + 5 originals against the gallery's own starting terms (13
+    // included, $5.000/extra, $2.000/original) leaves EVERY term of the
+    // surcharge strictly positive before AND after the edit below — chosen
+    // deliberately so a bug that wrote only SOME of the three snapshot
+    // columns (e.g. dropping `originalPhotoPriceCopSnapshot` from the
+    // UPDATE, leaving the OLD $2.000 in place) still changes the `after`
+    // numbers relative to a correct implementation, and is caught here. Both
+    // `selectedEdited` and `selectedOriginal` are non-zero for the same
+    // reason #205's own quota.test.ts mixed-case fixture is: a pair where
+    // either term lands on 0 cannot discriminate an implementation that
+    // ignores it.
+    const selectedEdited = 22;
+    const selectedOriginal = 5;
 
-    const before = computeQuota(selectedCount, {
+    const before = computeQuota(selectedEdited, selectedOriginal, {
       includedPhotosSnapshot: db.__rows.galleries[0]!.includedPhotosSnapshot as number,
       extraPhotoPriceCopSnapshot: db.__rows.galleries[0]!.extraPhotoPriceCopSnapshot as number,
+      originalPhotoPriceCopSnapshot: db.__rows.galleries[0]!
+        .originalPhotoPriceCopSnapshot as number,
     });
-    expect(before).toMatchObject({ extras: 9, surchargeCop: 45_000 });
+    // extras = 22 - 13 = 9 -> 9 * 5_000 = 45_000. originals = 5 * 2_000 =
+    // 10_000. Total 55_000.
+    expect(before).toMatchObject({ extras: 9, originals: 5, surchargeCop: 55_000 });
 
     await updateGalleryTerms(
       { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, includedPhotos: "20", extraPhotoPriceCop: "2000" }),
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "20",
+        extraPhotoPriceCop: "2000",
+        originalPhotoPriceCop: "9000",
+      }),
     );
 
-    const after = computeQuota(selectedCount, {
+    const after = computeQuota(selectedEdited, selectedOriginal, {
       includedPhotosSnapshot: db.__rows.galleries[0]!.includedPhotosSnapshot as number,
       extraPhotoPriceCopSnapshot: db.__rows.galleries[0]!.extraPhotoPriceCopSnapshot as number,
+      originalPhotoPriceCopSnapshot: db.__rows.galleries[0]!
+        .originalPhotoPriceCopSnapshot as number,
     });
-    expect(after).toMatchObject({ extras: 2, surchargeCop: 4_000 });
+    // extras = 22 - 20 = 2 -> 2 * 2_000 = 4_000. originals = 5 * 9_000 =
+    // 45_000. Total 49_000 — reachable ONLY if the UPDATE actually wrote the
+    // new `originalPhotoPriceCopSnapshot`: a mutant that left the OLD $2.000
+    // in place would compute 4_000 + 5 * 2_000 = 14_000 instead.
+    expect(after).toMatchObject({ extras: 2, originals: 5, surchargeCop: 49_000 });
   });
 
   // Criterion 7 — the trap this repo already knows how to get wrong: assert
@@ -493,13 +616,19 @@ describe("updateGalleryTerms success", () => {
 
     const result = await updateGalleryTerms(
       { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, includedPhotos: "20", extraPhotoPriceCop: "0" }),
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "20",
+        extraPhotoPriceCop: "0",
+        originalPhotoPriceCop: "2000",
+      }),
     );
 
     expect(result).toEqual({ status: "updated" });
     expect(db.__rows.galleries[0]).toMatchObject({
       includedPhotosSnapshot: 20,
       extraPhotoPriceCopSnapshot: 0,
+      originalPhotoPriceCopSnapshot: 2_000,
     });
     expect(signInMock).not.toHaveBeenCalled();
   });

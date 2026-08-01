@@ -172,6 +172,7 @@ function galleryRow(overrides: Partial<Row> = {}): Row {
     publicSlug: "abc123",
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
+    originalPhotoPriceCopSnapshot: 2_000,
     createdAt: new Date("2026-07-01"),
     selectionSubmittedAt: null,
     deliveredAt: null,
@@ -361,11 +362,19 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
       quota: { selected: number; extras: number; surchargeCop: number };
     };
 
+    // Task #205 — `getGallerySelection()` returns every pick without regard
+    // to `selectionKind`, so this route passes them all as edited with 0
+    // originals; `originalPhotoPriceCopSnapshot` is the gallery's own frozen
+    // value, passed through unchanged.
     expect(body.quota).toEqual({
       selected: 15,
+      selectedEdited: 15,
+      selectedOriginal: 0,
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      originalPhotoPriceCopSnapshot: 2_000,
       extras: 2,
+      originals: 0,
       surchargeCop: 10_000,
     });
   });

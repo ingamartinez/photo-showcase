@@ -2,17 +2,19 @@
 
 // Creating a gallery is the one place the epic's central rule lives: the
 // chosen package's CURRENT terms are read exactly once, right here, and
-// copied into `includedPhotosSnapshot` / `extraPhotoPriceCopSnapshot`. From
+// copied into `includedPhotosSnapshot` / `extraPhotoPriceCopSnapshot` /
+// `originalPhotoPriceCopSnapshot` (the third added by task #205). From
 // the moment this insert commits, the gallery owes the `packages` row
 // nothing — see schema.ts's comment on those columns and PLAN.md §6.
 //
-// Task #193 — MANUAL OVERRIDE of either snapshot, typed by the admin at
-// creation time. The two optional form fields below (`includedPhotos`,
-// `extraPhotoPriceCop`) each independently either replace the chosen
-// package's own value or fall back to it — never both replaced or both kept
-// as an all-or-nothing pair. `pkg` is still read exactly once, same as
-// before; an override never adds a second read of `packages`, it only
-// decides which value wins for each snapshot column at insert time.
+// Task #193 — MANUAL OVERRIDE of any snapshot, typed by the admin at
+// creation time. The three optional form fields below (`includedPhotos`,
+// `extraPhotoPriceCop`, `originalPhotoPriceCop`) each independently either
+// replace the chosen package's own value or fall back to it — never all
+// replaced or all kept as an all-or-nothing group. `pkg` is still read
+// exactly once, same as before; an override never adds a second read of
+// `packages`, it only decides which value wins for each snapshot column at
+// insert time.
 
 import { z } from "zod";
 import postgres from "postgres";
@@ -115,6 +117,12 @@ const createGallerySchema = z.object({
   extraPhotoPriceCopOverride: optionalNonNegativeInt(
     "El precio de la foto extra tiene que ser un entero mayor o igual a 0.",
   ),
+  // Task #205 — same optional-override shape as the two fields above, added
+  // for the new `originalPhotoPriceCop` term. Independent of both: an admin
+  // can override any subset of the three, or none.
+  originalPhotoPriceCopOverride: optionalNonNegativeInt(
+    "El precio de la foto original tiene que ser un entero mayor o igual a 0.",
+  ),
 });
 
 export type CreateGalleryState = {
@@ -162,6 +170,7 @@ export async function createGallery(
     // defense, not the load-bearing check it used to be.
     includedPhotosOverride: formData.get("includedPhotos") || undefined,
     extraPhotoPriceCopOverride: formData.get("extraPhotoPriceCop") || undefined,
+    originalPhotoPriceCopOverride: formData.get("originalPhotoPriceCop") || undefined,
   });
 
   if (!parsed.success) {
@@ -215,9 +224,15 @@ export async function createGallery(
   const includedPhotosSnapshot = parsed.data.includedPhotosOverride ?? pkg.includedPhotos;
   const extraPhotoPriceCopSnapshot =
     parsed.data.extraPhotoPriceCopOverride ?? pkg.extraPhotoPriceCop;
+  // Task #205 — same `??` reasoning as the two lines above: an override of
+  // `0` (a free original, a legitimate promotion) must win over the
+  // package's own value exactly as a positive override would.
+  const originalPhotoPriceCopSnapshot =
+    parsed.data.originalPhotoPriceCopOverride ?? pkg.originalPhotoPriceCop;
   const termsOverridden =
     parsed.data.includedPhotosOverride !== undefined ||
-    parsed.data.extraPhotoPriceCopOverride !== undefined;
+    parsed.data.extraPhotoPriceCopOverride !== undefined ||
+    parsed.data.originalPhotoPriceCopOverride !== undefined;
 
   try {
     // The gallery row and its client memberships are inserted together, in
@@ -246,6 +261,7 @@ export async function createGallery(
           publicSlug: generateGallerySlug(),
           includedPhotosSnapshot,
           extraPhotoPriceCopSnapshot,
+          originalPhotoPriceCopSnapshot,
           termsOverridden,
         })
         .returning({ id: galleries.id });
@@ -272,9 +288,10 @@ export async function createGallery(
 }
 
 // ---------------------------------------------------------------------------
-// Edit an EXISTING gallery's commercial terms (task #200) — the first action
-// in this file that rewrites `includedPhotosSnapshot`/
-// `extraPhotoPriceCopSnapshot` after creation. `createGallery` above still
+// Edit an EXISTING gallery's commercial terms (task #200, widened by #205 to
+// the third term) — the first action in this file that rewrites
+// `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot`/
+// `originalPhotoPriceCopSnapshot` after creation. `createGallery` above still
 // owns the ONE read of the live `packages` row; this action never touches
 // `packages` at all — it only overwrites the gallery's own frozen snapshot
 // with whatever the admin types now.
@@ -304,15 +321,15 @@ export async function createGallery(
 // definitionally an override, even on the rare occasion the admin types
 // back the package's own numbers.
 //
-// BOTH FIELDS ARE REQUIRED, unlike `createGallery`'s own OPTIONAL overrides
-// (`optionalNonNegativeInt` above). At creation, empty means "inherit from
-// the package" — a meaning that has no equivalent here: this gallery already
-// has effective terms, so "leave this blank" would have to mean either
-// "keep what it had" (then why is the field editable at all) or "go back to
-// the package's live terms" (which would require reading `packages` again,
-// exactly what the snapshot columns exist to avoid). The form below
-// pre-fills both fields with the gallery's CURRENT effective values, so
-// there is no ambiguous empty state to design around — see
+// ALL THREE FIELDS ARE REQUIRED, unlike `createGallery`'s own OPTIONAL
+// overrides (`optionalNonNegativeInt` above). At creation, empty means
+// "inherit from the package" — a meaning that has no equivalent here: this
+// gallery already has effective terms, so "leave this blank" would have to
+// mean either "keep what it had" (then why is the field editable at all) or
+// "go back to the package's live terms" (which would require reading
+// `packages` again, exactly what the snapshot columns exist to avoid). The
+// form below pre-fills all three fields with the gallery's CURRENT effective
+// values, so there is no ambiguous empty state to design around — see
 // `requiredNonNegativeInt`'s own comment for how `0` and empty are told
 // apart.
 function requiredNonNegativeInt(message: string) {
@@ -332,6 +349,14 @@ const updateGalleryTermsSchema = z.object({
   extraPhotoPriceCop: requiredNonNegativeInt(
     "El precio de la foto extra tiene que ser un entero mayor o igual a 0.",
   ),
+  // Task #205 — REQUIRED, same reasoning as the two fields above
+  // (`requiredNonNegativeInt`'s own comment): this gallery already has an
+  // effective original-photo price, so there is no ambiguous empty state to
+  // design around, and the dialog pre-fills it with the gallery's current
+  // value.
+  originalPhotoPriceCop: requiredNonNegativeInt(
+    "El precio de la foto original tiene que ser un entero mayor o igual a 0.",
+  ),
 });
 
 export type UpdateGalleryTermsState = {
@@ -340,8 +365,9 @@ export type UpdateGalleryTermsState = {
 };
 
 /**
- * Overwrites a gallery's `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot`
- * with values the admin typed, sets `termsOverridden = true` unconditionally,
+ * Overwrites a gallery's `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot`/
+ * `originalPhotoPriceCopSnapshot` with values the admin typed, sets
+ * `termsOverridden = true` unconditionally,
  * and stamps who did it and when (`termsUpdatedAt`/`termsUpdatedByEmail`,
  * schema.ts — the same snapshot-not-foreign-key shape `unlockedByEmail`
  * already established). No state gate, no email — see this section's own
@@ -375,6 +401,7 @@ export async function updateGalleryTerms(
     // out of habit.
     includedPhotos: formData.get("includedPhotos") ?? "",
     extraPhotoPriceCop: formData.get("extraPhotoPriceCop") ?? "",
+    originalPhotoPriceCop: formData.get("originalPhotoPriceCop") ?? "",
   });
   if (!parsed.success) {
     return {
@@ -406,6 +433,7 @@ export async function updateGalleryTerms(
     .set({
       includedPhotosSnapshot: parsed.data.includedPhotos,
       extraPhotoPriceCopSnapshot: parsed.data.extraPhotoPriceCop,
+      originalPhotoPriceCopSnapshot: parsed.data.originalPhotoPriceCop,
       termsOverridden: true,
       termsUpdatedAt: now,
       termsUpdatedByEmail,

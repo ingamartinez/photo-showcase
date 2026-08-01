@@ -408,6 +408,7 @@ export default async function GalleryDetailPage({
                 status={gallery.status}
                 includedPhotosSnapshot={gallery.includedPhotosSnapshot}
                 extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}
+                originalPhotoPriceCopSnapshot={gallery.originalPhotoPriceCopSnapshot}
                 selectedCount={selectedCount}
               />
             </div>

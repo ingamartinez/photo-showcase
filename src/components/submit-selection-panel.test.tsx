@@ -8,6 +8,16 @@ import { computeQuota } from "@/lib/quota";
 // No `@/lib/format` mock needed — same reasoning as selection-counter.test.tsx:
 // it has no `server-only`/`@/lib/db` import, so jsdom resolves it directly.
 
+// Task #205 — every fixture below passes 0 originals: nothing in this app
+// writes `assets.selectionKind` to anything but `edited` yet (task #206 is
+// the slice that would), and this component itself renders no originals
+// breakdown — see the new test at the bottom of this file pinning that.
+const SNAPSHOT = {
+  includedPhotosSnapshot: 13,
+  extraPhotoPriceCopSnapshot: 5_000,
+  originalPhotoPriceCopSnapshot: 2_000,
+};
+
 function jsonResponse(status: number, body: unknown): Response {
   return {
     ok: status >= 200 && status < 300,
@@ -27,7 +37,7 @@ describe("SubmitSelectionPanel", () => {
     render(
       <SubmitSelectionPanel
         galleryId="g1"
-        quota={computeQuota(5, { includedPhotosSnapshot: 13, extraPhotoPriceCopSnapshot: 5_000 })}
+        quota={computeQuota(5, 0, SNAPSHOT)}
         isLocked
         submittedAt="2026-07-28T12:00:00.000Z"
         onSubmitted={vi.fn()}
@@ -51,7 +61,7 @@ describe("SubmitSelectionPanel", () => {
     render(
       <SubmitSelectionPanel
         galleryId="g1"
-        quota={computeQuota(5, { includedPhotosSnapshot: 13, extraPhotoPriceCopSnapshot: 5_000 })}
+        quota={computeQuota(5, 0, SNAPSHOT)}
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
@@ -65,7 +75,7 @@ describe("SubmitSelectionPanel", () => {
     render(
       <SubmitSelectionPanel
         galleryId="g1"
-        quota={computeQuota(0, { includedPhotosSnapshot: 13, extraPhotoPriceCopSnapshot: 5_000 })}
+        quota={computeQuota(0, 0, SNAPSHOT)}
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
@@ -89,7 +99,7 @@ describe("SubmitSelectionPanel", () => {
     render(
       <SubmitSelectionPanel
         galleryId="g1"
-        quota={computeQuota(15, { includedPhotosSnapshot: 13, extraPhotoPriceCopSnapshot: 5_000 })}
+        quota={computeQuota(15, 0, SNAPSHOT)}
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
@@ -116,7 +126,7 @@ describe("SubmitSelectionPanel", () => {
     render(
       <SubmitSelectionPanel
         galleryId="g1"
-        quota={computeQuota(15, { includedPhotosSnapshot: 13, extraPhotoPriceCopSnapshot: 5_000 })}
+        quota={computeQuota(15, 0, SNAPSHOT)}
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
@@ -132,10 +142,7 @@ describe("SubmitSelectionPanel", () => {
 
   it("POSTs to the submit route and reports the outcome once confirmed", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(true);
-    const submittedQuota = computeQuota(15, {
-      includedPhotosSnapshot: 13,
-      extraPhotoPriceCopSnapshot: 5_000,
-    });
+    const submittedQuota = computeQuota(15, 0, SNAPSHOT);
     const fetchMock = vi.fn(() =>
       Promise.resolve(
         jsonResponse(200, {
@@ -181,7 +188,7 @@ describe("SubmitSelectionPanel", () => {
     render(
       <SubmitSelectionPanel
         galleryId="g1"
-        quota={computeQuota(1, { includedPhotosSnapshot: 13, extraPhotoPriceCopSnapshot: 5_000 })}
+        quota={computeQuota(1, 0, SNAPSHOT)}
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
@@ -207,7 +214,7 @@ describe("SubmitSelectionPanel", () => {
     render(
       <SubmitSelectionPanel
         galleryId="g1"
-        quota={computeQuota(5, { includedPhotosSnapshot: 13, extraPhotoPriceCopSnapshot: 5_000 })}
+        quota={computeQuota(5, 0, SNAPSHOT)}
         isLocked={false}
         submittedAt={null}
         onSubmitted={onSubmitted}
@@ -233,7 +240,7 @@ describe("SubmitSelectionPanel", () => {
     render(
       <SubmitSelectionPanel
         galleryId="g1"
-        quota={computeQuota(5, { includedPhotosSnapshot: 13, extraPhotoPriceCopSnapshot: 5_000 })}
+        quota={computeQuota(5, 0, SNAPSHOT)}
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
@@ -243,5 +250,31 @@ describe("SubmitSelectionPanel", () => {
     await user.click(screen.getByRole("button", { name: "Enviar selección" }));
 
     await vi.waitFor(() => expect(screen.getByText("No se pudo conectar.")).toBeDefined());
+  });
+
+  // Task #205's own client-facing constraint: `quota.extras > 0 ?
+  // "Extras: ..." : "No tenés extras con esta selección."` is the only
+  // branch this component's confirmation text has — it must not grow a
+  // third branch for originals while every gallery still has zero of them.
+  it("never mentions originals in the confirmation dialog", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(false);
+    vi.stubGlobal("fetch", vi.fn());
+    const user = userEvent.setup();
+
+    render(
+      <SubmitSelectionPanel
+        galleryId="g1"
+        quota={computeQuota(15, 0, SNAPSHOT)}
+        isLocked={false}
+        submittedAt={null}
+        onSubmitted={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Enviar selección" }));
+
+    const confirmSpy = vi.mocked(window.confirm);
+    const message = confirmSpy.mock.calls[0]?.[0] as string;
+    expect(message).not.toMatch(/original/i);
   });
 });

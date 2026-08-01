@@ -65,9 +65,13 @@ async function currentQuota(gallery: Gallery): Promise<QuotaResult> {
     .from(assets)
     .where(eq(assets.galleryId, gallery.id));
   const selected = siblings.filter((row) => row.isSelected).length;
-  return computeQuota(selected, {
+  // Task #205 — every pick this query can see is `edited` today (task #206
+  // is what would let one be `original`), so `selected` is passed as the
+  // edited count with 0 originals.
+  return computeQuota(selected, 0, {
     includedPhotosSnapshot: gallery.includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
+    originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,
   });
 }
 

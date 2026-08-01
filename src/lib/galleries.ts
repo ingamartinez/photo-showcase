@@ -429,8 +429,9 @@ export type GalleryDetail = {
   package: { id: number; name: string };
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
-  // Task #193 — was either snapshot above typed by hand at creation, instead
-  // of inherited from the chosen package? Read straight off
+  originalPhotoPriceCopSnapshot: number;
+  // Task #193 (widened by #205) — was any snapshot above typed by hand at
+  // creation, instead of inherited from the chosen package? Read straight off
   // `galleries.terms_overridden` (schema.ts's own comment on that column has
   // the full reasoning for why this is a stored flag, never derived by
   // comparing these snapshots against the package's CURRENT row). The admin
@@ -553,6 +554,7 @@ function toGalleryDetail(row: RawGalleryDetailRow): GalleryDetail {
     package: { id: row.package.id, name: row.package.name },
     includedPhotosSnapshot: row.includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot: row.extraPhotoPriceCopSnapshot,
+    originalPhotoPriceCopSnapshot: row.originalPhotoPriceCopSnapshot,
     termsOverridden: row.termsOverridden,
     assets: row.assets,
     selectionSubmittedAt: row.selectionSubmittedAt,

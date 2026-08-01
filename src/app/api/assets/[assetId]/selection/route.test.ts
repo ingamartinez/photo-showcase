@@ -185,6 +185,7 @@ function galleryRow(overrides: Partial<Row> = {}): Row {
     publicSlug: "abc123",
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
+    originalPhotoPriceCopSnapshot: 2_000,
     createdAt: new Date("2026-07-01"),
     selectionSubmittedAt: null,
     deliveredAt: null,
@@ -597,9 +598,13 @@ describe("PATCH /api/assets/[assetId]/selection — persistence and quota recomp
     // 2 selected against a snapshot of 13 included means no extras yet.
     expect(body.quota).toEqual({
       selected: 2,
+      selectedEdited: 2,
+      selectedOriginal: 0,
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      originalPhotoPriceCopSnapshot: 2_000,
       extras: 0,
+      originals: 0,
       surchargeCop: 0,
     });
   });
@@ -619,9 +624,13 @@ describe("PATCH /api/assets/[assetId]/selection — persistence and quota recomp
 
     expect(body.quota).toEqual({
       selected: 2,
+      selectedEdited: 2,
+      selectedOriginal: 0,
       includedPhotosSnapshot: 1,
       extraPhotoPriceCopSnapshot: 5_000,
+      originalPhotoPriceCopSnapshot: 2_000,
       extras: 1,
+      originals: 0,
       surchargeCop: 5_000,
     });
   });

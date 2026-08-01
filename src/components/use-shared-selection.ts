@@ -154,10 +154,19 @@ export function useSharedSelection({
   const [selectionById, setSelectionById] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(initialAssets.map((asset) => [asset.id, asset.isSelected])),
   );
+  // Task #205 — this hook only ever knows `isSelected`, never
+  // `selectionKind` (`SharedSelectionAsset` doesn't carry it, and every
+  // asset this app can produce today is `edited` — task #206 is the slice
+  // that would let a client pick `original` at all). Seeded here as 0
+  // originals; every quota AFTER this first paint comes straight from the
+  // server's own recomputation (the PATCH/GET routes, both of which read the
+  // gallery's real `originalPhotoPriceCopSnapshot`), never recomputed
+  // locally again.
   const [quota, setQuota] = useState<QuotaResult>(() =>
-    computeQuota(initialAssets.filter((asset) => asset.isSelected).length, {
+    computeQuota(initialAssets.filter((asset) => asset.isSelected).length, 0, {
       includedPhotosSnapshot,
       extraPhotoPriceCopSnapshot,
+      originalPhotoPriceCopSnapshot: 0,
     }),
   );
   // Task #95: the shared, ATTRIBUTED selection — the tray's whole content.

@@ -12,6 +12,7 @@
 
 import { relations } from "drizzle-orm";
 import {
+  type AnyPgColumn,
   boolean,
   date,
   integer,
@@ -208,6 +209,55 @@ export const galleries = pgTable(
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     selectionSubmittedAt: timestamp("selection_submitted_at", { withTimezone: true }),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),
+    // The photo the CLIENT index (`/galleries`) uses as this gallery's 16:10
+    // card cover (task #180). NOT a reference type FIELD on `portfolioCollections`
+    // (which already has its own, unrelated `coverImageKey` for the PUBLIC
+    // portfolio, schema.ts's own comment above) — this is the first cover
+    // concept for a PRIVATE gallery.
+    //
+    // DECIDED BY THE OWNER (task #180, 2026-07-31): the cover is picked
+    // EXPLICITLY by the photographer from among the gallery's own uploaded
+    // assets. Deliberately NOT derived ("first photo", "first selected") —
+    // both alternatives were on the table and the owner rejected both, so
+    // this column exists precisely so the choice does not have to be
+    // recomputed from asset order, which the photographer does not control
+    // photo-by-photo. See `ClientGalleryListItem.coverProofKey` in this
+    // file's own `getGalleriesForClient` for the read side.
+    //
+    // NULLABLE, and NULL is the ORDINARY state, not an edge case: every
+    // gallery is created with no cover chosen (there is no admin surface in
+    // THIS slice that writes this column — task #180's own card names that
+    // as a follow-up, most likely #133/#134's territory, not invented here as
+    // a third screen). A gallery with zero assets cannot have a cover by
+    // definition, and one WITH assets simply has not had one picked yet.
+    // `getGalleriesForClient`'s client-index card renders a graceful
+    // text-forward fallback (task #143's own card, unchanged) whenever this
+    // is `null` — see that function's own comment for the read side, and
+    // src/app/galleries/page.tsx for the fallback markup.
+    //
+    // `onDelete: "set null"`, same reasoning as `assets.selectedBy` below:
+    // deleting the underlying asset (`DELETE /api/assets/[assetId]`) must not
+    // leave this column pointing at a row that no longer exists — the
+    // gallery falls back to no-cover, which already renders correctly,
+    // rather than the delete route needing to know about every place that
+    // might reference an asset it is removing.
+    //
+    // Declared with a FORWARD reference to `assets` (defined further down
+    // this file) rather than the other way around — safe because `assets`
+    // already existed as a table before this column did (the FK constraint
+    // is added in its own migration, ALTER TABLE against an already-existing
+    // table, not a circular CREATE TABLE). Deliberately NOT modeled as a
+    // Drizzle `relations()` entry alongside `assets: many(assets)` below:
+    // this table and `assets` already have one relation pair
+    // (`galleries.assets` / `assets.gallery`, via `assets.galleryId`) and
+    // Drizzle requires an explicit `relationName` to disambiguate a SECOND
+    // relation between the same two tables — not worth the risk of
+    // destabilizing the widely-used existing pair for a single nullable
+    // pointer this file only ever reads with a plain, explicit join/lookup
+    // (see `getGalleriesForClient`).
+    coverAssetId: uuid("cover_asset_id").references((): AnyPgColumn => assets.id, {
+      onDelete: "set null",
+    }),
     // Unlock audit trail (task #73) — the admin-only escape hatch that
     // replaces hand-editing `status` back to 'proofing' with a manual SQL
     // `UPDATE` against production (the exact hatch task #25's review flagged

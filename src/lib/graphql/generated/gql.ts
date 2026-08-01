@@ -14,11 +14,11 @@ import type { TypedDocumentNode as DocumentNode } from "@graphql-typed-document-
  * Learn more about it here: https://the-guild.dev/graphql/codegen/plugins/presets/preset-client#reducing-bundle-size
  */
 type Documents = {
-  "\n  query ClientGalleryList {\n    galleryList {\n      id\n      title\n      publicSlug\n      status\n      sessionDate\n      photoCount\n    }\n  }\n": typeof types.ClientGalleryListDocument;
+  "\n  query ClientGalleryList {\n    galleryList {\n      id\n      title\n      publicSlug\n      status\n      sessionDate\n      photoCount\n      coverProofKey\n    }\n  }\n": typeof types.ClientGalleryListDocument;
   "\n  query ClientGalleryBySlug($publicSlug: String!) {\n    galleryBySlug(publicSlug: $publicSlug) {\n      id\n      title\n      status\n      sessionDate\n      selectionSubmittedAt\n      includedPhotosSnapshot\n      extraPhotoPriceCopSnapshot\n      package {\n        name\n      }\n      assets {\n        id\n        originalFilename\n        proofKey\n        proofWidth\n        proofHeight\n        isSelected\n        finalKey\n        isEdited\n      }\n    }\n  }\n": typeof types.ClientGalleryBySlugDocument;
 };
 const documents: Documents = {
-  "\n  query ClientGalleryList {\n    galleryList {\n      id\n      title\n      publicSlug\n      status\n      sessionDate\n      photoCount\n    }\n  }\n":
+  "\n  query ClientGalleryList {\n    galleryList {\n      id\n      title\n      publicSlug\n      status\n      sessionDate\n      photoCount\n      coverProofKey\n    }\n  }\n":
     types.ClientGalleryListDocument,
   "\n  query ClientGalleryBySlug($publicSlug: String!) {\n    galleryBySlug(publicSlug: $publicSlug) {\n      id\n      title\n      status\n      sessionDate\n      selectionSubmittedAt\n      includedPhotosSnapshot\n      extraPhotoPriceCopSnapshot\n      package {\n        name\n      }\n      assets {\n        id\n        originalFilename\n        proofKey\n        proofWidth\n        proofHeight\n        isSelected\n        finalKey\n        isEdited\n      }\n    }\n  }\n":
     types.ClientGalleryBySlugDocument,
@@ -42,8 +42,8 @@ export function graphql(source: string): unknown;
  * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
  */
 export function graphql(
-  source: "\n  query ClientGalleryList {\n    galleryList {\n      id\n      title\n      publicSlug\n      status\n      sessionDate\n      photoCount\n    }\n  }\n",
-): (typeof documents)["\n  query ClientGalleryList {\n    galleryList {\n      id\n      title\n      publicSlug\n      status\n      sessionDate\n      photoCount\n    }\n  }\n"];
+  source: "\n  query ClientGalleryList {\n    galleryList {\n      id\n      title\n      publicSlug\n      status\n      sessionDate\n      photoCount\n      coverProofKey\n    }\n  }\n",
+): (typeof documents)["\n  query ClientGalleryList {\n    galleryList {\n      id\n      title\n      publicSlug\n      status\n      sessionDate\n      photoCount\n      coverProofKey\n    }\n  }\n"];
 /**
  * The graphql function is used to parse GraphQL queries into a document that can be used by GraphQL clients.
  */

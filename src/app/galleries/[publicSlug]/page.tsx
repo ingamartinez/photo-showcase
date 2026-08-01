@@ -1,7 +1,13 @@
 import type { Metadata } from "next";
 import { forbidden, notFound } from "next/navigation";
 import { requireSession } from "@/lib/auth-guards";
-import { formatGalleryStatus, formatSessionDate, getGalleryDetailBySlug } from "@/lib/galleries";
+import {
+  formatClientGalleryCardState,
+  formatGalleryStatus,
+  formatSessionDate,
+  getGalleryDetailBySlug,
+  isGalleryVisibleToClient,
+} from "@/lib/galleries";
 import { isAdminPreviewingClientGallery, isGalleryOwner } from "@/lib/gallery-access";
 import { getGallerySelection } from "@/lib/gallery-selection";
 import { readClientGalleryBySlug } from "@/lib/graphql/client-gallery-reads";
@@ -182,7 +188,31 @@ export default async function ClientGalleryPage({
       )}
 
       <div className="mb-10">
-        <span className="label text-accent mb-2 block">{formatGalleryStatus(gallery.status)}</span>
+        {/* Task #181: the CLIENT's own word for the gallery's state, not the
+            studio's internal workflow name — reuses
+            `formatClientGalleryCardState`, the SAME mapping `/galleries`'
+            index already renders (that function's own comment), rather than
+            reimplementing a second copy that would only drift from it again.
+            `formatGalleryStatus` stays for admin surfaces (the dashboard) —
+            see that function's own comment.
+
+            The `isGalleryVisibleToClient` branch below only ever executes
+            for a status a real CLIENT can never see here at all: this page
+            already gates `draft`/`archived` behind a 404 for a client
+            (`readClientGalleryBySlug` above), so the ONLY session that can
+            still reach this line with one of those two statuses is an ADMIN
+            previewing an unpublished/archived gallery (task #139's bypass —
+            see `isAdminPreviewingClientGallery` above). That admin is
+            reading their OWN studio's word, on a page they know is a
+            preview; `formatClientGalleryCardState` itself refuses to answer
+            for those two statuses (see its own comment), so falling back to
+            `formatGalleryStatus` here is what keeps that preview from
+            crashing instead of quietly re-deriving the client mapping. */}
+        <span className="label text-accent mb-2 block">
+          {isGalleryVisibleToClient(gallery.status)
+            ? formatClientGalleryCardState(gallery.status).label
+            : formatGalleryStatus(gallery.status)}
+        </span>
         <h1 className="max-w-[24ch] font-serif text-[clamp(28px,4vw,44px)] leading-[1.05] font-normal tracking-[-0.015em] text-balance">
           {gallery.title}
         </h1>

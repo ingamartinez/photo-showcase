@@ -23,12 +23,17 @@ vi.mock("server-only", () => ({}));
 // still override this per-test via `selectMock.mockReturnValue(...)`, exactly
 // as they already did — a later `mockReturnValue` always wins over this
 // default `mockImplementation`.
-const { findManyMock, findFirstMock, selectMock, realSelectHolder } = vi.hoisted(() => ({
-  findManyMock: vi.fn(),
-  findFirstMock: vi.fn(),
-  selectMock: vi.fn(),
-  realSelectHolder: { current: undefined as ((...args: unknown[]) => unknown) | undefined },
-}));
+const { findManyMock, findFirstMock, findManyAssetsMock, selectMock, realSelectHolder } =
+  vi.hoisted(() => ({
+    findManyMock: vi.fn(),
+    findFirstMock: vi.fn(),
+    // Task #180 — `getGalleriesForClient`'s second, batched query for cover
+    // assets. Defaults to `[]` in `beforeEach` below; only the tests that
+    // actually exercise a gallery with a `coverAssetId` set override it.
+    findManyAssetsMock: vi.fn(),
+    selectMock: vi.fn(),
+    realSelectHolder: { current: undefined as ((...args: unknown[]) => unknown) | undefined },
+  }));
 
 vi.mock("@/lib/db", async () => {
   const { drizzle } = await import("drizzle-orm/postgres-js");
@@ -44,6 +49,9 @@ vi.mock("@/lib/db", async () => {
           findMany: (...args: unknown[]) => findManyMock(...args),
           findFirst: (...args: unknown[]) => findFirstMock(...args),
         },
+        assets: {
+          findMany: (...args: unknown[]) => findManyAssetsMock(...args),
+        },
       },
       select: (...args: unknown[]) => selectMock(...args),
     },
@@ -53,6 +61,8 @@ vi.mock("@/lib/db", async () => {
 beforeEach(() => {
   findManyMock.mockReset();
   findFirstMock.mockReset();
+  findManyAssetsMock.mockReset();
+  findManyAssetsMock.mockResolvedValue([]);
   selectMock.mockReset();
   selectMock.mockImplementation((...args: unknown[]) => realSelectHolder.current!(...args));
 });
@@ -436,6 +446,7 @@ describe("getGalleriesForClient", () => {
         publicSlug: "abc123",
         status: "proofing",
         sessionDate: "2026-08-01",
+        coverAssetId: null,
         assets: [{ id: "a1" }, { id: "a2" }],
       },
     ]);
@@ -451,8 +462,123 @@ describe("getGalleriesForClient", () => {
         status: "proofing",
         sessionDate: "2026-08-01",
         photoCount: 2,
+        coverProofKey: null,
       },
     ]);
+    // The batched cover-asset lookup is SKIPPED entirely when nothing in
+    // this page of results has a cover set — not called with an empty
+    // `inArray`, not called at all. See the dedicated describe block below
+    // for the case where it IS called.
+    expect(findManyAssetsMock).not.toHaveBeenCalled();
+  });
+
+  // Task #180 — the cover photo itself: resolved via a SECOND, batched
+  // query, never one per gallery, and defensively re-checked against the
+  // OWNING gallery rather than trusted by id alone.
+  describe("cover photo (task #180)", () => {
+    it("resolves coverProofKey from the batched asset lookup for a gallery with a cover set", async () => {
+      findManyMock.mockResolvedValue([
+        {
+          id: "g1",
+          title: "Boda Ana y Beto",
+          publicSlug: "abc123",
+          status: "proofing",
+          sessionDate: "2026-08-01",
+          coverAssetId: "a1",
+          assets: [{ id: "a1" }, { id: "a2" }],
+        },
+      ]);
+      findManyAssetsMock.mockResolvedValue([
+        { id: "a1", galleryId: "g1", proofKey: "galleries/g1/proofs/a1.webp" },
+      ]);
+      const { getGalleriesForClient } = await import("./galleries");
+
+      const result = await getGalleriesForClient("user-1");
+
+      expect(result[0]?.coverProofKey).toBe("galleries/g1/proofs/a1.webp");
+      // Batched — ONE call regardless of how many galleries in this page
+      // have a cover set, never one call per gallery.
+      expect(findManyAssetsMock).toHaveBeenCalledTimes(1);
+    });
+
+    it("does not grow the cover query with the number of galleries — one batched call for many", async () => {
+      findManyMock.mockResolvedValue(
+        Array.from({ length: 5 }, (_unused, index) => ({
+          id: `g${index}`,
+          title: `Sesión ${index}`,
+          publicSlug: `slug-${index}`,
+          status: "proofing" as const,
+          sessionDate: "2026-08-01",
+          coverAssetId: `a${index}`,
+          assets: [],
+        })),
+      );
+      findManyAssetsMock.mockResolvedValue(
+        Array.from({ length: 5 }, (_unused, index) => ({
+          id: `a${index}`,
+          galleryId: `g${index}`,
+          proofKey: `galleries/g${index}/proofs/a${index}.webp`,
+        })),
+      );
+      const { getGalleriesForClient } = await import("./galleries");
+
+      const result = await getGalleriesForClient("user-1");
+
+      expect(result.every((row) => row.coverProofKey !== null)).toBe(true);
+      expect(findManyAssetsMock).toHaveBeenCalledTimes(1);
+    });
+
+    // THE security-relevant case: a `coverAssetId` resolving to an asset
+    // whose OWN `galleryId` does not match the gallery it is set on must
+    // never leak that other gallery's proof onto this client's index card.
+    // Mutation-proof: dropping the `coverAsset.galleryId === row.id` check
+    // in galleries.ts and trusting the id-only lookup turns this red (the
+    // cross-gallery asset would be returned as the cover).
+    it("refuses a cover asset that belongs to a DIFFERENT gallery than the one it is set on", async () => {
+      findManyMock.mockResolvedValue([
+        {
+          id: "g1",
+          title: "Boda Ana y Beto",
+          publicSlug: "abc123",
+          status: "proofing",
+          sessionDate: "2026-08-01",
+          coverAssetId: "a-other-gallery",
+          assets: [],
+        },
+      ]);
+      findManyAssetsMock.mockResolvedValue([
+        {
+          id: "a-other-gallery",
+          galleryId: "g2",
+          proofKey: "galleries/g2/proofs/private.webp",
+        },
+      ]);
+      const { getGalleriesForClient } = await import("./galleries");
+
+      const result = await getGalleriesForClient("user-1");
+
+      expect(result[0]?.coverProofKey).toBeNull();
+    });
+
+    it("falls back to null when coverAssetId points at an asset that no longer exists", async () => {
+      findManyMock.mockResolvedValue([
+        {
+          id: "g1",
+          title: "Boda Ana y Beto",
+          publicSlug: "abc123",
+          status: "proofing",
+          sessionDate: "2026-08-01",
+          coverAssetId: "deleted-asset",
+          assets: [],
+        },
+      ]);
+      findManyAssetsMock.mockResolvedValue([]);
+      const { getGalleriesForClient } = await import("./galleries");
+
+      const result = await getGalleriesForClient("user-1");
+
+      expect(result[0]?.coverProofKey).toBeNull();
+    });
   });
 
   it("returns an empty list when the client has no galleries at all", async () => {

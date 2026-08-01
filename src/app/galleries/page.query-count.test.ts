@@ -28,16 +28,28 @@ import ClientGalleriesPage from "./page";
 const authMock = vi.fn();
 vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 
+// Task #180: the page presigns each gallery's own cover key — `@/lib/r2`
+// constructs a real `S3Client` off `r2Env()` (see r2.ts's own header), which
+// this query-count file has no reason to exercise. Mocked with the same
+// deterministic fake every other test in this app uses for it.
+vi.mock("@/lib/r2", () => ({
+  getPresignedUrl: (key: string) => `https://r2.example.com/${key}?presigned=1`,
+  storedKey: (key: string) => key,
+}));
+
 /** A row shaped exactly as `getGalleriesForClient`'s own relational query
  * returns one: the gallery's columns plus an id-only `assets` projection it
- * counts in memory. */
-function galleryRow(index: number, photoCount: number) {
+ * counts in memory. `coverAssetId` defaults to `null` — no cover picked
+ * yet, task #180's own ordinary state — and can be overridden to exercise
+ * the SECOND, batched cover-asset query below. */
+function galleryRow(index: number, photoCount: number, coverAssetId: string | null = null) {
   return {
     id: `g${index}`,
     title: `Sesión ${index}`,
     publicSlug: `slug-${index}`,
     status: "proofing" as const,
     sessionDate: "2026-08-01",
+    coverAssetId,
     assets: Array.from({ length: photoCount }, (_unused, asset) => ({ id: `g${index}-a${asset}` })),
   };
 }
@@ -58,6 +70,17 @@ function spyOnGalleryQueries(rows: ReturnType<typeof galleryRow>[]) {
   const findFirst = vi.spyOn(db.query.galleries, "findFirst");
 
   return { findMany, findFirst, compiled };
+}
+
+/** Task #180 — spies `db.query.assets.findMany`, the SECOND, batched query
+ * `getGalleriesForClient` issues to resolve cover photos. Resolves canned
+ * `coverAssets` without ever touching Postgres, same technique as
+ * `spyOnGalleryQueries` above. */
+function spyOnAssetsFindMany(coverAssets: { id: string; galleryId: string; proofKey: string }[]) {
+  return vi
+    .spyOn(db.query.assets, "findMany")
+    .mockImplementation((() =>
+      Promise.resolve(coverAssets)) as unknown as typeof db.query.assets.findMany);
 }
 
 beforeEach(() => {
@@ -112,5 +135,37 @@ describe("/galleries — real query count through the GraphQL read", () => {
     await expect(ClientGalleriesPage()).resolves.toBeTruthy();
 
     expect(findMany).toHaveBeenCalledTimes(1);
+  });
+
+  // Task #180 — the SAME "no N+1" criterion, extended to the cover photo.
+  // Five galleries, each with its OWN cover set, must still cost exactly one
+  // extra (batched) query for the covers — never one per gallery.
+  it("resolves FIVE galleries' cover photos in exactly ONE additional batched query", async () => {
+    const rows = [1, 2, 3, 4, 5].map((index) => galleryRow(index, 10, `g${index}-a0`));
+    const { findMany } = spyOnGalleryQueries(rows);
+    const findManyAssets = spyOnAssetsFindMany(
+      [1, 2, 3, 4, 5].map((index) => ({
+        id: `g${index}-a0`,
+        galleryId: `g${index}`,
+        proofKey: `galleries/g${index}/proofs/a0.webp`,
+      })),
+    );
+
+    await expect(ClientGalleriesPage()).resolves.toBeTruthy();
+
+    expect(findMany).toHaveBeenCalledTimes(1);
+    expect(findManyAssets).toHaveBeenCalledTimes(1);
+  });
+
+  // The no-cover-set case costs NOTHING extra: the batched cover query is
+  // skipped entirely rather than issued with an empty `inArray`.
+  it("never queries for cover assets when nothing in the page has a cover set", async () => {
+    const rows = [galleryRow(1, 10), galleryRow(2, 10)];
+    spyOnGalleryQueries(rows);
+    const findManyAssets = spyOnAssetsFindMany([]);
+
+    await expect(ClientGalleriesPage()).resolves.toBeTruthy();
+
+    expect(findManyAssets).not.toHaveBeenCalled();
   });
 });

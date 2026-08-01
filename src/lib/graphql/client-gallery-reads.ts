@@ -70,6 +70,7 @@ const CLIENT_GALLERY_LIST_DOCUMENT = graphql(`
       status
       sessionDate
       photoCount
+      coverProofKey
     }
   }
 `);

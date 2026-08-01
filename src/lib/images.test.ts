@@ -277,8 +277,17 @@ describe("processProof", () => {
     }
 
     // Loose bound: this is about proving broad tiling coverage, not pinning
-    // down the exact tile phase against the grid.
-    expect(cellsWithInk).toBeGreaterThanOrEqual(Math.ceil(gridSize * gridSize * 0.6));
+    // down the exact tile phase against the grid. The ratio was lowered from
+    // 0.6 to 0.45 for task #201 (owner decision, 2026-08-01): the tile grew
+    // from 320x160 to 640x320 across that task's several rounds, so it now
+    // repeats far fewer times across a ~1600px-long-edge proof canvas —
+    // fewer, sparser repetitions legitimately light up fewer of this grid's
+    // 36 cells even though the mark still reaches across the whole image.
+    // Measured directly against the current fixture/tile size: 19/36 cells
+    // (~0.53). 0.45 keeps a real margin below that measured value rather
+    // than pinning to it exactly, while still failing loudly if a future
+    // change collapses coverage back down toward one corner.
+    expect(cellsWithInk).toBeGreaterThanOrEqual(Math.ceil(gridSize * gridSize * 0.45));
   });
 
   it("does not upscale an image already smaller than the max long edge", async () => {

@@ -89,8 +89,8 @@ const WEBP_QUALITY = 82;
 // option. Tiling (rather than one mark in a corner) is deliberate: it is
 // far harder to crop out without destroying the photo, and it survives
 // screenshots/crops of any region.
-const WATERMARK_TILE_WIDTH = 480;
-const WATERMARK_TILE_HEIGHT = 240;
+const WATERMARK_TILE_WIDTH = 640;
+const WATERMARK_TILE_HEIGHT = 320;
 const WATERMARK_ROTATION_DEG = -28;
 const WATERMARK_FONT_SIZE = 30;
 
@@ -144,17 +144,35 @@ export async function assertTileHasInk(tile: Buffer): Promise<void> {
  * explicit owner decision — the mark is the photographer's pre-payment
  * leverage, and subtle is not the same request as invisible.
  *
- * Round 2 (tile size — CURRENT): after round 1 shipped, the owner was shown
- * three density options rendered against a real light-background sample —
- * not estimated, actually looked at — and chose the densest of the three
- * that still fit at 3 marks in the reference crop. 560x280 (round 1's tile
- * size) produced only 2 marks in that crop; 520x260 was tried and still
- * produced 2; 480x240 was the first size that produced 3, so that is what
- * shipped. Over a full 1400x933 photo this raises the mark count from ~8 to
- * ~11. If tile size is revisited again, treat "how many marks appear in a
- * rendered sample" as the thing that was actually decided, not the pixel
- * numbers themselves — the numbers are a byproduct of that visual count at
- * this specific font size/rotation, not an independently chosen quantity.
+ * Round 2 (tile size — SUPERSEDED by round 3 below, kept for the trail): the
+ * owner was shown three density options rendered against a real
+ * light-background sample — not estimated, actually looked at — and chose
+ * the densest of the three that still fit at 3 marks in a small reference
+ * crop. 560x280 produced only 2 marks in that crop; 520x260 was tried and
+ * still produced 2; 480x240 was the first size that produced 3, so that
+ * shipped. At the time, the mark count over a full 1400x933 photo was
+ * reported as ~11 (extrapolated from the crop's density, not itself a
+ * full-photo render).
+ *
+ * Round 3 (tile size — CURRENT): the owner then looked at 480x240 rendered
+ * on an actual full photo (not a crop) and asked for more spacing. That
+ * full-photo render put round 2's ~11 estimate at ~14 actual visible marks
+ * — the two numbers disagree because round 2's was extrapolated from a
+ * crop and round 3's was counted directly off the full render; trust the
+ * direct count over the extrapolation if a future reader has to choose
+ * between them. 640x320 was rendered next and approved by looking at it:
+ * ~9 visible marks on the same 1400x933 reference, down from ~14.
+ *
+ * IMPORTANT for whoever revisits this: every visible-mark count above (~8,
+ * ~11, ~14, ~9) came from counting BY EYE on an actual rendered image, not
+ * from `canvasWidth / tileWidth * canvasHeight / tileHeight`. That grid
+ * arithmetic UNDERCOUNTS what a person actually sees, because
+ * `composite({ tile: true })` also paints partial, cropped tiles along the
+ * canvas's right and bottom edges — a cropped word at the edge still reads
+ * as "a mark" to a human looking at the image, even though it is not a
+ * complete tile. Do not "correct" a future visual count back to the grid
+ * math, and do not derive a target tile size from the grid math either —
+ * always render and count, the way every round of this decision was made.
  *
  * `tileWidth`/`tileHeight` default to the design size but can be smaller —
  * `processProof` clamps them to the output canvas, since sharp's

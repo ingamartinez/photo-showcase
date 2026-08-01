@@ -1,0 +1,1 @@
+ALTER TABLE "galleries" ADD COLUMN "allows_original_selection" boolean DEFAULT false NOT NULL;

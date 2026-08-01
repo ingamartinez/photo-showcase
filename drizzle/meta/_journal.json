@@ -78,6 +78,13 @@
       "when": 1785568301995,
       "tag": "0010_equal_star_brand",
       "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1785600259378,
+      "tag": "0011_legal_khan",
+      "breakpoints": true
     }
   ]
 }

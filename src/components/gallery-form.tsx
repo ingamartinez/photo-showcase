@@ -1,6 +1,6 @@
 "use client";
 
-import { useActionState, useEffect } from "react";
+import { useActionState, useEffect, useState } from "react";
 import Link from "next/link";
 import { createGallery, type CreateGalleryState } from "@/app/dashboard/galleries/actions";
 import type { ClientForPicker } from "@/lib/clients";
@@ -39,6 +39,16 @@ export function GalleryForm({
   onCreated?: () => void;
 }) {
   const [state, formAction, pending] = useActionState(createGallery, initialState);
+
+  // Task #193 — tracked only so the "Fotos incluidas" override field can
+  // show the CHOSEN package's own quota as its placeholder (what the
+  // photographer is starting from), never submitted itself. Nothing here is
+  // trusted server-side: `createGallery` re-reads the package's live row by
+  // `packageId` on its own (this file's own comment above `<select
+  // packageId>` further down never changed) — this state exists purely to
+  // drive a UI hint.
+  const [selectedPackageId, setSelectedPackageId] = useState("");
+  const selectedPackage = packages.find((pkg) => String(pkg.id) === selectedPackageId);
 
   // Narrowed to a boolean on purpose: `state` is a fresh object on every
   // action result, so depending on it directly would re-fire this on an error
@@ -144,6 +154,7 @@ export function GalleryForm({
           name="packageId"
           required
           defaultValue=""
+          onChange={(event) => setSelectedPackageId(event.target.value)}
           aria-invalid={state.status === "error"}
           aria-describedby={state.status === "error" ? "gallery-form-error" : undefined}
           className={inputClass}
@@ -157,6 +168,61 @@ export function GalleryForm({
             </option>
           ))}
         </select>
+      </div>
+
+      {/* Task #193 — both OPTIONAL, both fall back to the chosen package's
+          own terms when left blank (createGallery's own `??` against these
+          two fields, actions.ts). Neither is `required`: the untouched
+          default has to reproduce today's create-a-gallery flow bit for bit.
+
+          `PackageForPicker` (src/lib/packages.ts) deliberately omits the
+          package's LIVE `extraPhotoPriceCop` — its own header comment
+          explains why widening it would let live terms leak back into the
+          app. The included-photos placeholder below is safe precisely
+          because `includedPhotos` is the one live field that type already
+          exposes; the extra-photo-price field gets a static hint instead of
+          a real number, rather than widening that type for one placeholder. */}
+      <div className="flex flex-col gap-2">
+        <label htmlFor="includedPhotos" className="text-fg-mute text-xs tracking-wide uppercase">
+          Fotos incluidas (opcional)
+        </label>
+        <input
+          id="includedPhotos"
+          name="includedPhotos"
+          type="number"
+          min={0}
+          step={1}
+          inputMode="numeric"
+          placeholder={
+            selectedPackage
+              ? `Vacío = ${selectedPackage.includedPhotos} (del paquete)`
+              : "Vacío = del paquete"
+          }
+          aria-invalid={state.status === "error"}
+          aria-describedby={state.status === "error" ? "gallery-form-error" : undefined}
+          className={inputClass}
+        />
+      </div>
+
+      <div className="flex flex-col gap-2">
+        <label
+          htmlFor="extraPhotoPriceCop"
+          className="text-fg-mute text-xs tracking-wide uppercase"
+        >
+          Precio foto extra, COP (opcional)
+        </label>
+        <input
+          id="extraPhotoPriceCop"
+          name="extraPhotoPriceCop"
+          type="number"
+          min={0}
+          step={1}
+          inputMode="numeric"
+          placeholder="Vacío = precio del paquete"
+          aria-invalid={state.status === "error"}
+          aria-describedby={state.status === "error" ? "gallery-form-error" : undefined}
+          className={inputClass}
+        />
       </div>
 
       <div className="flex flex-col gap-2">

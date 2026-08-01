@@ -136,6 +136,80 @@ describe("GalleryForm", () => {
   });
 
   // -------------------------------------------------------------------------
+  // Task #193 — manual overrides of the package's included-photos quota and
+  // extra-photo price, both optional. `createGallery` itself decides
+  // "blank = inherit from the package" (actions.ts's own `??`, never `||`);
+  // this suite only pins what the FORM submits, not that decision.
+  // -------------------------------------------------------------------------
+
+  it("renders both override fields as optional, neither required", () => {
+    render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
+
+    const includedPhotos = screen.getByLabelText("Fotos incluidas (opcional)");
+    const extraPrice = screen.getByLabelText("Precio foto extra, COP (opcional)");
+    expect(includedPhotos).toHaveProperty("required", false);
+    expect(extraPrice).toHaveProperty("required", false);
+  });
+
+  // The placeholder is a UI hint only — it shows what the CHOSEN package's
+  // own quota is, so the photographer sees what they are starting from
+  // before typing an override. Before any package is picked, there is
+  // nothing to show a number for.
+  it("shows the selected package's included-photos count as the override field's placeholder", async () => {
+    const user = userEvent.setup();
+    render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
+
+    expect(screen.getByLabelText("Fotos incluidas (opcional)")).toHaveProperty(
+      "placeholder",
+      "Vacío = del paquete",
+    );
+
+    await user.selectOptions(screen.getByLabelText("Paquete"), "1");
+
+    expect(screen.getByLabelText("Fotos incluidas (opcional)")).toHaveProperty(
+      "placeholder",
+      "Vacío = 13 (del paquete)",
+    );
+  });
+
+  it("submits typed override values, including a literal 0, through the action", async () => {
+    createGalleryMock.mockResolvedValue({ status: "created" });
+    const user = userEvent.setup();
+    render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
+
+    await user.selectOptions(screen.getByLabelText("Paquete"), "1");
+    await user.type(screen.getByLabelText("Título"), "Boda con override");
+    await user.type(screen.getByLabelText("Fecha de la sesión"), "2026-08-01");
+    await user.type(screen.getByLabelText("Fotos incluidas (opcional)"), "0");
+    await user.type(screen.getByLabelText("Precio foto extra, COP (opcional)"), "7000");
+    await user.click(screen.getByRole("button", { name: "Crear galería" }));
+
+    await screen.findByText("Galería creada.");
+    const [, formData] = createGalleryMock.mock.calls[0] as [CreateGalleryState, FormData];
+    // A typed `0` must reach the action as the STRING "0", not be dropped —
+    // `createGallery`'s own `??` (not `||`) is what depends on this string
+    // surviving intact all the way from the input.
+    expect(formData.get("includedPhotos")).toBe("0");
+    expect(formData.get("extraPhotoPriceCop")).toBe("7000");
+  });
+
+  it("leaves both override fields empty in the submitted form data when the photographer never touches them", async () => {
+    createGalleryMock.mockResolvedValue({ status: "created" });
+    const user = userEvent.setup();
+    render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
+
+    await user.selectOptions(screen.getByLabelText("Paquete"), "1");
+    await user.type(screen.getByLabelText("Título"), "Boda sin override");
+    await user.type(screen.getByLabelText("Fecha de la sesión"), "2026-08-01");
+    await user.click(screen.getByRole("button", { name: "Crear galería" }));
+
+    await screen.findByText("Galería creada.");
+    const [, formData] = createGalleryMock.mock.calls[0] as [CreateGalleryState, FormData];
+    expect(formData.get("includedPhotos")).toBe("");
+    expect(formData.get("extraPhotoPriceCop")).toBe("");
+  });
+
+  // -------------------------------------------------------------------------
   // `onCreated` (task #131) — the one thing this form learns about being
   // inside a dialog. Every test above renders WITHOUT it on purpose, which is
   // what proves the prop is genuinely optional; these two are the other half.

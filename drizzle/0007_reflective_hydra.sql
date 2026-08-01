@@ -1,0 +1,1 @@
+ALTER TABLE "galleries" ADD COLUMN "terms_overridden" boolean DEFAULT false NOT NULL;

@@ -206,6 +206,27 @@ export const galleries = pgTable(
     // retroactively change what a past client owed.
     includedPhotosSnapshot: integer("included_photos_snapshot").notNull(),
     extraPhotoPriceCopSnapshot: integer("extra_photo_price_cop_snapshot").notNull(),
+    // Task #193: did the admin type a manual value for either snapshot above
+    // at creation, instead of accepting the chosen package's terms as-is?
+    // `notNull().default(false)` — there are galleries in production, and
+    // every one of them created before this column existed was, definitionally,
+    // never overridden.
+    //
+    // WRITTEN ONCE, BY `createGallery`, NEVER DERIVED. The tempting
+    // alternative — comparing `includedPhotosSnapshot`/
+    // `extraPhotoPriceCopSnapshot` against the CURRENT `packages` row for the
+    // gallery's `packageId` — looks equivalent today but silently rots the
+    // moment a package's price is edited (task #193's own trap): editing
+    // "Estándar" from 13 to 20 included photos would make every OLD,
+    // never-overridden gallery bound to it suddenly "look" overridden (its
+    // frozen 13 no longer matches the live 20), and a gallery that WAS
+    // overridden to exactly the package's old value would stop looking
+    // overridden the instant the live row changes to match something else.
+    // This is exactly the class of bug the snapshot columns above exist to
+    // prevent, reintroduced through a comparison instead of a write. A flag
+    // set once, at creation, and never touched again is the only shape that
+    // stays true regardless of what happens to `packages` afterward.
+    termsOverridden: boolean("terms_overridden").notNull().default(false),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
     selectionSubmittedAt: timestamp("selection_submitted_at", { withTimezone: true }),
     deliveredAt: timestamp("delivered_at", { withTimezone: true }),

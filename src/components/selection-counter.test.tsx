@@ -27,21 +27,50 @@ afterEach(() => {
 });
 
 describe("SelectionCounter", () => {
-  it("renders the package name, included, selected, extras and surcharge — task #24's exact shape", () => {
+  it("renders included, selected, extras and surcharge — task #24's exact shape", () => {
     const quota = computeQuota(15, {
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
     });
 
-    render(<SelectionCounter packageName="Estándar" quota={quota} />);
+    render(<SelectionCounter quota={quota} />);
 
     const text = counterText();
-    expect(text).toContain("Estándar");
     expect(text).toContain("incluidas 13");
     expect(text).toContain("seleccionadas 15");
     expect(text).toContain("extras 2");
     expect(text).toContain("$ 5.000");
     expect(text).toContain("$ 10.000");
+  });
+
+  // Task #193 — the owner's decision to strip the package's name off every
+  // client-facing gallery, unconditionally (see this component's own header
+  // comment for why "only on overridden galleries" would itself be a tell).
+  //
+  // THE TRAP THIS TEST GUARDS AGAINST (this task's own named defect, also
+  // documented at #176): a bare `not.toContain("Estándar")` passes just as
+  // well if <SelectionCounter> never rendered anything at all — it proves
+  // nothing on its own. This asserts the REAL content renders FIRST
+  // ("incluidas 13 · seleccionadas 15", the exact same positive assertion
+  // the test above makes), and only THEN that the package's name is not
+  // anywhere in that same, genuinely-mounted output.
+  it("never renders the package's name, on a gallery that was never overridden", () => {
+    const quota = computeQuota(15, {
+      includedPhotosSnapshot: 13,
+      extraPhotoPriceCopSnapshot: 5_000,
+    });
+
+    render(<SelectionCounter quota={quota} />);
+
+    // Positive control first: the component actually mounted and rendered
+    // its real numbers — this is what makes the negative assertion below
+    // mean something.
+    const text = counterText();
+    expect(text).toContain("incluidas 13");
+    expect(text).toContain("seleccionadas 15");
+
+    expect(screen.queryByText(/Estándar/)).toBeNull();
+    expect(document.body.textContent).not.toContain("Estándar");
   });
 
   it("still shows all three parts (never hides the row) when nobody has selected anything yet", () => {
@@ -50,7 +79,7 @@ describe("SelectionCounter", () => {
       extraPhotoPriceCopSnapshot: 5_000,
     });
 
-    render(<SelectionCounter packageName="Estándar" quota={quota} />);
+    render(<SelectionCounter quota={quota} />);
 
     const text = counterText();
     expect(text).toContain("seleccionadas 0");
@@ -63,7 +92,7 @@ describe("SelectionCounter", () => {
       extraPhotoPriceCopSnapshot: 5_000,
     });
 
-    render(<SelectionCounter packageName="Premium" quota={quota} />);
+    render(<SelectionCounter quota={quota} />);
 
     const text = counterText();
     expect(text).toContain("seleccionadas 30");
@@ -82,7 +111,7 @@ describe("SelectionCounter", () => {
       extraPhotoPriceCopSnapshot: 5_000,
     });
 
-    render(<SelectionCounter packageName="Estándar" quota={quota} />);
+    render(<SelectionCounter quota={quota} />);
 
     expect(screen.getByText(/no se cobra nada/)).toBeDefined();
     expect(screen.getByText(/fuera de la app/)).toBeDefined();
@@ -98,7 +127,7 @@ describe("SelectionCounter", () => {
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
     });
-    const { unmount } = render(<SelectionCounter packageName="Estándar" quota={under} />);
+    const { unmount } = render(<SelectionCounter quota={under} />);
     expect(screen.getByText(/no se cobra nada/)).toBeDefined();
     unmount();
 
@@ -106,7 +135,7 @@ describe("SelectionCounter", () => {
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
     });
-    render(<SelectionCounter packageName="Estándar" quota={over} />);
+    render(<SelectionCounter quota={over} />);
     expect(screen.getByText(/no se cobra nada/)).toBeDefined();
   });
 });

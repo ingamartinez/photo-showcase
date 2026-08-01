@@ -55,7 +55,6 @@ function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
       // sync override it.
       initialPicks={[]}
       viewerId="client-a"
-      packageName="Estándar"
       includedPhotosSnapshot={13}
       extraPhotoPriceCopSnapshot={5_000}
       {...overrides}

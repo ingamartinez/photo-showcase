@@ -160,6 +160,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     package: { id: 1, name: "Estándar" },
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
+    termsOverridden: false,
     assets: [],
     selectionSubmittedAt: null,
     ...overrides,
@@ -289,6 +290,37 @@ describe("GalleryDetailPage chrome", () => {
     render(element);
 
     expect(screen.getByText("$ 7.777")).toBeDefined();
+  });
+
+  // Task #193 — the admin detail page is the ONE surface allowed to say a
+  // gallery's terms were hand-typed rather than inherited from its package;
+  // see this component's own comment for why the label is read straight off
+  // `gallery.termsOverridden`, never re-derived from a snapshot/live-package
+  // comparison.
+  it("labels the terms 'Del paquete' when the gallery was never overridden", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ termsOverridden: false }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByText("Del paquete")).toBeDefined();
+    expect(screen.queryByText("Personalizados")).toBeNull();
+  });
+
+  it("labels the terms 'Personalizados' when the admin overrode them at creation", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({ termsOverridden: true, includedPhotosSnapshot: 20 }),
+    );
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByText("Personalizados")).toBeDefined();
+    expect(screen.queryByText("Del paquete")).toBeNull();
+    // Still the EFFECTIVE terms, the same snapshot other tests in this file
+    // pin — the label marks the terms as overridden, it does not replace
+    // them with anything else.
+    expect(screen.getByText("20")).toBeDefined();
   });
 
   it("renders every asset's thumbnail and filename", async () => {

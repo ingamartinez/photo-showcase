@@ -356,6 +356,24 @@ export default async function GalleryDetailPage({
               <dd className="text-right">{gallery.includedPhotosSnapshot}</dd>
               <dt className="text-fg-mute">Foto extra</dt>
               <dd className="text-right">{formatCop(gallery.extraPhotoPriceCopSnapshot)}</dd>
+              {/* Task #193 — the fotos-incluidas/foto-extra rows above are
+                  always the gallery's EFFECTIVE terms (its own frozen
+                  snapshots, never the live package), overridden or not; this
+                  row is only what tells the photographer WHICH of the two it
+                  is. Read straight off `gallery.termsOverridden`
+                  (`galleries.terms_overridden`, schema.ts) — never re-derived
+                  by comparing the snapshots above against the package's
+                  current row, which is exactly the trap that column exists
+                  to avoid. */}
+              <dt className="text-fg-mute">Términos</dt>
+              <dd
+                className={cn(
+                  "text-right",
+                  gallery.termsOverridden && "text-accent-2 font-semibold",
+                )}
+              >
+                {gallery.termsOverridden ? "Personalizados" : "Del paquete"}
+              </dd>
               <dt className="text-fg-mute">Fotos subidas</dt>
               <dd className="text-right">{gallery.assets.length}</dd>
               <dt className="text-fg-mute">Seleccionadas</dt>

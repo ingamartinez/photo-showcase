@@ -429,6 +429,14 @@ export type GalleryDetail = {
   package: { id: number; name: string };
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
+  // Task #193 — was either snapshot above typed by hand at creation, instead
+  // of inherited from the chosen package? Read straight off
+  // `galleries.terms_overridden` (schema.ts's own comment on that column has
+  // the full reasoning for why this is a stored flag, never derived by
+  // comparing these snapshots against the package's CURRENT row). The admin
+  // detail page uses this to label the terms below as overridden or
+  // inherited; nothing client-facing ever reads this field.
+  termsOverridden: boolean;
   assets: GalleryDetailAsset[];
   // `Date | null`, not optional (task #25's own review): `findGalleryDetail`
   // below populates this UNCONDITIONALLY off the row's own column, so an
@@ -545,6 +553,7 @@ function toGalleryDetail(row: RawGalleryDetailRow): GalleryDetail {
     package: { id: row.package.id, name: row.package.name },
     includedPhotosSnapshot: row.includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot: row.extraPhotoPriceCopSnapshot,
+    termsOverridden: row.termsOverridden,
     assets: row.assets,
     selectionSubmittedAt: row.selectionSubmittedAt,
   };

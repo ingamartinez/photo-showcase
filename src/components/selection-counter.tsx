@@ -1,7 +1,7 @@
-// The live quota counter (task #24): "Estándar · incluidas 13 ·
-// seleccionadas 15" on one line, "extras 2 × $5.000 = $10.000 — se coordina
-// por fuera de la app" on the next. Purely presentational — every number it
-// renders is handed to it already computed by `computeQuota`
+// The live quota counter (task #24): "incluidas 13 · seleccionadas 15" on one
+// line, "extras 2 × $5.000 = $10.000 — se coordina por fuera de la app" on
+// the next. Purely presentational — every number it renders is handed to it
+// already computed by `computeQuota`
 // (src/lib/quota.ts), never derived here. This is what keeps the maths in
 // ONE pure, unit-tested place instead of scattered across components: this
 // file only ever formats numbers it is given, it never subtracts or
@@ -50,17 +50,20 @@
 import { formatCop } from "@/lib/format";
 import type { QuotaResult } from "@/lib/quota";
 
-export function SelectionCounter({
-  packageName,
-  quota,
-}: {
-  packageName: string;
-  quota: QuotaResult;
-}) {
+// Task #193 — the package's NAME is deliberately never a prop here, and
+// never was going to become one again: the owner's decision (this
+// component's own callers cite it) is that a client must never be able to
+// read "Estándar · incluidas 20" here and cross-reference it against
+// `/contact`'s public price list to deduce they got a special deal. This
+// applies to EVERY gallery, overridden or not — see proof-grid.tsx's own
+// comment on why the omission has to be unconditional, not just for
+// overridden galleries. Only the NUMBERS survive: "incluidas 20 ·
+// seleccionadas 14".
+export function SelectionCounter({ quota }: { quota: QuotaResult }) {
   return (
     <div aria-live="polite">
       <p className="text-fg font-serif text-lg leading-snug">
-        {packageName} · incluidas {quota.includedPhotosSnapshot} · seleccionadas {quota.selected}
+        incluidas {quota.includedPhotosSnapshot} · seleccionadas {quota.selected}
       </p>
       <p className="text-fg-mute mt-1 text-sm">
         extras {quota.extras} × {formatCop(quota.extraPhotoPriceCopSnapshot)} ={" "}

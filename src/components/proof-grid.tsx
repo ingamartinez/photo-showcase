@@ -134,7 +134,6 @@ export function ProofGrid({
   initialSubmittedAt,
   initialPicks,
   viewerId,
-  packageName,
   includedPhotosSnapshot,
   extraPhotoPriceCopSnapshot,
 }: {
@@ -165,7 +164,18 @@ export function ProofGrid({
   // (before any toggle has happened yet); every toggle after that replaces
   // the whole `quota` state with the server's own recomputation, which
   // already carries these same numbers back.
-  packageName: string;
+  //
+  // Task #193 — there used to be a `packageName: string` prop right here,
+  // threaded straight through to <SelectionCounter>. REMOVED, and not just
+  // for overridden galleries: the owner's decision was that the package's
+  // NAME must never reach a client's own view of ANY gallery, overridden or
+  // not, because the ABSENCE of the name only in overridden galleries would
+  // itself be the tell — a client with two galleries, or two clients who
+  // talk, would learn "no name shown" means "you got a special deal" just as
+  // easily as reading the name would. Removing it unconditionally is what
+  // keeps every gallery's client view identical in this respect, regardless
+  // of whether `termsOverridden` is true. The NUMBERS below still render —
+  // this is about the package's label, not its terms.
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
 }) {
@@ -291,7 +301,7 @@ export function ProofGrid({
           nothing left to act on. */}
       {!isDelivered && isLocked && (
         <div className="mb-4">
-          <SelectionCounter packageName={packageName} quota={quota} />
+          <SelectionCounter quota={quota} />
         </div>
       )}
 
@@ -384,7 +394,7 @@ export function ProofGrid({
       {!isDelivered && !isLocked && (
         <div className="border-line-2 bg-bg/95 fixed inset-x-0 bottom-0 z-40 border-t px-4 pt-3 pb-[calc(12px+env(safe-area-inset-bottom,0px))] backdrop-blur-md min-[620px]:px-7 lg:px-12">
           <div className="mx-auto flex max-w-[1280px] flex-wrap items-center justify-between gap-3">
-            <SelectionCounter packageName={packageName} quota={quota} />
+            <SelectionCounter quota={quota} />
             <div className="flex items-center gap-3">
               {toggleError && <p className="text-xs text-[#e0796b]">{toggleError}</p>}
               <SubmitSelectionPanel

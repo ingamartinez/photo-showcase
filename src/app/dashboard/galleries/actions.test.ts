@@ -443,6 +443,50 @@ describe("createGallery validation", () => {
     expect(result.status).toBe("error");
     expect(result.message).toBeTruthy();
   });
+
+  // Task #193 — the two override fields are validated the SAME way, each
+  // independently: a non-integer or negative value is refused with a
+  // friendly message, without ever reaching the package lookup or the
+  // insert.
+  it("rejects a non-integer override for included photos", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    const result = await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda",
+        sessionDate: "2026-08-01",
+        includedPhotos: "trece",
+      }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.message).toBeTruthy();
+    expect(db.__rows.galleries).toHaveLength(0);
+  });
+
+  it("rejects a negative override for the extra-photo price", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    const result = await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda",
+        sessionDate: "2026-08-01",
+        extraPhotoPriceCop: "-1",
+      }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.message).toBeTruthy();
+    expect(db.__rows.galleries).toHaveLength(0);
+  });
 });
 
 describe("createGallery package resolution", () => {
@@ -543,15 +587,239 @@ describe("createGallery success + frozen terms", () => {
     expect(db.__rows.galleryClients).toEqual([
       expect.objectContaining({ galleryId: stored!.id, userId: "client-1" }),
     ]);
+    // No override was typed — `termsOverridden` must stay `false`, the
+    // column default (schema.ts), and NOT be derived by comparing these
+    // snapshots against the live package row (this task's own documented
+    // trap: that comparison rots the moment the package is edited).
+    expect(stored).toMatchObject({ termsOverridden: false });
+  });
+
+  // Task #193 — REVIEW FINDING: the test above never actually posts the two
+  // override fields at all (`formDataWith` skips `undefined` entries
+  // entirely), so it only ever exercised `null || undefined`, which behaves
+  // identically under `??`. It could not have caught the bug this test
+  // exists for. THIS test posts an EXPLICIT `""` for both fields — what a
+  // real, untouched `<input type="number">` actually posts — and pins the
+  // exact spot where blank-vs-typed is decided.
+  //
+  // MUTATION-PROVEN, TWO WAYS:
+  //
+  // 1. `optionalNonNegativeInt`'s own trim-and-collapse `.transform` is now
+  //    what decides "empty" — moved there FROM the call site's
+  //    `formData.get(...) || undefined`, which used to be the only place
+  //    deciding it (see that function's own header comment). Removing that
+  //    transform's `|| trimmed === ""` clause AND flipping the call site's
+  //    `||` to `??` at the same time (reproducing the exact pre-fix shape:
+  //    correctness resting on that one operator, with the schema doing
+  //    nothing to catch it) turns this test red with
+  //    `includedPhotosSnapshot: 0`, `extraPhotoPriceCopSnapshot: 0`,
+  //    `termsOverridden: true` — `"" ?? undefined` stays `""`, `Number("")`
+  //    is `0`, and a `0` survives `??` against the package's own value like
+  //    any other override would.
+  //
+  // 2. Flipping ONLY the call site's `||` to `??`, with the schema's own fix
+  //    left intact, stays GREEN — verified directly, not assumed. That is
+  //    the fix working as intended, not a gap: correctness no longer rests
+  //    on that operator at all, so mutating it alone is now a no-op. The
+  //    schema's own trim-and-collapse is what has to be removed (as in
+  //    #1 above) to reach red again.
+  it("treats an explicitly blank override field the same as an untouched one — inherits the package, never overridden", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda con campos en blanco",
+        sessionDate: "2026-08-01",
+        includedPhotos: "",
+        extraPhotoPriceCop: "",
+      }),
+    );
+
+    const stored = db.__rows.galleries.find((g) => g.title === "Boda con campos en blanco");
+    expect(stored).toMatchObject({
+      includedPhotosSnapshot: 13,
+      extraPhotoPriceCopSnapshot: 5_000,
+      termsOverridden: false,
+    });
+  });
+
+  // Task #193 — REVIEW FINDING: the blank-field test right above only pins
+  // `""` — the empty-string half of `optionalNonNegativeInt`'s own
+  // `trimmed === undefined || trimmed === ""` check (that function's header
+  // comment). Nothing pinned the OTHER half, `.trim()` itself: a
+  // whitespace-only field (a stray space from a fumbled tap, or a browser
+  // extension that pads inputs) is a genuinely empty field in every way that
+  // matters here, and has to inherit the package exactly like `""` does —
+  // not become a `0` override because it happens to be non-empty BEFORE
+  // trimming.
+  //
+  // MUTATION-PROVEN: removing `.trim()` alone (keeping the `|| trimmed ===
+  // ""` clause intact) turns this red — `" ".trim()` never runs, so `value`
+  // stays `" "`, which is neither `undefined` nor `""` and sails through as
+  // a "typed" value. `Number(" ")` is `0` (JS's `Number()` strips
+  // whitespace, unlike the `Number.isInteger`/`>= 0` refine that runs on the
+  // STRING first), so this reached exactly the same corruption as the
+  // untrimmed `""` case did before the fix: `includedPhotosSnapshot: 0`,
+  // `extraPhotoPriceCopSnapshot: 0`, `termsOverridden: true`, despite the
+  // admin never typing a digit.
+  it("treats a whitespace-only override field the same as an untouched one — inherits the package, never overridden", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda con campos de espacios",
+        sessionDate: "2026-08-01",
+        includedPhotos: " ",
+        extraPhotoPriceCop: "  ",
+      }),
+    );
+
+    const stored = db.__rows.galleries.find((g) => g.title === "Boda con campos de espacios");
+    expect(stored).toMatchObject({
+      includedPhotosSnapshot: 13,
+      extraPhotoPriceCopSnapshot: 5_000,
+      termsOverridden: false,
+    });
+  });
+
+  // Task #193 — both override fields typed together replace BOTH snapshots,
+  // and the gallery is flagged as overridden.
+  it("writes the manually typed override values instead of the package's own terms, and flags the gallery as overridden", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda con override completo",
+        sessionDate: "2026-08-01",
+        includedPhotos: "20",
+        extraPhotoPriceCop: "9000",
+      }),
+    );
+
+    const stored = db.__rows.galleries.find((g) => g.title === "Boda con override completo");
+    expect(stored).toMatchObject({
+      packageId: 1,
+      includedPhotosSnapshot: 20,
+      extraPhotoPriceCopSnapshot: 9_000,
+      termsOverridden: true,
+    });
+  });
+
+  // Each field overrides INDEPENDENTLY — overriding one must not force the
+  // other away from the package's own value.
+  it("overrides only the included-photos quota, inheriting the package's own extra-photo price", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda con tope overrideado",
+        sessionDate: "2026-08-01",
+        includedPhotos: "7",
+      }),
+    );
+
+    const stored = db.__rows.galleries.find((g) => g.title === "Boda con tope overrideado");
+    expect(stored).toMatchObject({
+      includedPhotosSnapshot: 7,
+      extraPhotoPriceCopSnapshot: 5_000,
+      termsOverridden: true,
+    });
+  });
+
+  it("overrides only the extra-photo price, inheriting the package's own included-photos quota", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda con precio extra overrideado",
+        sessionDate: "2026-08-01",
+        extraPhotoPriceCop: "12000",
+      }),
+    );
+
+    const stored = db.__rows.galleries.find((g) => g.title === "Boda con precio extra overrideado");
+    expect(stored).toMatchObject({
+      includedPhotosSnapshot: 13,
+      extraPhotoPriceCopSnapshot: 12_000,
+      termsOverridden: true,
+    });
+  });
+
+  // MUTATION-PROVING TEST for this slice's own named trap: `Number("")` is
+  // `0`, and `override || pkg.includedPhotos` would treat a typed `0` as
+  // falsy and silently fall back to the package's value instead. A literal
+  // `0` has to survive as a REAL override, distinct from an untouched field.
+  it("treats a typed 0 as a real override, not as an untouched field falling back to the package", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda con cero incluidas",
+        sessionDate: "2026-08-01",
+        includedPhotos: "0",
+        extraPhotoPriceCop: "0",
+      }),
+    );
+
+    const stored = db.__rows.galleries.find((g) => g.title === "Boda con cero incluidas");
+    expect(stored).toMatchObject({
+      includedPhotosSnapshot: 0,
+      extraPhotoPriceCopSnapshot: 0,
+      termsOverridden: true,
+    });
   });
 
   // THE highest-value test in this slice (per the task): prove the snapshot
   // is frozen, not derived live. This actually MUTATES the live package row
   // after the gallery is created and re-reads the gallery through the real
   // read-side query (getGalleriesWithDetails) — not a stub of either side.
-  it("keeps a gallery's displayed terms unmoved after the bound package's price/quota are edited afterward", async () => {
+  //
+  // Task #193 extended this in place (rather than adding a sibling test)
+  // with a SECOND, overridden gallery bound to the same package: the frozen-
+  // terms guarantee has to hold for an overridden gallery exactly as it
+  // already held for a normal one.
+  //
+  // REVIEW FINDING, FIXED: this comment used to also claim a
+  // derived-from-comparison `termsOverridden` (the trap this task's own
+  // ticket names) "would be exposed by the SAME live-package mutation this
+  // test already performs" — false. `getGalleriesWithDetails` returns
+  // `GalleryWithDetails` (src/lib/galleries.ts), which has no
+  // `termsOverridden` field at all; the assertions below it only ever
+  // checked the four snapshot numbers, never that flag, so a comparison-
+  // based derivation could ship right through this test undetected. Fixed
+  // by reading BOTH galleries a second time through `getGalleryDetailsByIds`
+  // instead — it shares the identical `toGalleryDetail` mapper `getGalleryDetail`
+  // (the admin page's own read) uses, and its `GalleryDetail` type DOES carry
+  // `termsOverridden` — and asserting the flag directly, AFTER the same
+  // live-package mutation, so a comparison-based derivation would now
+  // actually flip these assertions the way the comment always claimed.
+  it("keeps a gallery's displayed terms unmoved after the bound package's price/quota are edited afterward — normal and overridden alike", async () => {
     const { createGallery } = await import("./actions");
-    const { getGalleriesWithDetails } = await import("@/lib/galleries");
+    const { getGalleriesWithDetails, getGalleryDetailsByIds } = await import("@/lib/galleries");
     const db = await seededDb();
 
     const created = await createGallery(
@@ -564,6 +832,19 @@ describe("createGallery success + frozen terms", () => {
       }),
     );
     expect(created.status).toBe("created");
+
+    const createdOverride = await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda Overrideada",
+        sessionDate: "2026-08-01",
+        includedPhotos: "20",
+        extraPhotoPriceCop: "9000",
+      }),
+    );
+    expect(createdOverride.status).toBe("created");
 
     // A real price/quota increase to the seeded offer, made to the SAME row
     // object the fake db's `select` reads from — genuinely mutated, not a
@@ -580,10 +861,35 @@ describe("createGallery success + frozen terms", () => {
 
     const galleriesList = await getGalleriesWithDetails();
     const gallery = galleriesList.find((g) => g.title === "Boda Ana y Beto");
+    const overriddenGallery = galleriesList.find((g) => g.title === "Boda Overrideada");
 
     expect(gallery).toBeDefined();
     expect(gallery?.includedPhotosSnapshot).toBe(13);
     expect(gallery?.extraPhotoPriceCopSnapshot).toBe(5_000);
+
+    // The overridden gallery's snapshots are what the admin TYPED at
+    // creation, and stay exactly that regardless of what happens to the live
+    // package afterward — same guarantee, same live mutation, second
+    // gallery.
+    expect(overriddenGallery).toBeDefined();
+    expect(overriddenGallery?.includedPhotosSnapshot).toBe(20);
+    expect(overriddenGallery?.extraPhotoPriceCopSnapshot).toBe(9_000);
+
+    // `termsOverridden` itself, read through `getGalleryDetailsByIds` (the
+    // one projection that carries it) — the actual fix for this comment's
+    // own review finding above. A derivation that compared these frozen
+    // snapshots against the package's CURRENT row (still sitting at
+    // `includedPhotos: 1` / `extraPhotoPriceCop: 999_999` from the mutation
+    // above) would call the FIRST gallery overridden (13 ≠ 1) — that
+    // mismatches the `false` this asserts for it, and is what actually flips
+    // this test red under that derivation.
+    const galleryId = db.__rows.galleries.find((g) => g.title === "Boda Ana y Beto")!.id as string;
+    const overriddenGalleryId = db.__rows.galleries.find((g) => g.title === "Boda Overrideada")!
+      .id as string;
+    const details = await getGalleryDetailsByIds([galleryId, overriddenGalleryId]);
+
+    expect(details.find((d) => d.id === galleryId)?.termsOverridden).toBe(false);
+    expect(details.find((d) => d.id === overriddenGalleryId)?.termsOverridden).toBe(true);
   });
 
   it("rejects a client id that does not exist (foreign key violation), with a friendly message", async () => {

@@ -5,6 +5,14 @@
 // copied into `includedPhotosSnapshot` / `extraPhotoPriceCopSnapshot`. From
 // the moment this insert commits, the gallery owes the `packages` row
 // nothing — see schema.ts's comment on those columns and PLAN.md §6.
+//
+// Task #193 — MANUAL OVERRIDE of either snapshot, typed by the admin at
+// creation time. The two optional form fields below (`includedPhotos`,
+// `extraPhotoPriceCop`) each independently either replace the chosen
+// package's own value or fall back to it — never both replaced or both kept
+// as an all-or-nothing pair. `pkg` is still read exactly once, same as
+// before; an override never adds a second read of `packages`, it only
+// decides which value wins for each snapshot column at insert time.
 
 import { z } from "zod";
 import postgres from "postgres";
@@ -27,6 +35,43 @@ import {
 } from "@/lib/gallery-access-rate-limiters";
 import { generateGallerySlug } from "@/lib/slug";
 import { notifySelectionChanged } from "@/lib/selection-events";
+
+// Task #193 — a manual override of a snapshot's value.
+//
+// EMPTINESS IS DECIDED RIGHT HERE, not at the call site. A review of this
+// slice found the decision living ENTIRELY in the call site's own
+// `formData.get(...) || undefined` (below) — the same normalization
+// `unlockSelection`'s `reason` field already uses — with nothing re-checking
+// it here. That meant correctness rested on ONE operator at ONE call site:
+// flipping that `||` to `??` (a mutation test proved this) let a genuinely
+// empty `""` sail straight through as a "typed" value, and `Number("")` is
+// `0` — an untouched field would silently write `includedPhotosSnapshot: 0`
+// / `extraPhotoPriceCopSnapshot: 0` and `termsOverridden: true`. The
+// `.transform` below trims and re-collapses an empty (or whitespace-only —
+// same fix closes that case too) string to `undefined` REGARDLESS of what
+// the call site handed over, so the call site's own `|| undefined` is now a
+// second, redundant layer ("cinturón y tiradores"), never the only one.
+//
+// From here on `undefined` means "inherit from the package" and any
+// non-empty string — INCLUDING `"0"` — is a value the admin actually typed
+// and must be parsed and kept, never treated as absent: `Number("")` being
+// `0` and `override || pkg.value` silently discarding a real `0` are the two
+// traps this shape exists to avoid; see the `??` used against these parsed
+// values further down in `createGallery` itself.
+function optionalNonNegativeInt(message: string) {
+  return z
+    .string()
+    .optional()
+    .transform((value) => {
+      const trimmed = value?.trim();
+      return trimmed === undefined || trimmed === "" ? undefined : trimmed;
+    })
+    .refine(
+      (value) => value === undefined || (Number.isInteger(Number(value)) && Number(value) >= 0),
+      { message },
+    )
+    .transform((value) => (value === undefined ? undefined : Number(value)));
+}
 
 const createGallerySchema = z.object({
   // Fed by a `<select multiple>` picker backed by getClientsForPicker()
@@ -61,6 +106,15 @@ const createGallerySchema = z.object({
     .trim()
     .min(1, "Elegí la fecha de la sesión.")
     .pipe(z.iso.date("Ingresá una fecha de sesión válida.")),
+  // Task #193 — both OPTIONAL, both independent of one another. An admin can
+  // override only the quota, only the extra-photo price, both, or neither
+  // (the untouched default, which reproduces today's behavior bit for bit).
+  includedPhotosOverride: optionalNonNegativeInt(
+    "El tope de fotos incluidas tiene que ser un entero mayor o igual a 0.",
+  ),
+  extraPhotoPriceCopOverride: optionalNonNegativeInt(
+    "El precio de la foto extra tiene que ser un entero mayor o igual a 0.",
+  ),
 });
 
 export type CreateGalleryState = {
@@ -99,6 +153,15 @@ export async function createGallery(
     packageId: formData.get("packageId"),
     title: formData.get("title"),
     sessionDate: formData.get("sessionDate"),
+    // `|| undefined` here only normalizes `formData.get`'s possible `null`
+    // (a field genuinely absent from the form) into `undefined` for the
+    // schema's `.optional()` to accept — it is NOT what decides "empty vs a
+    // real value" anymore. `optionalNonNegativeInt`'s own trim-and-collapse
+    // transform (above) is what makes that call now, on whatever string
+    // reaches it, so this line staying `||` instead of `??` is redundant
+    // defense, not the load-bearing check it used to be.
+    includedPhotosOverride: formData.get("includedPhotos") || undefined,
+    extraPhotoPriceCopOverride: formData.get("extraPhotoPriceCop") || undefined,
   });
 
   if (!parsed.success) {
@@ -142,6 +205,20 @@ export async function createGallery(
   // than trying to add a second, ambiguous catch for it.
   const clientIds = [...new Set(parsed.data.clientIds)];
 
+  // Task #193 — resolved ONCE here, outside the transaction, so both the
+  // insert below and `termsOverridden` read the exact same decision. `??`,
+  // not `||`: an override of `0` (a legitimate "no photos included" or "no
+  // charge for extras" quote) must win over the package's own value exactly
+  // as a positive override would — `||` would treat that `0` as falsy and
+  // silently fall through to `pkg.includedPhotos`/`pkg.extraPhotoPriceCop`
+  // instead.
+  const includedPhotosSnapshot = parsed.data.includedPhotosOverride ?? pkg.includedPhotos;
+  const extraPhotoPriceCopSnapshot =
+    parsed.data.extraPhotoPriceCopOverride ?? pkg.extraPhotoPriceCop;
+  const termsOverridden =
+    parsed.data.includedPhotosOverride !== undefined ||
+    parsed.data.extraPhotoPriceCopOverride !== undefined;
+
   try {
     // The gallery row and its client memberships are inserted together, in
     // ONE transaction. Task #94 wrote this transaction to guarantee "a
@@ -167,8 +244,9 @@ export async function createGallery(
           // from the title or a counter (schema.ts's comment on
           // `publicSlug`).
           publicSlug: generateGallerySlug(),
-          includedPhotosSnapshot: pkg.includedPhotos,
-          extraPhotoPriceCopSnapshot: pkg.extraPhotoPriceCop,
+          includedPhotosSnapshot,
+          extraPhotoPriceCopSnapshot,
+          termsOverridden,
         })
         .returning({ id: galleries.id });
 

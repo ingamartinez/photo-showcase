@@ -51,10 +51,24 @@ export function UnlockSelectionPanel({ galleryId }: { galleryId: string }) {
         className="border-line-2 w-full rounded-sm border bg-transparent px-3 py-2 text-sm"
       />
       <input type="hidden" name="galleryId" value={galleryId} />
+      {/* Task #135 sweep: this used to be the marketing CTA — uppercase,
+          0.1em-tracked, 13px — the same button shape as the public site's
+          hero/header buttons. The mock's own plain `.btn`
+          (design/system/dashboard.html:220-227) never uppercases or tracks a
+          button label at all; its only states are a border and an
+          `--app-raised` hover wash, never brass (epic #125's own rule that
+          brass is a fill, never a hover/focus wash). Brand tokens
+          (`bg-bg-2`), not `app-*`, on purpose: this file is not named
+          `dashboard-*` and does not live under `src/app/dashboard/**`, so
+          task #175's ESLint rule correctly refuses `app-*` here even though
+          the component only ever renders inside that scope — `bg-bg-2` IS
+          `--app-raised`'s own value (globals.css's `--app-raised: var(--bg-2)`
+          under `[data-surface="app"]`), so this reads identically without
+          reaching for a token this file is not allowed to name. */}
       <button
         type="submit"
         disabled={pending}
-        className="border-line-2 hover:border-accent hover:text-accent-2 min-h-11 rounded-[6px] border px-[18px] py-[12px] text-[13px] tracking-[0.1em] uppercase transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-6"
+        className="border-line-2 hover:bg-bg-2 hover:border-fg-mute inline-flex min-h-11 items-center justify-center rounded-[5px] border px-4 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-6"
       >
         {pending ? "Desbloqueando…" : "Desbloquear selección"}
       </button>

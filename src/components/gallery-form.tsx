@@ -8,8 +8,18 @@ import type { PackageForPicker } from "@/lib/packages";
 
 const initialState: CreateGalleryState = { status: "idle" };
 
+// Task #135 sweep: rendered ONLY inside <DashboardGalleryCreateDialog>'s
+// <DialogContent>, which portals to `document.body` — outside
+// `[data-surface="app"]` (see that file's header comment on "WHY THERE IS
+// NOT A SINGLE `app-*` UTILITY BELOW THE TRIGGER"). `--app-radius-sm` and
+// `--app-text-base` are declared under that attribute and would resolve to
+// nothing here, so this stays on brand tokens and plain Tailwind scales
+// rather than the app-surface ones — `rounded-[5px]`/`text-sm` (14px) are
+// literal stand-ins for the values `--app-radius-sm`/`--app-text-base`
+// carry, chosen so a phone/desk field and a dialog field read as the same
+// size without this form being able to reach the token that says so.
 const inputClass =
-  "border-line-2 focus-visible:border-accent text-fg placeholder:text-fg-mute rounded-sm border bg-transparent px-4 py-3 text-[15px] transition-colors outline-none";
+  "border-line-2 focus-visible:border-accent text-fg placeholder:text-fg-mute rounded-[5px] border bg-transparent px-4 py-3 text-sm transition-colors outline-none";
 
 export function GalleryForm({
   clients,
@@ -81,7 +91,13 @@ export function GalleryForm({
             will follow to nothing, so that branch uses a plain <span>. */}
         {clients.length === 0 ? (
           <>
-            <span className="label text-fg-mute">Clientes (opcional)</span>
+            {/* Task #135 sweep: `.label` (globals.css's mono, uppercase,
+                0.22em-tracked eyebrow) doesn't survive under /dashboard —
+                epic #125's own done-when. Same plain-text replacement
+                attach-gallery-clients-form.tsx already established. */}
+            <span className="text-fg-mute text-xs tracking-wide uppercase">
+              Clientes (opcional)
+            </span>
             <p className="text-fg-dim text-sm leading-relaxed">
               Todavía no cargaste ningún cliente. Podés crear la galería igual y agregarle el
               cliente cuando exista — hasta entonces queda en borrador.{" "}
@@ -93,7 +109,7 @@ export function GalleryForm({
           </>
         ) : (
           <>
-            <label htmlFor="clientIds" className="label text-fg-mute">
+            <label htmlFor="clientIds" className="text-fg-mute text-xs tracking-wide uppercase">
               Clientes (opcional)
             </label>
             <select
@@ -120,7 +136,7 @@ export function GalleryForm({
       </div>
 
       <div className="flex flex-col gap-2">
-        <label htmlFor="packageId" className="label text-fg-mute">
+        <label htmlFor="packageId" className="text-fg-mute text-xs tracking-wide uppercase">
           Paquete
         </label>
         <select
@@ -144,7 +160,7 @@ export function GalleryForm({
       </div>
 
       <div className="flex flex-col gap-2">
-        <label htmlFor="title" className="label text-fg-mute">
+        <label htmlFor="title" className="text-fg-mute text-xs tracking-wide uppercase">
           Título
         </label>
         <input
@@ -158,7 +174,7 @@ export function GalleryForm({
       </div>
 
       <div className="flex flex-col gap-2">
-        <label htmlFor="sessionDate" className="label text-fg-mute">
+        <label htmlFor="sessionDate" className="text-fg-mute text-xs tracking-wide uppercase">
           Fecha de la sesión
         </label>
         <input id="sessionDate" name="sessionDate" type="date" required className={inputClass} />
@@ -175,10 +191,14 @@ export function GalleryForm({
         </p>
       )}
 
+      {/* Task #135 sweep: this used to be the marketing CTA — uppercase,
+          0.1em-tracked, 13px, the same button shape as the public site's
+          hero/header buttons. Portaled, like `inputClass` above, so this
+          reads brand tokens and a literal radius, not `app-*`. */}
       <button
         type="submit"
         disabled={pending || packages.length === 0}
-        className="border-line-2 hover:border-accent hover:text-accent-2 rounded-sm border px-[18px] py-[12px] text-[13px] tracking-[0.1em] uppercase transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+        className="border-line-2 hover:bg-bg-2 hover:border-fg-mute inline-flex min-h-11 items-center justify-center rounded-[5px] border px-4 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50"
       >
         {pending ? "Guardando…" : "Crear galería"}
       </button>

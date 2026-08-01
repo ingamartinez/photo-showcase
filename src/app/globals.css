@@ -71,10 +71,39 @@
 @source not "../**/*.test.tsx";
 
 /*
-  Alejo Frames — dark gallery.
-  A deliberately single-theme, cinema-black world: cool-biased near-black ground,
-  a single tungsten-brass accent used sparingly, high-contrast serif display.
-  See design/system/home.html for the reference mock.
+  Alejo Frames — one brand, two surfaces (epic #125).
+
+  This file used to describe a single world: the public portfolio and the
+  client gallery, both editorial — cool-biased near-black ground, a single
+  tungsten-brass accent used sparingly, high-contrast serif display, built to
+  seduce a visitor. See design/system/home.html for that reference mock.
+  That description was never wrong for those two, and it stays true of them.
+
+  It was, however, silently being read as a description of the WHOLE app,
+  and epic #125 exists because `/dashboard` was built out of that same
+  system verbatim — the marketing chrome, the serif display headline, the
+  mono eyebrow — even though a work tool and a portfolio are opposite
+  products (that epic's own body has the full argument). `/dashboard` now
+  has its OWN surface: same brand tokens (`--bg`, `--fg`, `--accent`, the
+  Fraunces wordmark), but a sans working density, its own radii and raised
+  surfaces, and a sidebar/tab-bar shell instead of the `.wrap` centred
+  column. See design/system/dashboard.html for ITS reference mock, and the
+  "APP SURFACE" block further down in this file for the mechanism
+  (`[data-surface="app"]`) that scopes it so it cannot leak into the
+  editorial world above.
+
+  THE BOUNDARY, PLAINLY: everything above the "APP SURFACE" block, and
+  every rule with no `[data-surface="app"]` ancestor, belongs to the
+  editorial system — the public portfolio (`/`, `/work/[slug]`, `/about`,
+  `/contact`) AND the client gallery (`/galleries/[publicSlug]`), which
+  deliberately stays editorial on purpose (the epic's own scope boundary:
+  the paying client sees cinema-black, the photographer's own work tool
+  does not). Only `/dashboard/**` reads the second block, because only
+  `src/app/dashboard/layout.tsx` ever sets the attribute that turns it on.
+
+  A future surface would extend this same shape — its own reference mock,
+  its own scoping attribute if its tokens need to differ from both of the
+  above — rather than a third description bolted onto this one.
 */
 
 @theme inline {

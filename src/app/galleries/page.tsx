@@ -35,6 +35,16 @@ const STATE_TONE_CLASS: Record<ReturnType<typeof formatClientGalleryCardState>["
   done: "text-[#8FAE97]",
 };
 
+// Task #149's own sweep: globals.css's `.label` class (0.22em tracking) is
+// the PUBLIC SITE'S eyebrow — home.html's own `.kicker` (0.22em), reused
+// verbatim in globals.css under the `.label` name. It is not this surface's
+// value. `design/system/client.html`'s OWN `.kicker` (:117-120) is the
+// authority here and specifies 0.18em, not 0.22em — a real, if easy to miss,
+// 0.04em drift, not a rounding difference. Inlined rather than reusing the
+// shared class so the value actually shipped here can never silently drift
+// back to the marketing one just because the two share a class name.
+const KICKER_CLASS = "font-mono text-[11px] tracking-[0.18em] uppercase";
+
 export const metadata: Metadata = {
   title: "Tus galerías",
   // Every client's own gallery list is unlisted and reachable only by a
@@ -79,7 +89,7 @@ export default async function ClientGalleriesPage() {
 
   return (
     <>
-      <span className="label text-accent mb-4 block">Tus galerías</span>
+      <span className={`${KICKER_CLASS} text-accent mb-4 block`}>Tus galerías</span>
       {/* `.display`, client.html:121-125 and the heading markup at 597-600.
           `formatGalleryIndexHeading` (src/lib/galleries.ts) decides the exact
           lines, including the null-name degrade this task's own late-added
@@ -148,7 +158,7 @@ export default async function ClientGalleriesPage() {
               const cardText = (
                 <>
                   <span
-                    className={`label mb-2 flex items-center gap-[7px] ${STATE_TONE_CLASS[state.tone]}`}
+                    className={`${KICKER_CLASS} mb-2 flex items-center gap-[7px] ${STATE_TONE_CLASS[state.tone]}`}
                   >
                     <span aria-hidden className="h-[5px] w-[5px] rounded-full bg-current" />
                     {state.label}

@@ -208,7 +208,13 @@ export default async function ClientGalleryPage({
             for those two statuses (see its own comment), so falling back to
             `formatGalleryStatus` here is what keeps that preview from
             crashing instead of quietly re-deriving the client mapping. */}
-        <span className="label text-accent mb-2 block">
+        {/* Task #149's own sweep: NOT globals.css's `.label` (0.22em) — that
+            is home.html's own `.kicker` value, reused verbatim under a
+            different name. `design/system/client.html`'s OWN `.kicker`
+            (:117-120) specifies 0.18em, which is what this surface's eyebrow
+            actually needs to render at. Inlined, not the shared class, so it
+            cannot drift back to the marketing value silently. */}
+        <span className="text-accent mb-2 block font-mono text-[11px] tracking-[0.18em] uppercase">
           {isGalleryVisibleToClient(gallery.status)
             ? formatClientGalleryCardState(gallery.status).label
             : formatGalleryStatus(gallery.status)}

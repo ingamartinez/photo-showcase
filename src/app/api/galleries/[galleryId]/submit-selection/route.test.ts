@@ -218,6 +218,7 @@ function galleryRow(overrides: Row = {}): Row {
     publicSlug: "abc123",
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
+    originalPhotoPriceCopSnapshot: 2_000,
     createdAt: new Date("2026-07-01"),
     selectionSubmittedAt: null,
     deliveredAt: null,
@@ -423,9 +424,13 @@ describe("POST /api/galleries/[galleryId]/submit-selection — locked statuses",
       status: "already_submitted",
       quota: {
         selected: 1,
+        selectedEdited: 1,
+        selectedOriginal: 0,
         includedPhotosSnapshot: 13,
         extraPhotoPriceCopSnapshot: 5_000,
+        originalPhotoPriceCopSnapshot: 2_000,
         extras: 0,
+        originals: 0,
         surchargeCop: 0,
       },
       submittedAt: "2026-07-28T10:00:00.000Z",
@@ -462,9 +467,13 @@ describe("POST /api/galleries/[galleryId]/submit-selection — success", () => {
     expect(body.status).toBe("submitted");
     expect(body.quota).toEqual({
       selected: 2,
+      selectedEdited: 2,
+      selectedOriginal: 0,
       includedPhotosSnapshot: 1,
       extraPhotoPriceCopSnapshot: 5_000,
+      originalPhotoPriceCopSnapshot: 2_000,
       extras: 1,
+      originals: 0,
       surchargeCop: 5_000,
     });
     expect(body.submittedAt).toBeTruthy();

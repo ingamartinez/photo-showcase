@@ -167,6 +167,15 @@ export const galleryStatus = pgEnum("gallery_status", [
   "archived",
 ]);
 
+// Task #205 — what the client asked for THIS pick to become, not whether they
+// picked it at all (that is `assets.isSelected`, unchanged). Two values, on
+// purpose: `edited` (today's only behavior — the photographer retouches the
+// shot) and `original` (deliver it AS SHOT, no edit, at its own, cheaper
+// price — see `packages.originalPhotoPriceCop`'s own comment for why it costs
+// less). NOT a third state alongside "not selected" — see
+// `assets.selectionKind`'s own comment for why that would be the wrong shape.
+export const selectionKind = pgEnum("selection_kind", ["edited", "original"]);
+
 // Seeded, editable without a migration (PLAN.md §3). Prices here are the CURRENT
 // offer — never the terms of an existing gallery; see the snapshots below.
 export const packages = pgTable("packages", {
@@ -175,6 +184,15 @@ export const packages = pgTable("packages", {
   priceCop: integer("price_cop").notNull(),
   includedPhotos: integer("included_photos").notNull(),
   extraPhotoPriceCop: integer("extra_photo_price_cop").notNull(),
+  // Task #205 — the price of an "original" pick: a photo the client wants
+  // delivered AS SHOT, never edited. Same shape as `extraPhotoPriceCop`
+  // above (the CURRENT offer, copied into a gallery's own frozen snapshot at
+  // creation, never re-read after that — see `galleries.originalPhotoPriceCopSnapshot`
+  // below). `notNull().default(2_000)` because packages already exist in
+  // production; the owner picked this default (2026-08-01, task #205's own
+  // kanban body) — cheaper than `extraPhotoPriceCop` (5_000 today), because
+  // an original is less work to produce than an edit.
+  originalPhotoPriceCop: integer("original_photo_price_cop").notNull().default(2_000),
   // Human-facing session length, e.g. "1.5–2 h". Display only.
   durationLabel: text("duration_label").notNull(),
   // Retired packages stay for historical galleries but leave the picker.
@@ -206,16 +224,35 @@ export const galleries = pgTable(
     // retroactively change what a past client owed.
     includedPhotosSnapshot: integer("included_photos_snapshot").notNull(),
     extraPhotoPriceCopSnapshot: integer("extra_photo_price_cop_snapshot").notNull(),
-    // Task #193: did the admin type a manual value for either snapshot above
-    // at creation, instead of accepting the chosen package's terms as-is?
+    // Task #205 — the frozen price of an "original" pick, same shape and same
+    // reasoning as `extraPhotoPriceCopSnapshot` above: copied from
+    // `packages.originalPhotoPriceCop` exactly once, by `createGallery`, and
+    // never re-read from `packages` afterward. `notNull().default(2_000)` —
+    // there are galleries in production; the default is the SAME value
+    // `packages.originalPhotoPriceCop` defaults to (that column's own
+    // comment has the owner's reasoning), so every existing gallery's
+    // migrated snapshot matches what its own package would have quoted it.
+    // `computeQuota` (src/lib/quota.ts) only ever multiplies this by the
+    // count of ORIGINAL picks, which is always 0 for every gallery that
+    // exists before task #206 (the slice that lets a client choose
+    // `original` at all) ships — so this column changes nothing observable
+    // about any gallery's numbers today; see `assets.selectionKind` below
+    // for the other half of that guarantee.
+    originalPhotoPriceCopSnapshot: integer("original_photo_price_cop_snapshot")
+      .notNull()
+      .default(2_000),
+    // Task #193 (widened by #205 to cover the third snapshot above): did the
+    // admin type a manual value for any of the three snapshots above at
+    // creation, instead of accepting the chosen package's terms as-is?
     // `notNull().default(false)` — there are galleries in production, and
     // every one of them created before this column existed was, definitionally,
     // never overridden.
     //
     // WRITTEN ONCE, BY `createGallery`, NEVER DERIVED. The tempting
     // alternative — comparing `includedPhotosSnapshot`/
-    // `extraPhotoPriceCopSnapshot` against the CURRENT `packages` row for the
-    // gallery's `packageId` — looks equivalent today but silently rots the
+    // `extraPhotoPriceCopSnapshot`/`originalPhotoPriceCopSnapshot` against the
+    // CURRENT `packages` row for the gallery's `packageId` — looks equivalent
+    // today but silently rots the
     // moment a package's price is edited (task #193's own trap): editing
     // "Estándar" from 13 to 20 included photos would make every OLD,
     // never-overridden gallery bound to it suddenly "look" overridden (its
@@ -503,6 +540,34 @@ export const assets = pgTable("assets", {
   // stale attribution has no business holding a person's own account
   // hostage.
   selectedBy: text("selected_by").references(() => users.id, { onDelete: "set null" }),
+  // Task #205 — WHAT the client asked for this pick to become: `edited`
+  // (default, today's only behavior) or `original` (delivered as shot, no
+  // edit — see `packages.originalPhotoPriceCop`'s own comment). Deliberately
+  // NOT merged with `isSelected` into a three-state enum ("not selected" /
+  // "selected, edited" / "selected, original") — `isSelected` already answers
+  // WHETHER this asset is picked, and every existing reader of that boolean
+  // (tasks #24, #66, #95, #114) would need re-auditing the moment "selected"
+  // stopped being a plain true/false. This column only ever answers WHAT was
+  // asked for, and is meaningless while `isSelected` is `false` — the same
+  // "meaningless until selected" relationship `selectedAt`/`selectedBy` above
+  // already have with it.
+  //
+  // `notNull().default("edited")` — there are assets in production, and this
+  // slice (#205) is domain + admin surfaces ONLY: nothing anywhere in the app
+  // writes any value but `edited` to this column yet. The client control that
+  // lets a pick actually BE `original` is task #206, the next slice.
+  //
+  // ONE MORE THING WORTH WRITING DOWN, because it is easy to reach for the
+  // wrong mental model: this app NEVER STORES an "original" file distinct
+  // from the edited one (`src/app/api/galleries/[galleryId]/proofs/route.ts`,
+  // "Never stored, never referenced again once this function returns" —
+  // PLAN.md's own "originals are never stored" rule). "Original" here is a
+  // COMMERCIAL LABEL on what the client requested, not a second set of bytes
+  // this app can serve. The photographer delivers an original pick by
+  // uploading it as that asset's `finalKey`, exactly the same mechanism used
+  // for an edited pick today — this column changes what it COSTS, never how
+  // it is DELIVERED.
+  selectionKind: selectionKind("selection_kind").notNull().default("edited"),
   isEdited: boolean("is_edited").notNull().default(false),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

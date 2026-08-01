@@ -25,9 +25,12 @@ function assetsFor(count: number, overrides: Partial<ProofAsset>[] = []): ProofA
 // The SAME pure function <SelectionCounter> is fed from, not a hand-built
 // object literal: the lightbox displays two of its fields and must keep
 // agreeing with the one place the quota maths lives (src/lib/quota.ts).
-const QUOTA = computeQuota(0, {
+// Task #205 — 0 originals throughout this file: nothing writes
+// `assets.selectionKind` to anything but `edited` yet (task #206).
+const QUOTA = computeQuota(0, 0, {
   includedPhotosSnapshot: 13,
   extraPhotoPriceCopSnapshot: 5000,
+  originalPhotoPriceCopSnapshot: 2000,
 });
 
 let onClose: ReturnType<typeof vi.fn<() => void>>;
@@ -101,7 +104,11 @@ describe("ProofLightbox", () => {
   // does no arithmetic of its own.
   it("shows the running selected count and the package's included count", () => {
     renderLightbox({
-      quota: computeQuota(9, { includedPhotosSnapshot: 13, extraPhotoPriceCopSnapshot: 5000 }),
+      quota: computeQuota(9, 0, {
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5000,
+        originalPhotoPriceCopSnapshot: 2000,
+      }),
     });
 
     expect(screen.getByText("9 elegidas · 13 incluidas")).toBeDefined();
@@ -109,7 +116,11 @@ describe("ProofLightbox", () => {
 
   it("announces the running count politely, since it changes while the client looks at the photo", () => {
     renderLightbox({
-      quota: computeQuota(9, { includedPhotosSnapshot: 13, extraPhotoPriceCopSnapshot: 5000 }),
+      quota: computeQuota(9, 0, {
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5000,
+        originalPhotoPriceCopSnapshot: 2000,
+      }),
     });
 
     expect(screen.getByText("9 elegidas · 13 incluidas").getAttribute("aria-live")).toBe("polite");

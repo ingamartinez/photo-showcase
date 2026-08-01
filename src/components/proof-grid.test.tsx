@@ -1051,9 +1051,12 @@ describe("ProofGrid", () => {
         status: overrides.status ?? "proofing",
         submittedAt: overrides.submittedAt ?? null,
         picks,
-        quota: computeQuota(overrides.selectedCount ?? picks.length, {
+        // Task #205 — 0 originals: nothing writes `assets.selectionKind` to
+        // anything but `edited` yet (task #206).
+        quota: computeQuota(overrides.selectedCount ?? picks.length, 0, {
           includedPhotosSnapshot: 13,
           extraPhotoPriceCopSnapshot: 5_000,
+          originalPhotoPriceCopSnapshot: 2_000,
         }),
       };
     }
@@ -1115,9 +1118,10 @@ describe("ProofGrid", () => {
                 selectedAt: selected ? "2026-07-30T12:00:00.000Z" : null,
                 pickedBy: selected ? { id: "client-a", label: "Ana Pérez" } : null,
               },
-              quota: computeQuota(selected ? 1 : 0, {
+              quota: computeQuota(selected ? 1 : 0, 0, {
                 includedPhotosSnapshot: 13,
                 extraPhotoPriceCopSnapshot: 5_000,
+                originalPhotoPriceCopSnapshot: 2_000,
               }),
             },
           ),
@@ -1303,9 +1307,10 @@ describe("ProofGrid", () => {
               selectedAt: "2026-07-30T12:00:00.000Z",
               pickedBy: { id: "client-a", label: "Ana Pérez" },
             },
-            quota: computeQuota(1, {
+            quota: computeQuota(1, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
         );
@@ -1362,9 +1367,10 @@ describe("ProofGrid", () => {
         resolveToggle?.(
           jsonResponse(200, {
             asset: { id: "a1", isSelected: false, selectedAt: null, pickedBy: null },
-            quota: computeQuota(0, {
+            quota: computeQuota(0, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
         );
@@ -1470,9 +1476,10 @@ describe("ProofGrid", () => {
         resolveToggle?.(
           jsonResponse(200, {
             asset: { id: "a1", isSelected: false, selectedAt: null, pickedBy: null },
-            quota: computeQuota(0, {
+            quota: computeQuota(0, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
         );
@@ -1514,9 +1521,10 @@ describe("ProofGrid", () => {
         resolveToggle?.(
           jsonResponse(200, {
             asset: { id: "a1", isSelected: false, selectedAt: null, pickedBy: null },
-            quota: computeQuota(0, {
+            quota: computeQuota(0, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
         );
@@ -1662,9 +1670,10 @@ describe("ProofGrid", () => {
             status: "proofing",
             submittedAt: null,
             picks: [],
-            quota: computeQuota(0, {
+            quota: computeQuota(0, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
         ),
@@ -1698,9 +1707,10 @@ describe("ProofGrid", () => {
                 pickedBy: { id: "client-b", label: "Beto Ruiz" },
               },
             ],
-            quota: computeQuota(1, {
+            quota: computeQuota(1, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
         ),
@@ -1738,9 +1748,10 @@ describe("ProofGrid", () => {
             status: "proofing",
             submittedAt: null,
             picks: [],
-            quota: computeQuota(0, {
+            quota: computeQuota(0, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
         );
@@ -1769,9 +1780,10 @@ describe("ProofGrid", () => {
             status: "proofing",
             submittedAt: null,
             picks: [],
-            quota: computeQuota(0, {
+            quota: computeQuota(0, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
         );
@@ -1805,9 +1817,10 @@ describe("ProofGrid", () => {
             status: "archived",
             submittedAt: "2026-07-30T13:00:00.000Z",
             picks: [],
-            quota: computeQuota(0, {
+            quota: computeQuota(0, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
         ),

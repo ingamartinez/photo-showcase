@@ -170,18 +170,20 @@ export function GalleryForm({
         </select>
       </div>
 
-      {/* Task #193 — both OPTIONAL, both fall back to the chosen package's
-          own terms when left blank (createGallery's own `??` against these
-          two fields, actions.ts). Neither is `required`: the untouched
-          default has to reproduce today's create-a-gallery flow bit for bit.
+      {/* Task #193 (widened by #205 to a third field) — all OPTIONAL, all
+          fall back to the chosen package's own terms when left blank
+          (createGallery's own `??` against these fields, actions.ts). None
+          is `required`: the untouched default has to reproduce today's
+          create-a-gallery flow bit for bit.
 
           `PackageForPicker` (src/lib/packages.ts) deliberately omits the
-          package's LIVE `extraPhotoPriceCop` — its own header comment
-          explains why widening it would let live terms leak back into the
-          app. The included-photos placeholder below is safe precisely
-          because `includedPhotos` is the one live field that type already
-          exposes; the extra-photo-price field gets a static hint instead of
-          a real number, rather than widening that type for one placeholder. */}
+          package's LIVE `extraPhotoPriceCop`/`originalPhotoPriceCop` — its
+          own header comment explains why widening it would let live terms
+          leak back into the app. The included-photos placeholder below is
+          safe precisely because `includedPhotos` is the one live field that
+          type already exposes; the extra-photo-price and original-photo-price
+          fields each get a static hint instead of a real number, rather than
+          widening that type for a placeholder. */}
       <div className="flex flex-col gap-2">
         <label htmlFor="includedPhotos" className="text-fg-mute text-xs tracking-wide uppercase">
           Fotos incluidas (opcional)
@@ -214,6 +216,34 @@ export function GalleryForm({
         <input
           id="extraPhotoPriceCop"
           name="extraPhotoPriceCop"
+          type="number"
+          min={0}
+          step={1}
+          inputMode="numeric"
+          placeholder="Vacío = precio del paquete"
+          aria-invalid={state.status === "error"}
+          aria-describedby={state.status === "error" ? "gallery-form-error" : undefined}
+          className={inputClass}
+        />
+      </div>
+
+      {/* Task #205 — same optional/inherit-from-package shape as the two
+          fields above, for the new original-photo price. Same reason
+          `extraPhotoPriceCop` above uses a static placeholder instead of a
+          live number: `PackageForPicker` (src/lib/packages.ts) deliberately
+          omits every LIVE price, and widening it for one placeholder is how
+          those prices leak back into the app (that type's own header
+          comment). */}
+      <div className="flex flex-col gap-2">
+        <label
+          htmlFor="originalPhotoPriceCop"
+          className="text-fg-mute text-xs tracking-wide uppercase"
+        >
+          Precio foto original, COP (opcional)
+        </label>
+        <input
+          id="originalPhotoPriceCop"
+          name="originalPhotoPriceCop"
           type="number"
           min={0}
           step={1}

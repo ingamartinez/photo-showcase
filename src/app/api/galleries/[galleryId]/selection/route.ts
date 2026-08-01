@@ -193,9 +193,15 @@ export const GET = withApiSession(async function GET(
   // once. Off the gallery's own FROZEN snapshot terms, never the live
   // `packages` row: a gallery created under last year's price list keeps last
   // year's numbers forever.
-  const quota = computeQuota(picks.length, {
+  //
+  // Task #205 — `getGallerySelection()` returns every pick without regard to
+  // `selectionKind` (task #206 is what would need that split); every one of
+  // them is `edited` today, so `picks.length` is passed as the edited count
+  // with 0 originals.
+  const quota = computeQuota(picks.length, 0, {
     includedPhotosSnapshot: gallery.includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
+    originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,
   });
 
   return NextResponse.json({

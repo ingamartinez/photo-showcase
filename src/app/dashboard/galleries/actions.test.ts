@@ -260,6 +260,7 @@ const ESTANDAR_PACKAGE: Row = {
   priceCop: 100_000,
   includedPhotos: 13,
   extraPhotoPriceCop: 5_000,
+  originalPhotoPriceCop: 2_000,
   durationLabel: "1.5–2 h",
   active: true,
   sortOrder: 1,
@@ -271,6 +272,7 @@ const RETIRED_PACKAGE: Row = {
   priceCop: 50_000,
   includedPhotos: 5,
   extraPhotoPriceCop: 4_000,
+  originalPhotoPriceCop: 1_000,
   durationLabel: "1 h",
   active: false,
   sortOrder: 2,
@@ -487,6 +489,28 @@ describe("createGallery validation", () => {
     expect(result.message).toBeTruthy();
     expect(db.__rows.galleries).toHaveLength(0);
   });
+
+  // Task #205 — the third override field, validated the SAME independent way
+  // as the two above.
+  it("rejects a negative override for the original-photo price", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    const result = await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda",
+        sessionDate: "2026-08-01",
+        originalPhotoPriceCop: "-1",
+      }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.message).toBeTruthy();
+    expect(db.__rows.galleries).toHaveLength(0);
+  });
 });
 
 describe("createGallery package resolution", () => {
@@ -575,6 +599,7 @@ describe("createGallery success + frozen terms", () => {
       packageId: 1,
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      originalPhotoPriceCopSnapshot: 2_000,
     });
     // `status` isn't written by this action at all — the DB column default
     // ("draft", schema.ts) is what puts a new gallery there, not this insert.
@@ -636,6 +661,8 @@ describe("createGallery success + frozen terms", () => {
         sessionDate: "2026-08-01",
         includedPhotos: "",
         extraPhotoPriceCop: "",
+        // Task #205 — the third field, same blank-vs-typed decision.
+        originalPhotoPriceCop: "",
       }),
     );
 
@@ -643,6 +670,7 @@ describe("createGallery success + frozen terms", () => {
     expect(stored).toMatchObject({
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      originalPhotoPriceCopSnapshot: 2_000,
       termsOverridden: false,
     });
   });
@@ -679,6 +707,8 @@ describe("createGallery success + frozen terms", () => {
         sessionDate: "2026-08-01",
         includedPhotos: " ",
         extraPhotoPriceCop: "  ",
+        // Task #205 — the third field, same whitespace-only decision.
+        originalPhotoPriceCop: "   ",
       }),
     );
 
@@ -686,12 +716,13 @@ describe("createGallery success + frozen terms", () => {
     expect(stored).toMatchObject({
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      originalPhotoPriceCopSnapshot: 2_000,
       termsOverridden: false,
     });
   });
 
-  // Task #193 — both override fields typed together replace BOTH snapshots,
-  // and the gallery is flagged as overridden.
+  // Task #193 (widened by #205) — all three override fields typed together
+  // replace all three snapshots, and the gallery is flagged as overridden.
   it("writes the manually typed override values instead of the package's own terms, and flags the gallery as overridden", async () => {
     const { createGallery } = await import("./actions");
     const db = await seededDb();
@@ -705,6 +736,7 @@ describe("createGallery success + frozen terms", () => {
         sessionDate: "2026-08-01",
         includedPhotos: "20",
         extraPhotoPriceCop: "9000",
+        originalPhotoPriceCop: "7000",
       }),
     );
 
@@ -713,13 +745,14 @@ describe("createGallery success + frozen terms", () => {
       packageId: 1,
       includedPhotosSnapshot: 20,
       extraPhotoPriceCopSnapshot: 9_000,
+      originalPhotoPriceCopSnapshot: 7_000,
       termsOverridden: true,
     });
   });
 
   // Each field overrides INDEPENDENTLY — overriding one must not force the
-  // other away from the package's own value.
-  it("overrides only the included-photos quota, inheriting the package's own extra-photo price", async () => {
+  // others away from the package's own value.
+  it("overrides only the included-photos quota, inheriting the package's own extra-photo and original-photo prices", async () => {
     const { createGallery } = await import("./actions");
     const db = await seededDb();
 
@@ -738,11 +771,12 @@ describe("createGallery success + frozen terms", () => {
     expect(stored).toMatchObject({
       includedPhotosSnapshot: 7,
       extraPhotoPriceCopSnapshot: 5_000,
+      originalPhotoPriceCopSnapshot: 2_000,
       termsOverridden: true,
     });
   });
 
-  it("overrides only the extra-photo price, inheriting the package's own included-photos quota", async () => {
+  it("overrides only the extra-photo price, inheriting the package's own included-photos quota and original-photo price", async () => {
     const { createGallery } = await import("./actions");
     const db = await seededDb();
 
@@ -761,6 +795,39 @@ describe("createGallery success + frozen terms", () => {
     expect(stored).toMatchObject({
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 12_000,
+      originalPhotoPriceCopSnapshot: 2_000,
+      termsOverridden: true,
+    });
+  });
+
+  // Task #205 — the third field's own independence: overriding ONLY the
+  // original-photo price must not disturb the other two, and must still flip
+  // `termsOverridden` (the widened disjunction at actions.ts's own
+  // `termsOverridden = includedPhotosOverride !== undefined ||
+  // extraPhotoPriceCopOverride !== undefined ||
+  // originalPhotoPriceCopOverride !== undefined`).
+  it("overrides only the original-photo price, inheriting the package's own included-photos quota and extra-photo price", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda con precio original overrideado",
+        sessionDate: "2026-08-01",
+        originalPhotoPriceCop: "6000",
+      }),
+    );
+
+    const stored = db.__rows.galleries.find(
+      (g) => g.title === "Boda con precio original overrideado",
+    );
+    expect(stored).toMatchObject({
+      includedPhotosSnapshot: 13,
+      extraPhotoPriceCopSnapshot: 5_000,
+      originalPhotoPriceCopSnapshot: 6_000,
       termsOverridden: true,
     });
   });
@@ -782,6 +849,9 @@ describe("createGallery success + frozen terms", () => {
         sessionDate: "2026-08-01",
         includedPhotos: "0",
         extraPhotoPriceCop: "0",
+        // Task #205 — a free original is a legitimate promotion (task body's
+        // own example), so `0` here must survive as a real override too.
+        originalPhotoPriceCop: "0",
       }),
     );
 
@@ -789,6 +859,7 @@ describe("createGallery success + frozen terms", () => {
     expect(stored).toMatchObject({
       includedPhotosSnapshot: 0,
       extraPhotoPriceCopSnapshot: 0,
+      originalPhotoPriceCopSnapshot: 0,
       termsOverridden: true,
     });
   });
@@ -817,6 +888,18 @@ describe("createGallery success + frozen terms", () => {
   // `termsOverridden` — and asserting the flag directly, AFTER the same
   // live-package mutation, so a comparison-based derivation would now
   // actually flip these assertions the way the comment always claimed.
+  //
+  // TASK #205 REVIEW FINDING, FIXED: this test never posted or asserted
+  // `originalPhotoPriceCop`/`originalPhotoPriceCopSnapshot` at all — the
+  // reviewer proved that by deleting `originalPhotoPriceCopSnapshot,` from
+  // `createGallery`'s own `.values({...})` (actions.ts) and getting
+  // `127 files / 1654 tests passed`, `tsc --noEmit` exit 0. Extended below,
+  // IN PLACE (not beside), with a third live-package mutation and a third
+  // snapshot assertion on each gallery, read through `getGalleryDetailsByIds`
+  // (the one projection both `GalleryDetail` fields — `termsOverridden` and
+  // `originalPhotoPriceCopSnapshot` — already carry; `GalleryWithDetails`
+  // still doesn't expose the third snapshot, so that one is asserted only
+  // through `details`, not through `galleriesList`).
   it("keeps a gallery's displayed terms unmoved after the bound package's price/quota are edited afterward — normal and overridden alike", async () => {
     const { createGallery } = await import("./actions");
     const { getGalleriesWithDetails, getGalleryDetailsByIds } = await import("@/lib/galleries");
@@ -842,6 +925,7 @@ describe("createGallery success + frozen terms", () => {
         sessionDate: "2026-08-01",
         includedPhotos: "20",
         extraPhotoPriceCop: "9000",
+        originalPhotoPriceCop: "6000",
       }),
     );
     expect(createdOverride.status).toBe("created");
@@ -853,6 +937,7 @@ describe("createGallery success + frozen terms", () => {
     livePackage.priceCop = 500_000;
     livePackage.includedPhotos = 1;
     livePackage.extraPhotoPriceCop = 999_999;
+    livePackage.originalPhotoPriceCop = 777_777;
 
     // Negative control: prove the mutation actually took effect on the live
     // row, so this test would fail for the right reason if the read-side
@@ -875,21 +960,33 @@ describe("createGallery success + frozen terms", () => {
     expect(overriddenGallery?.includedPhotosSnapshot).toBe(20);
     expect(overriddenGallery?.extraPhotoPriceCopSnapshot).toBe(9_000);
 
-    // `termsOverridden` itself, read through `getGalleryDetailsByIds` (the
-    // one projection that carries it) — the actual fix for this comment's
-    // own review finding above. A derivation that compared these frozen
-    // snapshots against the package's CURRENT row (still sitting at
-    // `includedPhotos: 1` / `extraPhotoPriceCop: 999_999` from the mutation
-    // above) would call the FIRST gallery overridden (13 ≠ 1) — that
-    // mismatches the `false` this asserts for it, and is what actually flips
-    // this test red under that derivation.
+    // `termsOverridden` AND the third snapshot, read through
+    // `getGalleryDetailsByIds` (the one projection that carries both) — the
+    // actual fix for this comment's own review findings above. A derivation
+    // that compared these frozen snapshots against the package's CURRENT row
+    // (still sitting at `includedPhotos: 1` / `extraPhotoPriceCop: 999_999` /
+    // `originalPhotoPriceCop: 777_777` from the mutation above) would call
+    // the FIRST gallery overridden (13 ≠ 1) — that mismatches the `false`
+    // this asserts for it, and is what actually flips this test red under
+    // that derivation. A `createGallery` that dropped
+    // `originalPhotoPriceCopSnapshot` from its insert (falling back to the
+    // column's own `default(2_000)`) would report `2_000` for the OVERRIDDEN
+    // gallery below instead of the typed `6_000` — that is what
+    // `originalPhotoPriceCopSnapshot` on the second assertion actually
+    // catches.
     const galleryId = db.__rows.galleries.find((g) => g.title === "Boda Ana y Beto")!.id as string;
     const overriddenGalleryId = db.__rows.galleries.find((g) => g.title === "Boda Overrideada")!
       .id as string;
     const details = await getGalleryDetailsByIds([galleryId, overriddenGalleryId]);
 
-    expect(details.find((d) => d.id === galleryId)?.termsOverridden).toBe(false);
-    expect(details.find((d) => d.id === overriddenGalleryId)?.termsOverridden).toBe(true);
+    const detail = details.find((d) => d.id === galleryId);
+    const overriddenDetail = details.find((d) => d.id === overriddenGalleryId);
+
+    expect(detail?.termsOverridden).toBe(false);
+    expect(detail?.originalPhotoPriceCopSnapshot).toBe(2_000);
+
+    expect(overriddenDetail?.termsOverridden).toBe(true);
+    expect(overriddenDetail?.originalPhotoPriceCopSnapshot).toBe(6_000);
   });
 
   it("rejects a client id that does not exist (foreign key violation), with a friendly message", async () => {

@@ -22,16 +22,25 @@ function counterText(): string {
   return `${first} ${second}`.replace(/\s+/g, " ");
 }
 
+// Task #205 — every fixture below passes 0 originals: nothing in this app
+// writes `assets.selectionKind` to anything but `edited` yet (task #206 is
+// the slice that would), and `<SelectionCounter>` itself renders no
+// originals breakdown row — see this component's own file for why that stays
+// true even after this task (it only ever formats what `computeQuota` hands
+// it, and nothing here asks it to show a new row).
+const SNAPSHOT = {
+  includedPhotosSnapshot: 13,
+  extraPhotoPriceCopSnapshot: 5_000,
+  originalPhotoPriceCopSnapshot: 2_000,
+};
+
 afterEach(() => {
   cleanup();
 });
 
 describe("SelectionCounter", () => {
   it("renders included, selected, extras and surcharge — task #24's exact shape", () => {
-    const quota = computeQuota(15, {
-      includedPhotosSnapshot: 13,
-      extraPhotoPriceCopSnapshot: 5_000,
-    });
+    const quota = computeQuota(15, 0, SNAPSHOT);
 
     render(<SelectionCounter quota={quota} />);
 
@@ -55,10 +64,7 @@ describe("SelectionCounter", () => {
   // the test above makes), and only THEN that the package's name is not
   // anywhere in that same, genuinely-mounted output.
   it("never renders the package's name, on a gallery that was never overridden", () => {
-    const quota = computeQuota(15, {
-      includedPhotosSnapshot: 13,
-      extraPhotoPriceCopSnapshot: 5_000,
-    });
+    const quota = computeQuota(15, 0, SNAPSHOT);
 
     render(<SelectionCounter quota={quota} />);
 
@@ -74,10 +80,7 @@ describe("SelectionCounter", () => {
   });
 
   it("still shows all three parts (never hides the row) when nobody has selected anything yet", () => {
-    const quota = computeQuota(0, {
-      includedPhotosSnapshot: 13,
-      extraPhotoPriceCopSnapshot: 5_000,
-    });
+    const quota = computeQuota(0, 0, SNAPSHOT);
 
     render(<SelectionCounter quota={quota} />);
 
@@ -87,10 +90,7 @@ describe("SelectionCounter", () => {
   });
 
   it("never blocks or scolds when far over the included count — just informs with the real numbers", () => {
-    const quota = computeQuota(30, {
-      includedPhotosSnapshot: 13,
-      extraPhotoPriceCopSnapshot: 5_000,
-    });
+    const quota = computeQuota(30, 0, SNAPSHOT);
 
     render(<SelectionCounter quota={quota} />);
 
@@ -106,10 +106,7 @@ describe("SelectionCounter", () => {
   // (<SubmitSelectionPanel>'s own copy, which fires once at the very end of
   // a session that can run twenty minutes).
   it("states plainly, on every render, that the app never charges — not only at submit time", () => {
-    const quota = computeQuota(15, {
-      includedPhotosSnapshot: 13,
-      extraPhotoPriceCopSnapshot: 5_000,
-    });
+    const quota = computeQuota(15, 0, SNAPSHOT);
 
     render(<SelectionCounter quota={quota} />);
 
@@ -123,19 +120,26 @@ describe("SelectionCounter", () => {
   // #147's own body calls the hardest problem in the epic. Same "no charge"
   // reassurance renders whether the client is under or over the quota.
   it("keeps the same reassurance sentence whether under or over the included quota", () => {
-    const under = computeQuota(5, {
-      includedPhotosSnapshot: 13,
-      extraPhotoPriceCopSnapshot: 5_000,
-    });
+    const under = computeQuota(5, 0, SNAPSHOT);
     const { unmount } = render(<SelectionCounter quota={under} />);
     expect(screen.getByText(/no se cobra nada/)).toBeDefined();
     unmount();
 
-    const over = computeQuota(20, {
-      includedPhotosSnapshot: 13,
-      extraPhotoPriceCopSnapshot: 5_000,
-    });
+    const over = computeQuota(20, 0, SNAPSHOT);
     render(<SelectionCounter quota={over} />);
     expect(screen.getByText(/no se cobra nada/)).toBeDefined();
+  });
+
+  // Task #205's own client-facing constraint: even though `QuotaResult` now
+  // carries `originals`/`selectedOriginal`/`originalPhotoPriceCopSnapshot`,
+  // this component renders no row mentioning originals at all — it must stay
+  // absent, not merely zeroed, so a gallery with zero originals is visually
+  // identical to what this component rendered before task #205.
+  it("never renders anything about originals — no new row, no new word", () => {
+    const quota = computeQuota(15, 0, SNAPSHOT);
+
+    render(<SelectionCounter quota={quota} />);
+
+    expect(screen.queryByText(/original/i)).toBeNull();
   });
 });

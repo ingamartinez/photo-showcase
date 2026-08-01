@@ -26,7 +26,7 @@ async function openDialog(user: ReturnType<typeof userEvent.setup>) {
 }
 
 describe("EditGalleryTermsDialog — fields", () => {
-  it("pre-fills both fields with the gallery's current effective values", async () => {
+  it("pre-fills all three fields with the gallery's current effective values", async () => {
     const user = userEvent.setup();
     render(
       <EditGalleryTermsDialog
@@ -34,6 +34,7 @@ describe("EditGalleryTermsDialog — fields", () => {
         status="proofing"
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        originalPhotoPriceCopSnapshot={2_000}
         selectedCount={0}
       />,
     );
@@ -48,9 +49,12 @@ describe("EditGalleryTermsDialog — fields", () => {
     expect(within(dialog).getByLabelText<HTMLInputElement>("Precio foto extra, COP").value).toBe(
       "5000",
     );
+    expect(within(dialog).getByLabelText<HTMLInputElement>("Precio foto original, COP").value).toBe(
+      "2000",
+    );
   });
 
-  it("marks both fields required — unlike creation, an edit has no meaningful empty value", async () => {
+  it("marks all three fields required — unlike creation, an edit has no meaningful empty value", async () => {
     const user = userEvent.setup();
     render(
       <EditGalleryTermsDialog
@@ -58,6 +62,7 @@ describe("EditGalleryTermsDialog — fields", () => {
         status="draft"
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        originalPhotoPriceCopSnapshot={2_000}
         selectedCount={0}
       />,
     );
@@ -68,9 +73,12 @@ describe("EditGalleryTermsDialog — fields", () => {
     expect(within(dialog).getByLabelText<HTMLInputElement>("Precio foto extra, COP").required).toBe(
       true,
     );
+    expect(
+      within(dialog).getByLabelText<HTMLInputElement>("Precio foto original, COP").required,
+    ).toBe(true);
   });
 
-  it("submits the gallery id and the typed values", async () => {
+  it("submits the gallery id and the typed values, including the original photo price", async () => {
     updateGalleryTermsMock.mockResolvedValue({ status: "updated" });
     const user = userEvent.setup();
     render(
@@ -79,6 +87,7 @@ describe("EditGalleryTermsDialog — fields", () => {
         status="draft"
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        originalPhotoPriceCopSnapshot={2_000}
         selectedCount={0}
       />,
     );
@@ -90,6 +99,9 @@ describe("EditGalleryTermsDialog — fields", () => {
     const extraPriceField = within(dialog).getByLabelText("Precio foto extra, COP");
     await user.clear(extraPriceField);
     await user.type(extraPriceField, "0");
+    const originalPriceField = within(dialog).getByLabelText("Precio foto original, COP");
+    await user.clear(originalPriceField);
+    await user.type(originalPriceField, "3000");
     await user.click(within(dialog).getByRole("button", { name: "Guardar términos" }));
 
     const [, formData] = updateGalleryTermsMock.mock.calls[0] as [
@@ -99,6 +111,7 @@ describe("EditGalleryTermsDialog — fields", () => {
     expect(formData.get("galleryId")).toBe(GALLERY_ID);
     expect(formData.get("includedPhotos")).toBe("20");
     expect(formData.get("extraPhotoPriceCop")).toBe("0");
+    expect(formData.get("originalPhotoPriceCop")).toBe("3000");
   });
 
   it("shows the server's error message and keeps the form open to retry", async () => {
@@ -113,6 +126,7 @@ describe("EditGalleryTermsDialog — fields", () => {
         status="draft"
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        originalPhotoPriceCopSnapshot={2_000}
         selectedCount={0}
       />,
     );
@@ -138,6 +152,7 @@ describe("EditGalleryTermsDialog — fields", () => {
         status="draft"
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        originalPhotoPriceCopSnapshot={2_000}
         selectedCount={0}
       />,
     );
@@ -163,6 +178,7 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
         status="draft"
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        originalPhotoPriceCopSnapshot={2_000}
         selectedCount={0}
       />,
     );
@@ -171,6 +187,7 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
 
     expect(within(dialog).queryByText(/El cliente ve hoy/)).toBeNull();
     expect(within(dialog).queryByText(/Va a ver/)).toBeNull();
+    expect(within(dialog).queryByText(/Precio foto original vigente/)).toBeNull();
   });
 
   it("shows correct before/after numbers, via computeQuota, for a gallery with a selection already made", async () => {
@@ -181,6 +198,7 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
         status="selected"
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        originalPhotoPriceCopSnapshot={2_000}
         // 22 selected against the starting terms (13 included, $5.000/extra)
         // keeps `extras`/`surchargeCop` strictly positive on BOTH sides —
         // same reasoning as actions.terms.test.ts's own rebuilt "changes
@@ -194,10 +212,16 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
 
     const dialog = await openDialog(user);
 
-    // Before: computeQuota(22, {13, 5000}) => extras 9, surcharge 45_000.
+    // Before: computeQuota(22, 0, {13, 5000, 2000}) => extras 9, surcharge
+    // 45_000, originalPhotoPriceCopSnapshot passed through unchanged as
+    // 2_000. Two SEPARATE sentences (task #205 review round 2): the original
+    // price is never something "the client sees today" (no client sees
+    // anything about it until task #206), so it gets its own row worded as a
+    // currently-saved fact, not folded into the "El cliente ve hoy" claim.
     expect(
       within(dialog).getByText("El cliente ve hoy: 13 incluidas · 9 extras · $ 45.000"),
     ).toBeDefined();
+    expect(within(dialog).getByText(/Precio foto original vigente: \$ 2\.000/)).toBeDefined();
 
     const includedPhotosField = within(dialog).getByLabelText("Fotos incluidas");
     await user.clear(includedPhotosField);
@@ -205,22 +229,31 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
     const extraPriceField = within(dialog).getByLabelText("Precio foto extra, COP");
     await user.clear(extraPriceField);
     await user.type(extraPriceField, "2000");
+    const originalPriceField = within(dialog).getByLabelText("Precio foto original, COP");
+    await user.clear(originalPriceField);
+    await user.type(originalPriceField, "9000");
 
-    // After: computeQuota(22, {20, 2000}) => extras 2, surcharge 4_000.
+    // After: computeQuota(22, 0, {20, 2000, 9000}) => extras 2, surcharge
+    // 4_000. `originalPhotoPriceCopSnapshot` reflects the NEWLY TYPED 9_000
+    // even though `selectedOriginal` is 0 here and the surcharge itself
+    // doesn't move because of it — this is the row that proves the typed
+    // original price actually reaches the preview.
     expect(within(dialog).getByText("Va a ver: 20 incluidas · 2 extras · $ 4.000")).toBeDefined();
+    expect(within(dialog).getByText(/Nuevo precio foto original: \$ 9\.000/)).toBeDefined();
 
     // THE FIX (task #200 review round 1): the "hoy" row must stay pinned to
     // the gallery's SAVED snapshot — never drift to follow what is
     // mid-typed below it. Without this assertion, a bug that reads the
     // "hoy" row off the live inputs instead of the `includedPhotosSnapshot`/
-    // `extraPhotoPriceCopSnapshot` props would show the admin "lo que el
-    // cliente ve hoy" as the numbers they are ABOUT to save — the most
-    // misleading failure this screen could produce — and nothing above
-    // catches it, because the only prior assertion on this row ran BEFORE
-    // any typing happened.
+    // `extraPhotoPriceCopSnapshot`/`originalPhotoPriceCopSnapshot` props
+    // would show the admin "lo que el cliente ve hoy" as the numbers they
+    // are ABOUT to save — the most misleading failure this screen could
+    // produce — and nothing above catches it, because the only prior
+    // assertion on this row ran BEFORE any typing happened.
     expect(
       within(dialog).getByText("El cliente ve hoy: 13 incluidas · 9 extras · $ 45.000"),
     ).toBeDefined();
+    expect(within(dialog).getByText(/Precio foto original vigente: \$ 2\.000/)).toBeDefined();
   });
 
   it("still shows the notice for a published gallery with nobody selected yet", async () => {
@@ -231,6 +264,7 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
         status="proofing"
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        originalPhotoPriceCopSnapshot={2_000}
         selectedCount={0}
       />,
     );
@@ -240,9 +274,10 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
     expect(
       within(dialog).getByText("El cliente ve hoy: 13 incluidas · 0 extras · $ 0"),
     ).toBeDefined();
+    expect(within(dialog).getByText(/Precio foto original vigente: \$ 2\.000/)).toBeDefined();
   });
 
-  // The trap the task body names explicitly: `0` in either field is a
+  // The trap the task body names explicitly: `0` in any field is a
   // legitimate value, and the preview must reflect it accurately rather than
   // treating it as "no input".
   it("reflects a typed 0 in the preview rather than falling back to the original value", async () => {
@@ -253,6 +288,7 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
         status="selected"
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        originalPhotoPriceCopSnapshot={2_000}
         selectedCount={5}
       />,
     );
@@ -262,8 +298,38 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
     await user.clear(includedPhotosField);
     await user.type(includedPhotosField, "0");
 
-    // computeQuota(5, {0, 5000}) => extras 5, surcharge 25_000.
+    // computeQuota(5, 0, {0, 5000, 2000}) => extras 5, surcharge 25_000.
     expect(within(dialog).getByText("Va a ver: 0 incluidas · 5 extras · $ 25.000")).toBeDefined();
+    expect(within(dialog).getByText(/Nuevo precio foto original: \$ 2\.000/)).toBeDefined();
+  });
+
+  // Criterion 6, this component's own corner of it: `0` typed into the NEW
+  // original-price field specifically (not the included-photos field the
+  // test above already covers) must show as $0, not fall back to the
+  // gallery's actual current price or hide the row.
+  it("reflects a typed 0 in the original-photo-price field, distinct from leaving it untouched", async () => {
+    const user = userEvent.setup();
+    render(
+      <EditGalleryTermsDialog
+        galleryId={GALLERY_ID}
+        status="selected"
+        includedPhotosSnapshot={13}
+        extraPhotoPriceCopSnapshot={5_000}
+        originalPhotoPriceCopSnapshot={2_000}
+        selectedCount={5}
+      />,
+    );
+
+    const dialog = await openDialog(user);
+    const originalPriceField = within(dialog).getByLabelText("Precio foto original, COP");
+    await user.clear(originalPriceField);
+    await user.type(originalPriceField, "0");
+
+    // computeQuota(5, 0, {13, 5000, 0}) => extras 0 (under quota), surcharge
+    // 0, originalPhotoPriceCopSnapshot 0 (the typed value, not the gallery's
+    // real 2_000).
+    expect(within(dialog).getByText("Va a ver: 13 incluidas · 0 extras · $ 0")).toBeDefined();
+    expect(within(dialog).getByText(/Nuevo precio foto original: \$ 0/)).toBeDefined();
   });
 
   it("hides the 'Va a ver' row while a field is empty mid-edit, instead of showing a wrong preview", async () => {
@@ -274,6 +340,7 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
         status="selected"
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        originalPhotoPriceCopSnapshot={2_000}
         selectedCount={5}
       />,
     );
@@ -283,7 +350,35 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
     await user.clear(includedPhotosField);
 
     expect(within(dialog).queryByText(/Va a ver/)).toBeNull();
-    // The "hoy" row survives — it never depends on the in-progress edit.
+    expect(within(dialog).queryByText(/Nuevo precio foto original/)).toBeNull();
+    // The "hoy" rows survive — they never depend on the in-progress edit.
     expect(within(dialog).getByText(/El cliente ve hoy/)).toBeDefined();
+    expect(within(dialog).getByText(/Precio foto original vigente/)).toBeDefined();
+  });
+
+  // Same emptiness guard as the included-photos/extra-price fields, applied
+  // to the new original-price field: clearing IT specifically must also
+  // suppress the preview, not just clearing one of the other two.
+  it("hides the 'Va a ver' row while the original-photo-price field is empty mid-edit", async () => {
+    const user = userEvent.setup();
+    render(
+      <EditGalleryTermsDialog
+        galleryId={GALLERY_ID}
+        status="selected"
+        includedPhotosSnapshot={13}
+        extraPhotoPriceCopSnapshot={5_000}
+        originalPhotoPriceCopSnapshot={2_000}
+        selectedCount={5}
+      />,
+    );
+
+    const dialog = await openDialog(user);
+    const originalPriceField = within(dialog).getByLabelText("Precio foto original, COP");
+    await user.clear(originalPriceField);
+
+    expect(within(dialog).queryByText(/Va a ver/)).toBeNull();
+    expect(within(dialog).queryByText(/Nuevo precio foto original/)).toBeNull();
+    expect(within(dialog).getByText(/El cliente ve hoy/)).toBeDefined();
+    expect(within(dialog).getByText(/Precio foto original vigente/)).toBeDefined();
   });
 });

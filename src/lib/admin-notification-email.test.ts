@@ -6,7 +6,13 @@ import {
 } from "./admin-notification-email";
 import { computeQuota } from "@/lib/quota";
 
-const QUOTA = computeQuota(15, { includedPhotosSnapshot: 13, extraPhotoPriceCopSnapshot: 5_000 });
+// Task #205 — 0 originals: nothing writes `assets.selectionKind` to anything
+// but `edited` yet (task #206).
+const QUOTA = computeQuota(15, 0, {
+  includedPhotosSnapshot: 13,
+  extraPhotoPriceCopSnapshot: 5_000,
+  originalPhotoPriceCopSnapshot: 2_000,
+});
 
 const PARAMS = {
   clientName: "Ana Pérez",

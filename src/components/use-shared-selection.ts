@@ -158,10 +158,29 @@ export function useSharedSelection({
   // `selectionKind` (`SharedSelectionAsset` doesn't carry it, and every
   // asset this app can produce today is `edited` — task #206 is the slice
   // that would let a client pick `original` at all). Seeded here as 0
-  // originals; every quota AFTER this first paint comes straight from the
-  // server's own recomputation (the PATCH/GET routes, both of which read the
-  // gallery's real `originalPhotoPriceCopSnapshot`), never recomputed
-  // locally again.
+  // originals, which makes the `originalPhotoPriceCopSnapshot: 0` right
+  // below harmless (0 * anything is 0) but NOT a stand-in for the gallery's
+  // real price — this hook's own props (below) simply do not carry that
+  // value, because the wiring stops one layer up:
+  // `src/app/galleries/[publicSlug]/page.tsx` passes only
+  // `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot` to `<ProofGrid>`
+  // (and from there to this hook), and the GraphQL `Gallery` type
+  // (`src/lib/graphql/types/gallery.ts`) does not expose
+  // `originalPhotoPriceCopSnapshot` at all — `readClientGalleryBySlug`'s own
+  // document never selects it (deliberately narrow, `client-gallery-
+  // reads.ts`'s header comment).
+  //
+  // THIS IS A REAL GAP, NOT A DATA-FLOW CHOICE, and it is intentionally NOT
+  // closed here: threading the real price through `gallery.ts`, `page.tsx`
+  // and this hook's own props would widen this slice into #206's territory.
+  // Every quota AFTER this first paint still comes from the server's own
+  // recomputation (the PATCH/GET routes, both of which DO read the gallery's
+  // real `originalPhotoPriceCopSnapshot` off the row — see those routes'
+  // own comments), so nothing downstream of the FIRST paint is affected by
+  // this hook's hardcoded 0. But #206 MUST thread the real value through all
+  // three of `gallery.ts`, `page.tsx` and this hook before it lets a client
+  // pick `original` — shipping that slice against this hook's hardcoded 0
+  // would compute every client's surcharge against a $0 original price.
   const [quota, setQuota] = useState<QuotaResult>(() =>
     computeQuota(initialAssets.filter((asset) => asset.isSelected).length, 0, {
       includedPhotosSnapshot,

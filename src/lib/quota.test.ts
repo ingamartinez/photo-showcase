@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { computeQuota } from "./quota";
 
@@ -137,14 +138,23 @@ describe("computeQuota", () => {
     expect(result.selected).toBe(12);
   });
 
-  // Acceptance criterion 8 — this module imports nothing from `@/lib/db` or
-  // `packages`; a static assertion isn't expressible in a vitest test, but a
-  // pure-function test suite with no db mock, no `vi.mock`, and no async
-  // setup anywhere in this file IS the proof: if this module ever needed I/O
-  // this file would need a mock to run at all.
-  it("is a pure function: same inputs, same output, no hidden state across calls", () => {
-    const first = computeQuota(9, 3, SNAPSHOT);
-    const second = computeQuota(9, 3, SNAPSHOT);
-    expect(first).toEqual(second);
+  // Acceptance criterion 8 — this module must never import `@/lib/db` or
+  // `packages`, so it stays callable with plain numbers, no mock, no async
+  // setup, from both a Server Component and a Route Handler.
+  //
+  // REVIEW FINDING, FIXED (task #205, round 2): the test this replaced —
+  // "is a pure function: same inputs, same output" — called `computeQuota`
+  // twice and `toEqual`'d the results. Any function returning a fresh object
+  // literal passes that unconditionally; it could not have caught an added
+  // `@/lib/db`/`packages` import, which is what this criterion actually
+  // asks. A real static-import guard, reading this module's own SOURCE TEXT
+  // rather than calling it, is the only thing that actually tests "imports
+  // nothing" — this is the one criterion in the whole slice a runtime call
+  // genuinely cannot observe.
+  it("never imports @/lib/db or @/lib/db/schema — computeQuota takes plain numbers, does no I/O", () => {
+    const source = readFileSync(new URL("./quota.ts", import.meta.url), "utf-8");
+    const importLines = source.split("\n").filter((line) => /^\s*import\b/.test(line));
+
+    expect(importLines).toEqual([]);
   });
 });

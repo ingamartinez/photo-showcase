@@ -242,11 +242,24 @@ export function EditGalleryTermsDialog({
               </p>
               {/* Unconditional once `showBeforeAfter` is true: this row
                   describes the gallery's CURRENT, already-saved terms, so it
-                  never depends on whatever is mid-typed below it. */}
+                  never depends on whatever is mid-typed below it.
+
+                  Task #205 review finding: this used to append
+                  "· original $X" to this SAME sentence, which reads as
+                  "the client sees this today" — untrue. No client sees
+                  anything about the original-photo price until task #206
+                  lets them actually pick one; today `originalPhotoPriceCopSnapshot`
+                  only ever multiplies against 0 originals. The original price
+                  gets its OWN sentence below, worded as what it IS (the
+                  currently-saved price, an admin-only fact) rather than as
+                  something the client is shown. */}
               <p className="text-fg-dim">
                 El cliente ve hoy: {before.includedPhotosSnapshot} incluidas · {before.extras}{" "}
-                extras · {formatCop(before.surchargeCop)} · original{" "}
-                {formatCop(before.originalPhotoPriceCopSnapshot)}
+                extras · {formatCop(before.surchargeCop)}
+              </p>
+              <p className="text-fg-dim">
+                Precio foto original vigente: {formatCop(before.originalPhotoPriceCopSnapshot)} — el
+                cliente todavía no lo ve.
               </p>
               {/* Conditional on `after` being a valid parse of what is
                   CURRENTLY typed — an empty or malformed field mid-edit
@@ -254,11 +267,16 @@ export function EditGalleryTermsDialog({
                   value the server would reject anyway (see
                   `hasValidPreviewInputs` above). */}
               {after && (
-                <p className="text-fg mt-1">
-                  Va a ver: {after.includedPhotosSnapshot} incluidas · {after.extras} extras ·{" "}
-                  {formatCop(after.surchargeCop)} · original{" "}
-                  {formatCop(after.originalPhotoPriceCopSnapshot)}
-                </p>
+                <>
+                  <p className="text-fg mt-1">
+                    Va a ver: {after.includedPhotosSnapshot} incluidas · {after.extras} extras ·{" "}
+                    {formatCop(after.surchargeCop)}
+                  </p>
+                  <p className="text-fg mt-1">
+                    Nuevo precio foto original: {formatCop(after.originalPhotoPriceCopSnapshot)} —
+                    el cliente todavía no lo ve.
+                  </p>
+                </>
               )}
             </div>
           )}

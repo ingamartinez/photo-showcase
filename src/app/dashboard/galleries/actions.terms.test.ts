@@ -543,18 +543,31 @@ describe("updateGalleryTerms success", () => {
     expect(revalidatePathMock).toHaveBeenCalledWith("/galleries/abc123");
   });
 
-  // Criterion 5 (task #200) / criterion 4 (task #205, which EXTENDED this
-  // exact test for the third snapshot column rather than writing a parallel
-  // one beside it — see #205's own kanban body) — the client's own gallery
-  // page reads these exact three columns and hands them to `computeQuota()`
-  // (src/lib/quota.ts) with no extra propagation step in between:
-  // `/galleries/[publicSlug]` (page.tsx) passes
-  // `gallery.includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot`/
-  // `originalPhotoPriceCopSnapshot` straight through, unmodified. Proven here
-  // THROUGH `computeQuota`, not by re-asserting the raw column values a
-  // second time (that would just repeat the "saves new values" test above
-  // under a different name) — this is what a client actually sees once the
-  // row this action wrote is read back.
+  // Criterion 5 (task #200) — task #205 EXTENDED this exact test for the
+  // third snapshot column rather than writing a parallel one beside it, since
+  // this is the ONE test in the suite that proves `updateGalleryTerms`
+  // writes ALL of a gallery's frozen terms correctly, read back through
+  // `computeQuota()` rather than the raw columns a second time.
+  //
+  // CORRECTION (this task's own review, round 2): an earlier version of this
+  // comment also called this "criterion 4 (task #205)" — wrong. #205's
+  // criterion 4 is "frozen AT CREATION, unmoved by a LATER PACKAGE edit",
+  // which this test does not exercise at all (it never touches `packages`,
+  // only `updateGalleryTerms`'s own UPDATE). That criterion's real test is
+  // `actions.test.ts`'s "keeps a gallery's displayed terms unmoved after the
+  // bound package's price/quota are edited afterward" — see that file for
+  // the third-snapshot extension of THAT test. What THIS test actually
+  // proves is #205's criterion 5's edit half: the admin can edit the
+  // original-photo price afterward and the client-visible numbers move
+  // accordingly, proven via computeQuota rather than re-asserting the raw
+  // column values a second time (that would just repeat the "saves new
+  // values" test above under a different name).
+  //
+  // What this test does NOT prove, and never claimed to: it does not show
+  // `/galleries/[publicSlug]` (page.tsx) actually threading
+  // `originalPhotoPriceCopSnapshot` through to the client's own `computeQuota`
+  // call — it does not, today. See `use-shared-selection.ts`'s own comment
+  // for that gap and why it is deliberately NOT closed in this slice.
   it("changes what the client would see, verified through computeQuota on the written row", async () => {
     const { updateGalleryTerms } = await import("./actions");
     const db = await seededDb();

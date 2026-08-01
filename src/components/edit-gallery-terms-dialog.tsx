@@ -57,12 +57,21 @@ export function EditGalleryTermsDialog({
   // never counts assets itself.
   //
   // Task #205 — this stays a single total, not split into edited/original
-  // counts: nothing in this slice writes `assets.selectionKind` to anything
-  // but `edited` (task #206 is the slice that would let a client pick
-  // `original`), so every selected asset a gallery can have today IS an
-  // edited pick. Passed to `computeQuota` below as the edited count with 0
-  // originals — the same "0 originals" invariant `use-shared-selection.ts`
-  // and the selection routes all currently hold.
+  // counts, passed to `computeQuota` below as the edited count with 0
+  // originals.
+  //
+  // ⚠️ KNOWN GAP, LEFT OPEN BY TASK #206 ON PURPOSE (out of that slice's own
+  // scope — it touches the CLIENT gallery, not this admin dialog): task #206
+  // is what lets a client actually mark a pick `original`, which means this
+  // preview can now UNDERSTATE a real gallery's surcharge the moment one
+  // exists — every original is charged in full (src/lib/quota.ts's own
+  // header comment) and this component silently treats them all as `edited`
+  // instead. `[galleryId]/page.tsx`'s own `selectedCount` would need to
+  // split by `assets.selectionKind` the same way the client-facing routes
+  // do (PATCH .../selection, GET .../selection, POST .../submit-selection)
+  // before this dialog's preview can be trusted for a gallery that actually
+  // has originals. Flagged here rather than fixed quietly so the next
+  // reader does not mistake this comment for a guarantee that still holds.
   selectedCount,
 }: {
   galleryId: string;

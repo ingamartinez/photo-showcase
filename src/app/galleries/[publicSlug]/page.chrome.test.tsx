@@ -13,7 +13,7 @@
 // its proofs are actually wired into markup, and that the grid reserves
 // layout space up front (no CLS).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import type { Session } from "next-auth";
 import ClientGalleryPage from "./page";
 import type { GalleryDetail } from "@/lib/galleries";
@@ -343,6 +343,85 @@ describe("ClientGalleryPage chrome", () => {
         .map((p) => p.textContent)
         .filter((text): text is string => /\(\d+\)/.test(text ?? ""));
       expect(groupHeaders).toEqual(["Beto Ruiz (2)"]);
+    });
+
+    // Task #206, criterion 4 — END TO END through the REAL GraphQL pipeline
+    // (nothing under src/lib/graphql/** is mocked here, same seam #204's own
+    // end-to-end test above exercises): the gap this test closes is
+    // `originalPhotoPriceCopSnapshot` actually reaching the page's rendered
+    // counter through `Gallery.originalPhotoPriceCopSnapshot` (the wiring
+    // gap #205 left and this task's own first commit closed) AND the
+    // edited/original split reaching it through the real picks list. A
+    // fixture with picks above the quota AND originals present, so neither
+    // term can be silently dropped without changing the rendered total.
+    it("renders the correct two-tariff total end to end, picking above the quota AND marking originals", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(
+        galleryDetail({
+          includedPhotosSnapshot: 2,
+          extraPhotoPriceCopSnapshot: 5_000,
+          originalPhotoPriceCopSnapshot: 2_000,
+          assets: Array.from({ length: 5 }, (_unused, index) => ({
+            id: `a${index + 1}`,
+            originalFilename: `IMG_000${index + 1}.JPG`,
+            proofKey: `galleries/g1/proofs/a${index + 1}.webp`,
+            proofWidth: 1600,
+            proofHeight: 1067,
+            isSelected: true,
+            sortOrder: index,
+            finalKey: null,
+            isEdited: false,
+          })),
+        }),
+      );
+      // 3 edited (a1-a3) -> 1 over the 2 included -> 5_000. 2 originals
+      // (a4-a5) -> 4_000 more. Total 9_000 — reachable only by summing both.
+      getGallerySelectionMock.mockResolvedValue([
+        {
+          assetId: "a1",
+          selectedAt: "2026-07-30T12:00:00.000Z",
+          pickedBy: { id: "client-a", label: "Ana Pérez" },
+          selectionKind: "edited",
+        },
+        {
+          assetId: "a2",
+          selectedAt: "2026-07-30T12:01:00.000Z",
+          pickedBy: { id: "client-a", label: "Ana Pérez" },
+          selectionKind: "edited",
+        },
+        {
+          assetId: "a3",
+          selectedAt: "2026-07-30T12:02:00.000Z",
+          pickedBy: { id: "client-a", label: "Ana Pérez" },
+          selectionKind: "edited",
+        },
+        {
+          assetId: "a4",
+          selectedAt: "2026-07-30T12:03:00.000Z",
+          pickedBy: { id: "client-a", label: "Ana Pérez" },
+          selectionKind: "original",
+        },
+        {
+          assetId: "a5",
+          selectedAt: "2026-07-30T12:04:00.000Z",
+          pickedBy: { id: "client-a", label: "Ana Pérez" },
+          selectionKind: "original",
+        },
+      ]);
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      render(element);
+
+      expect(screen.getByText(/incluidas 2/)).toBeDefined();
+      expect(screen.getByText(/seleccionadas 5/)).toBeDefined();
+      expect(screen.getByText(/extras 1 × \$/)).toBeDefined();
+      expect(screen.getByText(/originales 2 × \$/)).toBeDefined();
+      expect(screen.getByText(/total \$\s*9\.000/)).toBeDefined();
+      // The tray itself shows each thumbnail's own type too (criterion 7) —
+      // scoped to the tray region, since the grid tile's own type control
+      // (task #206) also renders these exact words on every selected tile.
+      const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+      expect(within(tray).getAllByText("Original")).toHaveLength(2);
+      expect(within(tray).getAllByText("Editada")).toHaveLength(3);
     });
   });
 

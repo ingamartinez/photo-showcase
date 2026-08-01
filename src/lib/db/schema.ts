@@ -579,10 +579,13 @@ export const assets = pgTable("assets", {
   // "meaningless until selected" relationship `selectedAt`/`selectedBy` above
   // already have with it.
   //
-  // `notNull().default("edited")` — there are assets in production, and this
-  // slice (#205) is domain + admin surfaces ONLY: nothing anywhere in the app
-  // writes any value but `edited` to this column yet. The client control that
-  // lets a pick actually BE `original` is task #206, the next slice.
+  // `notNull().default("edited")` — there are assets in production, so a
+  // migrated existing row must keep meaning exactly what it already meant.
+  // Task #205 shipped the column with every existing/new row still `edited`
+  // (domain + admin surfaces only, nothing wrote `original` yet). Task #206
+  // is the client control that lets a pick actually BECOME `original` — see
+  // `PATCH /api/assets/[assetId]/selection`'s own header comment for the
+  // write path and its state gate.
   //
   // ONE MORE THING WORTH WRITING DOWN, because it is easy to reach for the
   // wrong mental model: this app NEVER STORES an "original" file distinct

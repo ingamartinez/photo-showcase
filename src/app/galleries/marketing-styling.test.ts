@@ -415,32 +415,74 @@ function extractClassNameValues(source: string): string[] {
  * forbid the whole shape. */
 const SANCTIONED_KICKER_TRACKING = "tracking-[0.18em]";
 
+// Every bespoke class `globals.css` defines for the editorial/marketing world,
+// enumerated rather than hand-picked. `wrap` and `label` are the two this slice
+// actually removed; the other four are banned because of what they CARRY, not
+// how they look: `.collections` and `.work` declare `@media (max-width: 900px)`
+// and `(max-width: 560px)` (globals.css:604,658,663). Reintroducing either one
+// here would smuggle a max-width onto a surface whose whole rule is that there
+// are none — and this scan reads .tsx, so it would never see the media query
+// itself. Banning the class is the only place that hole can be closed.
+const MARKETING_CLASSES = ["wrap", "label", "hero-scrim", "collections", "col-tile", "work"];
+
 function findViolations(classValue: string): string[] {
   const tokens = classValue.split(/\s+/).filter(Boolean);
   const found: string[] = [];
 
-  if (tokens.includes("wrap")) {
-    found.push(`the marketing "wrap" column: "${classValue}"`);
+  for (const banned of MARKETING_CLASSES) {
+    if (tokens.includes(banned)) {
+      found.push(
+        banned === "label"
+          ? `globals.css's "label" class (0.22em, the marketing site's own eyebrow value — ` +
+              `this surface's kicker is 0.18em): "${classValue}"`
+          : `globals.css's editorial "${banned}" class: "${classValue}"`,
+      );
+    }
   }
-  if (tokens.includes("label")) {
-    found.push(
-      `globals.css's "label" class (0.22em, the marketing site's own eyebrow value — this ` +
-        `surface's kicker is 0.18em): "${classValue}"`,
-    );
-  }
-  if (tokens.includes("uppercase") && !tokens.includes(SANCTIONED_KICKER_TRACKING)) {
-    found.push(
-      `"uppercase" without this surface's sanctioned ${SANCTIONED_KICKER_TRACKING} kicker ` +
-        `pairing — the marketing CTA's own uppercase/tight-tracking shape: "${classValue}"`,
-    );
+  if (tokens.includes("uppercase")) {
+    const tracking = tokens.filter((t) => t.startsWith("tracking-"));
+    // Two ways to fail, and the second is why this is not a bare
+    // `!includes(SANCTIONED)` check: an element carrying BOTH the sanctioned
+    // value and a competing one renders whichever Tailwind emits last, so
+    // "has the right token somewhere" is not the same as "is the right
+    // token". Nothing in the guarded set does this today; the check exists so
+    // a later `cn(KICKER_CLASS, "tracking-[0.1em]")` cannot slip the marketing
+    // shape back in behind a sanctioned token.
+    const offending = tracking.filter((t) => t !== SANCTIONED_KICKER_TRACKING);
+    if (tracking.length === 0 || offending.length > 0) {
+      found.push(
+        `"uppercase" without EXACTLY this surface's sanctioned ${SANCTIONED_KICKER_TRACKING} ` +
+          `kicker pairing — the marketing CTA's own uppercase/tight-tracking shape: "${classValue}"`,
+      );
+    }
   }
 
   return found;
 }
 
 describe("no surviving marketing chrome under /galleries (task #149)", () => {
-  it("found at least one file to guard, so an empty set cannot pass vacuously", () => {
-    expect(FILES_UNDER_GUARD.length).toBeGreaterThan(5);
+  // Not `toBeGreaterThan(n)`: the tree walk alone contributes 3 files, so a
+  // floor that low lets the hand-enumerated component list silently shrink —
+  // delete three entries and every remaining test still passes green. The
+  // whole point of a hand-maintained list is that nothing quietly leaves it,
+  // so the assertion names the set instead of counting it.
+  it("guards exactly the enumerated set, so no file can silently leave it", () => {
+    expect(FILES_UNDER_GUARD.map((f) => path.basename(f)).sort()).toEqual(
+      [
+        "client-preview-banner.tsx",
+        "download-all-button.tsx",
+        "download-final-button.tsx",
+        "layout.tsx",
+        "page.tsx",
+        "page.tsx",
+        "proof-grid.tsx",
+        "proof-lightbox.tsx",
+        "proof-tile.tsx",
+        "selection-counter.tsx",
+        "selection-tray.tsx",
+        "submit-selection-panel.tsx",
+      ].sort(),
+    );
   });
 
   it.each(FILES_UNDER_GUARD)("%s", (file) => {

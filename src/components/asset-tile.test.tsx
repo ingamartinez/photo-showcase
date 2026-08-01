@@ -30,11 +30,19 @@ function assetFor(overrides: Partial<WorkspaceAsset> = {}): WorkspaceAsset {
 let onDeleted: ReturnType<typeof vi.fn<(assetId: string) => void>>;
 let onMoved: ReturnType<typeof vi.fn<(updates: { id: string; sortOrder: number }[]) => void>>;
 let onFinalUploaded: ReturnType<typeof vi.fn<(assetId: string) => void>>;
+// Task #195: every test below that doesn't specifically exercise these two
+// controls just needs a stub — `isMarked` defaults to `false` so the
+// existing tests' assumptions (no "Elegida" text collision, etc.) still
+// hold with the marking control now always rendered.
+let onOpen: ReturnType<typeof vi.fn<() => void>>;
+let onToggleMarked: ReturnType<typeof vi.fn<(assetId: string) => void>>;
 
 beforeEach(() => {
   onDeleted = vi.fn();
   onMoved = vi.fn();
   onFinalUploaded = vi.fn();
+  onOpen = vi.fn();
+  onToggleMarked = vi.fn();
 });
 
 afterEach(() => {
@@ -54,6 +62,9 @@ describe("AssetTile", () => {
           onDeleted={onDeleted}
           onMoved={onMoved}
           onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
         />
       </ul>,
     );
@@ -61,6 +72,165 @@ describe("AssetTile", () => {
     const img = screen.getByRole("img") as HTMLImageElement;
     expect(img.src).toBe("https://r2.example.com/original-presigned");
     expect(screen.getByText("IMG_0001.JPG")).toBeDefined();
+  });
+
+  // Task #194: the owner's own report was "al abrir la galería me carga
+  // todas las imágenes" — a bare <img> defaults to `loading="eager"`. This
+  // renders a REAL tile (asserting the <img> exists first, via its actual
+  // alt text) and only then checks the attribute, so a component that
+  // stopped rendering an <img> at all would fail loudly here instead of
+  // this test passing vacuously — the exact trap this repo's kanban body
+  // calls out by name.
+  it("marks the thumbnail lazy and async-decoded, so a long grid doesn't fetch every proof eagerly", () => {
+    render(
+      <ul>
+        <AssetTile
+          asset={assetFor()}
+          isFirst={false}
+          isLast={false}
+          onDeleted={onDeleted}
+          onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
+        />
+      </ul>,
+    );
+
+    const img = screen.getByAltText("IMG_0001.JPG") as HTMLImageElement;
+    expect(img).toBeDefined();
+    expect(img.getAttribute("loading")).toBe("lazy");
+    expect(img.getAttribute("decoding")).toBe("async");
+  });
+
+  // Task #194's own trap: with `loading="lazy"`, a tile that never scrolled
+  // into view never fires `load`/`error`, so the "recover from an expired
+  // presigned URL" path (already proven above for the eager case) now has
+  // to survive being the FIRST thing that happens to a tile, not the
+  // second — and, per that same acceptance criterion, must still not loop
+  // if the browser fires more than one `error` event for the same broken
+  // image (real browsers can do this on a slow/flaky connection).
+  it("recovers once from an error on a tile that just entered the viewport, and does not loop on a second error", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(jsonResponse(200, { url: "https://r2.example.com/refreshed" })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ul>
+        <AssetTile
+          asset={assetFor()}
+          isFirst={false}
+          isLast={false}
+          onDeleted={onDeleted}
+          onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
+        />
+      </ul>,
+    );
+
+    const img = screen.getByRole("img") as HTMLImageElement;
+    // First error: the lazily-loaded image's first real load attempt fails
+    // against an already-expired presigned URL.
+    fireEvent.error(img);
+    await waitFor(() => expect(img.src).toBe("https://r2.example.com/refreshed"));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Second error on the SAME <img> (e.g. the refreshed URL itself 404s,
+    // or the browser retries after a flaky connection): must not refetch
+    // again — `refreshedOnce` stops it, exactly as it already does for the
+    // eager case.
+    fireEvent.error(img);
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  // Task #195: clicking the thumbnail image opens the full-screen viewer.
+  // Real click, real DOM — not a prop-existence check.
+  it("calls onOpen when the thumbnail image is clicked", async () => {
+    const user = userEvent.setup();
+    render(
+      <ul>
+        <AssetTile
+          asset={assetFor()}
+          isFirst={false}
+          isLast={false}
+          onDeleted={onDeleted}
+          onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
+        />
+      </ul>,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Ver IMG_0001.JPG en grande" }));
+
+    expect(onOpen).toHaveBeenCalledTimes(1);
+  });
+
+  // Task #195's naming/visual trap: the marking checkbox must be a SEPARATE
+  // control from the "Elegida" badge, not a re-skin of it — this asserts
+  // both are independently present/queryable at once for a selected AND
+  // marked asset, which would be impossible if the marking control reused
+  // the "Elegida" text or accidentally replaced it.
+  it("renders the marking checkbox as a distinct control from the 'Elegida' badge, and reports a toggle via onToggleMarked", async () => {
+    const user = userEvent.setup();
+    render(
+      <ul>
+        <AssetTile
+          asset={assetFor({ isSelected: true })}
+          isFirst={false}
+          isLast={false}
+          onDeleted={onDeleted}
+          onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
+        />
+      </ul>,
+    );
+
+    // Both present at once: the client's "Elegida" fact and the
+    // photographer's own mark control are two independent things on the
+    // same tile, neither replacing the other.
+    expect(screen.getByText("Elegida")).toBeDefined();
+    const markButton = screen.getByRole("button", { name: "Marcar IMG_0001.JPG para borrar" });
+    expect(markButton.getAttribute("aria-pressed")).toBe("false");
+
+    await user.click(markButton);
+
+    expect(onToggleMarked).toHaveBeenCalledWith("a1");
+    // The click must reach ONLY the marking control, never the "open
+    // viewer" control layered underneath it at the same screen position.
+    expect(onOpen).not.toHaveBeenCalled();
+  });
+
+  it("labels the marking checkbox as 'Desmarcar' once isMarked is true", () => {
+    render(
+      <ul>
+        <AssetTile
+          asset={assetFor()}
+          isFirst={false}
+          isLast={false}
+          onDeleted={onDeleted}
+          onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
+          isMarked={true}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
+        />
+      </ul>,
+    );
+
+    const markButton = screen.getByRole("button", { name: "Desmarcar IMG_0001.JPG" });
+    expect(markButton.getAttribute("aria-pressed")).toBe("true");
   });
 
   it("disables 'move up' for the first tile and 'move down' for the last tile", () => {
@@ -73,6 +243,9 @@ describe("AssetTile", () => {
           onDeleted={onDeleted}
           onMoved={onMoved}
           onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
         />
       </ul>,
     );
@@ -96,6 +269,9 @@ describe("AssetTile", () => {
           onDeleted={onDeleted}
           onMoved={onMoved}
           onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
         />
       </ul>,
     );
@@ -122,6 +298,9 @@ describe("AssetTile", () => {
           onDeleted={onDeleted}
           onMoved={onMoved}
           onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
         />
       </ul>,
     );
@@ -147,6 +326,9 @@ describe("AssetTile", () => {
           onDeleted={onDeleted}
           onMoved={onMoved}
           onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
         />
       </ul>,
     );
@@ -172,6 +354,9 @@ describe("AssetTile", () => {
           onDeleted={onDeleted}
           onMoved={onMoved}
           onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
         />
       </ul>,
     );
@@ -205,6 +390,9 @@ describe("AssetTile", () => {
           onDeleted={onDeleted}
           onMoved={onMoved}
           onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
         />
       </ul>,
     );
@@ -236,6 +424,9 @@ describe("AssetTile", () => {
           onDeleted={onDeleted}
           onMoved={onMoved}
           onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
         />
       </ul>,
     );
@@ -254,6 +445,9 @@ describe("AssetTile", () => {
           onDeleted={onDeleted}
           onMoved={onMoved}
           onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
         />
       </ul>,
     );
@@ -272,6 +466,9 @@ describe("AssetTile", () => {
           onDeleted={onDeleted}
           onMoved={onMoved}
           onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
         />
       </ul>,
     );
@@ -300,6 +497,9 @@ describe("AssetTile", () => {
             onDeleted={onDeleted}
             onMoved={onMoved}
             onFinalUploaded={onFinalUploaded}
+            isMarked={false}
+            onOpen={onOpen}
+            onToggleMarked={onToggleMarked}
           />
         </ul>,
       );
@@ -317,6 +517,9 @@ describe("AssetTile", () => {
             onDeleted={onDeleted}
             onMoved={onMoved}
             onFinalUploaded={onFinalUploaded}
+            isMarked={false}
+            onOpen={onOpen}
+            onToggleMarked={onToggleMarked}
           />
         </ul>,
       );
@@ -334,6 +537,9 @@ describe("AssetTile", () => {
             onDeleted={onDeleted}
             onMoved={onMoved}
             onFinalUploaded={onFinalUploaded}
+            isMarked={false}
+            onOpen={onOpen}
+            onToggleMarked={onToggleMarked}
           />
         </ul>,
       );
@@ -348,6 +554,9 @@ describe("AssetTile", () => {
             onDeleted={onDeleted}
             onMoved={onMoved}
             onFinalUploaded={onFinalUploaded}
+            isMarked={false}
+            onOpen={onOpen}
+            onToggleMarked={onToggleMarked}
           />
         </ul>,
       );
@@ -372,6 +581,9 @@ describe("AssetTile", () => {
           onDeleted={onDeleted}
           onMoved={onMoved}
           onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
         />
       </ul>,
     );
@@ -405,6 +617,9 @@ describe("AssetTile", () => {
           onDeleted={onDeleted}
           onMoved={onMoved}
           onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
         />
       </ul>,
     );

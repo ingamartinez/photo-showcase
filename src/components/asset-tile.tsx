@@ -17,6 +17,25 @@
 // unchanged in text/role, on purpose: this file's own existing tests (task
 // #20/#26) already prove those interactions work, and this slice is a
 // restyle, not a rewrite of the interaction model.
+//
+// Task #195 adds two more controls on THIS thumbnail: clicking the image
+// opens <AdminAssetViewer> (the full-screen, object-contain view — the
+// mirror-image request the owner made of #134's own crop) via `onOpen`, and
+// a bulk-op "marked" checkbox via `isMarked`/`onToggleMarked`. Neither piece
+// of state is OWNED here: both are lifted to <GalleryWorkspace>, which is
+// what makes "open a marked photo full screen without losing the mark" true
+// — see that file's own header comment. This tile only ever reads
+// `isMarked` and reports a toggle upward; it holds no state of its own for
+// either feature.
+//
+// NAMING, ON PURPOSE: `isMarked`/`onToggleMarked`, never `selected`/
+// `isSelected`/`onToggleSelection` — `asset.isSelected` two lines below is
+// already a DIFFERENT fact (the CLIENT's choice, task #24), and the
+// "Elegida" badge already renders it. Confusing the two names here would be
+// exactly the trap gallery-workspace.tsx's header comment calls out: a
+// photographer bulk-deleting what they believe is their own admin-side
+// pick, when the code actually marked the client's already-committed
+// selection.
 import { useRef, useState } from "react";
 import type { WorkspaceAsset } from "@/components/gallery-workspace";
 import { cn } from "@/lib/utils";
@@ -25,16 +44,29 @@ export function AssetTile({
   asset,
   isFirst,
   isLast,
+  isMarked,
   onDeleted,
   onMoved,
   onFinalUploaded,
+  onOpen,
+  onToggleMarked,
 }: {
   asset: WorkspaceAsset;
   isFirst: boolean;
   isLast: boolean;
+  // Task #195: whether the PHOTOGRAPHER marked this tile for a bulk
+  // operation — owned by <GalleryWorkspace>, read-only here. Distinct from
+  // `asset.isSelected` (the client's own pick) — see the file header.
+  isMarked: boolean;
   onDeleted: (assetId: string) => void;
   onMoved: (updates: { id: string; sortOrder: number }[]) => void;
   onFinalUploaded: (assetId: string) => void;
+  // Task #195: opens <AdminAssetViewer> on this tile's own asset. Takes no
+  // argument — <GalleryWorkspace> already knows which asset this tile is
+  // for (it's the one bound in the `.map()` that renders this component),
+  // so there is nothing this tile needs to hand back beyond "open".
+  onOpen: () => void;
+  onToggleMarked: (assetId: string) => void;
 }) {
   const [src, setSrc] = useState(asset.proofUrl);
   const [refreshedOnce, setRefreshedOnce] = useState(false);
@@ -52,6 +84,18 @@ export function AssetTile({
   // polling every tile on a timer regardless of whether it's even still on
   // screen. Guarded by `refreshedOnce` so a genuinely broken/deleted object
   // fails once and stays failed, instead of retrying forever.
+  //
+  // Task #194 note: with `loading="lazy"` on the <img> below, a tile that
+  // never scrolled into view never fires `load` OR `error` — the browser
+  // hasn't fetched anything for it yet. That's fine; it just means the
+  // FIRST fetch, once it finally happens on scroll, is now more likely to
+  // already be racing a presign that's close to (or past) its TTL on a tab
+  // left open a while. This handler doesn't change: it still fires once,
+  // refetches once, and `refreshedOnce` still stops it from looping if the
+  // refreshed URL is itself already bad (a genuinely deleted object, say).
+  // What changes is only how OFTEN this path gets exercised in practice —
+  // it moves from "rare" to "the normal case for a long-lived tab" — not
+  // whether it stays idempotent.
   async function handleImgError() {
     if (refreshedOnce) return;
     setRefreshedOnce(true);
@@ -161,20 +205,55 @@ export function AssetTile({
             is never stable between two loads of the same asset — configuring
             a next/image remote pattern for that buys nothing, since
             processProof already downscales/compresses server-side. */}
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={src}
-          alt={asset.originalFilename}
-          onError={() => void handleImgError()}
-          className="h-full w-full object-cover"
-        />
+        {/* Task #194: `loading="lazy"` is the actual fix for the owner's
+            report ("al abrir la galería me carga todas las imágenes") — a
+            gallery with ~84 proofs used to fire ~84 eager downloads on
+            first paint because a bare <img> defaults to eager. The box
+            above is a FIXED `aspect-[3/2]`, so this introduces no CLS: the
+            layout already reserves the space before the image ever
+            arrives, lazy or not. `decoding="async"` rides along with it —
+            without it, the browser can still decode dozens of JPEGs on the
+            main thread as they cross into view, which is a scroll-jank
+            problem `loading="lazy"` alone doesn't solve (it only staggers
+            the network fetch, not the decode). Neither attribute touches
+            `getPresignedUrl` or the read route — signing is a local HMAC,
+            not an R2 round trip, so 84 signatures were never the cost (see
+            this task's own kanban body for why that's a decoy). */}
+        {/* Task #195: the whole image is the "open full screen" control.
+            A real <button>, not a click handler on a bare <img> or a
+            keyboard-inaccessible <div>, so Enter/Space already work with no
+            extra wiring. The badges, filename and marking checkbox below
+            are SIBLINGS, not children — an interactive <button> (the
+            marking checkbox) cannot legally nest inside another <button>
+            (this one). They paint on top of this one by ordinary DOM
+            stacking (later siblings paint over earlier ones at the same
+            `z-index: auto`), and a click always targets the topmost element
+            at that point, so the checkbox intercepts its own clicks without
+            needing `stopPropagation` — they are siblings, not ancestor and
+            descendant, so a click on one never bubbles into the other. */}
+        <button
+          type="button"
+          onClick={onOpen}
+          aria-label={`Ver ${asset.originalFilename} en grande`}
+          className="absolute inset-0 block h-full w-full cursor-zoom-in"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={src}
+            alt={asset.originalFilename}
+            loading="lazy"
+            decoding="async"
+            onError={() => void handleImgError()}
+            className="h-full w-full object-cover"
+          />
+        </button>
 
         {/* State badges, at a glance across the whole grid — task #134.
             Neither is colour-only: "Elegida" is a real word, and the final
             badge carries a "✓" glyph plus a title, matching the mock's own
             `.asset__flag` / `.asset__final` (dashboard.html:443-455). */}
         {asset.isSelected && (
-          <span className="bg-accent absolute top-1 left-1 rounded-full px-1.5 py-0.5 text-[9px] font-bold tracking-[0.04em] text-[#14100a] uppercase">
+          <span className="bg-accent pointer-events-none absolute top-1 left-1 rounded-full px-1.5 py-0.5 text-[9px] font-bold tracking-[0.04em] text-[#14100a] uppercase">
             Elegida
           </span>
         )}
@@ -182,7 +261,7 @@ export function AssetTile({
           <span
             title="Final subido"
             aria-hidden="true"
-            className="absolute top-1 right-1 flex size-4 items-center justify-center rounded-full bg-[#7a9b82] text-[10px] font-bold text-[#08150c]"
+            className="pointer-events-none absolute top-1 right-1 flex size-4 items-center justify-center rounded-full bg-[#7a9b82] text-[10px] font-bold text-[#08150c]"
           >
             ✓
           </span>
@@ -201,8 +280,59 @@ export function AssetTile({
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-black/75 to-transparent"
         />
+
+        {/* Task #195's "marked" checkbox — bottom-left, over the same scrim
+            the filename sits on. Deliberately NOT styled like "Elegida"
+            (top-left, brass pill, plain text): different corner, different
+            shape (a small square checkbox instead of a text pill), and the
+            SAME `#e0796b` danger red this file already uses for its own
+            inline error text (the `error`/`finalError` paragraphs below) —
+            reused, not a new colour invented for this, and a semantically
+            honest one: the only thing this mark does is queue the photo for
+            bulk deletion. `#e0796b` directly, not the `app-danger` Tailwind
+            utility: that utility only paints under `[data-surface="app"]`
+            (globals.css, task #175) and eslint.config.mjs's own
+            `no-restricted-syntax` rule refuses it outside
+            `src/app/dashboard/**`/`src/components/dashboard-*`, which this
+            file's own name is neither — even though it only ever renders
+            inside the dashboard. See the file header for why this is
+            `isMarked`/`onToggleMarked`, never `selected`.
+
+            SIZE AND CONTRAST, fixed after code review: `size-6` (24px), not
+            the original `size-4` (16px) — matching the "Mover antes"/
+            "Mover después" `min-h-6 min-w-6` controls in the same tile,
+            below. 16px was smaller than every other control on this
+            component, sitting on a grid whose tiles run as small as ~92px
+            wide, with the ENTIRE rest of the tile behind it wired to open
+            the full-screen viewer instead — a near-miss tap there opens a
+            photo rather than marking it, on the path that ends in an
+            irreversible bulk delete. The unmarked state is also more
+            opaque now (`bg-black/60`, `border-fg-dim` at full opacity
+            instead of `/70`) — a control the photographer has to notice in
+            order to use needed better contrast against an arbitrary
+            photograph than a faint outline. */}
+        <button
+          type="button"
+          onClick={() => onToggleMarked(asset.id)}
+          aria-pressed={isMarked}
+          aria-label={
+            isMarked
+              ? `Desmarcar ${asset.originalFilename}`
+              : `Marcar ${asset.originalFilename} para borrar`
+          }
+          className={cn(
+            "absolute bottom-1 left-1 flex size-6 items-center justify-center rounded-[3px] border transition-colors",
+            isMarked
+              ? "border-[#e0796b] bg-[#e0796b] text-[#1a0d0a]"
+              : "border-fg-dim bg-black/60 text-transparent hover:border-[#e0796b]",
+          )}
+        >
+          <span aria-hidden="true" className="text-xs leading-none font-bold">
+            ✓
+          </span>
+        </button>
         <p
-          className="text-fg-dim absolute right-1.5 bottom-1 left-1.5 truncate font-mono text-[9px]"
+          className="text-fg-dim pointer-events-none absolute right-1.5 bottom-1.5 left-9 truncate font-mono text-[9px]"
           title={asset.originalFilename}
         >
           {asset.originalFilename}

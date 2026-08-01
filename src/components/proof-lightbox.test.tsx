@@ -47,8 +47,19 @@ beforeEach(() => {
   onSetSelectionKind = vi.fn();
 });
 
-afterEach(() => {
+afterEach(async () => {
   cleanup();
+
+  // Task #207. Same class of flake measured (1/28 full-suite runs) against
+  // `src/components/admin-asset-viewer.test.tsx` -- see that file's afterEach
+  // for the full root-cause writeup. `ProofLightbox` mounts a Radix
+  // `<DialogPrimitive.Root>` in every test here too, so it carries the same
+  // uncancelled `setTimeout(0)` from `@radix-ui/react-focus-scope`'s unmount
+  // effect. Awaiting one real macrotask tick after `cleanup()` drains that
+  // timer while this file's own jsdom window is still installed, before
+  // Vitest can tear it down and race it against the next file's environment.
+  await new Promise((resolve) => setTimeout(resolve, 0));
+
   document.body.style.overflow = "";
 });
 

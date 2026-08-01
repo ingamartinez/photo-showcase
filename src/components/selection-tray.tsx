@@ -77,11 +77,68 @@
 // feeling specifically — the sticky bar already covers the letter of "never
 // miss the surcharge," but not the mock's particular way of making it feel
 // earned rather than announced.
+//
+// TASK #203 — COLLAPSIBLE, HEIGHT-CAPPED TRAY. The tray above was correct in
+// isolation but never bounded its own height: with ~50 picks on a 390px
+// phone the `<ul>` grew to ~17 wrapped rows (~2100px) and, being
+// `sticky top-0`, sat fixed over the grid instead of scrolling away —
+// production clients hit this and could no longer reach the grid at all.
+// Two additions close that, in order of how much they change the markup:
+//
+// 1. THE LIST'S OWN SCROLL CAP IS MEASURED, NOT GUESSED. The naive fix is a
+//    hardcoded `max-h-[…]`, e.g. `max-h-[248px]` for "two rows" — this file's
+//    own math (96px image + 4px `mt-1` + a line at Tailwind's preflight
+//    `line-height: 1.5` × the label's `text-[11px]` ≈ 116.5px/row, doubled
+//    plus one `gap-3` ≈ 245px) lands almost exactly there, which is the
+//    trap: that number is only right as long as nobody ever changes the
+//    label's type scale, and it is silently wrong the day someone does.
+//    `<TrayItem>`'s label already carries `truncate` (one line, no wrap —
+//    see there), so row height IS deterministic; this file still measures
+//    the real rendered height of the first `<li>` (see the effect below)
+//    rather than re-deriving that arithmetic here, so the cap tracks
+//    whatever the label's actual computed line-height turns out to be
+//    instead of a number frozen at the moment this comment was written.
+//
+// 2. COLLAPSIBLE, STARTING EXPANDED. A control folds the list away, leaving
+//    only the header — but the header's counter (not the list) is what the
+//    `aria-live="polite"` region below has left to announce once collapsed;
+//    see the comment on that `<span>`. The hidden subtree uses the native
+//    `hidden` attribute rather than a CSS-only visibility trick, because
+//    `hidden` is the one technique that removes an element from BOTH the
+//    accessibility tree and the tab order in every major browser — a
+//    visually-hidden-but-focusable div would leave a collapsed tray's
+//    thumbnails reachable by Tab, exactly the trap the task called out.
+//
+// Deliberately NOT done, per the task body: no auto-scroll when a pick
+// lands (hostile under a moving finger, and the grid tile + header counter
+// already give feedback) and no reordering of picks (would reshuffle a list
+// the client is actively looking at).
+import { useEffect, useId, useRef, useState } from "react";
 import {
   pickerLabelFor,
   type SelectionPick,
   UNATTRIBUTED_PICKER_LABEL,
 } from "@/lib/selection-snapshot";
+
+// Two rows of picks stay visible before the list scrolls on its own axis.
+const VISIBLE_ROWS = 2;
+
+// The `<ul>` below carries `gap-3` (`row-gap: 0.75rem` = 12px). Used ONLY as
+// a fallback when the real computed value cannot be read — Vitest's jsdom
+// environment never loads the compiled Tailwind stylesheet, so
+// `getComputedStyle(list).rowGap` there is always empty. In a real browser
+// the actual computed value wins; this constant exists so the derived cap
+// still lands close to correct instead of collapsing to 0 under test.
+const FALLBACK_ROW_GAP_PX = 12;
+
+// The cap applied for the one render before the effect below has measured
+// anything (first paint, including the server-rendered HTML a slow client
+// sees before hydration runs). Deliberately generous rather than exact —
+// unlike a final, unmeasured cap, this one self-corrects within the same
+// frame the DOM becomes available, so a couple of stray pixels of a third
+// row peeking through for an instant is the acceptable failure mode, not a
+// silently-wrong permanent one.
+const PRE_MEASURE_MAX_HEIGHT_PX = 260;
 
 export function SelectionTray({
   picks,
@@ -134,6 +191,51 @@ export function SelectionTray({
    * showing broken images partway through a normal session." */
   onImageError: (assetId: string) => void;
 }) {
+  // Starts expanded (task #203's explicit acceptance criterion): the tray
+  // exists to show live collaboration, and a client who never sees it
+  // populated has no idea a partner's picks will land there. Collapsing is
+  // for the client who already knows what they picked and wants the screen
+  // back for the grid.
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const listRegionId = useId();
+  const listRef = useRef<HTMLUListElement>(null);
+  const [maxListHeightPx, setMaxListHeightPx] = useState<number | null>(null);
+  const hasPicks = picks.length > 0;
+
+  // Measures the ACTUAL rendered height of one row rather than hardcoding a
+  // pixel figure — see this file's header comment for why a hand-computed
+  // number is a trap here. Runs once picks first exist, and again whenever
+  // the observed item's own box changes size (font swap, zoom, a future
+  // style change to the label) — the row height does NOT depend on how many
+  // picks there are, only on the fixed 96px image and the single-line label
+  // beneath it, so re-measuring on `picks.length` changing count is not
+  // needed once a first real measurement has landed.
+  useEffect(() => {
+    const list = listRef.current;
+    const firstItem = list?.querySelector("li") ?? null;
+    if (!firstItem) return;
+
+    const measure = () => {
+      const itemHeight = firstItem.getBoundingClientRect().height;
+      // A zero height means the row is currently not laid out (e.g. this ran
+      // while `hidden` is set on an ancestor, which forces every descendant's
+      // box to 0) — keep whatever was last measured rather than clobbering it
+      // with a bogus cap.
+      if (itemHeight <= 0) return;
+      const rowGapPx =
+        parseFloat(window.getComputedStyle(list as HTMLUListElement).rowGap || "") ||
+        FALLBACK_ROW_GAP_PX;
+      setMaxListHeightPx(itemHeight * VISIBLE_ROWS + rowGapPx * (VISIBLE_ROWS - 1));
+    };
+
+    measure();
+
+    if (typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(measure);
+    observer.observe(firstItem);
+    return () => observer.disconnect();
+  }, [hasPicks]);
+
   return (
     <section
       aria-label="Fotos elegidas"
@@ -144,17 +246,42 @@ export function SelectionTray({
       // it must not interrupt someone mid-navigation of the grid.
       aria-live="polite"
     >
-      <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
-        <h2 className="font-serif text-lg">Fotos elegidas</h2>
-        {isLocked ? (
-          <p className="text-fg-mute text-xs">La selección ya fue enviada.</p>
-        ) : (
-          <p className="text-fg-mute text-xs">Se actualiza sola con lo que elijan los demás.</p>
-        )}
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+        <div className="flex items-baseline gap-2">
+          <h2 className="font-serif text-lg">Fotos elegidas</h2>
+          {/* Survives collapse ON PURPOSE — the whole section above is
+              `aria-live="polite"`, precisely so a pick from ANOTHER session
+              gets announced to a screen reader user who would otherwise
+              never learn about it. Collapsing the list below must not leave
+              that live region with nothing left to change when a pick
+              lands; this count is what changes instead. */}
+          <span className="text-fg-mute text-sm">{picks.length}</span>
+        </div>
+        <div className="flex items-center gap-3">
+          {isLocked ? (
+            <p className="text-fg-mute text-xs">La selección ya fue enviada.</p>
+          ) : (
+            <p className="text-fg-mute text-xs">Se actualiza sola con lo que elijan los demás.</p>
+          )}
+          <button
+            type="button"
+            onClick={() => setIsCollapsed((collapsed) => !collapsed)}
+            aria-expanded={!isCollapsed}
+            aria-controls={listRegionId}
+            className="text-accent focus-visible:ring-accent shrink-0 text-xs whitespace-nowrap underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:outline-none"
+          >
+            {isCollapsed ? "Mostrar" : "Ocultar"}
+          </button>
+        </div>
       </div>
 
       {isStale && (
-        // Never hides or clears the list — the picks below are the last thing
+        // OUTSIDE the collapsible region on purpose (task #203 acceptance
+        // criterion #8): this warns that the data below might be out of
+        // date, and hiding that warning exactly when the tray is folded away
+        // — i.e. exactly when the client is trusting the header instead of
+        // reading the list — would be worse than not having it. Never hides
+        // or clears the list itself either — the picks are the last thing
         // the server actually said, and saying "these may be out of date" is
         // strictly more useful than an empty box or a confident lie.
         <p className="mb-3 text-xs text-[#e0796b]">
@@ -162,26 +289,44 @@ export function SelectionTray({
         </p>
       )}
 
-      {picks.length === 0 ? (
-        <p className="text-fg-dim text-[15px] leading-relaxed">
-          Todavía no eligieron ninguna foto. Las que elijan van a aparecer acá, con el nombre de
-          quién las eligió.
-        </p>
-      ) : (
-        <ul className="flex flex-wrap gap-3">
-          {picks.map((pick) => (
-            <TrayItem
-              key={pick.assetId}
-              pick={pick}
-              src={urls[pick.assetId]}
-              originalFilename={filenamesByAssetId[pick.assetId]}
-              viewerId={viewerId}
-              onOpen={() => onOpenAsset(pick.assetId)}
-              onError={() => onImageError(pick.assetId)}
-            />
-          ))}
-        </ul>
-      )}
+      {/* Native `hidden`, not `className="hidden"` layered under something
+          conditional and not a visually-hidden-only trick — see this file's
+          header comment on why that specific technique is the one that is
+          both inert to assistive tech AND unreachable by Tab. */}
+      <div id={listRegionId} hidden={isCollapsed}>
+        {picks.length === 0 ? (
+          // No scroll chrome for the empty state (task #203 acceptance
+          // criterion #7) — an empty scrollable box reads as broken, not as
+          // "nothing here yet".
+          <p className="text-fg-dim text-[15px] leading-relaxed">
+            Todavía no eligieron ninguna foto. Las que elijan van a aparecer acá, con el nombre de
+            quién las eligió.
+          </p>
+        ) : (
+          // `overscroll-contain`: without it, a finger scrolling this list to
+          // its end on a phone chains into scrolling the PAGE — the exact
+          // "trapped/confused" feeling this whole fix exists to avoid at the
+          // list's outer sticky boundary.
+          <div
+            className="overflow-y-auto overscroll-contain"
+            style={{ maxHeight: maxListHeightPx ?? PRE_MEASURE_MAX_HEIGHT_PX }}
+          >
+            <ul ref={listRef} className="flex flex-wrap gap-3">
+              {picks.map((pick) => (
+                <TrayItem
+                  key={pick.assetId}
+                  pick={pick}
+                  src={urls[pick.assetId]}
+                  originalFilename={filenamesByAssetId[pick.assetId]}
+                  viewerId={viewerId}
+                  onOpen={() => onOpenAsset(pick.assetId)}
+                  onError={() => onImageError(pick.assetId)}
+                />
+              ))}
+            </ul>
+          </div>
+        )}
+      </div>
     </section>
   );
 }
@@ -244,6 +389,13 @@ function TrayItem({
           )}
         </div>
         <p
+          // `truncate` (task #203): a picker's name is client-controlled
+          // text, and a long one wrapping to a second line would make each
+          // row's height depend on WHICH picks are visible, breaking the
+          // "two rows" cap above (see this file's header comment). Pinning
+          // this to one line — `title` still exposes the full name on
+          // hover/long-press — is what makes the row height something the
+          // tray can measure once and trust.
           className={`mt-1 truncate text-[11px] ${
             label === UNATTRIBUTED_PICKER_LABEL ? "text-fg-mute italic" : "text-fg-dim"
           }`}

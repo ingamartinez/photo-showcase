@@ -297,9 +297,33 @@ export function EditGalleryTermsDialog({
                     Va a ver: {after.includedPhotosSnapshot} incluidas · {after.extras} extras ·{" "}
                     {formatCop(after.surchargeCop)}
                   </p>
+                  {/* Coordinator review finding on task #210: this used to say
+                      "el cliente todavía no lo ve" UNCONDITIONALLY — true only
+                      while `before.originals` is 0 (nobody has ever picked an
+                      original, so this price affects nobody regardless of
+                      whether it gets saved). Once real originals already exist,
+                      saving this typed price changes what those SAME assets
+                      cost IMMEDIATELY (`updateGalleryTerms` revalidates the
+                      client's own gallery path) — "todavía no lo ve" then reads
+                      as "this has no live consequence", which is the opposite
+                      of true, and directly contradicts the `surchargeCop` total
+                      one line up, which already prices these originals in.
+
+                      `after.originals` here, not `before.originals`: editing
+                      terms never re-picks which assets are original, so
+                      `selectedOriginalCount` — and therefore `.originals` — is
+                      IDENTICAL on both `before` and `after` (both computeQuota
+                      calls above receive the exact same second argument; only
+                      the snapshot object's prices differ). Reading `after`
+                      is for symmetry with this row's OTHER field
+                      (`after.originalPhotoPriceCopSnapshot`) — every value this
+                      row shows comes off the SAME result object — not because
+                      the count could ever diverge from `before.originals`. */}
                   <p className="text-fg mt-1">
-                    Nuevo precio foto original: {formatCop(after.originalPhotoPriceCopSnapshot)} —
-                    el cliente todavía no lo ve.
+                    Nuevo precio foto original: {formatCop(after.originalPhotoPriceCopSnapshot)}
+                    {after.originals > 0
+                      ? ` — va a aplicar a ${after.originals} foto${after.originals === 1 ? "" : "s"} original${after.originals === 1 ? "" : "es"} ya elegida${after.originals === 1 ? "" : "s"} en cuanto guardes.`
+                      : " — el cliente todavía no lo ve."}
                   </p>
                 </>
               )}

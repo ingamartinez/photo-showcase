@@ -320,6 +320,17 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
     // extrasSurchargeCop 25_000, originalsSurchargeCop 6_000, surchargeCop
     // 31_000.
     expect(within(dialog).getByText("Va a ver: 10 incluidas · 5 extras · $ 31.000")).toBeDefined();
+    // The "after" row's own originals inflection (coordinator review finding
+    // on this same task): `after.originals` is 3 here — UNCHANGED from
+    // `before.originals`, since typing a new included-photos count never
+    // re-picks which assets are original — so this pins the PLURAL form of
+    // the "va a aplicar" sentence, parallel to the "hoy" row's own plural
+    // assertion above.
+    expect(
+      within(dialog).getByText(
+        "Nuevo precio foto original: $ 2.000 — va a aplicar a 3 fotos originales ya elegidas en cuanto guardes.",
+      ),
+    ).toBeDefined();
   });
 
   // The SINGULAR half of the same sentence — coordinator review finding on
@@ -353,6 +364,24 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
     expect(
       within(dialog).getByText(
         "Precio foto original vigente: $ 2.000 — 1 foto original ya elegida, incluida en el total de arriba.",
+      ),
+    ).toBeDefined();
+
+    // The "after" row renders only once a field is typed (`hasValidPreviewInputs`)
+    // — typing the SAME included-photos value back in is enough to reveal it
+    // without changing the numbers, which keeps this assertion isolated to
+    // the originals inflection rather than also exercising the extras maths
+    // the "matches the client's own counter" test above already covers.
+    const includedPhotosField = within(dialog).getByLabelText("Fotos incluidas");
+    await user.clear(includedPhotosField);
+    await user.type(includedPhotosField, "13");
+
+    // computeQuota(5, 1, {13, 5000, 2000}) => extras 0, originals 1 — the
+    // SINGULAR form of the "va a aplicar" sentence, parallel to the "hoy"
+    // row's own singular assertion above.
+    expect(
+      within(dialog).getByText(
+        "Nuevo precio foto original: $ 2.000 — va a aplicar a 1 foto original ya elegida en cuanto guardes.",
       ),
     ).toBeDefined();
   });

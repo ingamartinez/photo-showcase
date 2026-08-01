@@ -153,6 +153,9 @@ function assetRow(overrides: Partial<Row> = {}): Row {
     isSelected: true,
     selectedAt: new Date("2026-07-30T12:00:00.000Z"),
     selectedBy: "client-a",
+    // Task #206 — the domain's own default; the tests exercising a marked
+    // original override this explicitly.
+    selectionKind: "edited",
     ...overrides,
   };
 }
@@ -270,16 +273,39 @@ describe("getGallerySelection", () => {
     expect(picks[0]?.selectedAt).toBe("2026-07-30T12:00:00.000Z");
   });
 
-  it("returns no R2 key, no URL and no email of its own invention — only ids and attribution", async () => {
+  it("returns no R2 key, no URL and no email of its own invention — only ids, attribution and the pick's type", async () => {
     // Task #95's constraint: the tray must not become a second way to obtain
     // image bytes. Pinned as a shape assertion so adding `proofKey` to the
-    // projection for convenience fails loudly here.
+    // projection for convenience fails loudly here. `selectionKind` is a
+    // DELIBERATE addition (task #206) — the type travels the same channel as
+    // every other pick fact, not a leak this test should have caught.
     const db = await seededDb();
     db.__rows.assets.push(assetRow({ id: "asset-1" }));
     const { getGallerySelection } = await import("@/lib/gallery-selection");
 
     const picks = await getGallerySelection(GALLERY_A);
 
-    expect(Object.keys(picks[0]!).sort()).toEqual(["assetId", "pickedBy", "selectedAt"]);
+    expect(Object.keys(picks[0]!).sort()).toEqual([
+      "assetId",
+      "pickedBy",
+      "selectedAt",
+      "selectionKind",
+    ]);
+  });
+
+  // Task #206 — the type travels the SAME query this function already ran;
+  // no second read, no second shape.
+  it("reports each pick's selectionKind straight off the row", async () => {
+    const db = await seededDb();
+    db.__rows.assets.push(
+      assetRow({ id: "edited-1", selectionKind: "edited" }),
+      assetRow({ id: "original-1", selectionKind: "original" }),
+    );
+    const { getGallerySelection } = await import("@/lib/gallery-selection");
+
+    const picks = await getGallerySelection(GALLERY_A);
+
+    expect(picks.find((pick) => pick.assetId === "edited-1")?.selectionKind).toBe("edited");
+    expect(picks.find((pick) => pick.assetId === "original-1")?.selectionKind).toBe("original");
   });
 });

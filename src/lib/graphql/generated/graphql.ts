@@ -36,6 +36,7 @@ export type ClientGalleryBySlugQuery = {
     selectionSubmittedAt: string | null;
     includedPhotosSnapshot: number;
     extraPhotoPriceCopSnapshot: number;
+    originalPhotoPriceCopSnapshot: number;
     selectionTrayMode: SelectionTrayMode;
     package: { name: string };
     assets: Array<{
@@ -122,6 +123,7 @@ export const ClientGalleryBySlugDocument = {
                 { kind: "Field", name: { kind: "Name", value: "selectionSubmittedAt" } },
                 { kind: "Field", name: { kind: "Name", value: "includedPhotosSnapshot" } },
                 { kind: "Field", name: { kind: "Name", value: "extraPhotoPriceCopSnapshot" } },
+                { kind: "Field", name: { kind: "Name", value: "originalPhotoPriceCopSnapshot" } },
                 { kind: "Field", name: { kind: "Name", value: "selectionTrayMode" } },
                 {
                   kind: "Field",

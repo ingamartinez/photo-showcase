@@ -51,11 +51,28 @@ export type QuotaResult = {
    * and each rule gives a different total for the same selection. "Originals
    * always pay, edits get the quota" has no such ambiguity. */
   originals: number;
-  /** `extras * extraPhotoPriceCopSnapshot + originals * originalPhotoPriceCopSnapshot`
-   * — DISPLAYED to the client, never charged: this app has no payment
-   * gateway (PLAN.md §3). With zero originals this is byte-identical to the
-   * pre-#205 formula (`extras * extraPhotoPriceCopSnapshot`) — see
-   * quota.test.ts's own "zero originals" cases, which pin exactly that. */
+  /** `extras * extraPhotoPriceCopSnapshot` — the edited-only slice of
+   * `surchargeCop` below. Task #206's own addition, for the two-tariff
+   * breakdown `selection-counter.tsx`/`submit-selection-panel.tsx` show once
+   * a gallery has any originals: those components are not allowed to
+   * multiply anything themselves (their own header comments say so), so this
+   * is the pre-multiplied number they read instead of re-deriving it. With
+   * zero originals this is byte-identical to `surchargeCop` — the same
+   * "identical to the pre-#205 formula" guarantee below, just also exposed
+   * under its own name. */
+  extrasSurchargeCop: number;
+  /** `originals * originalPhotoPriceCopSnapshot` — the originals-only slice
+   * of `surchargeCop` below, for the exact same reason `extrasSurchargeCop`
+   * exists: a display surface that needs "how much of the total is
+   * originals" must read it here, never compute `quota.originals *
+   * quota.originalPhotoPriceCopSnapshot` itself. Zero when there are no
+   * originals. */
+  originalsSurchargeCop: number;
+  /** `extrasSurchargeCop + originalsSurchargeCop` — DISPLAYED to the client,
+   * never charged: this app has no payment gateway (PLAN.md §3). With zero
+   * originals this is byte-identical to the pre-#205 formula (`extras *
+   * extraPhotoPriceCopSnapshot`) — see quota.test.ts's own "zero originals"
+   * cases, which pin exactly that. */
   surchargeCop: number;
 };
 
@@ -71,9 +88,9 @@ export function computeQuota(
 ): QuotaResult {
   const extras = Math.max(0, selectedEdited - snapshot.includedPhotosSnapshot);
   const originals = Math.max(0, selectedOriginal);
-  const surchargeCop =
-    extras * snapshot.extraPhotoPriceCopSnapshot +
-    originals * snapshot.originalPhotoPriceCopSnapshot;
+  const extrasSurchargeCop = extras * snapshot.extraPhotoPriceCopSnapshot;
+  const originalsSurchargeCop = originals * snapshot.originalPhotoPriceCopSnapshot;
+  const surchargeCop = extrasSurchargeCop + originalsSurchargeCop;
 
   return {
     selected: selectedEdited + selectedOriginal,
@@ -84,6 +101,8 @@ export function computeQuota(
     originalPhotoPriceCopSnapshot: snapshot.originalPhotoPriceCopSnapshot,
     extras,
     originals,
+    extrasSurchargeCop,
+    originalsSurchargeCop,
     surchargeCop,
   };
 }

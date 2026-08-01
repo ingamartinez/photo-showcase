@@ -605,6 +605,8 @@ describe("PATCH /api/assets/[assetId]/selection — persistence and quota recomp
       originalPhotoPriceCopSnapshot: 2_000,
       extras: 0,
       originals: 0,
+      extrasSurchargeCop: 0,
+      originalsSurchargeCop: 0,
       surchargeCop: 0,
     });
   });
@@ -631,6 +633,8 @@ describe("PATCH /api/assets/[assetId]/selection — persistence and quota recomp
       originalPhotoPriceCopSnapshot: 2_000,
       extras: 1,
       originals: 0,
+      extrasSurchargeCop: 5_000,
+      originalsSurchargeCop: 0,
       surchargeCop: 5_000,
     });
   });

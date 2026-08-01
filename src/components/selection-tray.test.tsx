@@ -11,6 +11,9 @@ function pick(overrides: Partial<SelectionPick> = {}): SelectionPick {
     assetId: "a1",
     selectedAt: "2026-07-30T12:00:00.000Z",
     pickedBy: { id: "client-b", label: "Beto Ruiz" },
+    // Task #206 — the domain's own default; tests exercising the type badge
+    // override this explicitly.
+    selectionKind: "edited",
     ...overrides,
   };
 }

@@ -37,6 +37,23 @@ export type SelectionPicker = {
   label: string;
 };
 
+/** Task #206 — what the client asked THIS pick to become: `edited` (the
+ * default, today's only pre-#206 behavior) or `original` (delivered as shot,
+ * no edit — see `packages.originalPhotoPriceCop`'s own comment in schema.ts,
+ * and `assets.selectionKind`'s comment there for the full "original is a
+ * commercial label on a request, not a second set of bytes this app can
+ * serve" story).
+ *
+ * Hand-rolled here rather than imported from `@/lib/db/schema`'s own
+ * `selectionKind` pgEnum, for the identical reason `use-shared-selection.ts`
+ * hand-rolls `GalleryStatus` instead of importing `Gallery["status"]`: even a
+ * type-only import off a module this close to `@/lib/db` has broken this
+ * app's production build before (see that file's own header comment) —
+ * duplicating one two-value string union costs nothing and removes the need
+ * to ever reason about it again. Keep in sync with `selectionKind` in
+ * schema.ts. */
+export type SelectionKind = "edited" | "original";
+
 export type SelectionPick = {
   assetId: string;
   /** ISO 8601, or `null` for a row whose `selected_at` was never stamped.
@@ -49,6 +66,15 @@ export type SelectionPick = {
    * (`onDelete: "set null"`, schema.ts). The tray says so plainly instead of
    * guessing a name. */
   pickedBy: SelectionPicker | null;
+  /** Task #206 — travels the SAME channel every other fact about a pick
+   * already does (the server render, the poll route, the PATCH route's own
+   * response, the SSE-triggered refresh): there is no second channel for
+   * "what type is this pick", by design — see `use-shared-selection.ts`'s
+   * own `setSelectionKind`. Meaningless for an asset that isn't picked at
+   * all (that's `assets.isSelected`, a separate question); every entry in a
+   * `SelectionPick[]` IS picked by construction, so this is never optional
+   * here. */
+  selectionKind: SelectionKind;
 };
 
 /** Copy shown when a pick carries no attribution at all — see

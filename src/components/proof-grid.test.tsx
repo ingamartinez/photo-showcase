@@ -57,6 +57,11 @@ function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
       viewerId="client-a"
       includedPhotosSnapshot={13}
       extraPhotoPriceCopSnapshot={5_000}
+      // Task #206 — the third frozen snapshot term, matching the value
+      // `scripts/seed-packages.ts` and the migration default use. Most tests
+      // here only exercise `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot`;
+      // the ones exercising originals override this explicitly.
+      originalPhotoPriceCopSnapshot={2_000}
       // Task #204 — default to `flat`, today's only behavior; the tray's own
       // test file covers `by-person` grouping directly.
       selectionTrayMode="flat"
@@ -250,6 +255,7 @@ describe("ProofGrid", () => {
           assetId: "a1",
           selectedAt: "2026-07-30T12:00:00.000Z",
           pickedBy: { id: "client-b", label: "Beto Ruiz" },
+          selectionKind: "edited",
         },
       ],
     });
@@ -292,6 +298,7 @@ describe("ProofGrid", () => {
           assetId: "a1",
           selectedAt: "2026-07-30T12:00:00.000Z",
           pickedBy: { id: "client-b", label: "Beto Ruiz" },
+          selectionKind: "edited",
         },
       ],
     });
@@ -692,11 +699,13 @@ describe("ProofGrid", () => {
             assetId: "a1",
             selectedAt: "2026-07-28T11:00:00.000Z",
             pickedBy: { id: "client-a", label: "Ana Pérez" },
+            selectionKind: "edited",
           },
           {
             assetId: "a2",
             selectedAt: "2026-07-28T11:05:00.000Z",
             pickedBy: { id: "client-b", label: "Beto Ruiz" },
+            selectionKind: "edited",
           },
         ],
       });
@@ -718,6 +727,7 @@ describe("ProofGrid", () => {
             assetId: "a1",
             selectedAt: "2026-07-28T11:00:00.000Z",
             pickedBy: { id: "client-a", label: "Ana Pérez" },
+            selectionKind: "edited",
           },
         ],
       });
@@ -1069,6 +1079,9 @@ describe("ProofGrid", () => {
         assetId,
         selectedAt: "2026-07-30T12:00:00.000Z",
         pickedBy: { id, label },
+        // Task #206 — nothing in this describe block exercises a type change;
+        // every fixture pick here is the domain's own default.
+        selectionKind: "edited",
       };
     }
 

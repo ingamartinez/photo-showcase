@@ -362,10 +362,10 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
       quota: { selected: number; extras: number; surchargeCop: number };
     };
 
-    // Task #205 — `getGallerySelection()` returns every pick without regard
-    // to `selectionKind`, so this route passes them all as edited with 0
-    // originals; `originalPhotoPriceCopSnapshot` is the gallery's own frozen
-    // value, passed through unchanged.
+    // This fixture's picks carry no `selectionKind` at all (a pre-#206-shaped
+    // mock, `as never` below) — the route treats anything that isn't
+    // literally `"original"` as edited (see this route's own comment), so
+    // all 15 count as edited with 0 originals here.
     expect(body.quota).toEqual({
       selected: 15,
       selectedEdited: 15,
@@ -375,6 +375,8 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
       originalPhotoPriceCopSnapshot: 2_000,
       extras: 2,
       originals: 0,
+      extrasSurchargeCop: 10_000,
+      originalsSurchargeCop: 0,
       surchargeCop: 10_000,
     });
   });

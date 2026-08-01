@@ -253,6 +253,14 @@ export default async function ClientGalleryPage({
         // not only for overridden galleries.
         includedPhotosSnapshot={gallery.includedPhotosSnapshot}
         extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}
+        // Task #206 — closes the wiring gap #205 left open deliberately (see
+        // that task's kanban body). Now that `Gallery.originalPhotoPriceCopSnapshot`
+        // is on the wire (src/lib/graphql/types/gallery.ts,
+        // client-gallery-reads.ts), this is a REQUIRED prop on <ProofGrid>
+        // (and, one layer down, on `useSharedSelection`) — the compiler
+        // enforces this line exists, rather than a comment merely asking for
+        // it.
+        originalPhotoPriceCopSnapshot={gallery.originalPhotoPriceCopSnapshot}
         // Task #204 — presentation only, an admin-set choice on the gallery
         // itself. `selectionTrayModeFromWire` undoes GraphQL's own
         // NAME-not-VALUE enum serialization — see that function's own

@@ -137,6 +137,7 @@ export function ProofGrid({
   viewerId,
   includedPhotosSnapshot,
   extraPhotoPriceCopSnapshot,
+  originalPhotoPriceCopSnapshot,
   selectionTrayMode,
 }: {
   // Task #25's submit route is keyed on this — see that route's own header
@@ -180,6 +181,15 @@ export function ProofGrid({
   // this is about the package's label, not its terms.
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
+  // Task #206 — the gallery's frozen original-photo price, threaded the same
+  // way its two siblings above are. REQUIRED, not optional: before this
+  // slice, `useSharedSelection` hardcoded `0` here (see that file's own
+  // former comment, and #205's "Hueco de cableado" note) because nothing
+  // upstream of it carried the real value — the GraphQL `Gallery` type
+  // didn't expose it and this prop didn't exist. Making it required is what
+  // turns "the wiring gap is closed" into something the compiler checks
+  // rather than a comment that could go stale.
+  originalPhotoPriceCopSnapshot: number;
   // Task #204 — how <SelectionTray> lays out the SAME picks below: one flat
   // list (today's only behavior) or grouped one row per picker. Purely a
   // presentation choice the admin sets on the gallery itself
@@ -214,6 +224,7 @@ export function ProofGrid({
     initialPicks,
     includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot,
+    originalPhotoPriceCopSnapshot,
   });
 
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);

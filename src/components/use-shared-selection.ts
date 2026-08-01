@@ -138,6 +138,7 @@ export function useSharedSelection({
   initialPicks,
   includedPhotosSnapshot,
   extraPhotoPriceCopSnapshot,
+  originalPhotoPriceCopSnapshot,
 }: {
   galleryId: string;
   initialAssets: SharedSelectionAsset[];
@@ -146,6 +147,16 @@ export function useSharedSelection({
   initialPicks: SelectionPick[];
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
+  // Task #206 — REQUIRED, not optional. This used to not exist as a prop at
+  // all: the GraphQL `Gallery` type didn't expose
+  // `originalPhotoPriceCopSnapshot`, `page.tsx` had nothing to pass, and this
+  // hook hardcoded `0` right where the value now goes (harmless before this
+  // slice, since nothing wrote `assets.selectionKind` to anything but
+  // `edited` — see #205's own "Hueco de cableado" note). Making the prop
+  // required is what turns "the wiring gap is closed" into a compile error
+  // at every call site that doesn't supply it, rather than a comment asking
+  // nicely for it.
+  originalPhotoPriceCopSnapshot: number;
 }) {
   // `is_selected` per asset. Seeded from the initial server-rendered paint,
   // then only ever overwritten by a toggle response's own `asset.isSelected`
@@ -154,40 +165,29 @@ export function useSharedSelection({
   const [selectionById, setSelectionById] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(initialAssets.map((asset) => [asset.id, asset.isSelected])),
   );
-  // Task #205 — this hook only ever knows `isSelected`, never
-  // `selectionKind` (`SharedSelectionAsset` doesn't carry it, and every
-  // asset this app can produce today is `edited` — task #206 is the slice
-  // that would let a client pick `original` at all). Seeded here as 0
-  // originals, which makes the `originalPhotoPriceCopSnapshot: 0` right
-  // below harmless (0 * anything is 0) but NOT a stand-in for the gallery's
-  // real price — this hook's own props (below) simply do not carry that
-  // value, because the wiring stops one layer up:
-  // `src/app/galleries/[publicSlug]/page.tsx` passes only
-  // `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot` to `<ProofGrid>`
-  // (and from there to this hook), and the GraphQL `Gallery` type
-  // (`src/lib/graphql/types/gallery.ts`) does not expose
-  // `originalPhotoPriceCopSnapshot` at all — `readClientGalleryBySlug`'s own
-  // document never selects it (deliberately narrow, `client-gallery-
-  // reads.ts`'s header comment).
-  //
-  // THIS IS A REAL GAP, NOT A DATA-FLOW CHOICE, and it is intentionally NOT
-  // closed here: threading the real price through `gallery.ts`, `page.tsx`
-  // and this hook's own props would widen this slice into #206's territory.
-  // Every quota AFTER this first paint still comes from the server's own
-  // recomputation (the PATCH/GET routes, both of which DO read the gallery's
-  // real `originalPhotoPriceCopSnapshot` off the row — see those routes'
-  // own comments), so nothing downstream of the FIRST paint is affected by
-  // this hook's hardcoded 0. But #206 MUST thread the real value through all
-  // three of `gallery.ts`, `page.tsx` and this hook before it lets a client
-  // pick `original` — shipping that slice against this hook's hardcoded 0
-  // would compute every client's surcharge against a $0 original price.
-  const [quota, setQuota] = useState<QuotaResult>(() =>
-    computeQuota(initialAssets.filter((asset) => asset.isSelected).length, 0, {
+  // Task #206 — the TOTAL selected count still comes off `initialAssets`
+  // (`SharedSelectionAsset`'s own `isSelected`, unchanged since before this
+  // slice — every existing caller and test that seeds only `initialAssets`
+  // keeps working exactly as it did). The EDITED/ORIGINAL split comes off
+  // `initialPicks`, which now carries `selectionKind` per pick (see
+  // selection-snapshot.ts) — the one place that split actually lives. In
+  // production the two are always built from the SAME query
+  // (`getGallerySelection`, called once by the server component that renders
+  // this page — see that function's own header comment), so they can never
+  // disagree; a test fixture that supplies mismatched `initialAssets`/
+  // `initialPicks` is a fixture bug, not a real reachable state.
+  const [quota, setQuota] = useState<QuotaResult>(() => {
+    const selectedTotal = initialAssets.filter((asset) => asset.isSelected).length;
+    const selectedOriginal = initialPicks.filter(
+      (pick) => pick.selectionKind === "original",
+    ).length;
+    const selectedEdited = selectedTotal - selectedOriginal;
+    return computeQuota(selectedEdited, selectedOriginal, {
       includedPhotosSnapshot,
       extraPhotoPriceCopSnapshot,
-      originalPhotoPriceCopSnapshot: 0,
-    }),
-  );
+      originalPhotoPriceCopSnapshot,
+    });
+  });
   // Task #95: the shared, ATTRIBUTED selection — the tray's whole content.
   // Seeded from the server render, then replaced WHOLESALE by each accepted
   // snapshot (never merged field by field) plus the one local edit a
@@ -629,6 +629,9 @@ export function useSharedSelection({
             assetId: body.asset.id,
             selectedAt: body.asset.selectedAt,
             pickedBy: body.asset.pickedBy,
+            // Task #206 — a fresh select always starts `edited` (criterion 2:
+            // deselecting and re-selecting returns a pick to `edited`).
+            selectionKind: "edited",
           },
         ];
       });

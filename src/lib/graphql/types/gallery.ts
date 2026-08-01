@@ -36,6 +36,13 @@ export const GalleryType = builder.objectRef<GalleryDetail>("Gallery").implement
     package: t.field({ type: PackageType, resolve: (gallery) => gallery.package }),
     includedPhotosSnapshot: t.exposeInt("includedPhotosSnapshot"),
     extraPhotoPriceCopSnapshot: t.exposeInt("extraPhotoPriceCopSnapshot"),
+    // Task #206 — closes the wiring gap #205 deliberately left open (see that
+    // task's own kanban body, "Hueco de cableado que deja #205"): the price
+    // was frozen in the database but stopped at this exact boundary, with
+    // `use-shared-selection.ts` hardcoding `0` in its place. Exposed the same
+    // way its two siblings above are — a plain `exposeInt` off the frozen
+    // snapshot column, never the live `packages` row.
+    originalPhotoPriceCopSnapshot: t.exposeInt("originalPhotoPriceCopSnapshot"),
     selectionTrayMode: t.expose("selectionTrayMode", { type: SelectionTrayModeType }),
     assets: t.field({ type: [AssetType], resolve: (gallery) => gallery.assets }),
   }),

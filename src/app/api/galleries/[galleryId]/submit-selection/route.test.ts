@@ -431,6 +431,8 @@ describe("POST /api/galleries/[galleryId]/submit-selection — locked statuses",
         originalPhotoPriceCopSnapshot: 2_000,
         extras: 0,
         originals: 0,
+        extrasSurchargeCop: 0,
+        originalsSurchargeCop: 0,
         surchargeCop: 0,
       },
       submittedAt: "2026-07-28T10:00:00.000Z",
@@ -474,6 +476,8 @@ describe("POST /api/galleries/[galleryId]/submit-selection — success", () => {
       originalPhotoPriceCopSnapshot: 2_000,
       extras: 1,
       originals: 0,
+      extrasSurchargeCop: 5_000,
+      originalsSurchargeCop: 0,
       surchargeCop: 5_000,
     });
     expect(body.submittedAt).toBeTruthy();

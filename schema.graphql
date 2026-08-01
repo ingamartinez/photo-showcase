@@ -27,6 +27,7 @@ type Gallery {
   extraPhotoPriceCopSnapshot: Int!
   id: ID!
   includedPhotosSnapshot: Int!
+  originalPhotoPriceCopSnapshot: Int!
   package: Package!
   publicSlug: String!
   selectionSubmittedAt: String

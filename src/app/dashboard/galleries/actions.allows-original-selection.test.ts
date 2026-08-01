@@ -30,11 +30,15 @@ vi.mock("next/cache", () => ({
   revalidatePath: (...args: unknown[]) => revalidatePathMock(...args),
 }));
 
-// `@/lib/selection-events` is imported at module scope by actions.ts (for
-// `unlockSelection`'s own notification, not this action) — mocked so
-// importing the module never triggers a real Postgres NOTIFY.
+// `@/lib/selection-events` is imported at module scope by actions.ts, and —
+// since this action's own "TASK #114 NOTIFY" decision — called by THIS
+// action too, on the "turn off" branch specifically. Exposed as a named mock
+// (not the fire-and-forget inline stub sibling suites use for actions that
+// merely import it for a NEIGHBOUR) so the tests below can assert whether it
+// was called at all, and with which gallery id.
+const notifySelectionChangedMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/selection-events", () => ({
-  notifySelectionChanged: vi.fn().mockResolvedValue(undefined),
+  notifySelectionChanged: (...args: [string]) => notifySelectionChangedMock(...args),
 }));
 
 // A minimal, genuinely-behaving double for `@/lib/db` — this action is the
@@ -262,6 +266,8 @@ beforeEach(async () => {
   authMock.mockReset();
   signInMock.mockReset();
   revalidatePathMock.mockReset();
+  notifySelectionChangedMock.mockReset();
+  notifySelectionChangedMock.mockResolvedValue(undefined);
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
 
   const db = await seededDb();
@@ -390,6 +396,21 @@ describe("updateAllowsOriginalSelection — turning ON", () => {
     expect(revalidatePathMock).toHaveBeenCalledWith("/dashboard/galleries");
     expect(revalidatePathMock).toHaveBeenCalledWith("/galleries/abc123");
   });
+
+  // Task #114 — this function's own "TASK #114 NOTIFY" decision: turning ON
+  // never touches `assets` at all, so there is nothing shared-selection state
+  // to propagate. A notify here would tell every open client tab to re-poll
+  // for a pick that never changed.
+  it("does NOT notify the shared-selection channel — nothing about picks changed", async () => {
+    const { updateAllowsOriginalSelection } = await import("./actions");
+
+    await updateAllowsOriginalSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID, allowsOriginalSelection: "true" }),
+    );
+
+    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("updateAllowsOriginalSelection — turning OFF", () => {
@@ -410,6 +431,42 @@ describe("updateAllowsOriginalSelection — turning OFF", () => {
 
     expect(result).toEqual({ status: "updated" });
     expect(db.__rows.galleries[0]).toMatchObject({ allowsOriginalSelection: false });
+  });
+
+  // Task #114 — this function's own "TASK #114 NOTIFY" decision: turning off
+  // is the ONE branch that rewrites `assets.selection_kind`, so it is the one
+  // branch that must tell every open client tab to re-poll rather than wait
+  // out the 30s fallback.
+  it("notifies the shared-selection channel with this gallery's own id", async () => {
+    const db = await seededDb();
+    db.__rows.galleries[0] = galleryRow({ allowsOriginalSelection: true });
+    db.__rows.assets.push(assetRow({ id: "asset-1", selectionKind: "original" }));
+    const { updateAllowsOriginalSelection } = await import("./actions");
+
+    await updateAllowsOriginalSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID, allowsOriginalSelection: "false" }),
+    );
+
+    expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_ID);
+  });
+
+  // Still notifies even when there is nothing to reset — a client tab could
+  // be mid-toggle of its own type control, and this action's own commit still
+  // changed something about how the SERVER will treat the next request.
+  // Cheap either way (fire-and-forget), so there is no reason to special-case
+  // "nothing changed" out of the notify.
+  it("notifies even when there was nothing to reset", async () => {
+    const db = await seededDb();
+    db.__rows.galleries[0] = galleryRow({ allowsOriginalSelection: true });
+    const { updateAllowsOriginalSelection } = await import("./actions");
+
+    await updateAllowsOriginalSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID, allowsOriginalSelection: "false" }),
+    );
+
+    expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_ID);
   });
 
   // THE MUTATION THAT MATTERS MOST FOR THIS ACTION, per the task's own

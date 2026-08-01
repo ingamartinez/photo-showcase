@@ -27,6 +27,19 @@ function counterText(): string {
 // where nobody marked an original renders EXACTLY as it did before this
 // slice — see the "originals breakdown" describe block below for the
 // `originals > 0` cases.
+//
+// TASK #214'S OWN TRAP, RECORDED SO IT ISN'T RE-MADE: every render below
+// passes `allowsOriginalSelection={true}` — NOT `false` — even though this
+// whole block is about zero originals. These tests guard the COUNT half of
+// #206's rule ("zero originals -> no row"), and the switch being ON is what
+// makes that the operative condition; setting it to `false` here would let
+// the FLAG satisfy the precondition instead of the count, making the count
+// branch these tests exist to pin unreachable — exactly what happened in
+// review round 1 of this task. The flag's OWN "off -> no row regardless of
+// count" behavior has its dedicated describe block further down
+// ("allowsOriginalSelection is OFF"), which deliberately uses a NON-ZERO
+// originals count so the two guards can never overlap or substitute for one
+// another.
 const SNAPSHOT = {
   includedPhotosSnapshot: 13,
   extraPhotoPriceCopSnapshot: 5_000,
@@ -41,7 +54,7 @@ describe("SelectionCounter", () => {
   it("renders included, selected, extras and surcharge — task #24's exact shape", () => {
     const quota = computeQuota(15, 0, SNAPSHOT);
 
-    render(<SelectionCounter quota={quota} allowsOriginalSelection={false} />);
+    render(<SelectionCounter quota={quota} allowsOriginalSelection={true} />);
 
     const text = counterText();
     expect(text).toContain("incluidas 13");
@@ -65,7 +78,7 @@ describe("SelectionCounter", () => {
   it("never renders the package's name, on a gallery that was never overridden", () => {
     const quota = computeQuota(15, 0, SNAPSHOT);
 
-    render(<SelectionCounter quota={quota} allowsOriginalSelection={false} />);
+    render(<SelectionCounter quota={quota} allowsOriginalSelection={true} />);
 
     // Positive control first: the component actually mounted and rendered
     // its real numbers — this is what makes the negative assertion below
@@ -81,7 +94,7 @@ describe("SelectionCounter", () => {
   it("still shows all three parts (never hides the row) when nobody has selected anything yet", () => {
     const quota = computeQuota(0, 0, SNAPSHOT);
 
-    render(<SelectionCounter quota={quota} allowsOriginalSelection={false} />);
+    render(<SelectionCounter quota={quota} allowsOriginalSelection={true} />);
 
     const text = counterText();
     expect(text).toContain("seleccionadas 0");
@@ -91,7 +104,7 @@ describe("SelectionCounter", () => {
   it("never blocks or scolds when far over the included count — just informs with the real numbers", () => {
     const quota = computeQuota(30, 0, SNAPSHOT);
 
-    render(<SelectionCounter quota={quota} allowsOriginalSelection={false} />);
+    render(<SelectionCounter quota={quota} allowsOriginalSelection={true} />);
 
     const text = counterText();
     expect(text).toContain("seleccionadas 30");
@@ -107,7 +120,7 @@ describe("SelectionCounter", () => {
   it("states plainly, on every render, that the app never charges — not only at submit time", () => {
     const quota = computeQuota(15, 0, SNAPSHOT);
 
-    render(<SelectionCounter quota={quota} allowsOriginalSelection={false} />);
+    render(<SelectionCounter quota={quota} allowsOriginalSelection={true} />);
 
     expect(screen.getByText(/no se cobra nada/)).toBeDefined();
     expect(screen.getByText(/fuera de la app/)).toBeDefined();
@@ -120,12 +133,12 @@ describe("SelectionCounter", () => {
   // reassurance renders whether the client is under or over the quota.
   it("keeps the same reassurance sentence whether under or over the included quota", () => {
     const under = computeQuota(5, 0, SNAPSHOT);
-    const { unmount } = render(<SelectionCounter quota={under} allowsOriginalSelection={false} />);
+    const { unmount } = render(<SelectionCounter quota={under} allowsOriginalSelection={true} />);
     expect(screen.getByText(/no se cobra nada/)).toBeDefined();
     unmount();
 
     const over = computeQuota(20, 0, SNAPSHOT);
-    render(<SelectionCounter quota={over} allowsOriginalSelection={false} />);
+    render(<SelectionCounter quota={over} allowsOriginalSelection={true} />);
     expect(screen.getByText(/no se cobra nada/)).toBeDefined();
   });
 
@@ -137,7 +150,7 @@ describe("SelectionCounter", () => {
   it("never renders anything about originals — no new row, no new word", () => {
     const quota = computeQuota(15, 0, SNAPSHOT);
 
-    render(<SelectionCounter quota={quota} allowsOriginalSelection={false} />);
+    render(<SelectionCounter quota={quota} allowsOriginalSelection={true} />);
 
     expect(screen.queryByText(/original/i)).toBeNull();
   });
@@ -150,7 +163,7 @@ describe("SelectionCounter", () => {
   it("shows the exact same extras line digits as before task #206, with zero originals", () => {
     const quota = computeQuota(15, 0, SNAPSHOT);
 
-    render(<SelectionCounter quota={quota} allowsOriginalSelection={false} />);
+    render(<SelectionCounter quota={quota} allowsOriginalSelection={true} />);
 
     const text = counterText();
     expect(text).toContain("extras 2 × $ 5.000 = $ 10.000");
@@ -206,7 +219,7 @@ describe("SelectionCounter — the two-tariff breakdown (task #206)", () => {
   it("renders no originals row at all when originals is exactly zero, even with extras present", () => {
     const quota = computeQuota(15, 0, SNAPSHOT);
 
-    render(<SelectionCounter quota={quota} allowsOriginalSelection={false} />);
+    render(<SelectionCounter quota={quota} allowsOriginalSelection={true} />);
 
     expect(screen.queryByText(/originales/)).toBeNull();
     expect(screen.queryByText(/^total /)).toBeNull();

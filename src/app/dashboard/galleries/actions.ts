@@ -519,6 +519,23 @@ const updateAllowsOriginalSelectionSchema = z.object({
  * the dashboard detail page AND the client's own gallery page, which is
  * what actually renders (or stops rendering) the type control this flag
  * gates.
+ *
+ * TASK #114 NOTIFY — DECIDED, NOT OMITTED. Unlike the FLAG itself (see
+ * schema.ts's own comment on `galleries.allowsOriginalSelection` for why
+ * that does NOT travel over this channel), the RESET this action performs
+ * when turning off genuinely rewrites `assets.selection_kind` — the exact
+ * shared-selection column task #114's channel exists to propagate promptly.
+ * An open client tab mid-session would otherwise keep showing a tray "Original"
+ * chip, and the tile's own type buttons (now hidden by the flag on next
+ * reload, but still mounted in an ALREADY-RENDERED tab) for up to the 30s
+ * fallback poll. So this action DOES call `notifySelectionChanged` — a
+ * fourth call site alongside the PATCH toggle route, the submit route and
+ * `unlockSelection` above — but ONLY on the "turn off" branch, since turning
+ * ON never touches `assets` at all and would notify of a change that did not
+ * happen to picks. Fire-and-forget, same reasoning as every sibling call
+ * site: the transaction above already committed, and a slow or failed NOTIFY
+ * must never fail (or delay) a write that otherwise fully succeeded — the
+ * 30s fallback poll is the backstop either way.
  */
 export async function updateAllowsOriginalSelection(
   _prevState: UpdateAllowsOriginalSelectionState,
@@ -564,6 +581,18 @@ export async function updateAllowsOriginalSelection(
       .set({ allowsOriginalSelection: parsed.data.allowsOriginalSelection })
       .where(eq(galleries.id, gallery.id));
   });
+
+  // Task #114 — see this function's own header comment ("TASK #114 NOTIFY")
+  // for why this is scoped to the "turn off" branch specifically: only that
+  // branch touches `assets.selection_kind`, the shared-selection state this
+  // channel exists to propagate. Fire-and-forget, after the transaction
+  // above already committed.
+  if (!parsed.data.allowsOriginalSelection) {
+    void notifySelectionChanged(gallery.id).catch(() => {
+      // Swallowed — see src/lib/selection-events.ts's own header comment;
+      // the 30s fallback poll is the backstop.
+    });
+  }
 
   revalidatePath(`/dashboard/galleries/${gallery.id}`);
   revalidatePath("/dashboard/galleries");

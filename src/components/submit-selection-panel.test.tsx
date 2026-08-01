@@ -11,6 +11,19 @@ import { computeQuota } from "@/lib/quota";
 // Every fixture in THIS describe block passes 0 originals on purpose — see
 // the "two-tariff confirmation" describe block below for the `originals > 0`
 // cases (task #206).
+//
+// TASK #214'S OWN TRAP, RECORDED SO IT ISN'T RE-MADE: every render below
+// passes `allowsOriginalSelection={true}`, even though this whole block is
+// about zero originals. These tests (line 265's own "never mentions
+// originals... when there are none" especially) guard the COUNT half of
+// #206's rule; the switch being ON is what makes the count the operative
+// condition. Setting it to `false` here would let the FLAG satisfy the
+// precondition instead, making the count branch unreachable — exactly the
+// review-round-1 defect this comment exists to prevent a repeat of. The
+// flag's OWN "off -> no mention regardless of count" behavior gets its
+// dedicated test in the "two-tariff confirmation" describe block below,
+// which deliberately uses a NON-ZERO originals count so the two guards can
+// never substitute for one another.
 const SNAPSHOT = {
   includedPhotosSnapshot: 13,
   extraPhotoPriceCopSnapshot: 5_000,
@@ -40,7 +53,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked
         submittedAt="2026-07-28T12:00:00.000Z"
         onSubmitted={vi.fn()}
-        allowsOriginalSelection={false}
+        allowsOriginalSelection={true}
       />,
     );
 
@@ -65,7 +78,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
-        allowsOriginalSelection={false}
+        allowsOriginalSelection={true}
       />,
     );
 
@@ -80,7 +93,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
-        allowsOriginalSelection={false}
+        allowsOriginalSelection={true}
       />,
     );
 
@@ -105,7 +118,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
-        allowsOriginalSelection={false}
+        allowsOriginalSelection={true}
       />,
     );
 
@@ -133,7 +146,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
-        allowsOriginalSelection={false}
+        allowsOriginalSelection={true}
       />,
     );
 
@@ -167,7 +180,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={onSubmitted}
-        allowsOriginalSelection={false}
+        allowsOriginalSelection={true}
       />,
     );
 
@@ -197,7 +210,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
-        allowsOriginalSelection={false}
+        allowsOriginalSelection={true}
       />,
     );
 
@@ -224,7 +237,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={onSubmitted}
-        allowsOriginalSelection={false}
+        allowsOriginalSelection={true}
       />,
     );
 
@@ -251,7 +264,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
-        allowsOriginalSelection={false}
+        allowsOriginalSelection={true}
       />,
     );
 
@@ -274,7 +287,7 @@ describe("SubmitSelectionPanel", () => {
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
-        allowsOriginalSelection={false}
+        allowsOriginalSelection={true}
       />,
     );
 

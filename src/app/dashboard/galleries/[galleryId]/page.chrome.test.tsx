@@ -1006,3 +1006,37 @@ describe("GalleryDetailPage — terms-edit preview receives the real edited/orig
     ).toBeDefined();
   });
 });
+
+// Task #214's own wiring seam, the SAME class of gap task #210's own describe
+// block above closes for the terms preview: <AllowsOriginalSelectionControl>'s
+// own unit suite proves it renders the right label GIVEN the right prop, never
+// whether THIS page hands it `gallery.allowsOriginalSelection` at all. Without
+// this, the page could hardcode the prop to either boolean, or drop the
+// component from the tree entirely, and nothing here would notice — an admin
+// looking at an OFF gallery would be shown "Deshabilitar…" for a switch that
+// was never on, misreporting a setting that moves money.
+describe("GalleryDetailPage — the allows-original-selection control reflects the gallery's own value (task #214)", () => {
+  it("shows the enable button when the gallery has the switch off", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ allowsOriginalSelection: false }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(screen.getByRole("button", { name: "Habilitar selección de originales" })).toBeDefined();
+    expect(
+      screen.queryByRole("button", { name: "Deshabilitar selección de originales" }),
+    ).toBeNull();
+  });
+
+  it("shows the disable button when the gallery has the switch on", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ allowsOriginalSelection: true }));
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+
+    expect(
+      screen.getByRole("button", { name: "Deshabilitar selección de originales" }),
+    ).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Habilitar selección de originales" })).toBeNull();
+  });
+});

@@ -433,6 +433,84 @@ describe("ClientGalleryPage chrome", () => {
       expect(within(tray).getAllByText("Original")).toHaveLength(2);
       expect(within(tray).getAllByText("Editada")).toHaveLength(3);
     });
+
+    // Task #214's own complementary case, end to end through the REAL
+    // GraphQL pipeline, same as the test above: the identical fixture
+    // (originals genuinely present in `getGallerySelection`'s own response)
+    // but with the gallery's switch off. Nothing about originals may reach
+    // the rendered page at all — no breakdown row, no tray type line, no
+    // type buttons on the tile — even though the underlying picks are
+    // exactly the ones the test above renders as "Original".
+    it("renders no originals breakdown, tray type line, or tile type control end to end, when the switch is off", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(
+        galleryDetail({
+          includedPhotosSnapshot: 2,
+          extraPhotoPriceCopSnapshot: 5_000,
+          originalPhotoPriceCopSnapshot: 2_000,
+          allowsOriginalSelection: false,
+          assets: Array.from({ length: 5 }, (_unused, index) => ({
+            id: `a${index + 1}`,
+            originalFilename: `IMG_000${index + 1}.JPG`,
+            proofKey: `galleries/g1/proofs/a${index + 1}.webp`,
+            proofWidth: 1600,
+            proofHeight: 1067,
+            isSelected: true,
+            sortOrder: index,
+            finalKey: null,
+            isEdited: false,
+            selectionKind: "edited",
+          })),
+        }),
+      );
+      getGallerySelectionMock.mockResolvedValue([
+        {
+          assetId: "a1",
+          selectedAt: "2026-07-30T12:00:00.000Z",
+          pickedBy: { id: "client-a", label: "Ana Pérez" },
+          selectionKind: "edited",
+        },
+        {
+          assetId: "a2",
+          selectedAt: "2026-07-30T12:01:00.000Z",
+          pickedBy: { id: "client-a", label: "Ana Pérez" },
+          selectionKind: "edited",
+        },
+        {
+          assetId: "a3",
+          selectedAt: "2026-07-30T12:02:00.000Z",
+          pickedBy: { id: "client-a", label: "Ana Pérez" },
+          selectionKind: "edited",
+        },
+        {
+          assetId: "a4",
+          selectedAt: "2026-07-30T12:03:00.000Z",
+          pickedBy: { id: "client-a", label: "Ana Pérez" },
+          selectionKind: "original",
+        },
+        {
+          assetId: "a5",
+          selectedAt: "2026-07-30T12:04:00.000Z",
+          pickedBy: { id: "client-a", label: "Ana Pérez" },
+          selectionKind: "original",
+        },
+      ]);
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      render(element);
+
+      // Positive control first: the page genuinely mounted with the real
+      // numbers — the negative assertions below only mean something once
+      // this is established.
+      expect(screen.getByText(/incluidas 2/)).toBeDefined();
+      expect(screen.getByText(/seleccionadas 5/)).toBeDefined();
+
+      expect(screen.queryByText(/originales \d+ ×/)).toBeNull();
+      expect(screen.queryByText(/^total \$/)).toBeNull();
+      const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+      expect(within(tray).queryByText("Original")).toBeNull();
+      expect(within(tray).queryByText("Editada")).toBeNull();
+      expect(screen.queryByRole("button", { name: /Marcar como/ })).toBeNull();
+    });
   });
 
   it("renders the gallery's title, the CLIENT's own word for its status, and the session date", async () => {

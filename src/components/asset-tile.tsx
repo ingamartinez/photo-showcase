@@ -52,6 +52,18 @@ export function AssetTile({
   // polling every tile on a timer regardless of whether it's even still on
   // screen. Guarded by `refreshedOnce` so a genuinely broken/deleted object
   // fails once and stays failed, instead of retrying forever.
+  //
+  // Task #194 note: with `loading="lazy"` on the <img> below, a tile that
+  // never scrolled into view never fires `load` OR `error` — the browser
+  // hasn't fetched anything for it yet. That's fine; it just means the
+  // FIRST fetch, once it finally happens on scroll, is now more likely to
+  // already be racing a presign that's close to (or past) its TTL on a tab
+  // left open a while. This handler doesn't change: it still fires once,
+  // refetches once, and `refreshedOnce` still stops it from looping if the
+  // refreshed URL is itself already bad (a genuinely deleted object, say).
+  // What changes is only how OFTEN this path gets exercised in practice —
+  // it moves from "rare" to "the normal case for a long-lived tab" — not
+  // whether it stays idempotent.
   async function handleImgError() {
     if (refreshedOnce) return;
     setRefreshedOnce(true);
@@ -161,10 +173,26 @@ export function AssetTile({
             is never stable between two loads of the same asset — configuring
             a next/image remote pattern for that buys nothing, since
             processProof already downscales/compresses server-side. */}
+        {/* Task #194: `loading="lazy"` is the actual fix for the owner's
+            report ("al abrir la galería me carga todas las imágenes") — a
+            gallery with ~84 proofs used to fire ~84 eager downloads on
+            first paint because a bare <img> defaults to eager. The box
+            above is a FIXED `aspect-[3/2]`, so this introduces no CLS: the
+            layout already reserves the space before the image ever
+            arrives, lazy or not. `decoding="async"` rides along with it —
+            without it, the browser can still decode dozens of JPEGs on the
+            main thread as they cross into view, which is a scroll-jank
+            problem `loading="lazy"` alone doesn't solve (it only staggers
+            the network fetch, not the decode). Neither attribute touches
+            `getPresignedUrl` or the read route — signing is a local HMAC,
+            not an R2 round trip, so 84 signatures were never the cost (see
+            this task's own kanban body for why that's a decoy). */}
         {/* eslint-disable-next-line @next/next/no-img-element */}
         <img
           src={src}
           alt={asset.originalFilename}
+          loading="lazy"
+          decoding="async"
           onError={() => void handleImgError()}
           className="h-full w-full object-cover"
         />

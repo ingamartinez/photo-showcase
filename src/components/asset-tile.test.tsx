@@ -63,6 +63,75 @@ describe("AssetTile", () => {
     expect(screen.getByText("IMG_0001.JPG")).toBeDefined();
   });
 
+  // Task #194: the owner's own report was "al abrir la galería me carga
+  // todas las imágenes" — a bare <img> defaults to `loading="eager"`. This
+  // renders a REAL tile (asserting the <img> exists first, via its actual
+  // alt text) and only then checks the attribute, so a component that
+  // stopped rendering an <img> at all would fail loudly here instead of
+  // this test passing vacuously — the exact trap this repo's kanban body
+  // calls out by name.
+  it("marks the thumbnail lazy and async-decoded, so a long grid doesn't fetch every proof eagerly", () => {
+    render(
+      <ul>
+        <AssetTile
+          asset={assetFor()}
+          isFirst={false}
+          isLast={false}
+          onDeleted={onDeleted}
+          onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
+        />
+      </ul>,
+    );
+
+    const img = screen.getByAltText("IMG_0001.JPG") as HTMLImageElement;
+    expect(img).toBeDefined();
+    expect(img.getAttribute("loading")).toBe("lazy");
+    expect(img.getAttribute("decoding")).toBe("async");
+  });
+
+  // Task #194's own trap: with `loading="lazy"`, a tile that never scrolled
+  // into view never fires `load`/`error`, so the "recover from an expired
+  // presigned URL" path (already proven above for the eager case) now has
+  // to survive being the FIRST thing that happens to a tile, not the
+  // second — and, per that same acceptance criterion, must still not loop
+  // if the browser fires more than one `error` event for the same broken
+  // image (real browsers can do this on a slow/flaky connection).
+  it("recovers once from an error on a tile that just entered the viewport, and does not loop on a second error", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(jsonResponse(200, { url: "https://r2.example.com/refreshed" })),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(
+      <ul>
+        <AssetTile
+          asset={assetFor()}
+          isFirst={false}
+          isLast={false}
+          onDeleted={onDeleted}
+          onMoved={onMoved}
+          onFinalUploaded={onFinalUploaded}
+        />
+      </ul>,
+    );
+
+    const img = screen.getByRole("img") as HTMLImageElement;
+    // First error: the lazily-loaded image's first real load attempt fails
+    // against an already-expired presigned URL.
+    fireEvent.error(img);
+    await waitFor(() => expect(img.src).toBe("https://r2.example.com/refreshed"));
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    // Second error on the SAME <img> (e.g. the refreshed URL itself 404s,
+    // or the browser retries after a flaky connection): must not refetch
+    // again — `refreshedOnce` stops it, exactly as it already does for the
+    // eager case.
+    fireEvent.error(img);
+    await Promise.resolve();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
   it("disables 'move up' for the first tile and 'move down' for the last tile", () => {
     render(
       <ul>

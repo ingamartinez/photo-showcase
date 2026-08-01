@@ -443,6 +443,50 @@ describe("createGallery validation", () => {
     expect(result.status).toBe("error");
     expect(result.message).toBeTruthy();
   });
+
+  // Task #193 — the two override fields are validated the SAME way, each
+  // independently: a non-integer or negative value is refused with a
+  // friendly message, without ever reaching the package lookup or the
+  // insert.
+  it("rejects a non-integer override for included photos", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    const result = await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda",
+        sessionDate: "2026-08-01",
+        includedPhotos: "trece",
+      }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.message).toBeTruthy();
+    expect(db.__rows.galleries).toHaveLength(0);
+  });
+
+  it("rejects a negative override for the extra-photo price", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    const result = await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda",
+        sessionDate: "2026-08-01",
+        extraPhotoPriceCop: "-1",
+      }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.message).toBeTruthy();
+    expect(db.__rows.galleries).toHaveLength(0);
+  });
 });
 
 describe("createGallery package resolution", () => {
@@ -543,13 +587,128 @@ describe("createGallery success + frozen terms", () => {
     expect(db.__rows.galleryClients).toEqual([
       expect.objectContaining({ galleryId: stored!.id, userId: "client-1" }),
     ]);
+    // No override was typed — `termsOverridden` must stay `false`, the
+    // column default (schema.ts), and NOT be derived by comparing these
+    // snapshots against the live package row (this task's own documented
+    // trap: that comparison rots the moment the package is edited).
+    expect(stored).toMatchObject({ termsOverridden: false });
+  });
+
+  // Task #193 — both override fields typed together replace BOTH snapshots,
+  // and the gallery is flagged as overridden.
+  it("writes the manually typed override values instead of the package's own terms, and flags the gallery as overridden", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda con override completo",
+        sessionDate: "2026-08-01",
+        includedPhotos: "20",
+        extraPhotoPriceCop: "9000",
+      }),
+    );
+
+    const stored = db.__rows.galleries.find((g) => g.title === "Boda con override completo");
+    expect(stored).toMatchObject({
+      packageId: 1,
+      includedPhotosSnapshot: 20,
+      extraPhotoPriceCopSnapshot: 9_000,
+      termsOverridden: true,
+    });
+  });
+
+  // Each field overrides INDEPENDENTLY — overriding one must not force the
+  // other away from the package's own value.
+  it("overrides only the included-photos quota, inheriting the package's own extra-photo price", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda con tope overrideado",
+        sessionDate: "2026-08-01",
+        includedPhotos: "7",
+      }),
+    );
+
+    const stored = db.__rows.galleries.find((g) => g.title === "Boda con tope overrideado");
+    expect(stored).toMatchObject({
+      includedPhotosSnapshot: 7,
+      extraPhotoPriceCopSnapshot: 5_000,
+      termsOverridden: true,
+    });
+  });
+
+  it("overrides only the extra-photo price, inheriting the package's own included-photos quota", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda con precio extra overrideado",
+        sessionDate: "2026-08-01",
+        extraPhotoPriceCop: "12000",
+      }),
+    );
+
+    const stored = db.__rows.galleries.find((g) => g.title === "Boda con precio extra overrideado");
+    expect(stored).toMatchObject({
+      includedPhotosSnapshot: 13,
+      extraPhotoPriceCopSnapshot: 12_000,
+      termsOverridden: true,
+    });
+  });
+
+  // MUTATION-PROVING TEST for this slice's own named trap: `Number("")` is
+  // `0`, and `override || pkg.includedPhotos` would treat a typed `0` as
+  // falsy and silently fall back to the package's value instead. A literal
+  // `0` has to survive as a REAL override, distinct from an untouched field.
+  it("treats a typed 0 as a real override, not as an untouched field falling back to the package", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda con cero incluidas",
+        sessionDate: "2026-08-01",
+        includedPhotos: "0",
+        extraPhotoPriceCop: "0",
+      }),
+    );
+
+    const stored = db.__rows.galleries.find((g) => g.title === "Boda con cero incluidas");
+    expect(stored).toMatchObject({
+      includedPhotosSnapshot: 0,
+      extraPhotoPriceCopSnapshot: 0,
+      termsOverridden: true,
+    });
   });
 
   // THE highest-value test in this slice (per the task): prove the snapshot
   // is frozen, not derived live. This actually MUTATES the live package row
   // after the gallery is created and re-reads the gallery through the real
   // read-side query (getGalleriesWithDetails) — not a stub of either side.
-  it("keeps a gallery's displayed terms unmoved after the bound package's price/quota are edited afterward", async () => {
+  //
+  // Task #193 extended this in place (rather than adding a sibling test)
+  // with a SECOND, overridden gallery bound to the same package: the frozen-
+  // terms guarantee has to hold for an overridden gallery exactly as it
+  // already held for a normal one, and a derived-from-comparison
+  // `termsOverridden` (the trap this task's own ticket names) would be
+  // exposed by the SAME live-package mutation this test already performs.
+  it("keeps a gallery's displayed terms unmoved after the bound package's price/quota are edited afterward — normal and overridden alike", async () => {
     const { createGallery } = await import("./actions");
     const { getGalleriesWithDetails } = await import("@/lib/galleries");
     const db = await seededDb();
@@ -564,6 +723,19 @@ describe("createGallery success + frozen terms", () => {
       }),
     );
     expect(created.status).toBe("created");
+
+    const createdOverride = await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda Overrideada",
+        sessionDate: "2026-08-01",
+        includedPhotos: "20",
+        extraPhotoPriceCop: "9000",
+      }),
+    );
+    expect(createdOverride.status).toBe("created");
 
     // A real price/quota increase to the seeded offer, made to the SAME row
     // object the fake db's `select` reads from — genuinely mutated, not a
@@ -580,10 +752,19 @@ describe("createGallery success + frozen terms", () => {
 
     const galleriesList = await getGalleriesWithDetails();
     const gallery = galleriesList.find((g) => g.title === "Boda Ana y Beto");
+    const overriddenGallery = galleriesList.find((g) => g.title === "Boda Overrideada");
 
     expect(gallery).toBeDefined();
     expect(gallery?.includedPhotosSnapshot).toBe(13);
     expect(gallery?.extraPhotoPriceCopSnapshot).toBe(5_000);
+
+    // The overridden gallery's snapshots are what the admin TYPED at
+    // creation, and stay exactly that regardless of what happens to the live
+    // package afterward — same guarantee, same live mutation, second
+    // gallery.
+    expect(overriddenGallery).toBeDefined();
+    expect(overriddenGallery?.includedPhotosSnapshot).toBe(20);
+    expect(overriddenGallery?.extraPhotoPriceCopSnapshot).toBe(9_000);
   });
 
   it("rejects a client id that does not exist (foreign key violation), with a friendly message", async () => {

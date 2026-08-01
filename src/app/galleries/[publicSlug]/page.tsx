@@ -242,7 +242,14 @@ export default async function ClientGalleryPage({
         // Nothing is authorized by it: every route <ProofGrid> calls resolves
         // the acting session server-side.
         viewerId={session.user.id}
-        packageName={gallery.package.name}
+        // Task #193 — `gallery.package.name` used to be passed through here
+        // as `packageName`. The owner's decision, applying to every gallery
+        // regardless of `termsOverridden`: a client must never be able to
+        // read the package's name on their OWN gallery and cross-reference
+        // it against `/contact`'s public price list to deduce they got a
+        // deal different from the published one. See selection-counter.tsx's
+        // and proof-grid.tsx's own comments for why this is unconditional,
+        // not only for overridden galleries.
         includedPhotosSnapshot={gallery.includedPhotosSnapshot}
         extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}
       />

@@ -473,5 +473,112 @@ describe("GalleryWorkspace", () => {
 
       await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     });
+
+    // Code review (2026-07-31, on the first submission of this slice) found
+    // this interaction completely unguarded: 1581 passing tests and neither
+    // delete path's own suite ever put a marked asset through the OTHER
+    // path. Task #20's individual "Eliminar" button (criterion #8: kept
+    // alive on purpose, right next to the new marking checkbox on the same
+    // tile) removes a row from `assets` without ever looking at
+    // `markedIds` — so a photographer who marks two photos and then deletes
+    // ONE of them with its own tile button is left with a stale mark
+    // pointing at a row that no longer exists anywhere in `assets`.
+    describe("the two delete paths agree", () => {
+      it("prunes the mark when a marked asset is deleted via its OWN tile button, not the bulk path", async () => {
+        vi.spyOn(window, "confirm").mockReturnValue(true);
+        const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(200, { ok: true })));
+        vi.stubGlobal("fetch", fetchMock);
+        const user = userEvent.setup();
+
+        render(
+          <GalleryWorkspace
+            galleryId={GALLERY_ID}
+            initialAssets={[
+              assetFor({ id: "a1", originalFilename: "one.jpg", sortOrder: 0 }),
+              assetFor({ id: "a2", originalFilename: "two.jpg", sortOrder: 1 }),
+            ]}
+            clientEmails={[CLIENT_EMAIL]}
+            canDeliver={false}
+          />,
+        );
+
+        await user.click(screen.getByRole("button", { name: "Marcar one.jpg para borrar" }));
+        await user.click(screen.getByRole("button", { name: "Marcar two.jpg para borrar" }));
+        expect(screen.getByText("2 fotos marcadas para borrar.")).toBeDefined();
+
+        // Every tile has TWO delete controls now: its own "Eliminar" (task
+        // #20, unchanged) and the new bulk-op checkbox. This uses the
+        // FIRST one — one.jpg's own tile-local button — not the bulk bar.
+        const [deleteOneJpg] = screen.getAllByRole("button", { name: "Eliminar" });
+        await user.click(deleteOneJpg!);
+
+        await waitFor(() => expect(screen.queryByText("one.jpg")).toBeNull());
+        // The bar must reflect ONE remaining mark, not the stale two —
+        // this is the assertion that would have caught the bug: before the
+        // fix, this stayed at "2 fotos marcadas para borrar." pointing at
+        // an id (`a1`) that no longer exists in the grid at all.
+        expect(screen.getByText("1 foto marcada para borrar.")).toBeDefined();
+        expect(screen.queryByText("2 fotos marcadas para borrar.")).toBeNull();
+      });
+
+      // The reviewer's own reproduction, end to end: an unpruned mark makes
+      // the bulk-delete confirmation LIE about how many photos an
+      // IRREVERSIBLE action is about to remove (criterion #3), and — if the
+      // stale id is the one both marks depend on — leaves a terminal, only-
+      // a-reload-recovers state where the bar shows a count with no
+      // corresponding "Desmarcar" control left anywhere in the grid. This
+      // reproduces the fixed version's behaviour: the confirm dialog and the
+      // request it drives both agree with what is actually still on screen.
+      it("keeps the bulk-delete confirmation honest about count after an individual delete removes a marked asset", async () => {
+        const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(true);
+        const fetchMock = vi.fn((input: RequestInfo | URL) => {
+          const url = String(input);
+          if (url.endsWith("/api/assets/a1")) {
+            return Promise.resolve(jsonResponse(200, { ok: true }));
+          }
+          return Promise.resolve(jsonResponse(200, { deleted: ["a2"], failed: [] }));
+        });
+        vi.stubGlobal("fetch", fetchMock);
+        const user = userEvent.setup();
+
+        render(
+          <GalleryWorkspace
+            galleryId={GALLERY_ID}
+            initialAssets={[
+              assetFor({ id: "a1", originalFilename: "one.jpg", sortOrder: 0 }),
+              assetFor({ id: "a2", originalFilename: "two.jpg", sortOrder: 1 }),
+            ]}
+            clientEmails={[CLIENT_EMAIL]}
+            canDeliver={false}
+          />,
+        );
+
+        await user.click(screen.getByRole("button", { name: "Marcar one.jpg para borrar" }));
+        await user.click(screen.getByRole("button", { name: "Marcar two.jpg para borrar" }));
+
+        const [deleteOneJpg] = screen.getAllByRole("button", { name: "Eliminar" });
+        await user.click(deleteOneJpg!);
+        await waitFor(() => expect(screen.queryByText("one.jpg")).toBeNull());
+
+        await user.click(screen.getByRole("button", { name: "Eliminar 1 marcada" }));
+
+        // The confirmation the photographer actually saw, for an
+        // irreversible action, names exactly the ONE photo still marked —
+        // never the stale count of two.
+        expect(confirmSpy).toHaveBeenCalledWith(
+          "¿Eliminar 1 foto marcada? Esta acción no se puede deshacer.",
+        );
+        // And the request sent to the server carries only the still-live id.
+        expect(fetchMock).toHaveBeenCalledWith("/api/assets/bulk-delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ assetIds: ["a2"] }),
+        });
+
+        await waitFor(() => expect(screen.queryByText("two.jpg")).toBeNull());
+        // Nothing left marked, nothing left stuck.
+        expect(screen.queryByText(/marcada/)).toBeNull();
+      });
+    });
   });
 });

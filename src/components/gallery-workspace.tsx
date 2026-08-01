@@ -125,8 +125,47 @@ export function GalleryWorkspace({
     setAssets((prev) => [...prev, asset]);
   }, []);
 
+  // Task #195: the bulk-op mark — see this file's own header comment for why
+  // it lives here and not inside a tile or the viewer, and why it is never
+  // named `selected`. Declared BEFORE `handleDeleted` below on purpose: the
+  // INDIVIDUAL delete path (the tile's own "Eliminar" button, task #20, kept
+  // alive on purpose right next to the new marking checkbox — criterion #8)
+  // has to prune this same set too, not just the bulk path's own
+  // `handleBulkDelete`. Without that prune, deleting a marked asset one at a
+  // time leaves a mark pointing at a row that no longer exists: the bulk-
+  // delete bar's own count goes stale, its confirm dialog overstates how
+  // many photos an irreversible action is about to remove, and if the STALE
+  // id is the only thing left marked, the bar becomes unreachable — nothing
+  // in the grid still carries a "Desmarcar" control for an id that isn't
+  // rendered anymore. Fixed after code review found it unguarded by any
+  // test; see gallery-workspace.test.tsx's own "the two delete paths agree"
+  // describe block below for the regression coverage this was missing.
+  const [markedIds, setMarkedIds] = useState<Set<string>>(() => new Set());
+
+  const handleToggleMarked = useCallback((assetId: string) => {
+    setMarkedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(assetId)) {
+        next.delete(assetId);
+      } else {
+        next.add(assetId);
+      }
+      return next;
+    });
+  }, []);
+
   const handleDeleted = useCallback((assetId: string) => {
     setAssets((prev) => prev.filter((asset) => asset.id !== assetId));
+    // Prune the mark, if any — see the comment on `markedIds` above for why
+    // this is required, not merely tidy. `has()` first, so this never
+    // allocates a new `Set` (and therefore never triggers a re-render) for
+    // the common case of deleting an asset that was never marked.
+    setMarkedIds((prev) => {
+      if (!prev.has(assetId)) return prev;
+      const next = new Set(prev);
+      next.delete(assetId);
+      return next;
+    });
   }, []);
 
   const handleMoved = useCallback((updates: { id: string; sortOrder: number }[]) => {
@@ -143,23 +182,6 @@ export function GalleryWorkspace({
     setAssets((prev) =>
       prev.map((asset) => (asset.id === assetId ? { ...asset, hasFinal: true } : asset)),
     );
-  }, []);
-
-  // Task #195: the bulk-op mark — see this file's own header comment for why
-  // it lives here and not inside a tile or the viewer, and why it is never
-  // named `selected`.
-  const [markedIds, setMarkedIds] = useState<Set<string>>(() => new Set());
-
-  const handleToggleMarked = useCallback((assetId: string) => {
-    setMarkedIds((prev) => {
-      const next = new Set(prev);
-      if (next.has(assetId)) {
-        next.delete(assetId);
-      } else {
-        next.add(assetId);
-      }
-      return next;
-    });
   }, []);
 
   // The full-screen viewer's open asset, tracked by ID rather than by index

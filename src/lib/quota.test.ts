@@ -172,9 +172,22 @@ describe("computeQuota", () => {
   // rather than calling it, is the only thing that actually tests "imports
   // nothing" — this is the one criterion in the whole slice a runtime call
   // genuinely cannot observe.
+  // Task #209: the original regex (`/^\s*import\b/`) only ever looked at the
+  // START of a line, so it caught a static `import … from` but sailed
+  // straight past a dynamic `await import(...)` or a `require(...)` call
+  // buried inside the function body — either would give this module the
+  // exact I/O access criterion 8 forbids while leaving the guard green. This
+  // widened pattern also matches `import(`/`require(` anywhere on a line, not
+  // just at column 0. It does NOT strip comments or strings first (the repo
+  // has been burned by comment-stripping regexes hiding real code behind a
+  // stray `//` inside a URL) — it scans the raw source text, so it can only
+  // ever be too strict (flagging a legitimate `import type` or the literal
+  // word "import(" inside a comment), never too permissive.
   it("never imports @/lib/db or @/lib/db/schema — computeQuota takes plain numbers, does no I/O", () => {
     const source = readFileSync(new URL("./quota.ts", import.meta.url), "utf-8");
-    const importLines = source.split("\n").filter((line) => /^\s*import\b/.test(line));
+    const importLines = source
+      .split("\n")
+      .filter((line) => /^\s*import\b|\bimport\s*\(|\brequire\s*\(/.test(line));
 
     expect(importLines).toEqual([]);
   });

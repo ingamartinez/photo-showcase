@@ -37,12 +37,17 @@ import { describe, expect, it } from "vitest";
 //                    on their own passed clean, which is the exact device
 //                    four of the six files this task touched exist to keep
 //                    out. Guarded below by pairing `uppercase` with any
-//                    `tracking-[…]` at 0.07em or tighter — every LEGITIMATE
-//                    uppercase treatment left under /dashboard sits at
-//                    `tracking-[0.06em]`, `tracking-[0.04em]` or
-//                    `tracking-wide` (Tailwind's 0.025em), so 0.07em is a real
-//                    gap between "the app's own quiet uppercase micro-labels"
-//                    and "the marketing CTA's 0.1em", not an arbitrary cutoff.
+//                    `tracking-[…]` at 0.07em or tighter, OR Tailwind's named
+//                    `tracking-widest` — which compiles to the exact same
+//                    0.1em as the CTA's own bracket form, so the bracket-only
+//                    check alone would have let `tracking-wide` -> `-widest`
+//                    walk straight past it. Every LEGITIMATE uppercase
+//                    treatment left under /dashboard sits at
+//                    `tracking-[0.06em]`, `tracking-[0.04em]`,
+//                    `tracking-wide` (0.025em) or `tracking-wider` (0.05em),
+//                    so 0.07em is a real gap between "the app's own quiet
+//                    uppercase micro-labels" and "the marketing CTA's 0.1em",
+//                    not an arbitrary cutoff.
 //   - `clamp(...)` — the editorial display type scale (dashboard.html:82-91's
 //                    opposite number; the mock's own panel type scale,
 //                    globals.css's `--app-text-*`, is a fixed step list, not
@@ -246,8 +251,15 @@ const WORDMARK_SIZE_TOKEN = "text-[18px]";
  * legitimate quiet-uppercase treatments (`tracking-[0.06em]`,
  * `tracking-[0.04em]`, Tailwind's `tracking-wide` at 0.025em). See this
  * file's header comment for why 0.07em is the real gap, not an arbitrary
- * cutoff. */
+ * cutoff. Deliberately does NOT match the bracket form only: Tailwind's own
+ * NAMED `tracking-widest` utility compiles to `letter-spacing: 0.1em`
+ * (node_modules/tailwindcss/theme.css) — byte-identical to the CTA's own
+ * `tracking-[0.1em]` — so `TIGHT_TRACKING_TOKENS` below checks for it by
+ * name alongside the regex. `tracking-wider` (0.05em) is correctly NOT
+ * included; it sits below the 0.07em cutoff same as the bracket form
+ * would. */
 const TIGHT_TRACKING = /^tracking-\[0?\.(0[7-9]|[1-9])/;
+const TIGHT_TRACKING_TOKENS = new Set(["tracking-widest"]);
 
 function findViolations(classValue: string): string[] {
   const tokens = classValue.split(/\s+/).filter(Boolean);
@@ -267,7 +279,10 @@ function findViolations(classValue: string): string[] {
       `"font-serif" outside the ${WORDMARK_SIZE_TOKEN} wordmark exception: "${classValue}"`,
     );
   }
-  if (tokens.includes("uppercase") && tokens.some((t) => TIGHT_TRACKING.test(t))) {
+  if (
+    tokens.includes("uppercase") &&
+    tokens.some((t) => TIGHT_TRACKING.test(t) || TIGHT_TRACKING_TOKENS.has(t))
+  ) {
     found.push(`the marketing CTA's uppercase/tight-tracking pairing: "${classValue}"`);
   }
 

@@ -272,8 +272,9 @@ export function ProofTile({
                one hand, at night (task #145's own case) is already crowded
                with a 48px pick target and a position number; a second
                permanently-visible control competing for the same cramped
-               194px-wide tile (at 390px, two columns, near-zero gutter) would
-               make the pick button harder to hit reliably, not easier.
+               ~178px-wide tile (at 390px: `<main>`'s own `px-4` leaves 358px,
+               two columns at `gap-[2px]` makes each one (358-2)/2 ≈ 178px)
+               would make the pick button harder to hit reliably, not easier.
             2. It REFLECTS THE MODEL: `assets.selectionKind` is meaningless
                while `isSelected` is `false` (schema.ts's own comment on that
                column) — showing a type toggle for a photo nobody chose would
@@ -304,7 +305,23 @@ export function ProofTile({
           Reuses the pick button's own palette (`rgba(7,7,9,0.42)` ground,
           `rgba(236,234,242,0.5)` border, `--accent` when pressed) so this
           reads as the SAME family of control as the one right next to it,
-          not a competing visual language. */}
+          not a competing visual language.
+
+          THE WIDTH BUDGET, COMPUTED, NOT A REAL-BROWSER MEASUREMENT — flagged
+          honestly rather than asserted as verified. At 390px, `<main>`'s own
+          `px-4` (page.tsx) leaves 358px of content; two columns at `gap-[2px]`
+          (proof-grid.tsx's own `<ul>`) makes each tile (358-2)/2 = 178px wide.
+          The pick button reserves `right-[7px]` + 48px ≈ 55px from the right
+          edge, leaving this control ~178-8(left-2)-55 ≈ 115px before the two
+          would visually meet. `text-[9px]`/`px-1.5` (not the mock-matching
+          `text-[10px]`/`px-2` a first pass used) was chosen specifically to
+          stay under that budget with margin — "Editada"/"Original" at 9px in
+          a typical sans-serif land around 30-38px of glyphs each, +12px
+          padding, ~90-100px combined. Left at `text-[10px]`/`px-2` this same
+          arithmetic lands at ~107-122px, uncomfortably close to the 115px
+          ceiling. NOT confirmed in a real Chromium render at 390×844 (this
+          slice's own declared gap — see the kanban report); revisit with an
+          actual capture before trusting the margin further. */}
       {isSelected && !isLocked && (
         <div
           role="group"
@@ -317,7 +334,7 @@ export function ProofTile({
             aria-pressed={selectionKind === "edited"}
             aria-label={`Marcar como editada: ${asset.originalFilename}`}
             disabled={isPending}
-            className={`px-2 py-1 text-[10px] leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+            className={`px-1.5 py-1 text-[9px] leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
               selectionKind === "edited"
                 ? "bg-accent text-[#14100a]"
                 : "text-fg hover:text-accent-2"
@@ -331,7 +348,7 @@ export function ProofTile({
             aria-pressed={selectionKind === "original"}
             aria-label={`Marcar como original: ${asset.originalFilename}`}
             disabled={isPending}
-            className={`px-2 py-1 text-[10px] leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+            className={`px-1.5 py-1 text-[9px] leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
               selectionKind === "original"
                 ? "bg-accent text-[#14100a]"
                 : "text-fg hover:text-accent-2"

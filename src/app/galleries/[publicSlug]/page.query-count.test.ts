@@ -70,6 +70,9 @@ function galleryRow(assetCount: number) {
     // read rather than rendering a silent `0`.
     originalPhotoPriceCopSnapshot: 2_000,
     selectionTrayMode: "flat" as const,
+    // Task #214 — closes the same wiring gap #206's own comment above names:
+    // the GraphQL `Gallery` type now exposes this as non-null too.
+    allowsOriginalSelection: false,
     selectionSubmittedAt: new Date("2026-07-28T12:00:00.000Z"),
     galleryClients: [{ user: { id: "client-a", name: "Ana Pérez", email: "ana@example.com" } }],
     package: { id: 1, name: "Estándar" },

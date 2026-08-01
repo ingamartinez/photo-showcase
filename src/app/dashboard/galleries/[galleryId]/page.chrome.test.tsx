@@ -146,6 +146,11 @@ const updateGalleryTermsMock = vi.fn();
 // schema.ts's own comment on `selectionTrayMode` explains); its module
 // imports `updateSelectionTrayMode` from here too.
 const updateSelectionTrayModeMock = vi.fn();
+// Task #214: the page now renders <AllowsOriginalSelectionControl>
+// unconditionally (no status gate — same "no too-late-to-change-your-mind
+// moment" reasoning `updateSelectionTrayMode` above already established);
+// its module imports `updateAllowsOriginalSelection` from here too.
+const updateAllowsOriginalSelectionMock = vi.fn();
 vi.mock("@/app/dashboard/galleries/actions", () => ({
   publishGallery: (...args: unknown[]) => publishGalleryMock(...args),
   unlockSelection: (...args: unknown[]) => unlockSelectionMock(...args),
@@ -155,6 +160,7 @@ vi.mock("@/app/dashboard/galleries/actions", () => ({
   resendGalleryAccessEmail: (...args: unknown[]) => resendGalleryAccessEmailMock(...args),
   updateGalleryTerms: (...args: unknown[]) => updateGalleryTermsMock(...args),
   updateSelectionTrayMode: (...args: unknown[]) => updateSelectionTrayModeMock(...args),
+  updateAllowsOriginalSelection: (...args: unknown[]) => updateAllowsOriginalSelectionMock(...args),
 }));
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";

@@ -89,8 +89,8 @@ const WEBP_QUALITY = 82;
 // option. Tiling (rather than one mark in a corner) is deliberate: it is
 // far harder to crop out without destroying the photo, and it survives
 // screenshots/crops of any region.
-const WATERMARK_TILE_WIDTH = 320;
-const WATERMARK_TILE_HEIGHT = 160;
+const WATERMARK_TILE_WIDTH = 560;
+const WATERMARK_TILE_HEIGHT = 280;
 const WATERMARK_ROTATION_DEG = -28;
 const WATERMARK_FONT_SIZE = 30;
 
@@ -128,8 +128,18 @@ export async function assertTileHasInk(tile: Buffer): Promise<void> {
  * density/units (the trailing `.resize()` forces the pixel size so tiling
  * math never depends on that assumption). White fill over a black stroke
  * (`paint-order="stroke"` draws the stroke first) keeps the text legible
- * over both light and dark frames; both are kept at moderate opacity so the
- * mark reads as a watermark, not a censor bar.
+ * over both light and dark frames.
+ *
+ * Opacity, task #201 (owner decision, 2026-07-31, following real client
+ * complaints that the mark was too invasive): both fill and stroke opacity
+ * were deliberately turned down further than that task's own body proposed,
+ * and the stroke was kept proportionally fainter than the fill rather than
+ * dropped — a black outline at close-to-fill opacity reads as a dirty
+ * border, not a lighter mark, so the two had to move together and the
+ * stroke had to move further. These are not "moderate" values anymore by
+ * design; they are deliberately subdued. Do not lower them again without
+ * another explicit owner decision — the mark is the photographer's
+ * pre-payment leverage, and subtle is not the same request as invisible.
  *
  * `tileWidth`/`tileHeight` default to the design size but can be smaller —
  * `processProof` clamps them to the output canvas, since sharp's
@@ -153,9 +163,9 @@ async function buildWatermarkTile(
         font-weight="bold"
         font-size="${WATERMARK_FONT_SIZE}"
         fill="#ffffff"
-        fill-opacity="0.35"
+        fill-opacity="0.16"
         stroke="#000000"
-        stroke-opacity="0.30"
+        stroke-opacity="0.12"
         stroke-width="1.5"
         paint-order="stroke"
       >${WATERMARK_TEXT}</text>

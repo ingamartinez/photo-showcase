@@ -160,4 +160,163 @@ describe("SelectionTray", () => {
 
     expect(container.querySelector("section")?.getAttribute("aria-live")).toBe("polite");
   });
+
+  it("shows no empty scroll box alongside the explanatory message when nobody has picked yet", () => {
+    // Criterion #7: the message is enough on its own — an empty scrollable
+    // box next to it would read as broken, not as "nothing here yet".
+    const { container } = renderTray({ picks: [] });
+
+    expect(screen.getByText(/todavía no eligieron ninguna foto/i)).toBeDefined();
+    expect(container.querySelector("ul")).toBeNull();
+    expect(container.querySelector(".overflow-y-auto")).toBeNull();
+  });
+});
+
+describe("SelectionTray — collapsible tray with a height-capped list (task #203)", () => {
+  /** Builds N picks with distinct asset ids, all attributed to the same
+   * (short-named) picker — the row-height guarantee under test comes from
+   * <TrayItem>'s `truncate` label, not from any particular name, so a real
+   * name is not the point here. */
+  function manyPicks(count: number): SelectionPick[] {
+    return Array.from({ length: count }, (_, index) =>
+      pick({ assetId: `asset-${index}`, pickedBy: { id: "client-b", label: "Beto Ruiz" } }),
+    );
+  }
+
+  it("starts expanded, showing the list, with the toggle announcing that state", () => {
+    renderTray({ picks: [pick()] });
+
+    expect(screen.getByRole("listitem")).toBeDefined();
+    expect(screen.getByRole("button", { name: "Ocultar" }).getAttribute("aria-expanded")).toBe(
+      "true",
+    );
+  });
+
+  it("collapsing removes the list from the accessibility tree and the tab order, not just visually", async () => {
+    const user = userEvent.setup();
+    const { container } = renderTray({ picks: [pick({ assetId: "a1" })] });
+
+    await user.click(screen.getByRole("button", { name: "Ocultar" }));
+
+    // Not queryable by role at all — this is how Testing Library surfaces
+    // "excluded from the accessibility tree", which is the actual criterion,
+    // not merely "not visible on screen".
+    expect(screen.queryByRole("listitem")).toBeNull();
+    expect(screen.getByRole("button", { name: "Mostrar" }).getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+
+    // The `hidden` attribute is what does the work here — jsdom correctly
+    // computes `display: none` for it (verified separately), which is the
+    // property real browsers use to keep a subtree out of the tab order.
+    // jsdom's own `.focus()` does not go on to enforce that (a known jsdom
+    // gap: it does not implement the "is being rendered" check the actual
+    // focusing steps require), so this asserts the attribute directly
+    // instead of leaning on a `.focus()` call jsdom would let succeed anyway.
+    const listRegion = container.querySelector("li")?.closest("[hidden]");
+    expect(listRegion).not.toBeNull();
+  });
+
+  it("re-expanding restores the list to the accessibility tree", async () => {
+    const user = userEvent.setup();
+    renderTray({ picks: [pick({ assetId: "a1" })] });
+
+    await user.click(screen.getByRole("button", { name: "Ocultar" }));
+    await user.click(screen.getByRole("button", { name: "Mostrar" }));
+
+    expect(screen.getByRole("listitem")).toBeDefined();
+  });
+
+  it("keeps a visible pick counter in the header so aria-live still has something to announce while collapsed", async () => {
+    // Criteria #4 and #5: the header counter is what survives the collapse,
+    // so a pick arriving from ANOTHER session while the tray is folded still
+    // changes something inside the aria-live="polite" region.
+    const user = userEvent.setup();
+    const { container, rerender } = renderTray({ picks: [pick({ assetId: "a1" })] });
+
+    await user.click(screen.getByRole("button", { name: "Ocultar" }));
+
+    const section = container.querySelector("section") as HTMLElement;
+    expect(section.getAttribute("aria-live")).toBe("polite");
+    expect(section.textContent).toContain("1");
+
+    rerender(
+      <SelectionTray
+        picks={[
+          pick({ assetId: "a1" }),
+          pick({ assetId: "a2", pickedBy: { id: "client-c", label: "Caro" } }),
+        ]}
+        urls={{ a1: "https://r2.example.com/a1", a2: "https://r2.example.com/a2" }}
+        filenamesByAssetId={{ a1: "IMG_0001.JPG", a2: "IMG_0002.JPG" }}
+        viewerId="client-a"
+        isLocked={false}
+        isStale={false}
+        onOpenAsset={() => {}}
+        onImageError={() => {}}
+      />,
+    );
+
+    // The counter changed (this is the announcement)...
+    expect(section.textContent).toContain("2");
+    // ...while the list itself stayed folded away, exactly as the client
+    // left it — a pick from someone else must not force it back open.
+    expect(screen.queryByRole("listitem")).toBeNull();
+  });
+
+  it("keeps the stale-connection warning visible even while the tray is collapsed", async () => {
+    // Criterion #8: this warning is about trusting what's on screen at all,
+    // which matters MORE while collapsed, not less.
+    const user = userEvent.setup();
+    renderTray({ picks: [pick()], isStale: true });
+
+    await user.click(screen.getByRole("button", { name: "Ocultar" }));
+
+    expect(screen.getByText(/se perdió la conexión/i)).toBeDefined();
+  });
+
+  it("caps the scrollable list to two rows worth of height with 50 picks — not a class check, an actual measured height", () => {
+    // Criterion #2, the one that actually proves the production bug is
+    // fixed, and the easiest one to fake (task body's own warning: a
+    // `toHaveClass("max-h-...")` assertion is true regardless of which
+    // element it landed on and proves nothing). This mocks
+    // `getBoundingClientRect` to stand in for jsdom's absent layout engine —
+    // sanctioned explicitly by the task — then asserts the actual computed
+    // `maxHeight`, in pixels, that the scroll container ends up with.
+    const rowHeightPx = 120; // stand-in for one real item + its label
+    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+      height: rowHeightPx,
+      width: 96,
+      top: 0,
+      left: 0,
+      right: 96,
+      bottom: rowHeightPx,
+      x: 0,
+      y: 0,
+      toJSON() {
+        return {};
+      },
+    });
+
+    const { container } = renderTray({ picks: manyPicks(50) });
+
+    expect(screen.getAllByRole("listitem")).toHaveLength(50);
+
+    const scrollContainer = container.querySelector(".overflow-y-auto") as HTMLElement;
+    expect(scrollContainer).not.toBeNull();
+    expect(scrollContainer.className).toContain("overscroll-contain");
+
+    // Two rows plus one gap between them — see selection-tray.tsx's
+    // `FALLBACK_ROW_GAP_PX` comment for why 12px is the right fallback under
+    // jsdom specifically (no compiled Tailwind stylesheet loaded here to
+    // read the real `gap-3` value from).
+    const expectedMaxHeightPx = rowHeightPx * 2 + 12;
+    expect(scrollContainer.style.maxHeight).toBe(`${expectedMaxHeightPx}px`);
+
+    // The bug this task fixes was height growing WITH the pick count. Prove
+    // the cap does not scale: 3 picks must land on the exact same number.
+    cleanup();
+    const { container: fewContainer } = renderTray({ picks: manyPicks(3) });
+    const fewScrollContainer = fewContainer.querySelector(".overflow-y-auto") as HTMLElement;
+    expect(fewScrollContainer.style.maxHeight).toBe(`${expectedMaxHeightPx}px`);
+  });
 });

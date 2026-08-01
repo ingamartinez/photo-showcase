@@ -38,7 +38,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SubmitSelectionOutcome } from "@/components/submit-selection-panel";
 import { computeQuota, type QuotaResult } from "@/lib/quota";
-import type { SelectionPick, SelectionPicker } from "@/lib/selection-snapshot";
+import type { SelectionKind, SelectionPick, SelectionPicker } from "@/lib/selection-snapshot";
 
 // Hand-rolled, not imported from `@/lib/db/schema`'s `Gallery["status"]`:
 // even a type-only import is erased at compile time and technically safe
@@ -107,6 +107,10 @@ type SelectionResponse = {
     // Task #95: who the server recorded as the picker, straight from the
     // route that just wrote it — see that route's own comment.
     pickedBy: SelectionPicker | null;
+    // Task #206 — the type the route just recorded, whether this response
+    // came from a select/deselect (which resets it to `edited`) or a
+    // type-only change.
+    selectionKind: SelectionKind;
   };
   quota: QuotaResult;
 };
@@ -138,6 +142,7 @@ export function useSharedSelection({
   initialPicks,
   includedPhotosSnapshot,
   extraPhotoPriceCopSnapshot,
+  originalPhotoPriceCopSnapshot,
 }: {
   galleryId: string;
   initialAssets: SharedSelectionAsset[];
@@ -146,6 +151,16 @@ export function useSharedSelection({
   initialPicks: SelectionPick[];
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
+  // Task #206 — REQUIRED, not optional. This used to not exist as a prop at
+  // all: the GraphQL `Gallery` type didn't expose
+  // `originalPhotoPriceCopSnapshot`, `page.tsx` had nothing to pass, and this
+  // hook hardcoded `0` right where the value now goes (harmless before this
+  // slice, since nothing wrote `assets.selectionKind` to anything but
+  // `edited` — see #205's own "Hueco de cableado" note). Making the prop
+  // required is what turns "the wiring gap is closed" into a compile error
+  // at every call site that doesn't supply it, rather than a comment asking
+  // nicely for it.
+  originalPhotoPriceCopSnapshot: number;
 }) {
   // `is_selected` per asset. Seeded from the initial server-rendered paint,
   // then only ever overwritten by a toggle response's own `asset.isSelected`
@@ -154,40 +169,38 @@ export function useSharedSelection({
   const [selectionById, setSelectionById] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(initialAssets.map((asset) => [asset.id, asset.isSelected])),
   );
-  // Task #205 — this hook only ever knows `isSelected`, never
-  // `selectionKind` (`SharedSelectionAsset` doesn't carry it, and every
-  // asset this app can produce today is `edited` — task #206 is the slice
-  // that would let a client pick `original` at all). Seeded here as 0
-  // originals, which makes the `originalPhotoPriceCopSnapshot: 0` right
-  // below harmless (0 * anything is 0) but NOT a stand-in for the gallery's
-  // real price — this hook's own props (below) simply do not carry that
-  // value, because the wiring stops one layer up:
-  // `src/app/galleries/[publicSlug]/page.tsx` passes only
-  // `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot` to `<ProofGrid>`
-  // (and from there to this hook), and the GraphQL `Gallery` type
-  // (`src/lib/graphql/types/gallery.ts`) does not expose
-  // `originalPhotoPriceCopSnapshot` at all — `readClientGalleryBySlug`'s own
-  // document never selects it (deliberately narrow, `client-gallery-
-  // reads.ts`'s header comment).
+  // Task #206, corrected after review (round 2) — BOTH the total and the
+  // edited/original split come off `initialPicks` alone, never off
+  // `initialAssets`. An earlier version of this took the total from
+  // `initialAssets.filter(isSelected).length` and subtracted `initialPicks`'
+  // own originals count from it, on the claim that the two were "built from
+  // the same query so they can never disagree". That claim was false:
+  // `initialAssets` comes from `readClientGalleryBySlug` (page.tsx's FIRST
+  // await), `initialPicks` comes from `getGallerySelection` (a SEPARATE,
+  // LATER await, same file) — two sequential reads with a write window
+  // between them, in a feature whose entire premise (#94/#95) is several
+  // clients editing the same shared selection concurrently. A pick changing
+  // kind, or a NEW pick landing, in that window left `initialAssets` stale
+  // and `initialPicks` fresh, and subtracting one from the other produced a
+  // wrong count on the first paint of a money screen — see
+  // proof-grid.test.tsx's own "the two initial reads can disagree" test for
+  // the reproduced case.
   //
-  // THIS IS A REAL GAP, NOT A DATA-FLOW CHOICE, and it is intentionally NOT
-  // closed here: threading the real price through `gallery.ts`, `page.tsx`
-  // and this hook's own props would widen this slice into #206's territory.
-  // Every quota AFTER this first paint still comes from the server's own
-  // recomputation (the PATCH/GET routes, both of which DO read the gallery's
-  // real `originalPhotoPriceCopSnapshot` off the row — see those routes'
-  // own comments), so nothing downstream of the FIRST paint is affected by
-  // this hook's hardcoded 0. But #206 MUST thread the real value through all
-  // three of `gallery.ts`, `page.tsx` and this hook before it lets a client
-  // pick `original` — shipping that slice against this hook's hardcoded 0
-  // would compute every client's surcharge against a $0 original price.
-  const [quota, setQuota] = useState<QuotaResult>(() =>
-    computeQuota(initialAssets.filter((asset) => asset.isSelected).length, 0, {
+  // `initialPicks.length` alone is the correct total: every entry in it IS
+  // a currently-selected asset by construction (selection-snapshot.ts's own
+  // comment on `SelectionPick`), so there is nothing left to read off
+  // `initialAssets` for this calculation at all.
+  const [quota, setQuota] = useState<QuotaResult>(() => {
+    const selectedOriginal = initialPicks.filter(
+      (pick) => pick.selectionKind === "original",
+    ).length;
+    const selectedEdited = initialPicks.length - selectedOriginal;
+    return computeQuota(selectedEdited, selectedOriginal, {
       includedPhotosSnapshot,
       extraPhotoPriceCopSnapshot,
-      originalPhotoPriceCopSnapshot: 0,
-    }),
-  );
+      originalPhotoPriceCopSnapshot,
+    });
+  });
   // Task #95: the shared, ATTRIBUTED selection — the tray's whole content.
   // Seeded from the server render, then replaced WHOLESALE by each accepted
   // snapshot (never merged field by field) plus the one local edit a
@@ -612,9 +625,11 @@ export function useSharedSelection({
       // it, not one poll interval later — waiting up to 5 seconds to see your
       // OWN click take effect would read as the app being broken. Every field
       // written here comes from the response (`isSelected`, `selectedAt`,
-      // `pickedBy`), never guessed: this is the same row the route just wrote,
-      // reported back by the route that wrote it. The next accepted snapshot
-      // replaces the whole list anyway.
+      // `pickedBy`, `selectionKind`), never guessed: this is the same row the
+      // route just wrote, reported back by the route that wrote it (task
+      // #206's own "always `edited` on a fresh select" rule lives in that
+      // route, not here). The next accepted snapshot replaces the whole list
+      // anyway.
       //
       // Removed-then-appended on select rather than sorted: the server orders
       // by `selected_at` ascending, and a pick made now IS the newest, so
@@ -629,6 +644,7 @@ export function useSharedSelection({
             assetId: body.asset.id,
             selectedAt: body.asset.selectedAt,
             pickedBy: body.asset.pickedBy,
+            selectionKind: body.asset.selectionKind,
           },
         ];
       });
@@ -641,6 +657,72 @@ export function useSharedSelection({
       // The server's own recomputed quota — only applied if no LATER-issued
       // toggle's response (or accepted snapshot) has already been applied. See
       // the header comment on `quotaSequenceRef` above.
+      if (sequence > appliedQuotaSequenceRef.current) {
+        appliedQuotaSequenceRef.current = sequence;
+        setQuota(body.quota);
+      }
+    } catch {
+      setToggleError("No se pudo conectar.");
+    } finally {
+      pendingIdsRef.current.delete(assetId);
+      setPendingIds(new Set(pendingIdsRef.current));
+    }
+  }, []);
+
+  // Task #206 — set an ALREADY-selected pick's type, reusing every mechanism
+  // `toggleSelection` above already built rather than inventing a second
+  // channel (the task body's own instruction): the same `pendingIdsRef` guard
+  // (so a type change and a toggle can never race on the SAME asset — both
+  // key off `assetId`), the same `quotaSequenceRef`/`appliedQuotaSequenceRef`
+  // ordering (so a type change and a live snapshot, or two type changes,
+  // apply in issue order and never let a stale one win), and the same
+  // `lastLocalWriteClockRef` stamp (so a snapshot issued before this commit
+  // cannot flip the tray's local view back for one interval). The ONLY
+  // difference from `toggleSelection` is the request body and which fields
+  // of the response this writes back.
+  const setSelectionKind = useCallback(async (assetId: string, kind: SelectionKind) => {
+    // Same UX-only mirror of the server-side lock as `toggleSelection` — see
+    // that callback's own comment.
+    if (isLockedRef.current) return;
+    if (pendingIdsRef.current.has(assetId)) return;
+    pendingIdsRef.current.add(assetId);
+    setPendingIds(new Set(pendingIdsRef.current));
+    setToggleError(null);
+
+    const sequence = ++quotaSequenceRef.current;
+    try {
+      const response = await fetch(`/api/assets/${assetId}/selection`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ selectionKind: kind }),
+      });
+      if (!response.ok) {
+        setToggleError("No se pudo actualizar el tipo de foto.");
+        return;
+      }
+      const body = (await response.json()) as SelectionResponse;
+
+      // `isSelected` is unchanged by a type-only write (the route's own
+      // guarantee — see its `asset_not_selected` guard), but writing it back
+      // here costs nothing and keeps this handler symmetric with
+      // `toggleSelection`'s own "trust only the response" stance.
+      setSelectionById((prev) => ({ ...prev, [body.asset.id]: body.asset.isSelected }));
+      // `pickedBy` too — not just `selectionKind` — for the SAME reason
+      // `toggleSelection` above writes back every field its own response
+      // carries rather than assuming the pick's existing local copy is still
+      // right: the route's own `pickedBy` is a REAL lookup (a type change can
+      // be made by any client attached to the gallery, not only the one who
+      // originally picked the photo — task #94/#95's shared-selection model),
+      // and this is the one place that lookup's result is actually consumed.
+      setPicks((prev) =>
+        prev.map((pick) =>
+          pick.assetId === body.asset.id
+            ? { ...pick, selectionKind: body.asset.selectionKind, pickedBy: body.asset.pickedBy }
+            : pick,
+        ),
+      );
+
+      lastLocalWriteClockRef.current = quotaSequenceRef.current;
       if (sequence > appliedQuotaSequenceRef.current) {
         appliedQuotaSequenceRef.current = sequence;
         setQuota(body.quota);
@@ -688,6 +770,7 @@ export function useSharedSelection({
     toggleError,
     isStale,
     toggleSelection,
+    setSelectionKind,
     handleSubmitted,
   };
 }

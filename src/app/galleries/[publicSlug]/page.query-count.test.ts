@@ -65,6 +65,10 @@ function galleryRow(assetCount: number) {
     createdAt: new Date("2026-07-01T00:00:00.000Z"),
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
+    // Task #206 — closes the wiring gap #205 left open: the GraphQL `Gallery`
+    // type now exposes this as non-null, so a row missing it fails the whole
+    // read rather than rendering a silent `0`.
+    originalPhotoPriceCopSnapshot: 2_000,
     selectionTrayMode: "flat" as const,
     selectionSubmittedAt: new Date("2026-07-28T12:00:00.000Z"),
     galleryClients: [{ user: { id: "client-a", name: "Ana Pérez", email: "ana@example.com" } }],

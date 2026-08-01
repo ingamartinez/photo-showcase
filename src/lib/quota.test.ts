@@ -29,6 +29,8 @@ describe("computeQuota", () => {
         originalPhotoPriceCopSnapshot: 2_000,
         extras: 0,
         originals: 0,
+        extrasSurchargeCop: 0,
+        originalsSurchargeCop: 0,
         surchargeCop: 0,
       });
     });
@@ -43,6 +45,8 @@ describe("computeQuota", () => {
         originalPhotoPriceCopSnapshot: 2_000,
         extras: 0,
         originals: 0,
+        extrasSurchargeCop: 0,
+        originalsSurchargeCop: 0,
         surchargeCop: 0,
       });
     });
@@ -57,6 +61,8 @@ describe("computeQuota", () => {
         originalPhotoPriceCopSnapshot: 2_000,
         extras: 1,
         originals: 0,
+        extrasSurchargeCop: 5_000,
+        originalsSurchargeCop: 0,
         surchargeCop: 5_000,
       });
     });
@@ -71,6 +77,8 @@ describe("computeQuota", () => {
         originalPhotoPriceCopSnapshot: 2_000,
         extras: 17,
         originals: 0,
+        extrasSurchargeCop: 85_000,
+        originalsSurchargeCop: 0,
         surchargeCop: 85_000,
       });
     });
@@ -106,6 +114,17 @@ describe("computeQuota", () => {
       expect(result.originals).toBe(4);
       expect(result.surchargeCop).toBe(2 * 5_000 + 4 * 2_000);
     });
+
+    // Task #206's own addition: `extrasSurchargeCop`/`originalsSurchargeCop`,
+    // the pre-multiplied halves `surchargeCop` is built from — added so
+    // `selection-counter.tsx`/`submit-selection-panel.tsx` can show a
+    // two-tariff breakdown without ever multiplying anything themselves.
+    it("splits the surcharge into its edited-only and originals-only halves, which sum to the total", () => {
+      const result = computeQuota(15, 4, SNAPSHOT);
+      expect(result.extrasSurchargeCop).toBe(2 * 5_000);
+      expect(result.originalsSurchargeCop).toBe(4 * 2_000);
+      expect(result.extrasSurchargeCop + result.originalsSurchargeCop).toBe(result.surchargeCop);
+    });
   });
 
   // Acceptance criterion 3 — THE test that actually distinguishes a correct
@@ -136,6 +155,8 @@ describe("computeQuota", () => {
     expect(result.originals).toBe(3);
     expect(result.surchargeCop).toBe(16_000);
     expect(result.selected).toBe(12);
+    expect(result.extrasSurchargeCop).toBe(10_000);
+    expect(result.originalsSurchargeCop).toBe(6_000);
   });
 
   // Acceptance criterion 8 — this module must never import `@/lib/db` or

@@ -37,12 +37,14 @@ let onClose: ReturnType<typeof vi.fn<() => void>>;
 let onNavigate: ReturnType<typeof vi.fn<(index: number) => void>>;
 let onImageError: ReturnType<typeof vi.fn<(assetId: string) => void>>;
 let onToggleSelection: ReturnType<typeof vi.fn<(assetId: string, nextSelected: boolean) => void>>;
+let onSetSelectionKind: ReturnType<typeof vi.fn<(assetId: string, kind: string) => void>>;
 
 beforeEach(() => {
   onClose = vi.fn();
   onNavigate = vi.fn();
   onImageError = vi.fn();
   onToggleSelection = vi.fn();
+  onSetSelectionKind = vi.fn();
 });
 
 afterEach(() => {
@@ -65,6 +67,11 @@ function lightboxProps(
     pendingAssetIds: new Set<string>(),
     isLocked: false,
     isDelivered: false,
+    // Task #206 — no asset is selected by default in `assetsFor`, so this
+    // empty map is never actually read; tests exercising the type control
+    // override it explicitly.
+    selectionKindById: {},
+    onSetSelectionKind,
     ...overrides,
   };
 }
@@ -564,6 +571,66 @@ describe("ProofLightbox", () => {
       rerender(<ProofLightbox {...lightboxProps({ assets: assetsFor(1), index: 0 })} />);
 
       expect(screen.queryByText("Deslizá para pasar")).toBeNull();
+    });
+  });
+
+  // Task #206 — the SAME type control <ProofTile> carries, next to the pick
+  // button here instead of the grid tile.
+  describe("the type control (task #206)", () => {
+    it("does not render for an unselected photo", () => {
+      renderLightbox({ assets: assetsFor(1, [{ isSelected: false }]), index: 0 });
+
+      expect(screen.queryByRole("button", { name: /Marcar como/ })).toBeNull();
+    });
+
+    it("does not render once the selection is locked, even for a selected photo", () => {
+      renderLightbox({
+        assets: assetsFor(1, [{ isSelected: true }]),
+        index: 0,
+        isLocked: true,
+      });
+
+      expect(screen.queryByRole("button", { name: /Marcar como/ })).toBeNull();
+    });
+
+    it("renders both type buttons for a selected, unlocked photo, with the current kind pressed", () => {
+      renderLightbox({
+        assets: assetsFor(1, [{ isSelected: true }]),
+        index: 0,
+        selectionKindById: { a1: "original" },
+      });
+
+      const edited = screen.getByRole("button", { name: "Marcar como editada: IMG_0001.JPG" });
+      const original = screen.getByRole("button", { name: "Marcar como original: IMG_0001.JPG" });
+      expect(edited.getAttribute("aria-pressed")).toBe("false");
+      expect(original.getAttribute("aria-pressed")).toBe("true");
+    });
+
+    it("calls onSetSelectionKind with the asset id and the tapped kind, without touching onToggleSelection", () => {
+      renderLightbox({
+        assets: assetsFor(1, [{ isSelected: true }]),
+        index: 0,
+        selectionKindById: { a1: "edited" },
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Marcar como original: IMG_0001.JPG" }));
+
+      expect(onSetSelectionKind).toHaveBeenCalledWith("a1", "original");
+      expect(onToggleSelection).not.toHaveBeenCalled();
+    });
+
+    it("disables both type buttons while this asset is pending, mirroring the pick button's own gate", () => {
+      renderLightbox({
+        assets: assetsFor(1, [{ isSelected: true }]),
+        index: 0,
+        pendingAssetIds: new Set(["a1"]),
+      });
+
+      expect(
+        screen
+          .getByRole("button", { name: "Marcar como editada: IMG_0001.JPG" })
+          .hasAttribute("disabled"),
+      ).toBe(true);
     });
   });
 });

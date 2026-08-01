@@ -151,6 +151,8 @@ describe("readClientGalleryBySlug", () => {
       selectionSubmittedAt: "2026-07-28T12:00:00.000Z",
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      // Task #206 — closes the wiring gap #205 left open.
+      originalPhotoPriceCopSnapshot: 2_000,
       // The WIRE value, not the Postgres one — graphql-js serializes an enum
       // field to the MEMBER NAME (`"FLAT"`), not the `value` this schema
       // maps it from (`"flat"`, ./types/selection-tray-mode.ts). The page
@@ -187,6 +189,7 @@ describe("readClientGalleryBySlug", () => {
       "extraPhotoPriceCopSnapshot",
       "id",
       "includedPhotosSnapshot",
+      "originalPhotoPriceCopSnapshot",
       "package",
       "selectionSubmittedAt",
       "selectionTrayMode",

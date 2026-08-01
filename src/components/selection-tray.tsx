@@ -322,6 +322,20 @@ export function SelectionTray({
   const [maxListHeightPx, setMaxListHeightPx] = useState<number | null>(null);
   const hasPicks = picks.length > 0;
 
+  // Task #206, criterion 8 — the governing constraint: a gallery where
+  // nobody marked an original looks and counts EXACTLY as before this slice.
+  // `<TrayItem>` renders an extra type line only when this is true, so a
+  // gallery with zero originals gets the exact same markup (same height, same
+  // #203 cap) it always did — not a row that says "editada" either, which
+  // would still be new bytes nobody asked for. Once true, EVERY item gets the
+  // line (not just the originals) — deliberately, so every item's own
+  // rendered height stays UNIFORM: the #203/#204 height-cap measurement reads
+  // the FIRST `<li>`'s box and assumes every sibling matches it, and a label
+  // that appeared on some items but not others would make that assumption
+  // false again, in a smaller, easier-to-miss way than #204's own by-person
+  // bug (task #208's own warning about this exact class of mistake).
+  const hasAnyOriginal = picks.some((pick) => pick.selectionKind === "original");
+
   // Measures the ACTUAL rendered height of one row rather than hardcoding a
   // pixel figure — see this file's header comment for why a hand-computed
   // number is a trap here. Runs once picks first exist, and again whenever
@@ -521,6 +535,7 @@ export function SelectionTray({
                       viewerId={viewerId}
                       onOpen={() => onOpenAsset(pick.assetId)}
                       onError={() => onImageError(pick.assetId)}
+                      showType={hasAnyOriginal}
                     />
                   ))}
                 </ul>
@@ -546,6 +561,7 @@ export function SelectionTray({
                   viewerId={viewerId}
                   onOpen={() => onOpenAsset(pick.assetId)}
                   onError={() => onImageError(pick.assetId)}
+                  showType={hasAnyOriginal}
                 />
               ))}
             </ul>
@@ -563,6 +579,7 @@ function TrayItem({
   viewerId,
   onOpen,
   onError,
+  showType,
 }: {
   pick: SelectionPick;
   /** `undefined` when this pick's asset was not in the page's initial render
@@ -572,9 +589,19 @@ function TrayItem({
   viewerId: string | null;
   onOpen: () => void;
   onError: () => void;
+  /** Task #206, criterion 8 — `<SelectionTray>`'s own `hasAnyOriginal`,
+   * NEVER this item's own `pick.selectionKind`: whether the type line renders
+   * at all is a decision for the WHOLE gallery, made once, not per item. A
+   * gallery with zero originals must render this component with EXACTLY the
+   * markup it had before this slice — not a row that says "editada" either,
+   * which would still be new bytes nobody asked for and new height nobody
+   * turned on. See this file's own `hasAnyOriginal` comment for why, once
+   * true, every item gets the line rather than only the originals. */
+  showType: boolean;
 }) {
   const label = pickerLabelFor(pick.pickedBy, viewerId);
   const filename = originalFilename ?? "una foto";
+  const isOriginal = pick.selectionKind === "original";
 
   return (
     <li className="w-24">
@@ -585,7 +612,15 @@ function TrayItem({
         // one control that changes it stays on the tile in the grid, where
         // it has been since task #24. Clicking here opens the lightbox — the
         // useful thing to do with "somebody picked this one" is look at it.
-        aria-label={`Ver ${filename}, elegida por ${label}`}
+        //
+        // Task #206 — the type joins the accessible name too, but ONLY when
+        // `showType` (criterion 8: the default gallery's accessible name must
+        // stay byte-identical, not just its visible pixels).
+        aria-label={
+          showType
+            ? `Ver ${filename}, elegida por ${label}, ${isOriginal ? "original" : "editada"}`
+            : `Ver ${filename}, elegida por ${label}`
+        }
         className="focus-visible:ring-accent block w-full rounded-sm text-left focus-visible:ring-2 focus-visible:outline-none"
       >
         <div className="bg-bg-2 relative aspect-square overflow-hidden rounded-sm">
@@ -628,6 +663,19 @@ function TrayItem({
         >
           {label}
         </p>
+        {/* Task #206 — the type line. ONLY rendered when the gallery has any
+            originals at all (`showType`, see this component's own prop
+            comment) — absent, not zeroed, for the ordinary gallery this
+            slice must not visibly change (criterion 8). `truncate` for the
+            same reason the picker label above has it: a fixed one-line
+            height is what keeps every item's box the SAME height, which is
+            what makes the #203 height-cap measurement (reads the FIRST
+            `<li>`'s box) trustworthy for every OTHER item too. */}
+        {showType && (
+          <p className={`truncate text-[10px] ${isOriginal ? "text-accent" : "text-fg-mute"}`}>
+            {isOriginal ? "Original" : "Editada"}
+          </p>
+        )}
       </button>
     </li>
   );

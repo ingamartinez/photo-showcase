@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ProofGrid, SELECTION_POLL_INTERVAL_MS } from "./proof-grid";
 import type { GalleryStatus, ProofAsset } from "./proof-grid";
@@ -57,6 +57,11 @@ function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
       viewerId="client-a"
       includedPhotosSnapshot={13}
       extraPhotoPriceCopSnapshot={5_000}
+      // Task #206 — the third frozen snapshot term, matching the value
+      // `scripts/seed-packages.ts` and the migration default use. Most tests
+      // here only exercise `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot`;
+      // the ones exercising originals override this explicitly.
+      originalPhotoPriceCopSnapshot={2_000}
       // Task #204 — default to `flat`, today's only behavior; the tray's own
       // test file covers `by-person` grouping directly.
       selectionTrayMode="flat"
@@ -250,6 +255,7 @@ describe("ProofGrid", () => {
           assetId: "a1",
           selectedAt: "2026-07-30T12:00:00.000Z",
           pickedBy: { id: "client-b", label: "Beto Ruiz" },
+          selectionKind: "edited",
         },
       ],
     });
@@ -292,6 +298,7 @@ describe("ProofGrid", () => {
           assetId: "a1",
           selectedAt: "2026-07-30T12:00:00.000Z",
           pickedBy: { id: "client-b", label: "Beto Ruiz" },
+          selectionKind: "edited",
         },
       ],
     });
@@ -306,9 +313,19 @@ describe("ProofGrid", () => {
   });
 
   describe("live quota counter", () => {
-    it("renders the initial counter computed from the assets' own isSelected flags and the snapshot terms", () => {
+    it("renders the initial counter computed from the FIRST-PAINT PICKS, not the assets' own isSelected flags", () => {
+      // Task #206, round-2 review — the initial quota is derived from
+      // `initialPicks` alone (see use-shared-selection.ts's own comment on
+      // why `initialAssets` cannot be trusted for this), so a test that
+      // cares about the rendered counter has to seed `initialPicks` too, the
+      // same way a real page load does (both come off the same gallery,
+      // just via two separate reads on the server).
       renderGrid({
         initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }, {}]),
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+          { assetId: "a2", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+        ],
         includedPhotosSnapshot: 1,
         extraPhotoPriceCopSnapshot: 5_000,
       });
@@ -316,6 +333,35 @@ describe("ProofGrid", () => {
       const text = counterText();
       expect(text).toContain("seleccionadas 2");
       expect(text).toContain("extras 1");
+    });
+
+    // Task #206, round-2 review's own finding — `initialAssets` and
+    // `initialPicks` are NOT guaranteed to agree: `page.tsx` builds them from
+    // TWO SEPARATE, sequential reads (`readClientGalleryBySlug`, then a LATER
+    // `getGallerySelection`), with a write window between them — exactly the
+    // shape #94/#95 exist to let several clients race through. This
+    // reproduces that: `initialAssets` is STALE (it does not yet know "a2"
+    // was picked, by ANOTHER session, while the page's own first read was
+    // already in flight); `initialPicks` is the fresher, later read, and
+    // already knows about it, marked `original`.
+    it("derives the initial quota from initialPicks alone, even when initialAssets is stale and disagrees with it", () => {
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }, { isSelected: false }]),
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+          { assetId: "a2", selectedAt: null, pickedBy: null, selectionKind: "original" },
+        ],
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+      });
+
+      // The correct total is 2 (one edited pick, one original pick) —
+      // reachable only by trusting `initialPicks` alone. A version of this
+      // hook that instead took the TOTAL off `initialAssets.filter(isSelected)`
+      // (1, since "a2" reads stale there) and subtracted `initialPicks`' own
+      // originals count from that stale total would report "seleccionadas 1"
+      // here — losing "a1" from the count entirely.
+      expect(counterText()).toContain("seleccionadas 2");
     });
 
     it("toggling a tile PATCHes the selection route and replaces the counter with the server's own response, not a local increment", async () => {
@@ -500,6 +546,65 @@ describe("ProofGrid", () => {
     });
   });
 
+  // Task #206, round-2 review — proves the PATCH response's own `pickedBy`
+  // (not just `selectionKind`) is genuinely applied to local state after a
+  // type-only change, closing the exact gap the review found: a `users`
+  // lookup on the server whose result nothing on the client ever read.
+  describe("type control (task #206)", () => {
+    it("updates the tray's picker label from the response after a type-only change, not just the type", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(200, {
+            asset: {
+              id: "a1",
+              isSelected: true,
+              selectedAt: "2026-07-30T12:00:00.000Z",
+              // A DIFFERENT picker than the tray's own server-rendered
+              // seed below — proving this label came from THIS response,
+              // not from the pick's existing local copy.
+              pickedBy: { id: "client-c", label: "Caro Ruiz" },
+              selectionKind: "original",
+            },
+            quota: computeQuota(0, 1, {
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+              originalPhotoPriceCopSnapshot: 2_000,
+            }),
+          }),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }]),
+        initialPicks: [
+          {
+            assetId: "a1",
+            selectedAt: "2026-07-30T11:00:00.000Z",
+            pickedBy: { id: "client-b", label: "Beto Ruiz" },
+            selectionKind: "edited",
+          },
+        ],
+      });
+
+      const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+      expect(within(tray).getByText("Beto Ruiz")).toBeDefined();
+
+      await user.click(screen.getByRole("button", { name: "Marcar como original: IMG_0001.JPG" }));
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/assets/a1/selection", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ selectionKind: "original" }),
+      });
+      await vi.waitFor(() => {
+        expect(within(tray).getByText("Caro Ruiz")).toBeDefined();
+      });
+      expect(within(tray).queryByText("Beto Ruiz")).toBeNull();
+    });
+  });
+
   // Task #25: the lock/submit wiring between <ProofGrid>, <SubmitSelectionPanel>,
   // and the per-tile/lightbox toggle buttons.
   describe("submission lock", () => {
@@ -557,6 +662,13 @@ describe("ProofGrid", () => {
         galleryId: "g1",
         initialStatus: "proofing",
         initialAssets: assetsFor([{ isSelected: true }]),
+        // Task #206, round-2 review — the initial quota (and therefore
+        // whether the submit button starts enabled) comes from
+        // `initialPicks` alone; without a matching pick here `quota.selected`
+        // would be 0 and the button below would be disabled from the start.
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+        ],
       });
 
       await user.click(screen.getByRole("button", { name: "Enviar selección" }));
@@ -581,6 +693,13 @@ describe("ProofGrid", () => {
   // blocks or scolds going over quota" — had NO test anywhere in this suite
   // that would go red if it were broken. These three do.
   describe("task #24 invariant: never blocks or scolds over quota", () => {
+    // Task #206, round-3 review — the initial quota (whether extras is
+    // already > 0 on first paint) comes from `initialPicks` alone since this
+    // slice's own fix; a fixture that seeds only `initialAssets` renders
+    // `renderGrid`'s empty `initialPicks: []` default, so `quota.extras` is
+    // silently 0 and this describe block's whole premise ("already over
+    // quota, before any toggle") never actually holds. Every test below now
+    // seeds matching `initialPicks` for the two already-selected assets.
     it("keeps an unpicked tile's toggle enabled once the shared selection already exceeds the included quota", () => {
       renderGrid({
         initialAssets: assetsFor([
@@ -588,6 +707,10 @@ describe("ProofGrid", () => {
           { isSelected: true },
           { isSelected: false },
         ]),
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+          { assetId: "a2", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+        ],
         includedPhotosSnapshot: 1,
         extraPhotoPriceCopSnapshot: 5_000,
       });
@@ -603,6 +726,10 @@ describe("ProofGrid", () => {
     it("never renders any scolding, warning or limit copy while the selection is over the included quota", () => {
       renderGrid({
         initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }]),
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+          { assetId: "a2", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+        ],
         includedPhotosSnapshot: 1,
         extraPhotoPriceCopSnapshot: 5_000,
       });
@@ -637,6 +764,10 @@ describe("ProofGrid", () => {
           { isSelected: true },
           { isSelected: false },
         ]),
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+          { assetId: "a2", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+        ],
         includedPhotosSnapshot: 1,
         extraPhotoPriceCopSnapshot: 5_000,
       });
@@ -671,6 +802,12 @@ describe("ProofGrid", () => {
         initialStatus: "selected",
         initialSubmittedAt: "2026-07-28T12:00:00.000Z",
         initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }]),
+        // Task #206, round-2 review — see this describe block's first test's
+        // own comment: the initial quota comes from `initialPicks` alone.
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+          { assetId: "a2", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+        ],
         includedPhotosSnapshot: 1,
       });
 
@@ -692,11 +829,13 @@ describe("ProofGrid", () => {
             assetId: "a1",
             selectedAt: "2026-07-28T11:00:00.000Z",
             pickedBy: { id: "client-a", label: "Ana Pérez" },
+            selectionKind: "edited",
           },
           {
             assetId: "a2",
             selectedAt: "2026-07-28T11:05:00.000Z",
             pickedBy: { id: "client-b", label: "Beto Ruiz" },
+            selectionKind: "edited",
           },
         ],
       });
@@ -718,6 +857,7 @@ describe("ProofGrid", () => {
             assetId: "a1",
             selectedAt: "2026-07-28T11:00:00.000Z",
             pickedBy: { id: "client-a", label: "Ana Pérez" },
+            selectionKind: "edited",
           },
         ],
       });
@@ -1069,6 +1209,9 @@ describe("ProofGrid", () => {
         assetId,
         selectedAt: "2026-07-30T12:00:00.000Z",
         pickedBy: { id, label },
+        // Task #206 — nothing in this describe block exercises a type change;
+        // every fixture pick here is the domain's own default.
+        selectionKind: "edited",
       };
     }
 
@@ -1177,6 +1320,160 @@ describe("ProofGrid", () => {
 
       expect(screen.queryByText("Beto Ruiz")).toBeNull();
       expect(screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" })).toBeDefined();
+    });
+
+    // Task #206, criterion 5 — the type travels the SAME channel a pick
+    // already does: a snapshot reporting somebody ELSE's type change reaches
+    // this session's tray without a reload, exactly like a pick or a
+    // deselect already does above.
+    it("shows a type change made by ANOTHER session in the tray, without a reload", async () => {
+      const fetchMock = liveFetch({
+        snapshots: [
+          snapshot({
+            picks: [{ ...pickBy("a1", "client-b", "Beto Ruiz"), selectionKind: "original" }],
+          }),
+        ],
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }]),
+        initialPicks: [pickBy("a1", "client-b", "Beto Ruiz")],
+      });
+      // Scoped to the TRAY specifically — the grid tile's own type control
+      // (task #206) renders the word "Original" on every selected tile
+      // regardless of the CURRENT kind (it is a control, not a label), so an
+      // unscoped query would find it before this pick is ever marked original.
+      const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+      expect(within(tray).queryByText("Original")).toBeNull();
+
+      await onePollTick();
+
+      expect(within(tray).getByText("Original")).toBeDefined();
+    });
+
+    // Task #206, criterion 5's own named trap — the race condition. Reuses
+    // `pendingIdsRef` (use-shared-selection.ts's own mechanism), so a type
+    // change in flight must block a live snapshot from overwriting it, THE
+    // SAME as an in-flight toggle already does (condition 1 of the LIVE SYNC
+    // section) — proven here for `setSelectionKind` specifically, not
+    // assumed just because `toggleSelection` already has a test for it.
+    it("drops a live snapshot that arrives while THIS session's own type change is still in flight", async () => {
+      const typeChangeResolvers: ((value: Response) => void)[] = [];
+      const fetchMock = vi.fn((url: string) => {
+        if (url.startsWith("/api/galleries/")) {
+          // A snapshot claiming a wildly different count — if this were
+          // ever applied, `counterText()` below would show it.
+          return Promise.resolve(jsonResponse(200, snapshot({ selectedCount: 99 })));
+        }
+        return new Promise<Response>((resolve) => {
+          typeChangeResolvers.push(resolve);
+        });
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }]),
+        initialPicks: [pickBy("a1", "client-a", "Ana")],
+      });
+
+      await clickAndSettle(
+        screen.getByRole("button", { name: "Marcar como original: IMG_0001.JPG" }),
+      );
+      expect(typeChangeResolvers).toHaveLength(1);
+
+      // The poll tick's own snapshot resolves immediately (queued above) —
+      // but the type change is still pending, so condition 1 must drop it.
+      await onePollTick();
+      expect(counterText()).not.toContain("seleccionadas 99");
+
+      // Now let the type change itself resolve — its own quota is what the
+      // counter must show.
+      await act(async () => {
+        typeChangeResolvers[0]!(
+          jsonResponse(200, {
+            asset: {
+              id: "a1",
+              isSelected: true,
+              selectedAt: "2026-07-30T12:00:00.000Z",
+              pickedBy: { id: "client-a", label: "Ana" },
+              selectionKind: "original",
+            },
+            quota: computeQuota(0, 1, {
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+              originalPhotoPriceCopSnapshot: 2_000,
+            }),
+          }),
+        );
+      });
+
+      expect(counterText()).toContain("seleccionadas 1");
+      const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+      expect(within(tray).getByText("Original")).toBeDefined();
+    });
+
+    // Task #206, round-3 review — condition 2 of the LIVE SYNC section (a
+    // snapshot ISSUED at or before this session's last CONFIRMED write must
+    // not undo that write), proven for `setSelectionKind` specifically. The
+    // existing "does NOT let a snapshot older than a confirmed local write
+    // undo that write" test above only ever exercised this for
+    // `toggleSelection`; `setSelectionKind` shares the same
+    // `lastLocalWriteClockRef` stamp, but nothing forced it until now.
+    it("does NOT let a snapshot older than a confirmed type change undo that change", async () => {
+      let resolvePoll: ((value: unknown) => void) | undefined;
+      const fetchMock = vi.fn((url: string) => {
+        if (url.startsWith("/api/galleries/")) {
+          // The poll issued BEFORE the type change below — held open, so it
+          // resolves AFTER the type change has already been confirmed.
+          return new Promise((resolve) => {
+            resolvePoll = resolve;
+          });
+        }
+        // The type-only PATCH — resolves immediately, confirming `original`.
+        return Promise.resolve(
+          jsonResponse(200, {
+            asset: {
+              id: "a1",
+              isSelected: true,
+              selectedAt: "2026-07-30T12:00:00.000Z",
+              pickedBy: { id: "client-a", label: "Ana" },
+              selectionKind: "original",
+            },
+            quota: computeQuota(0, 1, {
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+              originalPhotoPriceCopSnapshot: 2_000,
+            }),
+          }),
+        );
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }]),
+        initialPicks: [pickBy("a1", "client-a", "Ana")],
+      });
+
+      // Poll issued and hangs — this is the "photograph of the past" whose
+      // own issue clock is OLDER than the type change about to happen.
+      await onePollTick();
+
+      await clickAndSettle(
+        screen.getByRole("button", { name: "Marcar como original: IMG_0001.JPG" }),
+      );
+      const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+      expect(within(tray).getByText("Original")).toBeDefined();
+
+      // The stale snapshot finally lands, still reporting `edited` (the
+      // state BEFORE the type change committed).
+      await act(async () => {
+        resolvePoll?.(jsonResponse(200, snapshot({ picks: [pickBy("a1", "client-a", "Ana")] })));
+      });
+
+      // Must still show "Original" — the older-issued snapshot must be
+      // dropped, not applied over the confirmed write.
+      expect(within(tray).getByText("Original")).toBeDefined();
     });
 
     it("replaces the counter with the SERVER's recomputed quota on every accepted snapshot", async () => {

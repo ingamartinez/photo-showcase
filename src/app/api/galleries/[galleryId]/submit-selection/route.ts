@@ -61,14 +61,21 @@ function errorResponse(error: string, status: number): NextResponse {
  * that was frozen at submission time. */
 async function currentQuota(gallery: Gallery): Promise<QuotaResult> {
   const siblings = await db
-    .select({ isSelected: assets.isSelected })
+    .select({ isSelected: assets.isSelected, selectionKind: assets.selectionKind })
     .from(assets)
     .where(eq(assets.galleryId, gallery.id));
-  const selected = siblings.filter((row) => row.isSelected).length;
-  // Task #205 — every pick this query can see is `edited` today (task #206
-  // is what would let one be `original`), so `selected` is passed as the
-  // edited count with 0 originals.
-  return computeQuota(selected, 0, {
+  const selectedSiblings = siblings.filter((row) => row.isSelected);
+  // Task #206 — split by kind, off the SAME re-read: the included-photos
+  // quota only ever applies to `edited` picks (src/lib/quota.ts's own header
+  // comment). This is the quota the client's confirmation dialog and the
+  // admin notification email both end up showing, so it must reflect
+  // whatever the client actually marked, not assume every pick is edited the
+  // way task #205 (before this slice) still did.
+  const selectedOriginal = selectedSiblings.filter(
+    (row) => row.selectionKind === "original",
+  ).length;
+  const selectedEdited = selectedSiblings.length - selectedOriginal;
+  return computeQuota(selectedEdited, selectedOriginal, {
     includedPhotosSnapshot: gallery.includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
     originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,

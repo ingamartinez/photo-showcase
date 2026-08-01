@@ -137,6 +137,7 @@ export function ProofGrid({
   viewerId,
   includedPhotosSnapshot,
   extraPhotoPriceCopSnapshot,
+  originalPhotoPriceCopSnapshot,
   selectionTrayMode,
 }: {
   // Task #25's submit route is keyed on this — see that route's own header
@@ -180,6 +181,15 @@ export function ProofGrid({
   // this is about the package's label, not its terms.
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
+  // Task #206 — the gallery's frozen original-photo price, threaded the same
+  // way its two siblings above are. REQUIRED, not optional: before this
+  // slice, `useSharedSelection` hardcoded `0` here (see that file's own
+  // former comment, and #205's "Hueco de cableado" note) because nothing
+  // upstream of it carried the real value — the GraphQL `Gallery` type
+  // didn't expose it and this prop didn't exist. Making it required is what
+  // turns "the wiring gap is closed" into something the compiler checks
+  // rather than a comment that could go stale.
+  originalPhotoPriceCopSnapshot: number;
   // Task #204 — how <SelectionTray> lays out the SAME picks below: one flat
   // list (today's only behavior) or grouped one row per picker. Purely a
   // presentation choice the admin sets on the gallery itself
@@ -205,6 +215,7 @@ export function ProofGrid({
     toggleError,
     isStale,
     toggleSelection,
+    setSelectionKind,
     handleSubmitted,
   } = useSharedSelection({
     galleryId,
@@ -214,9 +225,24 @@ export function ProofGrid({
     initialPicks,
     includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot,
+    originalPhotoPriceCopSnapshot,
   });
 
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+
+  // Task #206 — every currently-selected asset's own type, looked up by id.
+  // Built off `picks` (the shared selection's own list, which now carries
+  // `selectionKind` per pick) rather than a second piece of state: an asset
+  // NOT in this map is not currently selected, and the type control on both
+  // the tile and the lightbox only ever renders for a selected asset anyway
+  // (see <ProofTile>'s and <ProofLightbox>'s own comments — "a photo that
+  // isn't picked has no type", the task's own words). `useMemo` only to avoid
+  // rebuilding this on an unrelated re-render (a lightbox open/close, a
+  // toggled `isStale`), matching <SelectionTray>'s own `groups` memo.
+  const selectionKindById = useMemo(
+    () => Object.fromEntries(picks.map((pick) => [pick.assetId, pick.selectionKind])),
+    [picks],
+  );
 
   // Task #95: the tray's accessible labels, and nothing else. Frozen off the
   // server-rendered props on purpose — a snapshot can name an asset this page
@@ -371,6 +397,11 @@ export function ProofGrid({
               onError={() => void refreshUrl(asset.id)}
               onOpen={() => setLightboxIndex(index)}
               onToggleSelection={() => void toggleSelection(asset.id, !isSelected)}
+              // Task #206 — only meaningful while `isSelected` (the tile
+              // itself gates rendering the control on that), so an unselected
+              // asset's `"edited"` fallback here is never actually shown.
+              selectionKind={selectionKindById[asset.id] ?? "edited"}
+              onSetSelectionKind={(kind) => void setSelectionKind(asset.id, kind)}
             />
           );
         })}
@@ -457,6 +488,8 @@ export function ProofGrid({
           pendingAssetIds={pendingIds}
           isLocked={isLocked}
           isDelivered={isDelivered}
+          selectionKindById={selectionKindById}
+          onSetSelectionKind={(assetId, kind) => void setSelectionKind(assetId, kind)}
         />
       )}
     </>

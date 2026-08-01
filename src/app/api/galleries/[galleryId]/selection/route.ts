@@ -194,11 +194,16 @@ export const GET = withApiSession(async function GET(
   // `packages` row: a gallery created under last year's price list keeps last
   // year's numbers forever.
   //
-  // Task #205 — `getGallerySelection()` returns every pick without regard to
-  // `selectionKind` (task #206 is what would need that split); every one of
-  // them is `edited` today, so `picks.length` is passed as the edited count
-  // with 0 originals.
-  const quota = computeQuota(picks.length, 0, {
+  // Task #206 — `getGallerySelection()` now carries each pick's own
+  // `selectionKind`, so the edited/original split the included-photos quota
+  // needs comes straight off THIS list, not a second read. Anything that
+  // isn't literally `"original"` counts as edited — matching
+  // `assets.selectionKind`'s own `notNull().default("edited")` (schema.ts):
+  // `edited` is the domain's default, so a pick this route somehow can't
+  // interpret falls back to the same value the column itself would.
+  const selectedOriginal = picks.filter((pick) => pick.selectionKind === "original").length;
+  const selectedEdited = picks.length - selectedOriginal;
+  const quota = computeQuota(selectedEdited, selectedOriginal, {
     includedPhotosSnapshot: gallery.includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
     originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,

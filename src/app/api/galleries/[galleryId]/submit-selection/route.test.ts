@@ -237,6 +237,9 @@ function assetRow(overrides: Row = {}): Row {
     proofHeight: 1067,
     isSelected: false,
     selectedAt: null,
+    // Task #206 — the domain's own default; the mixed-case test overrides
+    // this explicitly.
+    selectionKind: "edited",
     isEdited: false,
     sortOrder: 0,
     createdAt: new Date("2026-07-02"),
@@ -431,6 +434,8 @@ describe("POST /api/galleries/[galleryId]/submit-selection — locked statuses",
         originalPhotoPriceCopSnapshot: 2_000,
         extras: 0,
         originals: 0,
+        extrasSurchargeCop: 0,
+        originalsSurchargeCop: 0,
         surchargeCop: 0,
       },
       submittedAt: "2026-07-28T10:00:00.000Z",
@@ -474,6 +479,8 @@ describe("POST /api/galleries/[galleryId]/submit-selection — success", () => {
       originalPhotoPriceCopSnapshot: 2_000,
       extras: 1,
       originals: 0,
+      extrasSurchargeCop: 5_000,
+      originalsSurchargeCop: 0,
       surchargeCop: 5_000,
     });
     expect(body.submittedAt).toBeTruthy();
@@ -498,6 +505,58 @@ describe("POST /api/galleries/[galleryId]/submit-selection — success", () => {
     expect(emailArgs.galleryTitle).toBe("Boda Ana y Beto");
     expect(emailArgs.galleryUrl).toContain(`/dashboard/galleries/${GALLERY_ID}`);
     expect(emailArgs.quota).toEqual(body.quota);
+  });
+
+  // Task #206, criterion 4 — the quota this route freezes and mails to the
+  // admin reflects the client's actual edited/original split, not "every
+  // pick is edited" the way task #205 (before this slice) still assumed.
+  // Both summands non-zero, neither a multiple of the other.
+  it("freezes and notifies the quota split between edited and original picks", async () => {
+    authMock.mockResolvedValue({
+      user: { id: CLIENT_ID, role: "client", name: "Ana Pérez", email: CLIENT_EMAIL },
+      expires: "2099-01-01T00:00:00.000Z",
+    });
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ includedPhotosSnapshot: 7 }));
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(
+      ...Array.from({ length: 9 }, (_unused, i) =>
+        assetRow({ id: `edited-${i}`, isSelected: true, selectionKind: "edited", sortOrder: i }),
+      ),
+      ...Array.from({ length: 3 }, (_unused, i) =>
+        assetRow({
+          id: `original-${i}`,
+          isSelected: true,
+          selectionKind: "original",
+          sortOrder: 9 + i,
+        }),
+      ),
+    );
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+    const body = (await response.json()) as {
+      quota: {
+        selectedEdited: number;
+        selectedOriginal: number;
+        extras: number;
+        originals: number;
+        surchargeCop: number;
+      };
+    };
+
+    // 9 edited -> 2 over the 7 included -> 10_000. 3 originals -> 6_000 more.
+    expect(body.quota.selectedEdited).toBe(9);
+    expect(body.quota.selectedOriginal).toBe(3);
+    expect(body.quota.extras).toBe(2);
+    expect(body.quota.originals).toBe(3);
+    expect(body.quota.surchargeCop).toBe(16_000);
+
+    const [emailArgs] = sendSubmissionNotificationEmailMock.mock.calls[0] as [
+      { quota: { surchargeCop: number } },
+    ];
+    expect(emailArgs.quota.surchargeCop).toBe(16_000);
   });
 
   // Task #114: every open tab's submit lock (proof-grid.tsx's live `status`)

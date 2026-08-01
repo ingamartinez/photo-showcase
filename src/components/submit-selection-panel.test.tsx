@@ -8,10 +8,9 @@ import { computeQuota } from "@/lib/quota";
 // No `@/lib/format` mock needed — same reasoning as selection-counter.test.tsx:
 // it has no `server-only`/`@/lib/db` import, so jsdom resolves it directly.
 
-// Task #205 — every fixture below passes 0 originals: nothing in this app
-// writes `assets.selectionKind` to anything but `edited` yet (task #206 is
-// the slice that would), and this component itself renders no originals
-// breakdown — see the new test at the bottom of this file pinning that.
+// Every fixture in THIS describe block passes 0 originals on purpose — see
+// the "two-tariff confirmation" describe block below for the `originals > 0`
+// cases (task #206).
 const SNAPSHOT = {
   includedPhotosSnapshot: 13,
   extraPhotoPriceCopSnapshot: 5_000,
@@ -252,11 +251,9 @@ describe("SubmitSelectionPanel", () => {
     await vi.waitFor(() => expect(screen.getByText("No se pudo conectar.")).toBeDefined());
   });
 
-  // Task #205's own client-facing constraint: `quota.extras > 0 ?
-  // "Extras: ..." : "No tenés extras con esta selección."` is the only
-  // branch this component's confirmation text has — it must not grow a
-  // third branch for originals while every gallery still has zero of them.
-  it("never mentions originals in the confirmation dialog", async () => {
+  // The governing constraint (task #206, restricting #205's own surface):
+  // with zero originals, this confirmation must not mention them at all.
+  it("never mentions originals in the confirmation dialog when there are none", async () => {
     vi.spyOn(window, "confirm").mockReturnValue(false);
     vi.stubGlobal("fetch", vi.fn());
     const user = userEvent.setup();
@@ -276,5 +273,75 @@ describe("SubmitSelectionPanel", () => {
     const confirmSpy = vi.mocked(window.confirm);
     const message = confirmSpy.mock.calls[0]?.[0] as string;
     expect(message).not.toMatch(/original/i);
+  });
+});
+
+describe("SubmitSelectionPanel — the two-tariff confirmation (task #206)", () => {
+  async function openConfirmation(quota: ReturnType<typeof computeQuota>): Promise<string> {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    vi.stubGlobal("fetch", vi.fn());
+    const user = userEvent.setup();
+
+    render(
+      <SubmitSelectionPanel
+        galleryId="g1"
+        quota={quota}
+        isLocked={false}
+        submittedAt={null}
+        onSubmitted={vi.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Enviar selección" }));
+
+    // `Intl.NumberFormat`'s `es-CO` currency output separates the symbol from
+    // the digits with a NON-BREAKING space (U+00A0), not an ordinary one —
+    // same collapsing `counterText()` already does in
+    // selection-counter.test.tsx (`\s+` matches both), so a plain-space
+    // literal in an assertion below means what it looks like it means.
+    const raw = confirmSpy.mock.calls[0]?.[0] as string;
+    return raw.replace(/\s+/g, " ");
+  }
+
+  // Criterion 3/4 — both summands non-zero, neither a multiple of the other.
+  it("states both tariffs and the total once there are edited extras AND originals", async () => {
+    const snapshot = {
+      includedPhotosSnapshot: 7,
+      extraPhotoPriceCopSnapshot: 5_000,
+      originalPhotoPriceCopSnapshot: 2_000,
+    };
+    // 9 edited -> 2 over 7 -> 10_000. 3 originals -> 6_000. Total 16_000.
+    const message = await openConfirmation(computeQuota(9, 3, snapshot));
+
+    expect(message).toMatch(/Extras: 2 × \$ 5\.000 = \$ 10\.000\./);
+    expect(message).toMatch(/Originales: 3 × \$ 2\.000 = \$ 6\.000\./);
+    expect(message).toMatch(/Total: \$ 16\.000\./);
+  });
+
+  // The trap the task body names explicitly.
+  it("states an original never counts toward the included quota", async () => {
+    const message = await openConfirmation(computeQuota(5, 2, SNAPSHOT));
+
+    expect(message).toMatch(/nunca cuenta para la cuota incluida/);
+  });
+
+  // Originals present, but the client stayed within the included edited
+  // count — the extras line must not appear (it would falsely claim extras
+  // exist), but the originals line must, and no "No tenés extras..." either.
+  it("shows only the originals line when there are originals but no edited extras", async () => {
+    const message = await openConfirmation(computeQuota(5, 2, SNAPSHOT));
+
+    expect(message).not.toMatch(/Extras:/);
+    expect(message).not.toMatch(/No tenés extras/);
+    expect(message).toMatch(/Originales: 2 × \$ 2\.000 = \$ 4\.000\./);
+    // Exactly one tariff line -> no separate "Total:" line (it would repeat
+    // the same number).
+    expect(message).not.toMatch(/Total:/);
+  });
+
+  it("still states the extras/surcharge situation is settled outside the app, with originals present", async () => {
+    const message = await openConfirmation(computeQuota(5, 2, SNAPSHOT));
+
+    expect(message).toMatch(/se coordina por fuera de la app/);
   });
 });

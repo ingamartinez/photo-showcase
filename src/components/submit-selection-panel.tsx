@@ -65,15 +65,40 @@ function confirmationMessage(quota: QuotaResult): string {
     "La selección se cierra para todos los que la están eligiendo con vos — si alguien más está eligiendo en este momento, no va a poder seguir.",
     "Una vez enviada, no se puede modificar sola — si hace falta cambiarla, hay que escribirle a tu fotógrafo para que la reabra.",
   ];
-  // Always states the extras/surcharge situation, even at zero — matching
-  // <SelectionCounter>'s own "always show all three parts" stance
-  // (src/components/selection-counter.tsx's header comment): the sentence
-  // shape stays constant, only the number changes.
-  lines.push(
-    quota.extras > 0
-      ? `Extras: ${quota.extras} × ${formatCop(quota.extraPhotoPriceCopSnapshot)} = ${formatCop(quota.surchargeCop)}.`
-      : "No tenés extras con esta selección.",
-  );
+
+  // Task #206 — one line per tariff that actually applies, built off
+  // `computeQuota`'s own pre-multiplied halves (`extrasSurchargeCop`/
+  // `originalsSurchargeCop`, src/lib/quota.ts) rather than this component
+  // multiplying anything itself. Same "always states the situation, even at
+  // zero" stance <SelectionCounter> follows, extended to two independent
+  // terms: whether EACH one shows a line depends on ITS OWN count, not on
+  // the other — a gallery with originals but no edited extras must not lose
+  // the originals line just because `quota.extras` happens to be 0.
+  const chargeLines: string[] = [];
+  if (quota.extras > 0) {
+    chargeLines.push(
+      `Extras: ${quota.extras} × ${formatCop(quota.extraPhotoPriceCopSnapshot)} = ${formatCop(quota.extrasSurchargeCop)}.`,
+    );
+  }
+  if (quota.originals > 0) {
+    chargeLines.push(
+      `Originales: ${quota.originals} × ${formatCop(quota.originalPhotoPriceCopSnapshot)} = ${formatCop(quota.originalsSurchargeCop)}. Un original nunca cuenta para la cuota incluida — siempre se cobra aparte.`,
+    );
+  }
+  if (chargeLines.length === 0) {
+    // Neither term applies — the ORIGINAL pre-#206 sentence, unchanged, for
+    // the gallery this task must not visibly change (the owner's own
+    // governing constraint).
+    lines.push("No tenés extras con esta selección.");
+  } else {
+    lines.push(...chargeLines);
+    // A TOTAL line only when there are TWO tariffs to add — with just one,
+    // that line's own number already IS the total, and repeating it would
+    // read as redundant rather than clarifying.
+    if (chargeLines.length > 1) {
+      lines.push(`Total: ${formatCop(quota.surchargeCop)}.`);
+    }
+  }
   lines.push("El cobro de los extras (si los hay) se coordina por fuera de la app, no acá.");
   return lines.join("\n\n");
 }

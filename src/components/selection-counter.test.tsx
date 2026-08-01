@@ -22,12 +22,11 @@ function counterText(): string {
   return `${first} ${second}`.replace(/\s+/g, " ");
 }
 
-// Task #205 — every fixture below passes 0 originals: nothing in this app
-// writes `assets.selectionKind` to anything but `edited` yet (task #206 is
-// the slice that would), and `<SelectionCounter>` itself renders no
-// originals breakdown row — see this component's own file for why that stays
-// true even after this task (it only ever formats what `computeQuota` hands
-// it, and nothing here asks it to show a new row).
+// Every fixture in THIS describe block passes 0 originals on purpose: the
+// owner's own restriction (added after #206 was written) is that a gallery
+// where nobody marked an original renders EXACTLY as it did before this
+// slice — see the "originals breakdown" describe block below for the
+// `originals > 0` cases.
 const SNAPSHOT = {
   includedPhotosSnapshot: 13,
   extraPhotoPriceCopSnapshot: 5_000,
@@ -141,5 +140,75 @@ describe("SelectionCounter", () => {
     render(<SelectionCounter quota={quota} />);
 
     expect(screen.queryByText(/original/i)).toBeNull();
+  });
+
+  // Task #206's own client-facing constraint: with zero originals, the
+  // extras line's OWN digits must be byte-identical to what it showed before
+  // this task — even though it now reads `extrasSurchargeCop` instead of
+  // `surchargeCop` internally (src/lib/quota.ts's own comment on why those
+  // are equal whenever `originals` is 0).
+  it("shows the exact same extras line digits as before task #206, with zero originals", () => {
+    const quota = computeQuota(15, 0, SNAPSHOT);
+
+    render(<SelectionCounter quota={quota} />);
+
+    const text = counterText();
+    expect(text).toContain("extras 2 × $ 5.000 = $ 10.000");
+  });
+});
+
+describe("SelectionCounter — the two-tariff breakdown (task #206)", () => {
+  // Criterion 3/8's positive case — both summands non-zero, neither a
+  // multiple of the other, so a component that dropped either term (or
+  // showed the wrong total) would be caught.
+  it("shows edited extras, originals and the total as three separate, legible lines once there are any originals", () => {
+    const snapshot = {
+      includedPhotosSnapshot: 7,
+      extraPhotoPriceCopSnapshot: 5_000,
+      originalPhotoPriceCopSnapshot: 2_000,
+    };
+    // 9 edited -> 2 over 7 -> 10_000. 3 originals -> 6_000. Total 16_000.
+    const quota = computeQuota(9, 3, snapshot);
+
+    render(<SelectionCounter quota={quota} />);
+
+    expect(screen.getByText(/extras 2 × \$ 5\.000 = \$ 10\.000/)).toBeDefined();
+    expect(screen.getByText(/originales 3 × \$ 2\.000 = \$ 6\.000/)).toBeDefined();
+    expect(screen.getByText(/total \$ 16\.000/)).toBeDefined();
+  });
+
+  // The trap the task body names explicitly: marking a photo original must
+  // never read as saving money.
+  it("states plainly that an original never saves quota, always adds to the total", () => {
+    const quota = computeQuota(5, 2, SNAPSHOT);
+
+    render(<SelectionCounter quota={quota} />);
+
+    expect(screen.getByText(/nunca ahorra cuota, siempre suma/)).toBeDefined();
+  });
+
+  // The "no se cobra nada" reassurance must still appear somewhere once
+  // originals are on screen — task #147's own standing requirement, now
+  // carried by the TOTAL line instead of the extras line.
+  it("still states the app never charges, even with originals present", () => {
+    const quota = computeQuota(5, 2, SNAPSHOT);
+
+    render(<SelectionCounter quota={quota} />);
+
+    expect(screen.getByText(/no se cobra nada/)).toBeDefined();
+    expect(screen.getByText(/fuera de la app/)).toBeDefined();
+  });
+
+  // The governing constraint's own regression guard: ZERO originals renders
+  // NO row mentioning them at all — not "0 originales — $0". A fixture with
+  // `originals: 1` distinguishes this from the pre-existing "never renders
+  // anything about originals" test above (which fixes originals at 0).
+  it("renders no originals row at all when originals is exactly zero, even with extras present", () => {
+    const quota = computeQuota(15, 0, SNAPSHOT);
+
+    render(<SelectionCounter quota={quota} />);
+
+    expect(screen.queryByText(/originales/)).toBeNull();
+    expect(screen.queryByText(/^total /)).toBeNull();
   });
 });

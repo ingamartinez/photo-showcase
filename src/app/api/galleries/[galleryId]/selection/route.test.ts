@@ -362,10 +362,10 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
       quota: { selected: number; extras: number; surchargeCop: number };
     };
 
-    // Task #205 — `getGallerySelection()` returns every pick without regard
-    // to `selectionKind`, so this route passes them all as edited with 0
-    // originals; `originalPhotoPriceCopSnapshot` is the gallery's own frozen
-    // value, passed through unchanged.
+    // This fixture's picks carry no `selectionKind` at all (a pre-#206-shaped
+    // mock, `as never` below) — the route treats anything that isn't
+    // literally `"original"` as edited (see this route's own comment), so
+    // all 15 count as edited with 0 originals here.
     expect(body.quota).toEqual({
       selected: 15,
       selectedEdited: 15,
@@ -375,8 +375,56 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
       originalPhotoPriceCopSnapshot: 2_000,
       extras: 2,
       originals: 0,
+      extrasSurchargeCop: 10_000,
+      originalsSurchargeCop: 0,
       surchargeCop: 10_000,
     });
+  });
+
+  // Task #206, criterion 4 — a mixed case verified end to end through THIS
+  // route, with both summands non-zero and neither a multiple of the other,
+  // so an implementation that drops either term (or lets an original draw
+  // from the quota) reports a different, wrong total.
+  it("splits picks by selectionKind before computing the quota, with both edited-extras and originals non-zero", async () => {
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ includedPhotosSnapshot: 7 }));
+    getGallerySelectionMock.mockResolvedValue([
+      ...Array.from({ length: 9 }, (_, i) => ({
+        assetId: `edited-${i}`,
+        selectedAt: null,
+        pickedBy: null,
+        selectionKind: "edited",
+      })),
+      ...Array.from({ length: 3 }, (_, i) => ({
+        assetId: `original-${i}`,
+        selectedAt: null,
+        pickedBy: null,
+        selectionKind: "original",
+      })),
+    ] as never);
+    authMock.mockResolvedValue(clientASession());
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
+    const body = (await response.json()) as {
+      quota: {
+        selectedEdited: number;
+        selectedOriginal: number;
+        extras: number;
+        originals: number;
+        surchargeCop: number;
+      };
+    };
+
+    // 9 edited -> 2 over the 7 included -> 2 * 5_000 = 10_000.
+    // 3 originals -> 3 * 2_000 = 6_000 more, additive.
+    // Total 16_000, reachable only by summing both terms.
+    expect(body.quota.selectedEdited).toBe(9);
+    expect(body.quota.selectedOriginal).toBe(3);
+    expect(body.quota.extras).toBe(2);
+    expect(body.quota.originals).toBe(3);
+    expect(body.quota.surchargeCop).toBe(16_000);
   });
 
   it("reports the gallery's own status and submission timestamp — this is the live submit lock", async () => {

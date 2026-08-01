@@ -36,6 +36,7 @@
 //     nowhere near enough to wash the mark out; an unpicked tile gets none.
 import { DownloadFinalButton } from "@/components/download-final-button";
 import type { ProofAsset } from "@/components/proof-grid";
+import type { SelectionKind } from "@/lib/selection-snapshot";
 
 export function ProofTile({
   asset,
@@ -48,6 +49,8 @@ export function ProofTile({
   onError,
   onOpen,
   onToggleSelection,
+  selectionKind,
+  onSetSelectionKind,
 }: {
   asset: ProofAsset;
   /** 1-based position in the grid, rendered in the tile's corner
@@ -70,6 +73,12 @@ export function ProofTile({
   onError: () => void;
   onOpen: () => void;
   onToggleSelection: () => void;
+  /** Task #206 — meaningless while `!isSelected` (schema.ts's own comment on
+   * `assets.selectionKind`), and this tile only ever RENDERS the control
+   * while `isSelected && !isLocked` (see below) — so a caller passing this
+   * for an unselected asset is passing a value nothing here reads. */
+  selectionKind: SelectionKind;
+  onSetSelectionKind: (kind: SelectionKind) => void;
 }) {
   return (
     <li className="relative">
@@ -249,6 +258,107 @@ export function ProofTile({
         <span aria-hidden="true">{isSelected ? "✓" : ""}</span>
       </button>
 
+      {/* TASK #206 — THE TYPE CONTROL, in the tile's bottom-LEFT corner (the
+          same corner `showDownload` below occupies — never at the same time,
+          see that block's own comment).
+
+          THE DESIGN DECISION THE TASK BODY ASKS FOR, MADE AND WRITTEN DOWN
+          HERE: this is NOT a second always-visible control sitting next to
+          the pick button on all 84 tiles. It renders ONLY once the photo is
+          picked (`isSelected`), for two reasons, and the second is the one
+          that actually decided it:
+
+            1. It keeps the grid CLEAN — 84 near-identical proofs on a phone,
+               one hand, at night (task #145's own case) is already crowded
+               with a 48px pick target and a position number; a second
+               permanently-visible control competing for the same cramped
+               ~178px-wide tile (at 390px: `<main>`'s own `px-4` leaves 358px,
+               two columns at `gap-[2px]` makes each one (358-2)/2 ≈ 178px)
+               would make the pick button harder to hit reliably, not easier.
+            2. It REFLECTS THE MODEL: `assets.selectionKind` is meaningless
+               while `isSelected` is `false` (schema.ts's own comment on that
+               column) — showing a type toggle for a photo nobody chose would
+               offer a choice that does not exist yet.
+
+          The cost this trades away, honestly: picking a photo now changes
+          the tile's OWN layout (a control appears where there was none),
+          which the always-visible alternative would have avoided. Judged
+          worth it because that layout change happens to exactly the ~15
+          tiles a client actually picks out of ~84, not to the whole grid —
+          the "keep the grid clean" win applies to every tile all the time,
+          the "layout shifts on pick" cost applies only to the ones a client
+          is already looking at because they just tapped it.
+
+          Only while `!isLocked`: once the selection is submitted there is
+          nothing left to change (the PATCH route's own gate refuses it
+          regardless), and the tray/counter already surface the chosen type
+          for a locked gallery — this tile does not need to duplicate that in
+          a disabled state nobody can act on.
+
+          Two EXPLICIT buttons ("Editada" / "Original"), not one button that
+          flips between them: this mirrors the PATCH route's own body shape
+          (`selectionKind: "edited" | "original"`, never a toggle), which
+          means tapping either always requests the value the client actually
+          sees pressed, with no ambiguity about what a single "flip" button
+          would currently mean.
+
+          Reuses the pick button's own palette (`rgba(7,7,9,0.42)` ground,
+          `rgba(236,234,242,0.5)` border, `--accent` when pressed) so this
+          reads as the SAME family of control as the one right next to it,
+          not a competing visual language.
+
+          THE WIDTH BUDGET, COMPUTED, NOT A REAL-BROWSER MEASUREMENT — flagged
+          honestly rather than asserted as verified. At 390px, `<main>`'s own
+          `px-4` (page.tsx) leaves 358px of content; two columns at `gap-[2px]`
+          (proof-grid.tsx's own `<ul>`) makes each tile (358-2)/2 = 178px wide.
+          The pick button reserves `right-[7px]` + 48px ≈ 55px from the right
+          edge, leaving this control ~178-8(left-2)-55 ≈ 115px before the two
+          would visually meet. `text-[9px]`/`px-1.5` (not the mock-matching
+          `text-[10px]`/`px-2` a first pass used) was chosen specifically to
+          stay under that budget with margin — "Editada"/"Original" at 9px in
+          a typical sans-serif land around 30-38px of glyphs each, +12px
+          padding, ~90-100px combined. Left at `text-[10px]`/`px-2` this same
+          arithmetic lands at ~107-122px, uncomfortably close to the 115px
+          ceiling. NOT confirmed in a real Chromium render at 390×844 (this
+          slice's own declared gap — see the kanban report); revisit with an
+          actual capture before trusting the margin further. */}
+      {isSelected && !isLocked && (
+        <div
+          role="group"
+          aria-label={`Tipo de foto: ${asset.originalFilename}`}
+          className="absolute bottom-2 left-2 z-10 flex overflow-hidden rounded-full border border-[rgba(236,234,242,0.5)] bg-[rgba(7,7,9,0.42)] backdrop-blur-[6px]"
+        >
+          <button
+            type="button"
+            onClick={() => onSetSelectionKind("edited")}
+            aria-pressed={selectionKind === "edited"}
+            aria-label={`Marcar como editada: ${asset.originalFilename}`}
+            disabled={isPending}
+            className={`px-1.5 py-1 text-[9px] leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+              selectionKind === "edited"
+                ? "bg-accent text-[#14100a]"
+                : "text-fg hover:text-accent-2"
+            }`}
+          >
+            Editada
+          </button>
+          <button
+            type="button"
+            onClick={() => onSetSelectionKind("original")}
+            aria-pressed={selectionKind === "original"}
+            aria-label={`Marcar como original: ${asset.originalFilename}`}
+            disabled={isPending}
+            className={`px-1.5 py-1 text-[9px] leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+              selectionKind === "original"
+                ? "bg-accent text-[#14100a]"
+                : "text-fg hover:text-accent-2"
+            }`}
+          >
+            Original
+          </button>
+        </div>
+      )}
+
       {/* Bottom-LEFT since task #145, not bottom-right — task #28's own
           affordance, shown only once the gallery is delivered AND this
           specific asset actually has a final (see <ProofGrid>'s own
@@ -257,7 +367,13 @@ export function ProofTile({
           bottom-right corner the two would overlap, and a `delivered` gallery
           renders BOTH (the toggle stays mounted-but-disabled per #25, it is
           not hidden). Only the position moved here — the delivered screen's
-          own visual treatment is task #148's. */}
+          own visual treatment is task #148's.
+
+          NEVER renders at the same time as the type control above: that one
+          requires `!isLocked`, this one only ever shows once `isDelivered`
+          (a status past `isLocked` becoming true) — the same "never both at
+          once" property `showDownload` and the pick-button corner already
+          had before this slice. */}
       {showDownload && (
         <div className="absolute bottom-2 left-2 z-10">
           <DownloadFinalButton assetId={asset.id} originalFilename={asset.originalFilename} />

@@ -939,18 +939,45 @@ describe("GalleryDetailPage — terms-edit preview receives the real edited/orig
         // counter" test uses — both sums strictly positive so a mutation
         // that drops either slot (edited folded into originals, or vice
         // versa) cannot pass by accident.
-        assets: Array.from({ length: 18 }, (_unused, index) => ({
-          id: `a${index + 1}`,
-          originalFilename: `IMG_${String(index + 1).padStart(4, "0")}.JPG`,
-          proofKey: `galleries/g1/proofs/a${index + 1}.webp`,
-          proofWidth: 1600,
-          proofHeight: 1067,
-          isSelected: true,
-          sortOrder: index,
-          finalKey: null,
-          isEdited: false,
-          selectionKind: index < 15 ? "edited" : "original",
-        })),
+        assets: [
+          ...Array.from({ length: 18 }, (_unused, index) => ({
+            id: `a${index + 1}`,
+            originalFilename: `IMG_${String(index + 1).padStart(4, "0")}.JPG`,
+            proofKey: `galleries/g1/proofs/a${index + 1}.webp`,
+            proofWidth: 1600,
+            proofHeight: 1067,
+            isSelected: true,
+            sortOrder: index,
+            finalKey: null,
+            isEdited: false,
+            selectionKind: index < 15 ? ("edited" as const) : ("original" as const),
+          })),
+          // Coordinator review finding: nothing in this fixture previously
+          // distinguished `asset.isSelected && asset.selectionKind ===
+          // "original"` (page.tsx's own filter) from a filter that checked
+          // `selectionKind` alone — every asset above is selected. This one
+          // is NOT: an unselected asset carrying `selectionKind: "original"`
+          // should not exist in practice (the selection route resets it to
+          // "edited" on both select and deselect,
+          // src/app/api/assets/[assetId]/selection/route.ts's own comment),
+          // but "should not exist" is exactly what a defensive `isSelected
+          // &&` guard is for, and a filter that dropped that guard would
+          // silently count this asset as a selected original too. Contributes
+          // to neither `selectedEditedCount` nor `selectedOriginalCount`
+          // either way, so it changes none of this test's own numbers.
+          {
+            id: "a19",
+            originalFilename: "IMG_0019.JPG",
+            proofKey: "galleries/g1/proofs/a19.webp",
+            proofWidth: 1600,
+            proofHeight: 1067,
+            isSelected: false,
+            sortOrder: 18,
+            finalKey: null,
+            isEdited: false,
+            selectionKind: "original" as const,
+          },
+        ],
       }),
     );
 

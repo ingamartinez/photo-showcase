@@ -367,11 +367,15 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
       ),
     ).toBeDefined();
 
-    // The "after" row renders only once a field is typed (`hasValidPreviewInputs`)
-    // — typing the SAME included-photos value back in is enough to reveal it
-    // without changing the numbers, which keeps this assertion isolated to
-    // the originals inflection rather than also exercising the extras maths
-    // the "matches the client's own counter" test above already covers.
+    // Coordinator review finding: the "after" row is ALREADY visible the
+    // moment the dialog opens — the three inputs seed from the snapshot
+    // props at mount, so `hasValidPreviewInputs` is true immediately, not
+    // only once something is typed. Retyping the SAME included-photos value
+    // below is a no-op on the numbers, deliberately: it demonstrates this
+    // row (and its originals inflection) stays STABLE across an edit,
+    // rather than being a precondition for the row to appear at all — and
+    // keeps this assertion isolated from the extras maths the "matches the
+    // client's own counter" test above already covers.
     const includedPhotosField = within(dialog).getByLabelText("Fotos incluidas");
     await user.clear(includedPhotosField);
     await user.type(includedPhotosField, "13");

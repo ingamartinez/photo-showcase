@@ -114,7 +114,15 @@ vi.mock("@/lib/db", async () => {
             catch: resultPromise.catch.bind(resultPromise),
           };
         }
-        const rows = rowsFor(table).filter(matches);
+        // Round-2 review finding: this branch used to skip `project()`
+        // entirely, so a query reading a column it never selected (or a
+        // typo'd alias) would pass here regardless — `assets`' own branch
+        // above already projected; the other tables (this route's own
+        // `users` lookup is the first non-`assets` caller through here) must
+        // too.
+        const rows = rowsFor(table)
+          .filter(matches)
+          .map((r) => project(r, columns));
         return { limit: async (n: number) => rows.slice(0, n) };
       },
     };
@@ -887,6 +895,12 @@ describe("PATCH /api/assets/[assetId]/selection — setting the type (task #206)
     // Task #94: both clients attached to the same gallery.
     db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
     db.__rows.assets[0] = assetRow({ isSelected: true, selectedBy: "client-a" });
+    // Round-2 review finding: this row MUST be seeded for the assertion below
+    // to mean anything — an unseeded `users` table makes the lookup return
+    // nothing no matter what the route does with its result, which is
+    // exactly how `pickedBy = null` slipped through as a passing mutation
+    // the first time this test was written.
+    db.__rows.users.push({ id: "client-a", name: "Ana Pérez", email: "a@example.com" });
     const { PATCH } = await import("./route");
 
     const response = await PATCH(
@@ -895,10 +909,33 @@ describe("PATCH /api/assets/[assetId]/selection — setting the type (task #206)
     );
     const body = (await response.json()) as { asset: { pickedBy: { id: string; label: string } } };
 
-    // Not seeded into the fake `users` table at all in this suite, so the
-    // lookup finds nothing and this asserts the SAFE fallback — see the
-    // route's own comment on why it never substitutes the acting session's
-    // name for a different picker's id.
+    // The ORIGINAL picker's real name (from the seeded `users` row) — never
+    // "Beto Ruiz", the ACTING session's own name, which the route must not
+    // substitute for a different picker's id.
+    expect(body.asset.pickedBy).toEqual({ id: "client-a", label: "Ana Pérez" });
+  });
+
+  // The fallback this route's own comment names: `selected_by` pointing at a
+  // user row that no longer exists (`onDelete: "set null"`) is a narrow,
+  // reachable window, not a bug — same honest "no attribution" outcome
+  // `gallery-selection.ts` already gives it. Seeded users table, genuinely
+  // empty result — not an unseeded table standing in for "nothing to find".
+  it("reports no attribution when the original picker's user row no longer exists", async () => {
+    authMock.mockResolvedValue({
+      user: { id: "client-b", role: "client", email: "b@example.com", name: "Beto Ruiz" },
+      expires: "2099-01-01T00:00:00.000Z",
+    });
+    const db = await seededDb();
+    db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
+    db.__rows.assets[0] = assetRow({ isSelected: true, selectedBy: "deleted-user" });
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+    const body = (await response.json()) as { asset: { pickedBy: unknown } };
+
     expect(body.asset.pickedBy).toBeNull();
   });
 });

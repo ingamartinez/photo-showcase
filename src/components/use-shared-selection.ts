@@ -169,23 +169,32 @@ export function useSharedSelection({
   const [selectionById, setSelectionById] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(initialAssets.map((asset) => [asset.id, asset.isSelected])),
   );
-  // Task #206 — the TOTAL selected count still comes off `initialAssets`
-  // (`SharedSelectionAsset`'s own `isSelected`, unchanged since before this
-  // slice — every existing caller and test that seeds only `initialAssets`
-  // keeps working exactly as it did). The EDITED/ORIGINAL split comes off
-  // `initialPicks`, which now carries `selectionKind` per pick (see
-  // selection-snapshot.ts) — the one place that split actually lives. In
-  // production the two are always built from the SAME query
-  // (`getGallerySelection`, called once by the server component that renders
-  // this page — see that function's own header comment), so they can never
-  // disagree; a test fixture that supplies mismatched `initialAssets`/
-  // `initialPicks` is a fixture bug, not a real reachable state.
+  // Task #206, corrected after review (round 2) — BOTH the total and the
+  // edited/original split come off `initialPicks` alone, never off
+  // `initialAssets`. An earlier version of this took the total from
+  // `initialAssets.filter(isSelected).length` and subtracted `initialPicks`'
+  // own originals count from it, on the claim that the two were "built from
+  // the same query so they can never disagree". That claim was false:
+  // `initialAssets` comes from `readClientGalleryBySlug` (page.tsx's FIRST
+  // await), `initialPicks` comes from `getGallerySelection` (a SEPARATE,
+  // LATER await, same file) — two sequential reads with a write window
+  // between them, in a feature whose entire premise (#94/#95) is several
+  // clients editing the same shared selection concurrently. A pick changing
+  // kind, or a NEW pick landing, in that window left `initialAssets` stale
+  // and `initialPicks` fresh, and subtracting one from the other produced a
+  // wrong count on the first paint of a money screen — see
+  // proof-grid.test.tsx's own "the two initial reads can disagree" test for
+  // the reproduced case.
+  //
+  // `initialPicks.length` alone is the correct total: every entry in it IS
+  // a currently-selected asset by construction (selection-snapshot.ts's own
+  // comment on `SelectionPick`), so there is nothing left to read off
+  // `initialAssets` for this calculation at all.
   const [quota, setQuota] = useState<QuotaResult>(() => {
-    const selectedTotal = initialAssets.filter((asset) => asset.isSelected).length;
     const selectedOriginal = initialPicks.filter(
       (pick) => pick.selectionKind === "original",
     ).length;
-    const selectedEdited = selectedTotal - selectedOriginal;
+    const selectedEdited = initialPicks.length - selectedOriginal;
     return computeQuota(selectedEdited, selectedOriginal, {
       includedPhotosSnapshot,
       extraPhotoPriceCopSnapshot,
@@ -698,10 +707,17 @@ export function useSharedSelection({
       // here costs nothing and keeps this handler symmetric with
       // `toggleSelection`'s own "trust only the response" stance.
       setSelectionById((prev) => ({ ...prev, [body.asset.id]: body.asset.isSelected }));
+      // `pickedBy` too — not just `selectionKind` — for the SAME reason
+      // `toggleSelection` above writes back every field its own response
+      // carries rather than assuming the pick's existing local copy is still
+      // right: the route's own `pickedBy` is a REAL lookup (a type change can
+      // be made by any client attached to the gallery, not only the one who
+      // originally picked the photo — task #94/#95's shared-selection model),
+      // and this is the one place that lookup's result is actually consumed.
       setPicks((prev) =>
         prev.map((pick) =>
           pick.assetId === body.asset.id
-            ? { ...pick, selectionKind: body.asset.selectionKind }
+            ? { ...pick, selectionKind: body.asset.selectionKind, pickedBy: body.asset.pickedBy }
             : pick,
         ),
       );

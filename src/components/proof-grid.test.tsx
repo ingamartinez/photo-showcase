@@ -313,9 +313,19 @@ describe("ProofGrid", () => {
   });
 
   describe("live quota counter", () => {
-    it("renders the initial counter computed from the assets' own isSelected flags and the snapshot terms", () => {
+    it("renders the initial counter computed from the FIRST-PAINT PICKS, not the assets' own isSelected flags", () => {
+      // Task #206, round-2 review — the initial quota is derived from
+      // `initialPicks` alone (see use-shared-selection.ts's own comment on
+      // why `initialAssets` cannot be trusted for this), so a test that
+      // cares about the rendered counter has to seed `initialPicks` too, the
+      // same way a real page load does (both come off the same gallery,
+      // just via two separate reads on the server).
       renderGrid({
         initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }, {}]),
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+          { assetId: "a2", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+        ],
         includedPhotosSnapshot: 1,
         extraPhotoPriceCopSnapshot: 5_000,
       });
@@ -323,6 +333,35 @@ describe("ProofGrid", () => {
       const text = counterText();
       expect(text).toContain("seleccionadas 2");
       expect(text).toContain("extras 1");
+    });
+
+    // Task #206, round-2 review's own finding — `initialAssets` and
+    // `initialPicks` are NOT guaranteed to agree: `page.tsx` builds them from
+    // TWO SEPARATE, sequential reads (`readClientGalleryBySlug`, then a LATER
+    // `getGallerySelection`), with a write window between them — exactly the
+    // shape #94/#95 exist to let several clients race through. This
+    // reproduces that: `initialAssets` is STALE (it does not yet know "a2"
+    // was picked, by ANOTHER session, while the page's own first read was
+    // already in flight); `initialPicks` is the fresher, later read, and
+    // already knows about it, marked `original`.
+    it("derives the initial quota from initialPicks alone, even when initialAssets is stale and disagrees with it", () => {
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }, { isSelected: false }]),
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+          { assetId: "a2", selectedAt: null, pickedBy: null, selectionKind: "original" },
+        ],
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+      });
+
+      // The correct total is 2 (one edited pick, one original pick) —
+      // reachable only by trusting `initialPicks` alone. A version of this
+      // hook that instead took the TOTAL off `initialAssets.filter(isSelected)`
+      // (1, since "a2" reads stale there) and subtracted `initialPicks`' own
+      // originals count from that stale total would report "seleccionadas 1"
+      // here — losing "a1" from the count entirely.
+      expect(counterText()).toContain("seleccionadas 2");
     });
 
     it("toggling a tile PATCHes the selection route and replaces the counter with the server's own response, not a local increment", async () => {
@@ -507,6 +546,65 @@ describe("ProofGrid", () => {
     });
   });
 
+  // Task #206, round-2 review — proves the PATCH response's own `pickedBy`
+  // (not just `selectionKind`) is genuinely applied to local state after a
+  // type-only change, closing the exact gap the review found: a `users`
+  // lookup on the server whose result nothing on the client ever read.
+  describe("type control (task #206)", () => {
+    it("updates the tray's picker label from the response after a type-only change, not just the type", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(200, {
+            asset: {
+              id: "a1",
+              isSelected: true,
+              selectedAt: "2026-07-30T12:00:00.000Z",
+              // A DIFFERENT picker than the tray's own server-rendered
+              // seed below — proving this label came from THIS response,
+              // not from the pick's existing local copy.
+              pickedBy: { id: "client-c", label: "Caro Ruiz" },
+              selectionKind: "original",
+            },
+            quota: computeQuota(0, 1, {
+              includedPhotosSnapshot: 13,
+              extraPhotoPriceCopSnapshot: 5_000,
+              originalPhotoPriceCopSnapshot: 2_000,
+            }),
+          }),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      renderGrid({
+        initialAssets: assetsFor([{ isSelected: true }]),
+        initialPicks: [
+          {
+            assetId: "a1",
+            selectedAt: "2026-07-30T11:00:00.000Z",
+            pickedBy: { id: "client-b", label: "Beto Ruiz" },
+            selectionKind: "edited",
+          },
+        ],
+      });
+
+      const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+      expect(within(tray).getByText("Beto Ruiz")).toBeDefined();
+
+      await user.click(screen.getByRole("button", { name: "Marcar como original: IMG_0001.JPG" }));
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/assets/a1/selection", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ selectionKind: "original" }),
+      });
+      await vi.waitFor(() => {
+        expect(within(tray).getByText("Caro Ruiz")).toBeDefined();
+      });
+      expect(within(tray).queryByText("Beto Ruiz")).toBeNull();
+    });
+  });
+
   // Task #25: the lock/submit wiring between <ProofGrid>, <SubmitSelectionPanel>,
   // and the per-tile/lightbox toggle buttons.
   describe("submission lock", () => {
@@ -564,6 +662,13 @@ describe("ProofGrid", () => {
         galleryId: "g1",
         initialStatus: "proofing",
         initialAssets: assetsFor([{ isSelected: true }]),
+        // Task #206, round-2 review — the initial quota (and therefore
+        // whether the submit button starts enabled) comes from
+        // `initialPicks` alone; without a matching pick here `quota.selected`
+        // would be 0 and the button below would be disabled from the start.
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+        ],
       });
 
       await user.click(screen.getByRole("button", { name: "Enviar selección" }));
@@ -678,6 +783,12 @@ describe("ProofGrid", () => {
         initialStatus: "selected",
         initialSubmittedAt: "2026-07-28T12:00:00.000Z",
         initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }]),
+        // Task #206, round-2 review — see this describe block's first test's
+        // own comment: the initial quota comes from `initialPicks` alone.
+        initialPicks: [
+          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+          { assetId: "a2", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+        ],
         includedPhotosSnapshot: 1,
       });
 

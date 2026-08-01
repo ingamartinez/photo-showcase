@@ -745,6 +745,7 @@ describe("getGalleryDetail", () => {
     // deriving it from a snapshot/live-package comparison (schema.ts's own
     // comment on `terms_overridden` explains why that comparison rots).
     termsOverridden: true,
+    selectionTrayMode: "flat" as const,
     assets: [
       {
         id: "a2",
@@ -796,6 +797,7 @@ describe("getGalleryDetail", () => {
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
       termsOverridden: true,
+      selectionTrayMode: "flat",
       assets: galleryRow.assets,
     });
 
@@ -845,6 +847,7 @@ describe("getGalleryDetailsByIds", () => {
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
     termsOverridden: false,
+    selectionTrayMode: "flat" as const,
     assets: [
       {
         id: "a1",
@@ -886,6 +889,7 @@ describe("getGalleryDetailsByIds", () => {
         includedPhotosSnapshot: 13,
         extraPhotoPriceCopSnapshot: 5_000,
         termsOverridden: false,
+        selectionTrayMode: "flat",
         assets: galleryRow.assets,
       },
     ]);

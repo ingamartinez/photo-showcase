@@ -71,6 +71,13 @@
       "when": 1785564302780,
       "tag": "0009_glossy_obadiah_stane",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1785568301995,
+      "tag": "0010_equal_star_brand",
+      "breakpoints": true
     }
   ]
 }

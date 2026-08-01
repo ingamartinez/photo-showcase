@@ -7,6 +7,8 @@ export type Incremental<T> =
 import type { TypedDocumentNode as DocumentNode } from "@graphql-typed-document-node/core";
 export type GalleryStatus = "archived" | "delivered" | "draft" | "proofing" | "selected";
 
+export type SelectionTrayMode = "BY_PERSON" | "FLAT";
+
 export type ClientGalleryListQueryVariables = Exact<{ [key: string]: never }>;
 
 export type ClientGalleryListQuery = {
@@ -34,6 +36,7 @@ export type ClientGalleryBySlugQuery = {
     selectionSubmittedAt: string | null;
     includedPhotosSnapshot: number;
     extraPhotoPriceCopSnapshot: number;
+    selectionTrayMode: SelectionTrayMode;
     package: { name: string };
     assets: Array<{
       id: string;
@@ -119,6 +122,7 @@ export const ClientGalleryBySlugDocument = {
                 { kind: "Field", name: { kind: "Name", value: "selectionSubmittedAt" } },
                 { kind: "Field", name: { kind: "Name", value: "includedPhotosSnapshot" } },
                 { kind: "Field", name: { kind: "Name", value: "extraPhotoPriceCopSnapshot" } },
+                { kind: "Field", name: { kind: "Name", value: "selectionTrayMode" } },
                 {
                   kind: "Field",
                   name: { kind: "Name", value: "package" },

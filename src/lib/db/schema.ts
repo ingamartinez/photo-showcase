@@ -176,6 +176,15 @@ export const galleryStatus = pgEnum("gallery_status", [
 // `assets.selectionKind`'s own comment for why that would be the wrong shape.
 export const selectionKind = pgEnum("selection_kind", ["edited", "original"]);
 
+// Task #204 — how the client's own "Fotos elegidas" tray lays out its picks.
+// `flat` (today's only behavior) is one list, each thumbnail labelled with
+// who picked it. `by-person` groups the SAME picks into one row per picker,
+// each with a name and count. Purely a presentation choice: it changes
+// nothing about what is selected, who owes what, or the frozen commercial
+// terms above — see galleries.selectionTrayMode's own comment for why it
+// carries none of #200's audit columns.
+export const selectionTrayMode = pgEnum("selection_tray_mode", ["flat", "by-person"]);
+
 // Seeded, editable without a migration (PLAN.md §3). Prices here are the CURRENT
 // offer — never the terms of an existing gallery; see the snapshots below.
 export const packages = pgTable("packages", {
@@ -387,6 +396,24 @@ export const galleries = pgTable(
     // migration ran.
     termsUpdatedAt: timestamp("terms_updated_at", { withTimezone: true }),
     termsUpdatedByEmail: text("terms_updated_by_email"),
+    // Task #204 — which of the two tray layouts (see `selectionTrayMode`
+    // above) this gallery's client-facing view uses. `notNull().default("flat")`
+    // because there are galleries in production: every one of them, created
+    // before this column existed, keeps the exact layout it already had —
+    // this is an additive capability switched on later, never a change to
+    // what happens today (the app's own owner-set constraint on this slice).
+    //
+    // Presentation, not a commercial term: unlike `includedPhotosSnapshot`/
+    // `extraPhotoPriceCopSnapshot`, this carries no `*UpdatedAt`/`*UpdatedByEmail`
+    // audit pair. Task #200's audit columns exist because a disputed money
+    // conversation can turn on "what were this gallery's terms, and who
+    // changed them" — flipping how the same picks are grouped on screen is
+    // not that kind of fact, and there is no dispute this column could ever
+    // need to settle. Changeable by the admin at ANY gallery status
+    // (src/app/dashboard/galleries/actions.ts's `updateSelectionTrayMode`) —
+    // it never touches `assets.isSelected`/`selectedBy` or the snapshot
+    // columns, so there is no state gate to enforce.
+    selectionTrayMode: selectionTrayMode("selection_tray_mode").notNull().default("flat"),
   },
   (t) => [uniqueIndex("galleries_public_slug_idx").on(t.publicSlug)],
 );

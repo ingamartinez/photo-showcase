@@ -11,6 +11,7 @@ import {
 import { isAdminPreviewingClientGallery, isGalleryOwner } from "@/lib/gallery-access";
 import { getGallerySelection } from "@/lib/gallery-selection";
 import { readClientGalleryBySlug } from "@/lib/graphql/client-gallery-reads";
+import { selectionTrayModeFromWire } from "@/lib/graphql/types/selection-tray-mode";
 import { displayKey, getPresignedUrl, storedKey } from "@/lib/r2";
 import { ClientPreviewBanner } from "@/components/client-preview-banner";
 import { ProofGrid } from "@/components/proof-grid";
@@ -252,6 +253,12 @@ export default async function ClientGalleryPage({
         // not only for overridden galleries.
         includedPhotosSnapshot={gallery.includedPhotosSnapshot}
         extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}
+        // Task #204 — presentation only, an admin-set choice on the gallery
+        // itself. `selectionTrayModeFromWire` undoes GraphQL's own
+        // NAME-not-VALUE enum serialization — see that function's own
+        // comment for why the field arrives as `"FLAT"`/`"BY_PERSON"` here
+        // and not the `"flat"`/`"by-person"` every other consumer expects.
+        selectionTrayMode={selectionTrayModeFromWire(gallery.selectionTrayMode)}
       />
     </>
   );

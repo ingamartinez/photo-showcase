@@ -139,6 +139,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     extraPhotoPriceCopSnapshot: 5_000,
     originalPhotoPriceCopSnapshot: 2_000,
     termsOverridden: false,
+    selectionTrayMode: "flat",
     assets: [],
     selectionSubmittedAt: null,
     ...overrides,
@@ -270,6 +271,78 @@ describe("ClientGalleryPage chrome", () => {
       render(await ClientGalleryPage(paramsFor(SLUG)));
 
       expect(getGallerySelectionMock).toHaveBeenCalledWith("g1");
+    });
+
+    // Task #204 — END TO END through the REAL GraphQL pipeline (nothing under
+    // src/lib/graphql/** is mocked in this file), the exact seam BLOCKING 1 of
+    // the review flagged: `readClientGalleryBySlug` gets `selectionTrayMode`
+    // back as graphql-js's own wire NAME ("BY_PERSON"), and
+    // `selectionTrayModeFromWire` (page.tsx) has to convert it back to
+    // `"by-person"` before <ProofGrid>/<SelectionTray> ever see it. A
+    // reviewer-run mutation (`selectionTrayModeFromWire` forced to always
+    // return `"flat"`) left the OTHER 1677 tests in this repo green — this is
+    // the one that would have caught it, because it is the only place that
+    // exercises the real resolver AND the real converter in the same render.
+    it("renders the by-person tray layout end to end when the gallery is set to that mode", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(
+        galleryDetail({
+          selectionTrayMode: "by-person",
+          assets: [
+            {
+              id: "a1",
+              originalFilename: "IMG_0001.JPG",
+              proofKey: "galleries/g1/proofs/a1.webp",
+              proofWidth: 1600,
+              proofHeight: 1067,
+              isSelected: true,
+              sortOrder: 0,
+              finalKey: null,
+              isEdited: false,
+            },
+            {
+              id: "a2",
+              originalFilename: "IMG_0002.JPG",
+              proofKey: "galleries/g1/proofs/a2.webp",
+              proofWidth: 1600,
+              proofHeight: 1067,
+              isSelected: true,
+              sortOrder: 1,
+              finalKey: null,
+              isEdited: false,
+            },
+          ],
+        }),
+      );
+      getGallerySelectionMock.mockResolvedValue([
+        {
+          assetId: "a1",
+          selectedAt: "2026-07-30T12:00:00.000Z",
+          pickedBy: { id: "client-b", label: "Beto Ruiz" },
+        },
+        {
+          assetId: "a2",
+          selectedAt: "2026-07-30T12:05:00.000Z",
+          pickedBy: { id: "client-b", label: "Beto Ruiz" },
+        },
+      ]);
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      const { container } = render(element);
+
+      // Only by-person mode renders a group header with a parenthesized
+      // count — flat mode renders each pick's label alone (see the "renders
+      // the tray with each pick attributed" test above, which asserts the
+      // bare "Beto Ruiz" text with no count). `screen.getByText` alone
+      // cannot see this: the count lives in a nested `<span>`, so RTL's
+      // default matcher — which does not concatenate text across a child
+      // element — never finds "Beto Ruiz (2)" as one node's text, even
+      // though it renders correctly; querying the `<p>`'s own `textContent`
+      // directly (same technique selection-tray.test.tsx's own
+      // `groupHeaderTexts` helper uses) is what actually proves it.
+      const groupHeaders = [...container.querySelectorAll("p")]
+        .map((p) => p.textContent)
+        .filter((text): text is string => /\(\d+\)/.test(text ?? ""));
+      expect(groupHeaders).toEqual(["Beto Ruiz (2)"]);
     });
   });
 

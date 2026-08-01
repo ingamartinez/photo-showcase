@@ -141,6 +141,11 @@ const resendGalleryAccessEmailMock = vi.fn();
 // (no status gate — that is the whole point of this task); its module
 // imports `updateGalleryTerms` from here too.
 const updateGalleryTermsMock = vi.fn();
+// Task #204: the page now renders <SelectionTrayModeControl> unconditionally
+// (no status gate — same "presentation, not a commercial term" reasoning
+// schema.ts's own comment on `selectionTrayMode` explains); its module
+// imports `updateSelectionTrayMode` from here too.
+const updateSelectionTrayModeMock = vi.fn();
 vi.mock("@/app/dashboard/galleries/actions", () => ({
   publishGallery: (...args: unknown[]) => publishGalleryMock(...args),
   unlockSelection: (...args: unknown[]) => unlockSelectionMock(...args),
@@ -149,6 +154,7 @@ vi.mock("@/app/dashboard/galleries/actions", () => ({
   removeGalleryClient: (...args: unknown[]) => removeGalleryClientMock(...args),
   resendGalleryAccessEmail: (...args: unknown[]) => resendGalleryAccessEmailMock(...args),
   updateGalleryTerms: (...args: unknown[]) => updateGalleryTermsMock(...args),
+  updateSelectionTrayMode: (...args: unknown[]) => updateSelectionTrayModeMock(...args),
 }));
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
@@ -167,6 +173,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     extraPhotoPriceCopSnapshot: 5_000,
     originalPhotoPriceCopSnapshot: 2_000,
     termsOverridden: false,
+    selectionTrayMode: "flat",
     assets: [],
     selectionSubmittedAt: null,
     ...overrides,

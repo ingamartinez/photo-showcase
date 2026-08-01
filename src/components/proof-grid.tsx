@@ -74,6 +74,7 @@ import { SelectionTray } from "@/components/selection-tray";
 import { SubmitSelectionPanel } from "@/components/submit-selection-panel";
 import { useProofUrls } from "@/components/use-proof-urls";
 import { useSharedSelection, type GalleryStatus } from "@/components/use-shared-selection";
+import type { Gallery } from "@/lib/db/schema";
 import type { QuotaResult } from "@/lib/quota";
 import { pickerLabelFor, type SelectionPick } from "@/lib/selection-snapshot";
 
@@ -136,6 +137,7 @@ export function ProofGrid({
   viewerId,
   includedPhotosSnapshot,
   extraPhotoPriceCopSnapshot,
+  selectionTrayMode,
 }: {
   // Task #25's submit route is keyed on this — see that route's own header
   // comment for why the internal id, not the page's `publicSlug`, is the
@@ -178,6 +180,12 @@ export function ProofGrid({
   // this is about the package's label, not its terms.
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
+  // Task #204 — how <SelectionTray> lays out the SAME picks below: one flat
+  // list (today's only behavior) or grouped one row per picker. Purely a
+  // presentation choice the admin sets on the gallery itself
+  // (src/app/dashboard/galleries/actions.ts's `updateSelectionTrayMode`);
+  // this component makes no decision about it, only threads it through.
+  selectionTrayMode: Gallery["selectionTrayMode"];
 }) {
   // One map of presigned URLs, shared by the tray, every grid tile and the
   // lightbox — see use-proof-urls.ts's own header comment for why it is one
@@ -282,6 +290,7 @@ export function ProofGrid({
           urls={urls}
           filenamesByAssetId={filenamesByAssetId}
           viewerId={viewerId}
+          mode={selectionTrayMode}
           isLocked={isLocked}
           isStale={isStale}
           onOpenAsset={openAssetInLightbox}

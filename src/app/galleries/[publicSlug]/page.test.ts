@@ -231,6 +231,7 @@ describe("ClientGalleryPage", () => {
             sortOrder: 0,
             finalKey: null,
             isEdited: false,
+            selectionKind: "edited",
           },
           {
             id: "a2",
@@ -242,6 +243,7 @@ describe("ClientGalleryPage", () => {
             sortOrder: 1,
             finalKey: null,
             isEdited: false,
+            selectionKind: "edited",
           },
         ],
       }),

@@ -350,6 +350,7 @@ describe("GalleryDetailPage chrome", () => {
             sortOrder: 0,
             finalKey: null,
             isEdited: false,
+            selectionKind: "edited",
           },
           {
             id: "a2",
@@ -361,6 +362,7 @@ describe("GalleryDetailPage chrome", () => {
             sortOrder: 1,
             finalKey: null,
             isEdited: false,
+            selectionKind: "edited",
           },
         ],
       }),
@@ -534,6 +536,7 @@ describe("GalleryDetailPage chrome", () => {
             sortOrder: 0,
             finalKey: null,
             isEdited: false,
+            selectionKind: "edited",
           },
         ],
       }),
@@ -563,6 +566,7 @@ describe("GalleryDetailPage chrome", () => {
             sortOrder: 0,
             finalKey: "galleries/g1/assets/a1/final.jpg",
             isEdited: true,
+            selectionKind: "edited",
           },
         ],
       }),
@@ -691,6 +695,7 @@ describe("GalleryDetailPage — archive-size warning (task #92)", () => {
         sortOrder: 0,
         finalKey: "galleries/g1/finals/a1.jpg",
         isEdited: true,
+        selectionKind: "edited" as const,
       },
     ];
     getGalleryDetailMock.mockResolvedValue(galleryDetail({ assets }));

@@ -215,6 +215,7 @@ describe("ClientGalleryPage chrome", () => {
             sortOrder: 0,
             finalKey: null,
             isEdited: false,
+            selectionKind: "edited",
           },
         ],
       });
@@ -298,6 +299,7 @@ describe("ClientGalleryPage chrome", () => {
               sortOrder: 0,
               finalKey: null,
               isEdited: false,
+              selectionKind: "edited",
             },
             {
               id: "a2",
@@ -309,6 +311,7 @@ describe("ClientGalleryPage chrome", () => {
               sortOrder: 1,
               finalKey: null,
               isEdited: false,
+              selectionKind: "edited",
             },
           ],
         }),
@@ -370,6 +373,7 @@ describe("ClientGalleryPage chrome", () => {
             sortOrder: index,
             finalKey: null,
             isEdited: false,
+            selectionKind: "edited",
           })),
         }),
       );
@@ -506,6 +510,7 @@ describe("ClientGalleryPage chrome", () => {
             sortOrder: 0,
             finalKey: null,
             isEdited: false,
+            selectionKind: "edited",
           },
         ],
       }),
@@ -537,6 +542,7 @@ describe("ClientGalleryPage chrome", () => {
             sortOrder: 0,
             finalKey: null,
             isEdited: false,
+            selectionKind: "edited",
           },
           {
             id: "a2",
@@ -548,6 +554,7 @@ describe("ClientGalleryPage chrome", () => {
             sortOrder: 1,
             finalKey: null,
             isEdited: false,
+            selectionKind: "edited",
           },
         ],
       }),
@@ -601,6 +608,7 @@ describe("ClientGalleryPage chrome", () => {
         sortOrder: 0,
         finalKey: null,
         isEdited: false,
+        selectionKind: "edited" as const,
       },
     ];
 
@@ -661,6 +669,7 @@ describe("ClientGalleryPage chrome", () => {
             sortOrder: 0,
             finalKey: null,
             isEdited: false,
+            selectionKind: "edited",
           },
         ],
       }),
@@ -705,6 +714,7 @@ describe("ClientGalleryPage chrome", () => {
             proofWidth: 1600,
             proofHeight: 1067,
             sortOrder: 0,
+            selectionKind: "edited",
             ...assetOverrides,
           },
         ],
@@ -779,6 +789,7 @@ describe("ClientGalleryPage chrome", () => {
       isSelected: true,
       isEdited: true,
       finalKey: "galleries/g1/finals/a1.jpg",
+      selectionKind: "edited" as const,
     };
     const NOT_DELIVERABLE = {
       id: "a2",
@@ -790,6 +801,7 @@ describe("ClientGalleryPage chrome", () => {
       isSelected: false,
       isEdited: false,
       finalKey: null,
+      selectionKind: "edited" as const,
     };
 
     function srcsOf(container: HTMLElement): (string | null)[] {

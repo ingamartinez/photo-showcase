@@ -41,6 +41,31 @@
 // third line next to <SubmitSelectionPanel>'s own button — see
 // proof-grid.tsx's own comment on the sticky bar these two share.
 //
+// TASK #206 — THE TWO-TARIFF BREAKDOWN, AND THE RULE IT HAS TO PROTECT.
+// `computeQuota` now also returns `extrasSurchargeCop`/`originalsSurchargeCop`
+// (src/lib/quota.ts's own comment on why those exist) — the pre-multiplied
+// halves this file reads instead of ever computing `quota.extras *
+// quota.extraPhotoPriceCopSnapshot` itself, which would break this file's own
+// "never subtracts or multiplies anything" promise above.
+//
+// THE GOVERNING CONSTRAINT (the owner's own restriction, added after this
+// task was written): a gallery where nobody marked an original must look
+// EXACTLY as it did before this slice — not a breakdown row that says "0
+// originales — $0", which would be a default-behaviour change dressed up as
+// a zero. So the extra lines below are ABSENT, not zeroed, whenever
+// `quota.originals === 0` — and the FIRST line (`extras N × price = X`) reads
+// `quota.extrasSurchargeCop` rather than `quota.surchargeCop` specifically so
+// its own rendered digits stay byte-identical to before: the two are
+// mathematically equal whenever `originals` is 0 (originals contribute
+// nothing to either), and only diverge once there is something to show
+// beneath them.
+//
+// Once `quota.originals > 0`, TWO more lines appear: how many originals at
+// their own price, and a TOTAL line summing both tariffs — the task's own
+// requirement that the breakdown stay "legible in vivo": marking a photo
+// original never saves quota, it always adds to what is owed, and a client
+// has to be able to see that arithmetic live, not just at submit.
+//
 // `formatCop` comes from `@/lib/format`, NOT `@/lib/galleries` — this is a
 // Client Component (rendered by `<ProofGrid>`, which is `"use client"`), and
 // `@/lib/galleries` imports `@/lib/db` (Postgres), which needs Node's `tls`.
@@ -60,6 +85,8 @@ import type { QuotaResult } from "@/lib/quota";
 // overridden galleries. Only the NUMBERS survive: "incluidas 20 ·
 // seleccionadas 14".
 export function SelectionCounter({ quota }: { quota: QuotaResult }) {
+  const hasOriginals = quota.originals > 0;
+
   return (
     <div aria-live="polite">
       <p className="text-fg font-serif text-lg leading-snug">
@@ -67,8 +94,21 @@ export function SelectionCounter({ quota }: { quota: QuotaResult }) {
       </p>
       <p className="text-fg-mute mt-1 text-sm">
         extras {quota.extras} × {formatCop(quota.extraPhotoPriceCopSnapshot)} ={" "}
-        {formatCop(quota.surchargeCop)} — se coordina por fuera de la app; acá no se cobra nada.
+        {formatCop(quota.extrasSurchargeCop)}
+        {!hasOriginals && " — se coordina por fuera de la app; acá no se cobra nada."}
       </p>
+      {hasOriginals && (
+        <>
+          <p className="text-fg-mute mt-1 text-sm">
+            originales {quota.originals} × {formatCop(quota.originalPhotoPriceCopSnapshot)} ={" "}
+            {formatCop(quota.originalsSurchargeCop)} — un original nunca ahorra cuota, siempre suma.
+          </p>
+          <p className="text-fg-mute mt-1 text-sm">
+            total {formatCop(quota.surchargeCop)} — se coordina por fuera de la app; acá no se cobra
+            nada.
+          </p>
+        </>
+      )}
     </div>
   );
 }

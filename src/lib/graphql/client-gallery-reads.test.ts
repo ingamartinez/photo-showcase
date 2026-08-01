@@ -62,6 +62,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
         sortOrder: 0,
         finalKey: "dev/galleries/g1/finals/a1.jpg",
         isEdited: true,
+        selectionKind: "edited",
       },
     ],
     selectionSubmittedAt: new Date("2026-07-28T12:00:00.000Z"),

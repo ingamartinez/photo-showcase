@@ -51,35 +51,34 @@ export function EditGalleryTermsDialog({
   includedPhotosSnapshot,
   extraPhotoPriceCopSnapshot,
   originalPhotoPriceCopSnapshot,
-  // `count(assets where is_selected)` — the SAME number the page already
-  // derived for the "Seleccionadas" row (page.tsx's own `selectedCount`),
-  // passed straight through rather than recomputed here. This component
-  // never counts assets itself.
+  // `count(assets where is_selected AND selection_kind = 'edited'/'original')`
+  // — the SAME split the page already derived from `gallery.assets`
+  // (page.tsx's own `selectedEditedCount`/`selectedOriginalCount`), passed
+  // straight through rather than recomputed here. This component never
+  // counts assets itself.
   //
-  // Task #205 — this stays a single total, not split into edited/original
-  // counts, passed to `computeQuota` below as the edited count with 0
-  // originals.
-  //
-  // ⚠️ KNOWN GAP, LEFT OPEN BY TASK #206 ON PURPOSE (out of that slice's own
-  // scope — it touches the CLIENT gallery, not this admin dialog): task #206
-  // is what lets a client actually mark a pick `original`, which means this
-  // preview can now UNDERSTATE a real gallery's surcharge the moment one
-  // exists — every original is charged in full (src/lib/quota.ts's own
-  // header comment) and this component silently treats them all as `edited`
-  // instead. `[galleryId]/page.tsx`'s own `selectedCount` would need to
-  // split by `assets.selectionKind` the same way the client-facing routes
-  // do (PATCH .../selection, GET .../selection, POST .../submit-selection)
-  // before this dialog's preview can be trusted for a gallery that actually
-  // has originals. Flagged here rather than fixed quietly so the next
-  // reader does not mistake this comment for a guarantee that still holds.
-  selectedCount,
+  // Task #210 — this used to be a single `selectedCount` total, fed to
+  // `computeQuota` below as the edited count with a HARDCODED 0 originals.
+  // That was true only while task #206 hadn't shipped a way for a client to
+  // actually mark a pick `original` yet; once it did, this preview started
+  // UNDERSTATING a real gallery's surcharge for any gallery with at least
+  // one original selected, because every original is charged in full
+  // (src/lib/quota.ts's own header comment) and this component was
+  // silently treating them all as `edited` instead. The two counts below
+  // close that gap: `computeQuota` now receives the gallery's REAL split,
+  // the same one `use-shared-selection.ts` derives for the client-facing
+  // counter, so this preview matches what the client's own counter shows
+  // for the same terms.
+  selectedEditedCount,
+  selectedOriginalCount,
 }: {
   galleryId: string;
   status: Gallery["status"];
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
   originalPhotoPriceCopSnapshot: number;
-  selectedCount: number;
+  selectedEditedCount: number;
+  selectedOriginalCount: number;
 }) {
   const [open, setOpen] = useState(false);
   const [state, formAction, pending] = useActionState(updateGalleryTerms, initialState);
@@ -138,19 +137,20 @@ export function EditGalleryTermsDialog({
   // `/galleries/[publicSlug]` actually shows the client, which is the only
   // number that matters here.
   //
-  // `selectedCount` is passed as the edited count with 0 originals — see
-  // this component's own prop comment above for why. `originalPhotoPriceCopSnapshot`
-  // still flows through `computeQuota` and back out on `before`/`after` (it's
-  // a passthrough field on `QuotaResult`), which is what lets the preview
-  // below show the NEW original price without this component doing its own
-  // arithmetic.
-  const before = computeQuota(selectedCount, 0, {
+  // `selectedEditedCount`/`selectedOriginalCount` are the gallery's REAL
+  // split (task #210 — see this component's own prop comment above), so
+  // `before.surchargeCop`/`after.surchargeCop` below are byte-identical to
+  // what `SelectionCounter` shows the client for the same terms: with zero
+  // originals both are unaffected (`computeQuota`'s own "identical to the
+  // pre-#205 formula" guarantee), and with at least one original both now
+  // add `originalsSurchargeCop` instead of silently dropping it.
+  const before = computeQuota(selectedEditedCount, selectedOriginalCount, {
     includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot,
     originalPhotoPriceCopSnapshot,
   });
   const after = hasValidPreviewInputs
-    ? computeQuota(selectedCount, 0, {
+    ? computeQuota(selectedEditedCount, selectedOriginalCount, {
         includedPhotosSnapshot: parsedIncludedPhotos,
         extraPhotoPriceCopSnapshot: parsedExtraPhotoPrice,
         originalPhotoPriceCopSnapshot: parsedOriginalPhotoPrice,
@@ -253,22 +253,38 @@ export function EditGalleryTermsDialog({
                   describes the gallery's CURRENT, already-saved terms, so it
                   never depends on whatever is mid-typed below it.
 
-                  Task #205 review finding: this used to append
-                  "· original $X" to this SAME sentence, which reads as
-                  "the client sees this today" — untrue. No client sees
-                  anything about the original-photo price until task #206
-                  lets them actually pick one; today `originalPhotoPriceCopSnapshot`
-                  only ever multiplies against 0 originals. The original price
-                  gets its OWN sentence below, worded as what it IS (the
-                  currently-saved price, an admin-only fact) rather than as
-                  something the client is shown. */}
+                  Task #205 review finding, updated by task #210: this used
+                  to append "· original $X" to this SAME sentence, which
+                  reads as "the client sees this today" — untrue at the time,
+                  since no client could pick an original yet. Task #206
+                  shipped that, so `originalPhotoPriceCopSnapshot` now DOES
+                  multiply against a real, possibly non-zero, original count
+                  whenever `before.originals > 0` — `before.surchargeCop`
+                  above already reflects that (computeQuota, real split).
+                  The original price still gets its OWN sentence below rather
+                  than folding into this one: the row above is the
+                  "incluidas/extras/total" shape every reader of this preview
+                  already recognizes, and inserting a third clause into it
+                  for originals only when they exist would make the
+                  sentence's own SHAPE change depending on the gallery,
+                  instead of only its digits.
+
+                  The `> 0` sentence itself inflects THREE words off
+                  `before.originals` (foto/fotos, original/originales,
+                  elegida/elegidas, incluida/incluidas) with the SAME
+                  singular-check-per-word ternary this codebase already uses
+                  for a two-word sentence (gallery-workspace.tsx's own delete
+                  confirmation, "¿Eliminar N foto(s) marcada(s)?") — never the
+                  `(s)` shorthand, which appears nowhere else in this UI. */}
               <p className="text-fg-dim">
                 El cliente ve hoy: {before.includedPhotosSnapshot} incluidas · {before.extras}{" "}
                 extras · {formatCop(before.surchargeCop)}
               </p>
               <p className="text-fg-dim">
-                Precio foto original vigente: {formatCop(before.originalPhotoPriceCopSnapshot)} — el
-                cliente todavía no lo ve.
+                Precio foto original vigente: {formatCop(before.originalPhotoPriceCopSnapshot)}
+                {before.originals > 0
+                  ? ` — ${before.originals} foto${before.originals === 1 ? "" : "s"} original${before.originals === 1 ? "" : "es"} ya elegida${before.originals === 1 ? "" : "s"}, incluida${before.originals === 1 ? "" : "s"} en el total de arriba.`
+                  : " — el cliente todavía no lo ve."}
               </p>
               {/* Conditional on `after` being a valid parse of what is
                   CURRENTLY typed — an empty or malformed field mid-edit
@@ -281,9 +297,33 @@ export function EditGalleryTermsDialog({
                     Va a ver: {after.includedPhotosSnapshot} incluidas · {after.extras} extras ·{" "}
                     {formatCop(after.surchargeCop)}
                   </p>
+                  {/* Coordinator review finding on task #210: this used to say
+                      "el cliente todavía no lo ve" UNCONDITIONALLY — true only
+                      while `before.originals` is 0 (nobody has ever picked an
+                      original, so this price affects nobody regardless of
+                      whether it gets saved). Once real originals already exist,
+                      saving this typed price changes what those SAME assets
+                      cost IMMEDIATELY (`updateGalleryTerms` revalidates the
+                      client's own gallery path) — "todavía no lo ve" then reads
+                      as "this has no live consequence", which is the opposite
+                      of true, and directly contradicts the `surchargeCop` total
+                      one line up, which already prices these originals in.
+
+                      `after.originals` here, not `before.originals`: editing
+                      terms never re-picks which assets are original, so
+                      `selectedOriginalCount` — and therefore `.originals` — is
+                      IDENTICAL on both `before` and `after` (both computeQuota
+                      calls above receive the exact same second argument; only
+                      the snapshot object's prices differ). Reading `after`
+                      is for symmetry with this row's OTHER field
+                      (`after.originalPhotoPriceCopSnapshot`) — every value this
+                      row shows comes off the SAME result object — not because
+                      the count could ever diverge from `before.originals`. */}
                   <p className="text-fg mt-1">
-                    Nuevo precio foto original: {formatCop(after.originalPhotoPriceCopSnapshot)} —
-                    el cliente todavía no lo ve.
+                    Nuevo precio foto original: {formatCop(after.originalPhotoPriceCopSnapshot)}
+                    {after.originals > 0
+                      ? ` — va a aplicar a ${after.originals} foto${after.originals === 1 ? "" : "s"} original${after.originals === 1 ? "" : "es"} ya elegida${after.originals === 1 ? "" : "s"} en cuanto guardes.`
+                      : " — el cliente todavía no lo ve."}
                   </p>
                 </>
               )}

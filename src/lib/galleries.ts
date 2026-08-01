@@ -413,6 +413,13 @@ export type GalleryDetailAsset = {
   // (src/app/api/assets/[assetId]/final/route.ts), never this raw key.
   finalKey: string | null;
   isEdited: boolean;
+  // Task #210 — added so the admin detail page can split `selectedCount`
+  // into edited/original the SAME way `use-shared-selection.ts`'s own
+  // `initialPicks` split does: filter this ONE already-fetched array,
+  // never a second query. Before this, `EditGalleryTermsDialog`'s
+  // before/after preview fed `computeQuota` a hardcoded 0 originals — true
+  // only while task #206 hadn't shipped selectable originals yet.
+  selectionKind: (typeof assets.$inferSelect)["selectionKind"];
 };
 
 export type GalleryDetail = {
@@ -523,6 +530,9 @@ const galleryDetailWith = {
       sortOrder: true,
       finalKey: true,
       isEdited: true,
+      // Task #210 — see `GalleryDetailAsset.selectionKind`'s own comment
+      // above for why this joined the projection.
+      selectionKind: true,
     },
   },
 } as const;

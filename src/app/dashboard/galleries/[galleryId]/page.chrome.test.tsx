@@ -12,7 +12,7 @@
 // proves the gallery's frozen terms and its assets are actually wired into
 // markup, not just that the page resolves.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, within } from "@testing-library/react";
 import type { Session } from "next-auth";
 import GalleryDetailPage from "./page";
 import type { GalleryDetail } from "@/lib/galleries";
@@ -350,6 +350,7 @@ describe("GalleryDetailPage chrome", () => {
             sortOrder: 0,
             finalKey: null,
             isEdited: false,
+            selectionKind: "edited",
           },
           {
             id: "a2",
@@ -361,6 +362,7 @@ describe("GalleryDetailPage chrome", () => {
             sortOrder: 1,
             finalKey: null,
             isEdited: false,
+            selectionKind: "edited",
           },
         ],
       }),
@@ -534,6 +536,7 @@ describe("GalleryDetailPage chrome", () => {
             sortOrder: 0,
             finalKey: null,
             isEdited: false,
+            selectionKind: "edited",
           },
         ],
       }),
@@ -563,6 +566,7 @@ describe("GalleryDetailPage chrome", () => {
             sortOrder: 0,
             finalKey: "galleries/g1/assets/a1/final.jpg",
             isEdited: true,
+            selectionKind: "edited",
           },
         ],
       }),
@@ -691,6 +695,7 @@ describe("GalleryDetailPage — archive-size warning (task #92)", () => {
         sortOrder: 0,
         finalKey: "galleries/g1/finals/a1.jpg",
         isEdited: true,
+        selectionKind: "edited" as const,
       },
     ];
     getGalleryDetailMock.mockResolvedValue(galleryDetail({ assets }));
@@ -905,5 +910,92 @@ describe("GalleryDetailPage — resend affordance wiring (task #101)", () => {
     render(element);
 
     expect(screen.queryByRole("button", { name: /Acciones para/ })).toBeNull();
+  });
+});
+
+// Task #210 — the wiring seam the dialog's OWN unit tests cannot see: those
+// prove <EditGalleryTermsDialog> computes the right preview GIVEN the right
+// props, never whether THIS page hands it the right ones. Coordinator review
+// finding: a mutation that reverted this page's own call site back to
+// `selectedEditedCount={selectedCount} selectedOriginalCount={0}` (the exact
+// pre-#210 defect) left the whole suite green, because nothing anywhere
+// rendered the real <EditGalleryTermsDialog> against a real, multi-original
+// <GalleryDetail> fixture through THIS page. This describe block closes that
+// gap — it renders the real page, opens the real dialog, and reads the real
+// preview text, the same way the resend-affordance block above proves the
+// page ASKS the right question rather than only that the predicate itself is
+// correct.
+describe("GalleryDetailPage — terms-edit preview receives the real edited/original split (task #210)", () => {
+  it("shows a surcharge in the terms-edit preview that prices in at least one already-selected original", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        status: "selected",
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+        originalPhotoPriceCopSnapshot: 2_000,
+        // 15 edited + 3 original, the SAME fixture shape
+        // edit-gallery-terms-dialog.test.tsx's own "matches the client's own
+        // counter" test uses — both sums strictly positive so a mutation
+        // that drops either slot (edited folded into originals, or vice
+        // versa) cannot pass by accident.
+        assets: [
+          ...Array.from({ length: 18 }, (_unused, index) => ({
+            id: `a${index + 1}`,
+            originalFilename: `IMG_${String(index + 1).padStart(4, "0")}.JPG`,
+            proofKey: `galleries/g1/proofs/a${index + 1}.webp`,
+            proofWidth: 1600,
+            proofHeight: 1067,
+            isSelected: true,
+            sortOrder: index,
+            finalKey: null,
+            isEdited: false,
+            selectionKind: index < 15 ? ("edited" as const) : ("original" as const),
+          })),
+          // Coordinator review finding: nothing in this fixture previously
+          // distinguished `asset.isSelected && asset.selectionKind ===
+          // "original"` (page.tsx's own filter) from a filter that checked
+          // `selectionKind` alone — every asset above is selected. This one
+          // is NOT: an unselected asset carrying `selectionKind: "original"`
+          // should not exist in practice (the selection route resets it to
+          // "edited" on both select and deselect,
+          // src/app/api/assets/[assetId]/selection/route.ts's own comment),
+          // but "should not exist" is exactly what a defensive `isSelected
+          // &&` guard is for, and a filter that dropped that guard would
+          // silently count this asset as a selected original too. Contributes
+          // to neither `selectedEditedCount` nor `selectedOriginalCount`
+          // either way, so it changes none of this test's own numbers.
+          {
+            id: "a19",
+            originalFilename: "IMG_0019.JPG",
+            proofKey: "galleries/g1/proofs/a19.webp",
+            proofWidth: 1600,
+            proofHeight: 1067,
+            isSelected: false,
+            sortOrder: 18,
+            finalKey: null,
+            isEdited: false,
+            selectionKind: "original" as const,
+          },
+        ],
+      }),
+    );
+
+    const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
+    render(element);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByRole("button", { name: "Editar términos" }));
+    const dialog = await screen.findByRole("dialog");
+
+    // computeQuota(15, 3, {13, 5000, 2000}) => extras 2, originalsSurchargeCop
+    // 6_000, surchargeCop 16_000 — the number this ticket exists to fix.
+    // Before task #210 (and after the coordinator's own re-applied
+    // mutation), this page fed the dialog `selectedEditedCount={18}
+    // selectedOriginalCount={0}`, which would render 5 extras (18 - 13) ×
+    // $5.000 = $25.000 here instead.
+    expect(
+      within(dialog).getByText("El cliente ve hoy: 13 incluidas · 2 extras · $ 16.000"),
+    ).toBeDefined();
   });
 });

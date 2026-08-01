@@ -143,6 +143,22 @@ export default async function GalleryDetailPage({
   // than polling all of them on a timer, so a long-open tab stays correct
   // without hammering the read route for assets nobody has scrolled past.
   const selectedCount = gallery.assets.filter((asset) => asset.isSelected).length;
+  // Task #210 — the edited/original split <EditGalleryTermsDialog> needs for
+  // its before/after preview, derived from THIS SAME `gallery.assets` array
+  // (the one query `getGalleryDetail` already issued), the identical
+  // "filter one already-fetched array, don't re-query" shape
+  // `use-shared-selection.ts`'s own `initialPicks` split uses for the
+  // client-facing counter. `selectedOriginalCount` first, `selectedCount -
+  // selectedOriginalCount` for edited — never two separate filters that
+  // could read the array at different moments, which is exactly the "two
+  // reads subtracted" bug task #206 shipped and fixed elsewhere this same
+  // day (see this page's own history above for the `pendingFinalsCount`
+  // precedent on why one live source beats two computed at different
+  // times).
+  const selectedOriginalCount = gallery.assets.filter(
+    (asset) => asset.isSelected && asset.selectionKind === "original",
+  ).length;
+  const selectedEditedCount = selectedCount - selectedOriginalCount;
   // Task #86 fix: this page used to also compute `pendingFinalsCount` here
   // and hand it to <DeliverGalleryButton> as a sibling prop — a snapshot
   // that never updated after an upload, while <GalleryWorkspace>'s own
@@ -400,9 +416,10 @@ export default async function GalleryDetailPage({
                 can be changed after creation. Deliberately OUTSIDE the
                 `<dl>` above (a `<dt>`/`<dd>` grid, not a place to hang a
                 dialog trigger) rather than crammed into the "Términos" `<dd>`
-                itself. `selectedCount` is the SAME number the "Seleccionadas"
-                row above already derived — never recomputed here or inside
-                the dialog. */}
+                itself. `selectedEditedCount`/`selectedOriginalCount` are the
+                SAME split derived above from the "Seleccionadas" row's own
+                `gallery.assets` — never recomputed here or inside the
+                dialog (task #210). */}
             <div className="mt-3 flex justify-end">
               <EditGalleryTermsDialog
                 galleryId={gallery.id}
@@ -410,7 +427,8 @@ export default async function GalleryDetailPage({
                 includedPhotosSnapshot={gallery.includedPhotosSnapshot}
                 extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}
                 originalPhotoPriceCopSnapshot={gallery.originalPhotoPriceCopSnapshot}
-                selectedCount={selectedCount}
+                selectedEditedCount={selectedEditedCount}
+                selectedOriginalCount={selectedOriginalCount}
               />
             </div>
 

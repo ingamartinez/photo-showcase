@@ -22,6 +22,7 @@ import { UnlockSelectionPanel } from "@/components/unlock-selection-panel";
 import { GalleryClientRow } from "@/components/gallery-client-row";
 import { AttachGalleryClientsForm } from "@/components/attach-gallery-clients-form";
 import { EditGalleryTermsDialog } from "@/components/edit-gallery-terms-dialog";
+import { SelectionTrayModeControl } from "@/components/selection-tray-mode-control";
 import type { Gallery } from "@/lib/db/schema";
 
 export const metadata: Metadata = {
@@ -427,6 +428,20 @@ export default async function GalleryDetailPage({
                   : `Los finales de esta galería pesan ${formatBytes(archiveSize.totalBytes)} — la descarga completa no va a funcionar por encima de unos 4 GB. Considerá exports más livianos antes de que sea un problema.`}
               </p>
             )}
+          </div>
+
+          {/* Task #204 — the tray layout the client's own gallery uses for
+              "Fotos elegidas". Its own card, separate from "Paquete" above:
+              this is presentation, not a commercial term (schema.ts's own
+              comment on `galleries.selectionTrayMode`), so it deliberately
+              does not share the `<dl>`/terms-editing card those facts live
+              in. Changeable in ANY gallery status — no gate here mirrors one
+              in `updateSelectionTrayMode` because there isn't one to hide. */}
+          <div className="border-line-2 rounded-[6px] border p-4">
+            <SelectionTrayModeControl
+              galleryId={gallery.id}
+              selectionTrayMode={gallery.selectionTrayMode}
+            />
           </div>
 
           {/* Task #139: the ONLY link from the panel to

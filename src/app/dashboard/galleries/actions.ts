@@ -23,7 +23,14 @@ import { and, count, eq, inArray, isNull } from "drizzle-orm";
 import { AuthError } from "next-auth";
 import { signIn } from "@/auth";
 import { db } from "@/lib/db";
-import { assets, galleries, galleryClients, packages, users } from "@/lib/db/schema";
+import {
+  assets,
+  galleries,
+  galleryClients,
+  packages,
+  selectionTrayMode,
+  users,
+} from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 import { requireAdmin } from "@/lib/auth-guards";
 import {
@@ -1891,4 +1898,83 @@ export async function removeGalleryClient(
   revalidatePath(`/dashboard/galleries/${gallery.id}`);
   revalidatePath("/dashboard/galleries");
   return { status: "removed" };
+}
+
+// ---------------------------------------------------------------------------
+// Update the selection tray's layout (task #204) — `flat` (today's only
+// behavior) or `by-person` (one row per picker). PRESENTATION ONLY: this
+// never reads or writes `assets.isSelected`/`selectedBy`, the frozen
+// `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot` terms, or anything
+// #200's audit trail already covers — a client's selection, and what they
+// owe for it, is identical before and after this action runs. That is also
+// why there is no `termsUpdatedAt`-shaped audit pair here (schema.ts's own
+// comment on `galleries.selectionTrayMode` has the full reasoning) and no
+// status gate: changeable at ANY point in the gallery's workflow, same as
+// the task body's own explicit acceptance criterion.
+// ---------------------------------------------------------------------------
+
+export type UpdateSelectionTrayModeState = {
+  status: "idle" | "error" | "updated";
+  message?: string;
+};
+
+const updateSelectionTrayModeSchema = z.object({
+  galleryId: z.uuid(),
+  // Reuses the Postgres enum's own values (schema.ts) rather than re-typing
+  // `["flat", "by-person"]` a second time — the same "don't duplicate a rule
+  // that already exists" discipline `./types/gallery-status.ts` follows for
+  // the GraphQL side of `galleryStatus`.
+  selectionTrayMode: z.enum(selectionTrayMode.enumValues),
+});
+
+/**
+ * Overwrites a gallery's `selectionTrayMode` with whatever the admin picked.
+ *
+ * `revalidatePath` for BOTH surfaces this feeds — the SAME two-path shape
+ * `updateGalleryTerms` above uses, and for the identical reason: this page
+ * (the dashboard detail the admin is looking at) AND `/galleries/[publicSlug]`
+ * (the client's own view, which is what actually renders the tray in the
+ * mode just chosen). Revalidating only the dashboard would leave the admin
+ * looking at the new setting while the client's page kept serving the router
+ * cache's stale layout — invisible from the surface where the change was
+ * made, which is exactly the failure #200 already paid for once.
+ */
+export async function updateSelectionTrayMode(
+  _prevState: UpdateSelectionTrayModeState,
+  formData: FormData,
+): Promise<UpdateSelectionTrayModeState> {
+  // Admin-only, checked at the data-access path itself — not only by the
+  // page above it, per src/lib/auth-guards.ts's header comment.
+  await requireAdmin();
+
+  const parsed = updateSelectionTrayModeSchema.safeParse({
+    galleryId: formData.get("galleryId"),
+    selectionTrayMode: formData.get("selectionTrayMode"),
+  });
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Elegí un modo válido.",
+    };
+  }
+
+  const [gallery] = await db
+    .select({ id: galleries.id, publicSlug: galleries.publicSlug })
+    .from(galleries)
+    .where(eq(galleries.id, parsed.data.galleryId))
+    .limit(1);
+  if (!gallery) {
+    return { status: "error", message: "La galería no existe." };
+  }
+
+  await db
+    .update(galleries)
+    .set({ selectionTrayMode: parsed.data.selectionTrayMode })
+    .where(eq(galleries.id, gallery.id));
+
+  revalidatePath(`/dashboard/galleries/${gallery.id}`);
+  revalidatePath("/dashboard/galleries");
+  revalidatePath(`/galleries/${gallery.publicSlug}`);
+
+  return { status: "updated" };
 }

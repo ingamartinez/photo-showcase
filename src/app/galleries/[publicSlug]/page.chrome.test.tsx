@@ -44,9 +44,21 @@ vi.mock("@/lib/galleries", () => ({
   // wrong place to look for drift protection between the two pages' fakes;
   // src/lib/galleries.test.ts pins the REAL function against
   // CLIENT_VISIBLE_STATUSES). Throws for `draft`/`archived`, mirroring the
-  // real function, so a regression that calls this WITHOUT the
-  // `isGalleryVisibleToClient` guard for an admin-previewed draft/archived
-  // gallery fails this suite instead of silently passing.
+  // real function's own shape.
+  //
+  // WHAT THIS FAKE'S THROW DOES NOT DO, corrected after review: it does NOT
+  // make THIS suite fail if the `isGalleryVisibleToClient` guard is ever
+  // dropped from the branch in page.tsx that calls this. Reviewer mutated
+  // exactly that and this file stayed green, 27/27 — every fixture here is
+  // either a client session (never reaches `draft`/`archived` at all,
+  // `getGalleryDetailBySlugMock` never resolves one) or an admin previewing
+  // a NON-draft/archived status, so the throwing branch is simply never
+  // exercised by anything in this file. The regression IS caught, just not
+  // here: `page.test.ts` > "lets an admin view a draft gallery" uses the
+  // REAL `formatClientGalleryCardState` (via `importActual`, node
+  // environment), and dropping the guard turns that real function's own
+  // throw into an unhandled rejection, failing that test's
+  // `.resolves.toBeTruthy()`.
   formatClientGalleryCardState: (status: string) => {
     const states: Record<string, { label: string; tone: "pending" | "waiting" | "done" }> = {
       proofing: { label: "Te toca elegir", tone: "pending" },
@@ -280,6 +292,17 @@ describe("ClientGalleryPage chrome", () => {
   // asserts NONE of the studio's own three words for them ever renders.
   // Mutation-proof: reverting page.tsx's status span back to
   // `formatGalleryStatus(gallery.status)` turns every case of this red.
+  // Task #181's own acceptance criterion: "verify there is no other client
+  // surface with the same leak." Checked: `src/components/submit-selection-
+  // panel.tsx:106` renders the literal string "Selección enviada" too — but
+  // as a sentence about the CLIENT's own action ("Selección enviada el
+  // [date] — tu fotógrafo ya tiene acceso a esta selección"), not a status
+  // echo, and it predates this slice. Left as-is: fixing a leak means
+  // removing the STUDIO's workflow word from a place that names the STATE;
+  // this sentence names an EVENT the client caused, in the client's own
+  // language, which is exactly what #181 wants elsewhere. No other
+  // `formatGalleryStatus` call site exists outside `src/app/dashboard/**`
+  // (grepped as part of this task) and this one client-facing exception.
   describe("never leaks the studio's internal workflow word (task #181)", () => {
     it.each([
       ["proofing", "En pruebas"],

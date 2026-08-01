@@ -181,15 +181,22 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
         status="selected"
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
-        selectedCount={15}
+        // 22 selected against the starting terms (13 included, $5.000/extra)
+        // keeps `extras`/`surchargeCop` strictly positive on BOTH sides —
+        // same reasoning as actions.terms.test.ts's own rebuilt "changes
+        // what the client would see" test (task #200's review round 1). A
+        // pair that lands on 0 either side (e.g. 15 selected / 20 included)
+        // cannot discriminate a mutation that ignores the typed price, since
+        // `extras` clamps to 0 and `0 × anything` is 0 regardless.
+        selectedCount={22}
       />,
     );
 
     const dialog = await openDialog(user);
 
-    // Before: computeQuota(15, {13, 5000}) => extras 2, surcharge 10_000.
+    // Before: computeQuota(22, {13, 5000}) => extras 9, surcharge 45_000.
     expect(
-      within(dialog).getByText("El cliente ve hoy: 13 incluidas · 2 extras · $ 10.000"),
+      within(dialog).getByText("El cliente ve hoy: 13 incluidas · 9 extras · $ 45.000"),
     ).toBeDefined();
 
     const includedPhotosField = within(dialog).getByLabelText("Fotos incluidas");
@@ -197,10 +204,23 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
     await user.type(includedPhotosField, "20");
     const extraPriceField = within(dialog).getByLabelText("Precio foto extra, COP");
     await user.clear(extraPriceField);
-    await user.type(extraPriceField, "0");
+    await user.type(extraPriceField, "2000");
 
-    // After: computeQuota(15, {20, 0}) => extras 0, surcharge 0.
-    expect(within(dialog).getByText("Va a ver: 20 incluidas · 0 extras · $ 0")).toBeDefined();
+    // After: computeQuota(22, {20, 2000}) => extras 2, surcharge 4_000.
+    expect(within(dialog).getByText("Va a ver: 20 incluidas · 2 extras · $ 4.000")).toBeDefined();
+
+    // THE FIX (task #200 review round 1): the "hoy" row must stay pinned to
+    // the gallery's SAVED snapshot — never drift to follow what is
+    // mid-typed below it. Without this assertion, a bug that reads the
+    // "hoy" row off the live inputs instead of the `includedPhotosSnapshot`/
+    // `extraPhotoPriceCopSnapshot` props would show the admin "lo que el
+    // cliente ve hoy" as the numbers they are ABOUT to save — the most
+    // misleading failure this screen could produce — and nothing above
+    // catches it, because the only prior assertion on this row ran BEFORE
+    // any typing happened.
+    expect(
+      within(dialog).getByText("El cliente ve hoy: 13 incluidas · 9 extras · $ 45.000"),
+    ).toBeDefined();
   });
 
   it("still shows the notice for a published gallery with nobody selected yet", async () => {

@@ -106,15 +106,20 @@ export const POST = withApiSession(async function POST(
     .from(assets)
     .where(eq(assets.galleryId, galleryId));
 
-  // Exact-set check — see the file header. A `Set` comparison, not a length
-  // check alone: two different ids swapped for each other could keep the
-  // count equal while still being the wrong set.
+  // Exact-set check — see the file header. Compares the POSTED LIST'S OWN
+  // length (not a de-duped `Set` of it) against the current member count:
+  // review found that comparing two `Set` sizes lets a list with a
+  // REPEATED id through as long as its distinct-member count happens to
+  // match (e.g. `[a3, a1, a2, a3]` against a 3-asset gallery) — the loop
+  // below would then write `a3`'s `sort_order` twice, at two different
+  // positions, and the LAST write wins in the database while `updated`
+  // (built from `postedIds` itself) reports BOTH positions for the same id,
+  // so a client reconciling against its own first match would show a
+  // `sort_order` the database does not actually hold.
   const currentIds = new Set(siblings.map((row) => row.id));
   const postedIds = bodyResult.data.assetIds;
-  const postedIdSet = new Set(postedIds);
-  const sameSize = currentIds.size === postedIdSet.size;
-  const sameMembers = sameSize && postedIds.every((id) => currentIds.has(id));
-  if (!sameSize || !sameMembers) {
+  const sameMembers = postedIds.every((id) => currentIds.has(id));
+  if (postedIds.length !== currentIds.size || !sameMembers) {
     return errorResponse("stale_asset_list", 409);
   }
 

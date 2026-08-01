@@ -58,6 +58,15 @@ vi.mock("@/lib/db", async () => {
 
   const assetRows: Row[] = [];
   const galleryRows: Row[] = [];
+  // Every WHERE clause a `tx.update(assets)` call actually ran, as its
+  // parsed leaf conditions — see the "scopes every UPDATE" test below for
+  // why this exists: `assets.id` alone is enough to select the right row in
+  // THIS suite's fixture data (every id is globally unique across
+  // galleries), so a fake db that only checks the update's OUTCOME cannot
+  // tell a route that scopes its WHERE to `(id, galleryId)` apart from one
+  // that scopes it to `id` alone — the two are indistinguishable by result
+  // here, only by the WHERE clause itself.
+  const updateConditions: LeafCondition[][] = [];
 
   function matches(row: Row, condition: unknown): boolean {
     return andConditions(condition).every((c) => row[c.column] === c.value);
@@ -110,6 +119,7 @@ vi.mock("@/lib/db", async () => {
             set: (patch: Row) => ({
               where: async (condition: unknown) => {
                 if (table !== assets) throw new Error("fake db: unsupported table in update()");
+                updateConditions.push(andConditions(condition));
                 updateAssets(pending, condition, patch);
               },
             }),
@@ -122,13 +132,17 @@ vi.mock("@/lib/db", async () => {
       },
       // Test-only escape hatch, not part of the real `db` shape.
       __rows: { assets: assetRows, galleries: galleryRows },
+      __updateConditions: updateConditions,
     },
   };
 });
 
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
-    db: { __rows: { assets: Row[]; galleries: Row[] } };
+    db: {
+      __rows: { assets: Row[]; galleries: Row[] };
+      __updateConditions: LeafCondition[][];
+    };
   };
   return db;
 }
@@ -209,6 +223,7 @@ beforeEach(async () => {
   const db = await seededDb();
   db.__rows.galleries.length = 0;
   db.__rows.assets.length = 0;
+  db.__updateConditions.length = 0;
   db.__rows.galleries.push(galleryRow());
   db.__rows.assets.push(
     assetRow({ id: ASSET_1_ID, sortOrder: 0 }),
@@ -333,6 +348,31 @@ describe("POST /api/galleries/[galleryId]/reorder — exact-set validation", () 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({ error: "stale_asset_list" });
   });
+
+  // Code review (2026-08-01): comparing two `Set` SIZES lets a list with a
+  // repeated id through as long as its distinct-member count happens to
+  // match the gallery's own asset count. `[a3, a1, a2, a3]` against this
+  // suite's 3-asset gallery has 3 DISTINCT members (same size as
+  // `currentIds`) but 4 entries — without this guard it would 200, write
+  // `a3`'s sort_order twice (0, then 3, last write winning), and the
+  // `updated` array would report BOTH positions for the same id.
+  it("refuses with 409 when the posted list repeats an id, even though its distinct members match", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      requestFor(GALLERY_A_ID, [ASSET_3_ID, ASSET_1_ID, ASSET_2_ID, ASSET_3_ID]),
+      paramsFor(GALLERY_A_ID),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "stale_asset_list" });
+    const byId = Object.fromEntries(db.__rows.assets.map((r) => [r.id, r.sortOrder]));
+    expect(byId[ASSET_1_ID]).toBe(0);
+    expect(byId[ASSET_2_ID]).toBe(1);
+    expect(byId[ASSET_3_ID]).toBe(2);
+  });
 });
 
 describe("POST /api/galleries/[galleryId]/reorder — gallery status gate", () => {
@@ -409,13 +449,21 @@ describe("POST /api/galleries/[galleryId]/reorder — happy path", () => {
     expect(byId[ASSET_2_ID]).toBe(2);
   });
 
-  it("does not touch a sibling gallery's assets", async () => {
+  // Code review (2026-08-01): the original version of this test asserted
+  // only the OUTCOME (the sibling gallery's asset keeps its own
+  // sort_order), which review proved unfalsifiable by removing
+  // `eq(assets.galleryId, galleryId)` from the route's own UPDATE WHERE and
+  // watching all 15 tests (this one included) stay green — every id in this
+  // suite's fixture data is globally unique, so `eq(assets.id, assetId)`
+  // ALONE already selects the correct row regardless of whether the
+  // galleryId predicate is present; the property was actually being
+  // defended by the sibling 409 test above, not this one. This version
+  // asserts the WHERE clause itself carries BOTH predicates, which the
+  // outcome-only version could not tell apart from a route that scopes
+  // updates to `id` alone.
+  it("scopes every UPDATE to (id, galleryId), not id alone", async () => {
     authMock.mockResolvedValue(adminSession());
     const db = await seededDb();
-    db.__rows.galleries.push(galleryRow({ id: GALLERY_B_ID, publicSlug: "def456" }));
-    db.__rows.assets.push(
-      assetRow({ id: OUTSIDE_ASSET_ID, galleryId: GALLERY_B_ID, sortOrder: 5 }),
-    );
     const { POST } = await import("./route");
 
     await POST(
@@ -423,7 +471,11 @@ describe("POST /api/galleries/[galleryId]/reorder — happy path", () => {
       paramsFor(GALLERY_A_ID),
     );
 
-    const outside = db.__rows.assets.find((r) => r.id === OUTSIDE_ASSET_ID);
-    expect(outside?.sortOrder).toBe(5);
+    expect(db.__updateConditions).toHaveLength(3);
+    for (const condition of db.__updateConditions) {
+      const byColumn = Object.fromEntries(condition.map((c) => [c.column, c.value]));
+      expect(byColumn.galleryId).toBe(GALLERY_A_ID);
+      expect([ASSET_1_ID, ASSET_2_ID, ASSET_3_ID]).toContain(byColumn.id);
+    }
   });
 });

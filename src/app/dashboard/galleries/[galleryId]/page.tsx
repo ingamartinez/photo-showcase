@@ -21,6 +21,7 @@ import { PublishGalleryButton } from "@/components/publish-gallery-button";
 import { UnlockSelectionPanel } from "@/components/unlock-selection-panel";
 import { GalleryClientRow } from "@/components/gallery-client-row";
 import { AttachGalleryClientsForm } from "@/components/attach-gallery-clients-form";
+import { EditGalleryTermsDialog } from "@/components/edit-gallery-terms-dialog";
 import type { Gallery } from "@/lib/db/schema";
 
 export const metadata: Metadata = {
@@ -393,6 +394,23 @@ export default async function GalleryDetailPage({
                 </>
               )}
             </dl>
+
+            {/* Task #200: the only place a gallery's own commercial terms
+                can be changed after creation. Deliberately OUTSIDE the
+                `<dl>` above (a `<dt>`/`<dd>` grid, not a place to hang a
+                dialog trigger) rather than crammed into the "Términos" `<dd>`
+                itself. `selectedCount` is the SAME number the "Seleccionadas"
+                row above already derived — never recomputed here or inside
+                the dialog. */}
+            <div className="mt-3 flex justify-end">
+              <EditGalleryTermsDialog
+                galleryId={gallery.id}
+                status={gallery.status}
+                includedPhotosSnapshot={gallery.includedPhotosSnapshot}
+                extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}
+                selectedCount={selectedCount}
+              />
+            </div>
 
             {/* Task #92: called out BEFORE the gallery crosses
                 GET .../download-all's own ceiling (`ZIP32_MAX_TOTAL_BYTES`/

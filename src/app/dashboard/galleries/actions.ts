@@ -272,6 +272,154 @@ export async function createGallery(
 }
 
 // ---------------------------------------------------------------------------
+// Edit an EXISTING gallery's commercial terms (task #200) — the first action
+// in this file that rewrites `includedPhotosSnapshot`/
+// `extraPhotoPriceCopSnapshot` after creation. `createGallery` above still
+// owns the ONE read of the live `packages` row; this action never touches
+// `packages` at all — it only overwrites the gallery's own frozen snapshot
+// with whatever the admin types now.
+//
+// TWO DECISIONS THE OWNER ALREADY MADE (2026-07-31), on the kanban task body
+// — do not re-litigate either against alternatives already rejected there:
+//
+//   1. Editable in ANY status, including `selected` and `delivered`. The
+//      owner was shown the risk (this can move the ground under a client who
+//      already submitted a selection) and chose "no importa en qué stage
+//      está" anyway. There is deliberately no `isEditable`-shaped gate here,
+//      unlike `isPublishable`/`isUnlockable`/`isDeliverable` above — this is
+//      the one gallery-editing action in this file that runs at every status.
+//   2. NO email. `unlockSelection`'s own notification was raised as the
+//      precedent and explicitly declined — the client's own gallery already
+//      says "se coordina por fuera de la app; acá no se cobra nada"
+//      (selection-counter.tsx), and this stays consistent with that: the
+//      photographer tells the client out of band, the same way money is
+//      already handled everywhere else in this product.
+//
+// `termsOverridden` IS ALWAYS WRITTEN `true` HERE, UNCONDITIONALLY — never
+// compared against the values the admin typed, never compared against the
+// gallery's own package. This is the exact trap schema.ts's own comment on
+// `termsOverridden` documents (task #193): comparing against the live
+// `packages` row would make the flag start lying the moment that row
+// changes for an unrelated reason. A manual edit through THIS action is
+// definitionally an override, even on the rare occasion the admin types
+// back the package's own numbers.
+//
+// BOTH FIELDS ARE REQUIRED, unlike `createGallery`'s own OPTIONAL overrides
+// (`optionalNonNegativeInt` above). At creation, empty means "inherit from
+// the package" — a meaning that has no equivalent here: this gallery already
+// has effective terms, so "leave this blank" would have to mean either
+// "keep what it had" (then why is the field editable at all) or "go back to
+// the package's live terms" (which would require reading `packages` again,
+// exactly what the snapshot columns exist to avoid). The form below
+// pre-fills both fields with the gallery's CURRENT effective values, so
+// there is no ambiguous empty state to design around — see
+// `requiredNonNegativeInt`'s own comment for how `0` and empty are told
+// apart.
+function requiredNonNegativeInt(message: string) {
+  return z
+    .string()
+    .trim()
+    .min(1, message)
+    .refine((value) => Number.isInteger(Number(value)) && Number(value) >= 0, { message })
+    .transform(Number);
+}
+
+const updateGalleryTermsSchema = z.object({
+  galleryId: z.uuid(),
+  includedPhotos: requiredNonNegativeInt(
+    "El tope de fotos incluidas tiene que ser un entero mayor o igual a 0.",
+  ),
+  extraPhotoPriceCop: requiredNonNegativeInt(
+    "El precio de la foto extra tiene que ser un entero mayor o igual a 0.",
+  ),
+});
+
+export type UpdateGalleryTermsState = {
+  status: "idle" | "error" | "updated";
+  message?: string;
+};
+
+/**
+ * Overwrites a gallery's `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot`
+ * with values the admin typed, sets `termsOverridden = true` unconditionally,
+ * and stamps who did it and when (`termsUpdatedAt`/`termsUpdatedByEmail`,
+ * schema.ts — the same snapshot-not-foreign-key shape `unlockedByEmail`
+ * already established). No state gate, no email — see this section's own
+ * header comment for both.
+ *
+ * `revalidatePath` for BOTH surfaces this data feeds: the dashboard detail
+ * page the admin is looking at right now, AND `/galleries/[publicSlug]` —
+ * the client's own gallery, which reads these exact snapshots through
+ * `computeQuota()` (src/lib/quota.ts). Revalidating only the dashboard would
+ * leave the admin looking at correct numbers while the client's page kept
+ * serving the router cache's stale copy — the worst version of this bug,
+ * because it is invisible from the surface where the change was made.
+ */
+export async function updateGalleryTerms(
+  _prevState: UpdateGalleryTermsState,
+  formData: FormData,
+): Promise<UpdateGalleryTermsState> {
+  // Admin-only surface, checked at the data-access path itself — not only by
+  // the page above it, per src/lib/auth-guards.ts's header comment and the
+  // epic's "every route and action is admin-only" rule.
+  const session = await requireAdmin();
+
+  const parsed = updateGalleryTermsSchema.safeParse({
+    galleryId: formData.get("galleryId"),
+    // `?? ""` normalizes a genuinely absent field (`formData.get` returning
+    // `null`) into the empty string `requiredNonNegativeInt`'s own
+    // `.min(1, message)` already rejects with a clear message — never `||`,
+    // which would do the exact same normalization here (there is no `"0"`
+    // vs `""` distinction to lose at this call site, unlike `createGallery`'s
+    // own `||` above) but the trap that bit #193 is worth not reintroducing
+    // out of habit.
+    includedPhotos: formData.get("includedPhotos") ?? "",
+    extraPhotoPriceCop: formData.get("extraPhotoPriceCop") ?? "",
+  });
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Revisá los datos del formulario.",
+    };
+  }
+
+  const [gallery] = await db
+    .select({ id: galleries.id, publicSlug: galleries.publicSlug })
+    .from(galleries)
+    .where(eq(galleries.id, parsed.data.galleryId))
+    .limit(1);
+  if (!gallery) {
+    return { status: "error", message: "La galería no existe." };
+  }
+
+  // Same fallback reasoning as `unlockSelection`'s own `unlockedByEmail`
+  // above: `session.user.email` is typed optional by NextAuth's
+  // `DefaultSession`, but `users.email` is NOT NULL in schema.ts and the
+  // database session strategy populates `session.user` straight from that
+  // row on every request — unreachable in practice, kept so the audit trail
+  // never silently loses the actor.
+  const termsUpdatedByEmail = session.user.email ?? session.user.id;
+  const now = new Date();
+
+  await db
+    .update(galleries)
+    .set({
+      includedPhotosSnapshot: parsed.data.includedPhotos,
+      extraPhotoPriceCopSnapshot: parsed.data.extraPhotoPriceCop,
+      termsOverridden: true,
+      termsUpdatedAt: now,
+      termsUpdatedByEmail,
+    })
+    .where(eq(galleries.id, gallery.id));
+
+  revalidatePath(`/dashboard/galleries/${gallery.id}`);
+  revalidatePath("/dashboard/galleries");
+  revalidatePath(`/galleries/${gallery.publicSlug}`);
+
+  return { status: "updated" };
+}
+
+// ---------------------------------------------------------------------------
 // Publish gallery (task #21) — draft -> proofing, plus the client's email.
 // ---------------------------------------------------------------------------
 

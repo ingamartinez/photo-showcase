@@ -137,6 +137,10 @@ const deliverGalleryMock = vi.fn();
 const attachGalleryClientsMock = vi.fn();
 const removeGalleryClientMock = vi.fn();
 const resendGalleryAccessEmailMock = vi.fn();
+// Task #200: the page now renders <EditGalleryTermsDialog> unconditionally
+// (no status gate — that is the whole point of this task); its module
+// imports `updateGalleryTerms` from here too.
+const updateGalleryTermsMock = vi.fn();
 vi.mock("@/app/dashboard/galleries/actions", () => ({
   publishGallery: (...args: unknown[]) => publishGalleryMock(...args),
   unlockSelection: (...args: unknown[]) => unlockSelectionMock(...args),
@@ -144,6 +148,7 @@ vi.mock("@/app/dashboard/galleries/actions", () => ({
   attachGalleryClients: (...args: unknown[]) => attachGalleryClientsMock(...args),
   removeGalleryClient: (...args: unknown[]) => removeGalleryClientMock(...args),
   resendGalleryAccessEmail: (...args: unknown[]) => resendGalleryAccessEmailMock(...args),
+  updateGalleryTerms: (...args: unknown[]) => updateGalleryTermsMock(...args),
 }));
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";

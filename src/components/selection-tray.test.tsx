@@ -302,8 +302,19 @@ describe("SelectionTray — collapsible tray with a height-capped list (task #20
     // `getBoundingClientRect` to stand in for jsdom's absent layout engine —
     // sanctioned explicitly by the task — then asserts the actual computed
     // `maxHeight`, in pixels, that the scroll container ends up with.
+    //
+    // Task #208: a UNIFORM mock here (every element reporting the same box)
+    // cannot tell "measured the first `<li>`" from "measured the scroll
+    // `<div>` or the `<ul>` itself" — a reviewer proved this by pointing the
+    // flat measurement at `list.parentElement` instead of the first item and
+    // watching this exact test stay green. Per-element-type mocks, same
+    // treatment as #204's own by-person fix a few lines below (:455): the
+    // real row lands only on `HTMLLIElement`, every OTHER element type gets
+    // an implausibly large height, so measuring the wrong node produces an
+    // unmistakably wrong cap instead of a coincidentally-close one.
     const rowHeightPx = 120; // stand-in for one real item + its label
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    const wrongElementHeightPx = 4_000;
+    vi.spyOn(HTMLLIElement.prototype, "getBoundingClientRect").mockReturnValue({
       height: rowHeightPx,
       width: 96,
       top: 0,
@@ -316,6 +327,23 @@ describe("SelectionTray — collapsible tray with a height-capped list (task #20
         return {};
       },
     });
+    const wrongElementRect = {
+      height: wrongElementHeightPx,
+      width: 96,
+      top: 0,
+      left: 0,
+      right: 96,
+      bottom: wrongElementHeightPx,
+      x: 0,
+      y: 0,
+      toJSON() {
+        return {};
+      },
+    };
+    // Both the scroll `<div>` AND the `<ul>` itself — either one is "the
+    // wrong element" if a regression measured it instead of the first `<li>`.
+    vi.spyOn(HTMLDivElement.prototype, "getBoundingClientRect").mockReturnValue(wrongElementRect);
+    vi.spyOn(HTMLUListElement.prototype, "getBoundingClientRect").mockReturnValue(wrongElementRect);
 
     const { container } = renderTray({ picks: manyPicks(50) });
 
@@ -345,8 +373,13 @@ describe("SelectionTray — collapsible tray with a height-capped list (task #20
   // SAME number it did before this slice existed — an extra type line on
   // every item would grow the measured row height and, with it, the cap.
   it("does not change the measured cap for 50 picks when nobody marked an original (criterion 8)", () => {
+    // Task #208: same per-element-type treatment as the test above — a
+    // uniform mock cannot distinguish "measured the right `<li>`" from
+    // "measured the wrong element", which is exactly the class of regression
+    // this criterion needs to still catch once #206's type line is in play.
     const rowHeightPx = 120;
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
+    const wrongElementHeightPx = 4_000;
+    vi.spyOn(HTMLLIElement.prototype, "getBoundingClientRect").mockReturnValue({
       height: rowHeightPx,
       width: 96,
       top: 0,
@@ -359,6 +392,21 @@ describe("SelectionTray — collapsible tray with a height-capped list (task #20
         return {};
       },
     });
+    const wrongElementRect = {
+      height: wrongElementHeightPx,
+      width: 96,
+      top: 0,
+      left: 0,
+      right: 96,
+      bottom: wrongElementHeightPx,
+      x: 0,
+      y: 0,
+      toJSON() {
+        return {};
+      },
+    };
+    vi.spyOn(HTMLDivElement.prototype, "getBoundingClientRect").mockReturnValue(wrongElementRect);
+    vi.spyOn(HTMLUListElement.prototype, "getBoundingClientRect").mockReturnValue(wrongElementRect);
 
     const { container } = renderTray({ picks: manyPicks(50) });
 

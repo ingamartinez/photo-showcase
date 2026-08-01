@@ -267,7 +267,15 @@ export function EditGalleryTermsDialog({
                   already recognizes, and inserting a third clause into it
                   for originals only when they exist would make the
                   sentence's own SHAPE change depending on the gallery,
-                  instead of only its digits. */}
+                  instead of only its digits.
+
+                  The `> 0` sentence itself inflects THREE words off
+                  `before.originals` (foto/fotos, original/originales,
+                  elegida/elegidas, incluida/incluidas) with the SAME
+                  singular-check-per-word ternary this codebase already uses
+                  for a two-word sentence (gallery-workspace.tsx's own delete
+                  confirmation, "¿Eliminar N foto(s) marcada(s)?") — never the
+                  `(s)` shorthand, which appears nowhere else in this UI. */}
               <p className="text-fg-dim">
                 El cliente ve hoy: {before.includedPhotosSnapshot} incluidas · {before.extras}{" "}
                 extras · {formatCop(before.surchargeCop)}
@@ -275,7 +283,7 @@ export function EditGalleryTermsDialog({
               <p className="text-fg-dim">
                 Precio foto original vigente: {formatCop(before.originalPhotoPriceCopSnapshot)}
                 {before.originals > 0
-                  ? ` — ${before.originals} foto(s) original(es) ya elegida(s), ya incluidas en el total de arriba.`
+                  ? ` — ${before.originals} foto${before.originals === 1 ? "" : "s"} original${before.originals === 1 ? "" : "es"} ya elegida${before.originals === 1 ? "" : "s"}, incluida${before.originals === 1 ? "" : "s"} en el total de arriba.`
                   : " — el cliente todavía no lo ve."}
               </p>
               {/* Conditional on `after` being a valid parse of what is

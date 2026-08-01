@@ -308,7 +308,7 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
     ).toBeDefined();
     expect(
       within(dialog).getByText(
-        "Precio foto original vigente: $ 2.000 — 3 foto(s) original(es) ya elegida(s), ya incluidas en el total de arriba.",
+        "Precio foto original vigente: $ 2.000 — 3 fotos originales ya elegidas, incluidas en el total de arriba.",
       ),
     ).toBeDefined();
 
@@ -320,6 +320,41 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
     // extrasSurchargeCop 25_000, originalsSurchargeCop 6_000, surchargeCop
     // 31_000.
     expect(within(dialog).getByText("Va a ver: 10 incluidas · 5 extras · $ 31.000")).toBeDefined();
+  });
+
+  // The SINGULAR half of the same sentence — coordinator review finding on
+  // this same task: the plural test above alone cannot tell "correctly
+  // inflected" from "always plural", since both render distinguishable text
+  // only when compared against this exact-1 case. `foto`/`original`/
+  // `elegida`/`incluida` all drop their `s` here; a fixture with `originals`
+  // fixed at exactly 1 is the only one that can catch a ternary that always
+  // takes its plural branch.
+  it("uses the singular form of every inflected word when exactly one original is selected", async () => {
+    const user = userEvent.setup();
+    render(
+      <EditGalleryTermsDialog
+        galleryId={GALLERY_ID}
+        status="selected"
+        includedPhotosSnapshot={13}
+        extraPhotoPriceCopSnapshot={5_000}
+        originalPhotoPriceCopSnapshot={2_000}
+        selectedEditedCount={5}
+        selectedOriginalCount={1}
+      />,
+    );
+
+    const dialog = await openDialog(user);
+
+    // computeQuota(5, 1, {13, 5000, 2000}) => extras 0 (5 < 13 included),
+    // originals 1, originalsSurchargeCop 2_000, surchargeCop 2_000.
+    expect(
+      within(dialog).getByText("El cliente ve hoy: 13 incluidas · 0 extras · $ 2.000"),
+    ).toBeDefined();
+    expect(
+      within(dialog).getByText(
+        "Precio foto original vigente: $ 2.000 — 1 foto original ya elegida, incluida en el total de arriba.",
+      ),
+    ).toBeDefined();
   });
 
   it("still shows the notice for a published gallery with nobody selected yet", async () => {

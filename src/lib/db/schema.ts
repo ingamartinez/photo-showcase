@@ -332,6 +332,24 @@ export const galleries = pgTable(
     // typing a note first (task #73's own scope note: "consider a reason
     // field", decided as optional).
     unlockReason: text("unlock_reason"),
+    // Terms-edit audit trail (task #200) — the SAME shape as
+    // `unlockedAt`/`unlockedByEmail` above, on purpose: `termsUpdatedByEmail`
+    // is the acting admin's own session email, snapshotted at write time, NOT
+    // a foreign key onto `users` (identical "frozen fact, not a live-updating
+    // reference" reasoning, PLAN.md §4's "identity is the email"). Only the
+    // MOST RECENT edit is kept — last-write-wins, not an append-only log, same
+    // scope cut task #83 already made for the unlock trail and the same
+    // reasoning: the evidence a disputed money conversation actually turns on
+    // is `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot` themselves
+    // (the CURRENT, effective terms) plus who/when last touched them, not a
+    // full history of every edit.
+    //
+    // Both NULLABLE, and NULL is the ORDINARY state — every gallery that has
+    // never had its terms edited after creation (which is most of them) has
+    // both columns NULL, including every gallery that existed before this
+    // migration ran.
+    termsUpdatedAt: timestamp("terms_updated_at", { withTimezone: true }),
+    termsUpdatedByEmail: text("terms_updated_by_email"),
   },
   (t) => [uniqueIndex("galleries_public_slug_idx").on(t.publicSlug)],
 );

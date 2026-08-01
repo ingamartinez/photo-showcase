@@ -121,42 +121,10 @@ describe("GalleryWorkspace", () => {
     expect(screen.getByText(/Todavía no subiste fotos/)).toBeDefined();
   });
 
-  it("re-sorts the grid after a reorder response, without needing a server refresh", async () => {
-    const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        jsonResponse(200, {
-          updated: [
-            { id: "a2", sortOrder: 0 },
-            { id: "a1", sortOrder: 1 },
-          ],
-        }),
-      ),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    const user = userEvent.setup();
-
-    render(
-      <GalleryWorkspace
-        galleryId={GALLERY_ID}
-        initialAssets={[
-          assetFor({ id: "a1", originalFilename: "first.jpg", sortOrder: 0 }),
-          assetFor({ id: "a2", originalFilename: "second.jpg", sortOrder: 1 }),
-        ]}
-        clientEmails={[CLIENT_EMAIL]}
-        canDeliver={false}
-      />,
-    );
-
-    const filenames = () => screen.getAllByText(/\.jpg$/).map((el) => el.textContent);
-    expect(filenames()).toEqual(["first.jpg", "second.jpg"]);
-
-    // "second.jpg" is the second tile (not first, not last) — its "move up"
-    // button is enabled.
-    const moveUpButtons = screen.getAllByRole("button", { name: "Mover antes" });
-    await user.click(moveUpButtons[1]!);
-
-    await waitFor(() => expect(filenames()).toEqual(["second.jpg", "first.jpg"]));
-  });
+  // Task #199 replaces the "up"/"down" swap with the whole-gallery reorder
+  // endpoint, driven from two places: drag-and-drop and the alphabetical
+  // button. See its own describe block below for both, plus the keyboard
+  // gesture and the optimistic-revert-on-failure contract.
 
   // Task #26's own scope note: "the screen should make the remaining work
   // obvious — which selected assets still lack a final."
@@ -579,6 +547,185 @@ describe("GalleryWorkspace", () => {
         // Nothing left marked, nothing left stuck.
         expect(screen.queryByText(/marcada/)).toBeNull();
       });
+    });
+  });
+
+  // Task #199. jsdom never runs real layout, so every element's
+  // `getBoundingClientRect()` is (0,0,0,0) by default — dnd-kit's own
+  // collision detection (both the pointer sensor's rect-intersection math
+  // and `sortableKeyboardCoordinates`'s directional filtering) cannot tell
+  // ANY two same-sized zero rects apart, so a real drag/keyboard move would
+  // silently do nothing without this. `mockTileRectsByFilename` gives each
+  // tile's own sortable node (its `<li>`, found via its drag handle's
+  // `aria-label`, which embeds the filename) a distinct, left-to-right
+  // rect, matching a real single-row layout closely enough for dnd-kit's
+  // directional (ArrowRight = "the next rect to the right") logic to behave
+  // the same way it would in a real browser.
+  function mockTileRectsByFilename(orderedFilenames: string[]) {
+    const indexByFilename = new Map(orderedFilenames.map((name, index) => [name, index]));
+    return vi.spyOn(HTMLLIElement.prototype, "getBoundingClientRect").mockImplementation(function (
+      this: HTMLLIElement,
+    ) {
+      const handle = this.querySelector('button[aria-label^="Reordenar "]');
+      const filename = handle?.getAttribute("aria-label")?.slice("Reordenar ".length) ?? "";
+      const left = (indexByFilename.get(filename) ?? 0) * 100;
+      return {
+        width: 100,
+        height: 100,
+        top: 0,
+        left,
+        right: left + 100,
+        bottom: 100,
+        x: left,
+        y: 0,
+        toJSON() {
+          return {};
+        },
+      } as DOMRect;
+    });
+  }
+
+  describe("task #199 — drag-and-drop reorder and the alphabetical-sort action", () => {
+    // The RESULT this criterion asks for: reordering works with a keyboard,
+    // not only a pointer. This drives dnd-kit's REAL `KeyboardSensor`
+    // through real `keydown` events on the real drag-handle button (Space
+    // picks the tile up, ArrowRight moves it past its neighbor, Space drops
+    // it) — not a mocked "onDragEnd was called" assertion. What's checked is
+    // the RESULT: the exact request the persisted order produces, and the
+    // grid's own rendered order once the (mocked) server response resolves.
+    it("reorders via the keyboard sensor and persists the whole new order in one request", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(200, {
+            updated: [
+              { id: "a2", sortOrder: 0 },
+              { id: "a1", sortOrder: 1 },
+            ],
+          }),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      mockTileRectsByFilename(["first.jpg", "second.jpg"]);
+
+      render(
+        <GalleryWorkspace
+          galleryId={GALLERY_ID}
+          initialAssets={[
+            assetFor({ id: "a1", originalFilename: "first.jpg", sortOrder: 0 }),
+            assetFor({ id: "a2", originalFilename: "second.jpg", sortOrder: 1 }),
+          ]}
+          clientEmails={[CLIENT_EMAIL]}
+          canDeliver={false}
+        />,
+      );
+
+      const filenames = () => screen.getAllByText(/\.jpg$/).map((el) => el.textContent);
+      expect(filenames()).toEqual(["first.jpg", "second.jpg"]);
+
+      const handle = screen.getByRole("button", { name: "Reordenar first.jpg" });
+      handle.focus();
+      // dnd-kit's own `KeyboardSensor.attach()` schedules its REAL keydown
+      // listener via a bare `setTimeout(fn)` (0 ms) right after "pick up" —
+      // so the very next synchronous `fireEvent.keyDown` would fire before
+      // that listener even exists and be silently ignored (fireEvent uses
+      // real DOM dispatch, not React's synthetic batching, so nothing here
+      // is React-async). A real macrotask tick between each key event gives
+      // that scheduled listener a chance to attach before the next key.
+      const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+      fireEvent.keyDown(handle, { code: "Space" });
+      await tick();
+      fireEvent.keyDown(handle, { code: "ArrowRight" });
+      await tick();
+      fireEvent.keyDown(handle, { code: "Space" });
+
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(`/api/galleries/${GALLERY_ID}/reorder`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ assetIds: ["a2", "a1"] }),
+        }),
+      );
+      await waitFor(() => expect(filenames()).toEqual(["second.jpg", "first.jpg"]));
+    });
+
+    it("sorts by natural filename order via the button, and persists it through the same endpoint", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(200, {
+            updated: [
+              { id: "a2", sortOrder: 0 },
+              { id: "a3", sortOrder: 1 },
+              { id: "a1", sortOrder: 2 },
+            ],
+          }),
+        ),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      render(
+        <GalleryWorkspace
+          galleryId={GALLERY_ID}
+          initialAssets={[
+            // Deliberately loaded out of natural order — IMG_10 sorts
+            // between IMG_1 and IMG_2 lexicographically, which is exactly
+            // the case natural-sort.ts's own test guards.
+            assetFor({ id: "a1", originalFilename: "IMG_10.JPG", sortOrder: 0 }),
+            assetFor({ id: "a2", originalFilename: "IMG_1.JPG", sortOrder: 1 }),
+            assetFor({ id: "a3", originalFilename: "IMG_2.JPG", sortOrder: 2 }),
+          ]}
+          clientEmails={[CLIENT_EMAIL]}
+          canDeliver={false}
+        />,
+      );
+
+      await user.click(screen.getByRole("button", { name: "Ordenar por nombre de archivo" }));
+
+      await waitFor(() =>
+        expect(fetchMock).toHaveBeenCalledWith(`/api/galleries/${GALLERY_ID}/reorder`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ assetIds: ["a2", "a3", "a1"] }),
+        }),
+      );
+      const filenames = () => screen.getAllByText(/\.JPG$/).map((el) => el.textContent);
+      await waitFor(() => expect(filenames()).toEqual(["IMG_1.JPG", "IMG_2.JPG", "IMG_10.JPG"]));
+    });
+
+    // The optimistic-state trap named in the kanban body: a drop the server
+    // REFUSES (a locked gallery, say — proven server-side in
+    // src/app/api/galleries/[galleryId]/reorder/route.test.ts's own status-
+    // gate suite) must not leave the grid showing an order the server never
+    // actually accepted.
+    it("reverts the grid to its previous order and shows an error when the server refuses the reorder", async () => {
+      const fetchMock = vi.fn(() =>
+        Promise.resolve(jsonResponse(409, { error: "gallery_locked" })),
+      );
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      render(
+        <GalleryWorkspace
+          galleryId={GALLERY_ID}
+          initialAssets={[
+            assetFor({ id: "a1", originalFilename: "IMG_2.JPG", sortOrder: 0 }),
+            assetFor({ id: "a2", originalFilename: "IMG_1.JPG", sortOrder: 1 }),
+          ]}
+          clientEmails={[CLIENT_EMAIL]}
+          canDeliver={false}
+        />,
+      );
+
+      const filenames = () => screen.getAllByText(/\.JPG$/).map((el) => el.textContent);
+      expect(filenames()).toEqual(["IMG_2.JPG", "IMG_1.JPG"]);
+
+      await user.click(screen.getByRole("button", { name: "Ordenar por nombre de archivo" }));
+
+      // The optimistic write applies immediately, then reverts once the 409
+      // resolves — asserting only the FINAL, settled state (not any
+      // intermediate frame) so this doesn't depend on render timing.
+      await waitFor(() => expect(screen.getByText("No se pudo reordenar.")).toBeDefined());
+      expect(filenames()).toEqual(["IMG_2.JPG", "IMG_1.JPG"]);
     });
   });
 });

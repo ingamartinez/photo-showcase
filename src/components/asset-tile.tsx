@@ -4,7 +4,10 @@
 // on-demand presigned-URL refresh), plus reorder and delete controls. Task
 // #26 adds a final-upload control, rendered only for SELECTED assets — see
 // its own comment below for why that follows the exact same "most assets
-// never get one" rule the write route itself enforces.
+// never get one" rule the write route itself enforces. Task #199 (see its
+// own comment further down) later replaces the original "move up"/"move
+// down" reorder buttons with a drag handle — the delete/final-upload
+// controls are untouched by that change.
 //
 // Task #134 — state legibility "at a glance across the whole grid, not one
 // tile at a time": the three states that matter (proof only / selected /
@@ -13,10 +16,11 @@
 // `.asset__final`), not only in the below-image controls a photographer
 // would have to open one tile at a time to read. Neither badge is
 // colour-only — "Elegida" is a real word, the final badge is a "✓" glyph —
-// and the reorder/delete/final-upload CONTROLS below the image are
-// unchanged in text/role, on purpose: this file's own existing tests (task
-// #20/#26) already prove those interactions work, and this slice is a
-// restyle, not a rewrite of the interaction model.
+// and the delete/final-upload CONTROLS below the image are unchanged in
+// text/role, on purpose: this file's own existing tests (task #20/#26)
+// already prove those interactions work, and this slice is a restyle, not a
+// rewrite of the interaction model. (The reorder control itself is the one
+// exception — task #199 replaces it outright; see that task's own comment.)
 //
 // Task #195 adds two more controls on THIS thumbnail: clicking the image
 // opens <AdminAssetViewer> (the full-screen, object-contain view — the
@@ -36,30 +40,49 @@
 // photographer bulk-deleting what they believe is their own admin-side
 // pick, when the code actually marked the client's already-committed
 // selection.
+//
+// TASK #199 — A THIRD GESTURE, VIA A DEDICATED HANDLE, NOT THE WHOLE TILE
+// ========================================================================
+// This tile already carries two conflicting full-surface interactions: the
+// "open viewer" button covers the ENTIRE image box (`absolute inset-0`,
+// below), and the marking checkbox sits on top of it in one corner. dnd-kit's
+// own docs are explicit about this exact situation: when a sortable item
+// contains its own interactive children, `listeners`/`attributes` belong on
+// a dedicated DRAG HANDLE, not on the item itself — spreading them on the
+// whole tile would mean every pointer-down on the open button or the
+// checkbox is ALSO a drag-sensor candidate, and the two would have to be
+// disambiguated by tuning alone. A handle sidesteps the ambiguity
+// structurally instead: it is placed in the below-image control row (where
+// the removed "Mover antes"/"Mover después" buttons used to live), not
+// anywhere on the photo, so it never competes with the open-viewer tap or
+// the 24px checkbox for the same pixels, and dragging never needs to
+// distinguish "the user meant to open this" from "the user meant to move
+// this" — a press on the handle can only ever mean the second thing.
+// `touch-none` (CSS `touch-action: none`) is scoped to JUST this small
+// button, not the tile or the grid, so a photographer can still scroll the
+// grid normally by touching anywhere else on a tile — sacrificing native
+// touch scrolling only over the one control whose entire job is dragging.
 import { useRef, useState } from "react";
+import { useSortable } from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
+import { GripVertical } from "lucide-react";
 import type { WorkspaceAsset } from "@/components/gallery-workspace";
 import { cn } from "@/lib/utils";
 
 export function AssetTile({
   asset,
-  isFirst,
-  isLast,
   isMarked,
   onDeleted,
-  onMoved,
   onFinalUploaded,
   onOpen,
   onToggleMarked,
 }: {
   asset: WorkspaceAsset;
-  isFirst: boolean;
-  isLast: boolean;
   // Task #195: whether the PHOTOGRAPHER marked this tile for a bulk
   // operation — owned by <GalleryWorkspace>, read-only here. Distinct from
   // `asset.isSelected` (the client's own pick) — see the file header.
   isMarked: boolean;
   onDeleted: (assetId: string) => void;
-  onMoved: (updates: { id: string; sortOrder: number }[]) => void;
   onFinalUploaded: (assetId: string) => void;
   // Task #195: opens <AdminAssetViewer> on this tile's own asset. Takes no
   // argument — <GalleryWorkspace> already knows which asset this tile is
@@ -68,6 +91,23 @@ export function AssetTile({
   onOpen: () => void;
   onToggleMarked: (assetId: string) => void;
 }) {
+  // Task #199: this tile IS the sortable item — <GalleryWorkspace> renders
+  // the <SortableContext> around the grid and supplies the ordered id list;
+  // everything else dnd-kit needs (measuring this node, computing the drag
+  // transform, wiring the keyboard sensor) is local to this component,
+  // keyed on the one id <GalleryWorkspace> already uses to identify this
+  // asset everywhere else.
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    setActivatorNodeRef,
+    transform,
+    transition,
+    isDragging,
+  } = useSortable({ id: asset.id });
+  const sortableStyle = { transform: CSS.Transform.toString(transform), transition };
+
   const [src, setSrc] = useState(asset.proofUrl);
   const [refreshedOnce, setRefreshedOnce] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -132,29 +172,6 @@ export function AssetTile({
     }
   }
 
-  async function handleMove(direction: "up" | "down") {
-    if (busy) return;
-    setBusy(true);
-    setError(null);
-    try {
-      const response = await fetch(`/api/assets/${asset.id}/reorder`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ direction }),
-      });
-      if (!response.ok) {
-        setError("No se pudo reordenar.");
-        return;
-      }
-      const body = (await response.json()) as { updated: { id: string; sortOrder: number }[] };
-      onMoved(body.updated);
-    } catch {
-      setError("No se pudo conectar.");
-    } finally {
-      setBusy(false);
-    }
-  }
-
   // Task #26: attaches (or replaces) this asset's final. The route itself
   // is the real guard (an unselected asset gets refused with 409) — this
   // control is only ever RENDERED for a selected asset in the first place
@@ -188,9 +205,16 @@ export function AssetTile({
 
   return (
     <li
+      ref={setNodeRef}
+      style={sortableStyle}
       className={cn(
         "border-line-2 flex flex-col gap-1.5 rounded-[6px] border p-1.5",
         asset.isSelected && "outline-accent outline-2 -outline-offset-2",
+        // Task #199: lifted above its siblings and slightly faded while
+        // actively being dragged, so the tile currently under the pointer/
+        // keyboard focus reads as "picked up" rather than looking identical
+        // to the rest of the grid mid-reorder.
+        isDragging && "z-10 opacity-60",
       )}
     >
       {/* Task #134: a FIXED aspect ratio (the mock's 3/2), not each photo's
@@ -299,9 +323,9 @@ export function AssetTile({
             `isMarked`/`onToggleMarked`, never `selected`.
 
             SIZE AND CONTRAST, fixed after code review: `size-6` (24px), not
-            the original `size-4` (16px) — matching the "Mover antes"/
-            "Mover después" `min-h-6 min-w-6` controls in the same tile,
-            below. 16px was smaller than every other control on this
+            the original `size-4` (16px) — matching the `min-h-6 min-w-6`
+            drag-handle/delete controls in the same tile, below. 16px was
+            smaller than every other control on this
             component, sitting on a grid whose tiles run as small as ~92px
             wide, with the ENTIRE rest of the tile behind it wired to open
             the full-screen viewer instead — a near-miss tap there opens a
@@ -340,26 +364,25 @@ export function AssetTile({
       </div>
       {error && <p className="text-xs text-[#e0796b]">{error}</p>}
       <div className="flex items-center justify-between gap-2">
-        <div className="flex gap-1">
-          <button
-            type="button"
-            disabled={busy || isFirst}
-            onClick={() => void handleMove("up")}
-            aria-label="Mover antes"
-            className="border-line-2 hover:border-accent min-h-6 min-w-6 rounded-[4px] border px-1.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            ↑
-          </button>
-          <button
-            type="button"
-            disabled={busy || isLast}
-            onClick={() => void handleMove("down")}
-            aria-label="Mover después"
-            className="border-line-2 hover:border-accent min-h-6 min-w-6 rounded-[4px] border px-1.5 py-1 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-40"
-          >
-            ↓
-          </button>
-        </div>
+        {/* Task #199: the ONE drag handle — see the file header for why this
+            lives here (its own row, off the photo) rather than as a
+            listeners-bearing prop on the whole tile or a corner overlay
+            fighting the marking checkbox for the same pixels. `touch-none`
+            is scoped to this 24px control alone: dnd-kit's own guidance for
+            a `PointerSensor` drag source is `touch-action: none` on the
+            ACTIVATOR element, so a touch-and-hold here is unambiguously "pick
+            this up," never "start scrolling the page" — every other pixel
+            of the tile keeps its native touch-scroll behavior. */}
+        <button
+          type="button"
+          ref={setActivatorNodeRef}
+          {...attributes}
+          {...listeners}
+          aria-label={`Reordenar ${asset.originalFilename}`}
+          className="border-line-2 hover:border-accent flex min-h-6 min-w-6 touch-none items-center justify-center rounded-[4px] border px-1 py-1 transition-colors active:cursor-grabbing"
+        >
+          <GripVertical aria-hidden="true" className="size-3.5" />
+        </button>
         <button
           type="button"
           disabled={busy}

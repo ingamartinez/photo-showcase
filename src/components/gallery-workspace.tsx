@@ -44,11 +44,48 @@
 // photos they believe are still just the client's picks. See
 // asset-tile.tsx's own header for the other half of this same guard (the
 // "Elegida" badge vs. the marking checkbox's own distinct styling).
+//
+// TASK #199 — ONE ENDPOINT, TWO CLIENT-SIDE ACTIONS, SAME RECONCILIATION
+// ========================================================================
+// `assets.sortOrder` is still the single source of truth for the grid's
+// order (PLAN.md), and this component is still the ONE place that owns it
+// locally (this file's own header, above). Drag-and-drop (`handleDragEnd`)
+// and the "Ordenar por nombre de archivo" button (`handleSortAlphabetically`)
+// both compute a full, ordered id list and hand it to the SAME
+// `persistReorder` — see src/app/api/galleries/[galleryId]/reorder/route.ts's
+// own header for why a single whole-list endpoint replaced the old
+// neighbor-swap route.
+//
+// OPTIMISTIC, BUT RECONCILED — same discipline `handleBulkDelete` below
+// already uses, applied to reordering: `persistReorder` applies the new
+// order to local state BEFORE the request resolves (a drag that visibly
+// snapped back only once the network round trip finished would feel broken),
+// but keeps a snapshot of `assets` from before that optimistic write and
+// restores it verbatim on any non-2xx response or network failure — a
+// `selected`/`delivered`/`archived` gallery's 409 must not leave the grid
+// LYING about an order the server refused to persist.
 import { useCallback, useMemo, useState } from "react";
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type Announcements,
+  type DragEndEvent,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  rectSortingStrategy,
+  sortableKeyboardCoordinates,
+  SortableContext,
+} from "@dnd-kit/sortable";
 import { AdminAssetViewer } from "@/components/admin-asset-viewer";
 import { AssetTile } from "@/components/asset-tile";
 import { ProofUploader } from "@/components/proof-uploader";
 import { DeliverGalleryButton } from "@/components/deliver-gallery-button";
+import { compareByFilenameNatural } from "@/lib/natural-sort";
 
 export type WorkspaceAsset = {
   id: string;
@@ -97,8 +134,8 @@ export function GalleryWorkspace({
   const [assets, setAssets] = useState<WorkspaceAsset[]>(initialAssets);
 
   // Re-sorted on every render off `sortOrder`, never assumed to already be
-  // in order — `handleMoved` below only patches the two changed rows'
-  // `sortOrder` values, it does not itself reorder the array.
+  // in order — `handleReordered` below only patches whichever rows'
+  // `sortOrder` values changed, it does not itself reorder the array.
   const sorted = useMemo(() => [...assets].sort((a, b) => a.sortOrder - b.sortOrder), [assets]);
 
   // Task #26's own scope note: "the screen should make the remaining work
@@ -168,7 +205,13 @@ export function GalleryWorkspace({
     });
   }, []);
 
-  const handleMoved = useCallback((updates: { id: string; sortOrder: number }[]) => {
+  // Task #199: patches `sortOrder` for whichever ids appear in `updates` —
+  // used both for the OPTIMISTIC write (before the request resolves) and
+  // for reconciling against the server's own `updated` array afterward. See
+  // this file's own header for why both drag-and-drop and the alphabetical
+  // button route through the same `persistReorder` below, which is the only
+  // caller of this function.
+  const handleReordered = useCallback((updates: { id: string; sortOrder: number }[]) => {
     if (updates.length === 0) return;
     setAssets((prev) =>
       prev.map((asset) => {
@@ -177,6 +220,157 @@ export function GalleryWorkspace({
       }),
     );
   }, []);
+
+  const [reorderBusy, setReorderBusy] = useState(false);
+  const [reorderError, setReorderError] = useState<string | null>(null);
+
+  // Task #199: the ONE place that talks to
+  // POST /api/galleries/[galleryId]/reorder — both `handleDragEnd` and
+  // `handleSortAlphabetically` below just compute an ordered id list and
+  // call this. See this file's own header comment for the
+  // optimistic-but-reconciled contract this follows.
+  const persistReorder = useCallback(
+    async (orderedIds: string[]) => {
+      if (reorderBusy) return;
+      const previousAssets = assets;
+      setReorderBusy(true);
+      setReorderError(null);
+      handleReordered(orderedIds.map((id, index) => ({ id, sortOrder: index })));
+      try {
+        const response = await fetch(`/api/galleries/${galleryId}/reorder`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ assetIds: orderedIds }),
+        });
+        if (!response.ok) {
+          // Reverts wholesale, not merely "stop showing a spinner" — a
+          // gallery that just moved to `selected` under this photographer's
+          // feet (another tab, say) refuses with 409, and the grid must not
+          // keep claiming an order the server never actually accepted.
+          setAssets(previousAssets);
+          setReorderError("No se pudo reordenar.");
+          return;
+        }
+        const body = (await response.json()) as { updated: { id: string; sortOrder: number }[] };
+        handleReordered(body.updated);
+      } catch {
+        setAssets(previousAssets);
+        setReorderError("No se pudo conectar.");
+      } finally {
+        setReorderBusy(false);
+      }
+    },
+    [assets, galleryId, handleReordered, reorderBusy],
+  );
+
+  // Task #199's central risk, written down where the fix lives: without an
+  // activation constraint, EVERY pointer-down on the drag handle (see
+  // asset-tile.tsx's own header for why the handle is a dedicated control)
+  // would register as a drag before any click ever fires, which would not
+  // look like a drag bug — it would look like "the handle sometimes does
+  // nothing." `distance: 8` is dnd-kit's own documented starting point for
+  // telling an intentional drag apart from a tap's incidental finger
+  // movement.
+  //
+  // THE PRIMARY DEFENSE IS STRUCTURAL, NOT THIS CONSTRAINT: the open-viewer
+  // button (`absolute inset-0`, asset-tile.tsx) carries no drag listeners at
+  // all, only the handle does, so a tap anywhere on the photo cannot become
+  // a drag regardless of how `distance` is tuned. This constraint only
+  // matters for taps ON the handle itself.
+  //
+  // AT 390PX (the dashboard epic's own mobile reference, #125): the control
+  // row (this handle + "Eliminar") was measured, not eyeballed — a
+  // standalone HTML page reproducing the control row's own markup, loaded in
+  // a real Chromium instance against this project's own compiled Tailwind
+  // output, at a 390px viewport, three tiles per row (the actual column
+  // count `grid-cols-[repeat(auto-fill,minmax(92px,1fr))]` produces once
+  // `main`'s own `px-4` is subtracted), measured ~101px of usable tile width
+  // against a combined ~69px for the handle (24px) + "Eliminar" (~45px) —
+  // roughly 30px of slack, no overflow, no wrap. That check was NOT run
+  // through the committed `e2e/` capture
+  // harness: `global-setup.ts`'s fixture-gallery seeding currently fails
+  // against this dev database independently of this slice (task #100's
+  // `galleries_active_client_check` trigger rejects the gallery insert
+  // before a client is attached in the same transaction) — a pre-existing
+  // gap this task does not own and did not introduce, reported separately
+  // rather than patched here.
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 8 } }),
+    // Criterion #6: reordering must work with a keyboard, not only a
+    // pointer — the up/down buttons this replaces were clumsy but
+    // accessible, and dropping keyboard support here would be a real
+    // regression wearing an upgrade's clothes. `sortableKeyboardCoordinates`
+    // is dnd-kit's own grid-aware coordinate getter: Space picks a tile up,
+    // arrow keys move it, Space again drops it, Escape cancels.
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
+  );
+
+  // Criterion: "anunciá el resultado del movimiento con aria-live... no
+  // sólo el estado de arrastre." dnd-kit renders its own visually-hidden
+  // live region (<DndContext accessibility>) and calls these for every
+  // sensor — pointer AND keyboard alike, so this is the one place that
+  // covers both. Overridden here only for Spanish copy and the
+  // filename/position framing the kanban body asked for by name
+  // ("IMG_0007.JPG movida a la posición 3 de 84"); dnd-kit's English
+  // defaults would otherwise announce active/over ids, meaningless to a
+  // screen-reader user.
+  const announcements: Announcements = useMemo(
+    () => ({
+      onDragStart({ active }) {
+        const asset = sorted.find((item) => item.id === active.id);
+        return asset ? `${asset.originalFilename} levantada para reordenar.` : undefined;
+      },
+      onDragOver({ active, over }) {
+        if (!over) return undefined;
+        const asset = sorted.find((item) => item.id === active.id);
+        const position = sorted.findIndex((item) => item.id === over.id) + 1;
+        return asset
+          ? `${asset.originalFilename} sobre la posición ${position} de ${sorted.length}.`
+          : undefined;
+      },
+      onDragEnd({ active, over }) {
+        const asset = sorted.find((item) => item.id === active.id);
+        if (!asset) return undefined;
+        if (!over) return `${asset.originalFilename} soltada sin cambiar de posición.`;
+        const position = sorted.findIndex((item) => item.id === over.id) + 1;
+        return `${asset.originalFilename} movida a la posición ${position} de ${sorted.length}.`;
+      },
+      onDragCancel({ active }) {
+        const asset = sorted.find((item) => item.id === active.id);
+        return asset ? `Reordenamiento de ${asset.originalFilename} cancelado.` : undefined;
+      },
+    }),
+    [sorted],
+  );
+
+  // A drop can land anywhere in the grid, not just next to a neighbor —
+  // `arrayMove` computes the WHOLE resulting order, which is exactly the
+  // shape `persistReorder`/the reorder endpoint expect (see this file's own
+  // header and that route's).
+  const handleDragEnd = useCallback(
+    (event: DragEndEvent) => {
+      const { active, over } = event;
+      if (!over || active.id === over.id) return;
+      const oldIndex = sorted.findIndex((asset) => asset.id === active.id);
+      const newIndex = sorted.findIndex((asset) => asset.id === over.id);
+      if (oldIndex === -1 || newIndex === -1) return;
+      const reordered = arrayMove(sorted, oldIndex, newIndex);
+      void persistReorder(reordered.map((asset) => asset.id));
+    },
+    [sorted, persistReorder],
+  );
+
+  // The "Ordenar por nombre de archivo" button (task #199's second entry
+  // point into `persistReorder`): computed CLIENT-SIDE off the already-
+  // loaded, already-correct `sorted` list, with the SAME natural-order
+  // comparator src/lib/natural-sort.ts documents (numeric-aware, case-
+  // insensitive on the extension, id tie-break for duplicate filenames).
+  // Deliberately not a server round trip to compute the order — this
+  // component already holds every `originalFilename` it needs.
+  const handleSortAlphabetically = useCallback(() => {
+    const naturallyOrdered = [...sorted].sort(compareByFilenameNatural);
+    void persistReorder(naturallyOrdered.map((asset) => asset.id));
+  }, [sorted, persistReorder]);
 
   const handleFinalUploaded = useCallback((assetId: string) => {
     setAssets((prev) =>
@@ -280,32 +474,70 @@ export function GalleryWorkspace({
     <div className="flex flex-col gap-6">
       <ProofUploader galleryId={galleryId} onUploaded={handleUploaded} />
 
+      {/* Task #199: the alphabetical-sort action — an ACTION, not a mode
+          (the owner's own explicit decision, this task's kanban body): once
+          pressed, the gallery's `sortOrder` is renumbered by natural
+          filename order and stays that way until something else (a drag, or
+          this button again) changes it. Only shown once there is more than
+          one photo to meaningfully order. Copy says what it DOES ("Ordenar
+          por nombre de archivo"), not "Reset" — nothing here is destructive,
+          only renumbered. */}
+      {sorted.length > 1 && (
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            type="button"
+            disabled={reorderBusy}
+            onClick={handleSortAlphabetically}
+            className="border-line-2 hover:border-accent min-h-9 rounded-[4px] border px-3 text-xs font-semibold tracking-[0.04em] uppercase transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            Ordenar por nombre de archivo
+          </button>
+          {reorderError && (
+            <p className="text-xs text-[#e0796b]" role="alert">
+              {reorderError}
+            </p>
+          )}
+        </div>
+      )}
+
       {/* Task #134: density. The grid starts at the mock's `minmax(92px,1fr)`
           (3-4 columns on a phone) and GROWS to `minmax(122px,1fr)` on the
           desk — epic #125's own rule that a volume surface grows when it has
           room, rather than being cropped when it doesn't
-          (design/system/dashboard.html:426-429, :603). */}
+          (design/system/dashboard.html:426-429, :603).
+
+          Task #199: the grid itself is now the drag-and-drop surface —
+          <DndContext> wires up the pointer/keyboard sensors and the
+          announcements above, <SortableContext> hands every tile the SAME
+          ordered id list this component already renders from, so dnd-kit's
+          own notion of "current order" never drifts from `sorted`. */}
       {sorted.length === 0 ? (
         <p className="text-fg-dim text-[15px] leading-relaxed">
           Todavía no subiste fotos de esta sesión — usá el selector de arriba.
         </p>
       ) : (
-        <ul className="grid grid-cols-[repeat(auto-fill,minmax(92px,1fr))] gap-1.5 sm:gap-2 lg:grid-cols-[repeat(auto-fill,minmax(122px,1fr))]">
-          {sorted.map((asset, index) => (
-            <AssetTile
-              key={asset.id}
-              asset={asset}
-              isFirst={index === 0}
-              isLast={index === sorted.length - 1}
-              isMarked={markedIds.has(asset.id)}
-              onDeleted={handleDeleted}
-              onMoved={handleMoved}
-              onFinalUploaded={handleFinalUploaded}
-              onOpen={() => handleOpenViewer(asset.id)}
-              onToggleMarked={handleToggleMarked}
-            />
-          ))}
-        </ul>
+        <DndContext
+          sensors={sensors}
+          collisionDetection={closestCenter}
+          accessibility={{ announcements }}
+          onDragEnd={handleDragEnd}
+        >
+          <SortableContext items={sorted.map((asset) => asset.id)} strategy={rectSortingStrategy}>
+            <ul className="grid grid-cols-[repeat(auto-fill,minmax(92px,1fr))] gap-1.5 sm:gap-2 lg:grid-cols-[repeat(auto-fill,minmax(122px,1fr))]">
+              {sorted.map((asset) => (
+                <AssetTile
+                  key={asset.id}
+                  asset={asset}
+                  isMarked={markedIds.has(asset.id)}
+                  onDeleted={handleDeleted}
+                  onFinalUploaded={handleFinalUploaded}
+                  onOpen={() => handleOpenViewer(asset.id)}
+                  onToggleMarked={handleToggleMarked}
+                />
+              ))}
+            </ul>
+          </SortableContext>
+        </DndContext>
       )}
 
       {/* Task #195: the bulk-delete bar, only present once at least one

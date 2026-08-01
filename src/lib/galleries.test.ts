@@ -740,6 +740,11 @@ describe("getGalleryDetail", () => {
     package: { id: 2, name: "Estándar" },
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
+    // Task #193 — a manually overridden gallery, on purpose: proves
+    // `toGalleryDetail` passes this column straight through rather than
+    // deriving it from a snapshot/live-package comparison (schema.ts's own
+    // comment on `terms_overridden` explains why that comparison rots).
+    termsOverridden: true,
     assets: [
       {
         id: "a2",
@@ -790,6 +795,7 @@ describe("getGalleryDetail", () => {
       package: { id: 2, name: "Estándar" },
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      termsOverridden: true,
       assets: galleryRow.assets,
     });
 
@@ -838,6 +844,7 @@ describe("getGalleryDetailsByIds", () => {
     package: { id: 2, name: "Estándar" },
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
+    termsOverridden: false,
     assets: [
       {
         id: "a1",
@@ -878,6 +885,7 @@ describe("getGalleryDetailsByIds", () => {
         package: { id: 2, name: "Estándar" },
         includedPhotosSnapshot: 13,
         extraPhotoPriceCopSnapshot: 5_000,
+        termsOverridden: false,
         assets: galleryRow.assets,
       },
     ]);

@@ -15,21 +15,8 @@ vi.mock("@/app/dashboard/galleries/actions", () => ({
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
 
-afterEach(async () => {
+afterEach(() => {
   cleanup();
-
-  // Task #207. Same class of flake measured (1/28 full-suite runs) against
-  // `src/components/admin-asset-viewer.test.tsx` -- see that file's afterEach
-  // for the full root-cause writeup. This file mounts a Radix
-  // `<DialogPrimitive.Root>` (via EditGalleryTermsDialog) in every test, so
-  // it carries the same uncancelled `setTimeout(0)` from
-  // `@radix-ui/react-focus-scope`'s unmount effect, and is named in #207's
-  // own report as a file with "compatible symptoms". Awaiting one real
-  // macrotask tick after `cleanup()` drains that timer while this file's own
-  // jsdom window is still installed, before Vitest can tear it down and race
-  // it against the next file's environment.
-  await new Promise((resolve) => setTimeout(resolve, 0));
-
   updateGalleryTermsMock.mockReset();
 });
 

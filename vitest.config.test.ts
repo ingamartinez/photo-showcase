@@ -64,3 +64,20 @@ describe("vitest.config.ts server-only alias", () => {
     expect(alias?.["@"]).toContain("src");
   });
 });
+
+// Task #207. `setupFiles` is what actually wires vitest.setup.ts's
+// `afterEach(flushPendingRealTimers)` into every test file, suite-wide --
+// see vitest.setup.ts for why a per-file drain was not a reliable closure.
+// This is a STATIC assertion, same limits as the `server-only` alias guard
+// above: it proves the entry is present, not that vitest actually calls the
+// hook for every test. That behavioural half is covered separately, by
+// vitest.radix-focus-scope-timer-leak.test.ts importing and mutation-testing
+// `flushPendingRealTimers` itself. Losing this ENTRY (e.g. a future edit
+// that replaces `setupFiles` wholesale to add an unrelated file) would
+// silently stop the hook from running anywhere, with no failing test to
+// say so except a flake nobody can attribute for another ~28 runs.
+describe("vitest.config.ts setupFiles", () => {
+  it("wires vitest.setup.ts in, so the focus-scope timer drain actually runs", () => {
+    expect(vitestConfig.test?.setupFiles).toContain("./vitest.setup.ts");
+  });
+});

@@ -238,5 +238,10 @@ export default defineConfig({
         ],
       },
     },
+
+    // Task #207: drains the trailing timer `@radix-ui/react-focus-scope`
+    // leaves behind on every FocusScope unmount, suite-wide -- see
+    // vitest.setup.ts for the full root-cause writeup and cost measurement.
+    setupFiles: ["./vitest.setup.ts"],
   },
 });

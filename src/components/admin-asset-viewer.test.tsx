@@ -38,42 +38,8 @@ beforeEach(() => {
   onToggleMarked = vi.fn();
 });
 
-afterEach(async () => {
+afterEach(() => {
   cleanup();
-
-  // Task #207. This file is the measured origin of a flake that made vitest
-  // exit 1 with the whole suite green (1/28 full-suite runs on #205's
-  // branch): `@radix-ui/react-focus-scope`'s FocusScope unmount effect
-  // (node_modules/@radix-ui/react-focus-scope/dist/index.mjs:87-99, present
-  // via this component's `<DialogPrimitive.Root>`) ALWAYS schedules an
-  // uncancelled `setTimeout(fn, 0)` on unmount -- regardless of `trapped` --
-  // that constructs a `CustomEvent` and dispatches it on the just-unmounted
-  // container. Root cause, confirmed by reproducing it deterministically
-  // against vitest's own environment lifecycle (not guessed): Vitest's jsdom
-  // environment teardown (`node_modules/vitest/dist/chunks/index.DC7d2Pf8.js`)
-  // restores `globalThis.CustomEvent` to whatever it was BEFORE this file's
-  // jsdom window installed itself -- i.e. Bun's own native `CustomEvent`
-  // class -- the instant this file's tests finish, and does not re-install a
-  // jsdom one until the NEXT file's environment sets up. If Radix's timer
-  // fires inside that gap (or after it, if this happens to be the last file
-  // its worker runs), `new CustomEvent(...)` builds a NATIVE event, and
-  // dispatching a native event on a jsdom `Element` fails jsdom's own
-  // `dispatchEvent` argument check with EXACTLY the observed uncaught
-  // exception: `TypeError: Failed to execute 'dispatchEvent' on
-  // 'EventTarget': parameter 1 is not of type 'Event'.` This is a genuine
-  // wall-clock race (hence ~1/28, not reproducible by just re-running), not
-  // a deterministic bug in this file's own tests.
-  //
-  // The fix: after every test's `cleanup()`, await one real macrotask tick.
-  // Radix's timer and this one are both scheduled with delay 0, so FIFO
-  // ordering guarantees Radix's callback runs first -- draining it while
-  // THIS file's jsdom window is still installed, before Vitest ever gets a
-  // chance to tear it down. This must run after EVERY test, not just the
-  // last one, since which test is physically last (and therefore which
-  // file's teardown races the leaked timer) is an implementation detail of
-  // vitest's own scheduling, not something this file controls.
-  await new Promise((resolve) => setTimeout(resolve, 0));
-
   document.body.style.overflow = "";
   vi.unstubAllGlobals();
   vi.restoreAllMocks();

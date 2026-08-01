@@ -187,6 +187,16 @@ function stripComments(source: string): string {
  * one guess behind the codebase. Resolving by USAGE (below, in
  * `extractClassNameValues`) instead of by NAME is what makes this
  * exhaustive rather than the third guess in a row.
+ *
+ * KNOWN LIMITATION, not live today: this is `Map.set`, so a LATER
+ * declaration of the same name silently WINS over an earlier one — a dirty
+ * `const rowClass = "…label…"` followed, further down the same file, by a
+ * clean `const rowClass = "text-sm"` would read as clean, because the
+ * second call overwrites the first entry rather than the first one
+ * shadowing the second. That is the dangerous direction (a false NEGATIVE,
+ * not a false positive), and it needs a real re-declaration to trigger —
+ * verified against the guarded set: seven such declarations exist today,
+ * across seven distinct names, zero of them duplicated.
  */
 function collectStringConstants(clean: string): Map<string, string> {
   const constants = new Map<string, string>();
@@ -202,12 +212,82 @@ function collectStringConstants(clean: string): Map<string, string> {
 }
 
 /**
+ * Every `const`/`let`/`var NAME = { key: "value", … }` object-literal
+ * declaration in the file, keyed by `NAME`, each mapped to EVERY string
+ * value found in its body regardless of key. Exists for the fourth way a
+ * string reaches `className`: a MEMBER EXPRESSION into a lookup map —
+ * `STATUS_RAMP[gallery.status]`, `src/app/dashboard/galleries/page.tsx:203`
+ * — sitting one line below a `DESK_COLUMNS` resolution this guard already
+ * performed (`:202`, same `cn(…)` argument list). `STATUS_RAMP` is a real
+ * one, per its own header comment ("the slices that ship badges and
+ * rows") scheduled to have its hex values replaced by `var(--app-st-*)`
+ * tokens by a DIFFERENT lane once #175's token layer lands — exactly the
+ * "edited by someone not looking at this guard" scenario #135 exists for.
+ *
+ * `gallery.status` is a RUNTIME value this static scan cannot know ahead
+ * of render, so a member expression into a KNOWN object resolves to EVERY
+ * one of that object's values, not a guess at which key wins at any given
+ * render — over-inclusive on purpose, the same soundness call
+ * `collectStringConstants` makes for a plain identifier, one layer down:
+ * guessing the VALUE would be the same mistake guessing the NAME already
+ * was, twice.
+ */
+function collectObjectStringConstants(clean: string): Map<string, string[]> {
+  const objects = new Map<string, string[]>();
+  // `(?::[^=]*)?` optionally skips a TypeScript type annotation between the
+  // identifier and its `=` (`STATUS_RAMP: Record<GalleryWithDetails["status"],
+  // string> = {`) — annotations here never contain a bare `=`, so `[^=]*` is
+  // safe. This is also why a destructuring `const { a, b } = …` and a
+  // `const Foo = () => { … }` function body never match: the former has no
+  // identifier directly after the keyword (the `{` IS the pattern), and the
+  // latter has `() =>` between `=` and `{`, not `=` immediately followed by
+  // `{`.
+  const declOpen = /\b(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*(?::[^=]*)?=\s*\{/g;
+
+  let decl: RegExpExecArray | null;
+  while ((decl = declOpen.exec(clean))) {
+    const name = decl[1];
+    const start = declOpen.lastIndex - 1;
+    let depth = 0;
+    let end = start;
+    for (let i = start; i < clean.length; i++) {
+      if (clean[i] === "{") depth++;
+      else if (clean[i] === "}") {
+        depth--;
+        if (depth === 0) {
+          end = i;
+          break;
+        }
+      }
+    }
+    const body = clean.slice(start + 1, end);
+    const values = [...body.matchAll(/:\s*"([^"]*)"/g)].map((m) => m[1]);
+    if (values.length > 0) objects.set(name, values);
+  }
+
+  return objects;
+}
+
+/**
  * Every string a `className` attribute contributes to the rendered class
- * list: a plain literal (`className="…"`), a string/template literal inside
- * an expression (`className={cn("…", cond && "…")}`), OR a bare identifier
- * referenced inside that expression (`className={cn(x, DESK_COLUMNS, y)}`,
- * or `className={inputClass}` on its own) — resolved against
- * `collectStringConstants()` above, not against a hand-picked name shape.
+ * list, FOUR ways — this is the fourth revision of this claim, and the
+ * first three each turned out to describe fewer ways than the code covered
+ * a round later, so treat this list as exactly what was checked, not as a
+ * promise about what a fifth round might still find:
+ *
+ *   1. A plain literal — `className="…"`.
+ *   2. A string/template literal inside an expression —
+ *      `className={cn("…", cond && "…")}`.
+ *   3. A BARE IDENTIFIER referenced inside that expression —
+ *      `className={cn(x, DESK_COLUMNS, y)}`, or `className={inputClass}` on
+ *      its own — resolved against `collectStringConstants()` by USAGE, not
+ *      by a hand-picked name shape.
+ *   4. A MEMBER EXPRESSION into an object-literal map referenced inside
+ *      that expression — `className={cn(x, STATUS_RAMP[gallery.status])}`
+ *      — resolved against `collectObjectStringConstants()`, to every value
+ *      the object holds (see that function's own comment for why "every
+ *      value", not the one runtime picks).
+ *
  * Restricted to what a `className` attribute actually reads — not a blanket
  * word search over the whole file — because "label" and "wrap" are both
  * otherwise-ordinary English/HTML words (the `<label>` element,
@@ -216,10 +296,22 @@ function collectStringConstants(clean: string): Map<string, string> {
  * guards against, and because a constant that merely EXISTS in the file
  * (an email-notice string, say) but is never read by a `className` is not
  * this guard's business even if it happened to contain one of these words.
+ *
+ * WHAT THIS STILL CANNOT SEE, checked directly against the guarded set
+ * rather than left to be found by a fifth round: a `className` built by
+ * concatenation (`"a" + b`) or spread (`{...someClassMap}`) rather than
+ * `cn(…)`; a value threaded through a second function before reaching
+ * `className` (an imported class-list helper, a prop passed down through
+ * another component); and, per `collectStringConstants`'s own comment, a
+ * later re-declaration of the same constant name silently masking an
+ * earlier dirty one. None of these three currently exist anywhere in the
+ * guarded set — verified by direct search, not assumed — so this is a
+ * documented boundary, not a hidden one.
  */
 function extractClassNameValues(source: string): string[] {
   const clean = stripComments(source);
   const constants = collectStringConstants(clean);
+  const objectConstants = collectObjectStringConstants(clean);
   const values: string[] = [];
 
   for (const m of clean.matchAll(/\bclassName\s*=\s*"([^"]*)"/g)) {
@@ -229,8 +321,8 @@ function extractClassNameValues(source: string): string[] {
   // `className={…}` — walk to the MATCHING closing brace by depth (a plain
   // regex cannot do this across a multi-line `cn(…)` call, which is most of
   // them in this codebase), then pull every quoted/template string out of
-  // the expression inside, PLUS every bare identifier in it that resolves
-  // to a known string constant.
+  // the expression inside, PLUS every bare identifier or object-member
+  // expression in it that resolves to a known string constant.
   const braceOpen = /\bclassName\s*=\s*\{/g;
   while (braceOpen.exec(clean)) {
     const start = braceOpen.lastIndex - 1;
@@ -261,6 +353,17 @@ function extractClassNameValues(source: string): string[] {
     for (const m of withoutStrings.matchAll(/\b[A-Za-z_$][\w$]*\b/g)) {
       const resolved = constants.get(m[0]);
       if (resolved !== undefined) values.push(resolved);
+    }
+
+    // Object-member expressions — `STATUS_RAMP[gallery.status]`,
+    // `STATUS_RAMP.draft` — same soundness stance as above: resolve EVERY
+    // value of the matching object, since the index/property itself is a
+    // runtime value this static scan cannot evaluate.
+    for (const m of withoutStrings.matchAll(
+      /\b([A-Za-z_$][\w$]*)\s*(?:\[[^\]]*\]|\.[A-Za-z_$][\w$]*)/g,
+    )) {
+      const resolvedValues = objectConstants.get(m[1]);
+      if (resolvedValues) values.push(...resolvedValues);
     }
   }
 

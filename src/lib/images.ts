@@ -89,8 +89,8 @@ const WEBP_QUALITY = 82;
 // option. Tiling (rather than one mark in a corner) is deliberate: it is
 // far harder to crop out without destroying the photo, and it survives
 // screenshots/crops of any region.
-const WATERMARK_TILE_WIDTH = 320;
-const WATERMARK_TILE_HEIGHT = 160;
+const WATERMARK_TILE_WIDTH = 640;
+const WATERMARK_TILE_HEIGHT = 320;
 const WATERMARK_ROTATION_DEG = -28;
 const WATERMARK_FONT_SIZE = 30;
 
@@ -128,8 +128,62 @@ export async function assertTileHasInk(tile: Buffer): Promise<void> {
  * density/units (the trailing `.resize()` forces the pixel size so tiling
  * math never depends on that assumption). White fill over a black stroke
  * (`paint-order="stroke"` draws the stroke first) keeps the text legible
- * over both light and dark frames; both are kept at moderate opacity so the
- * mark reads as a watermark, not a censor bar.
+ * over both light and dark frames.
+ *
+ * Full decision trail, task #201 (real client complaints that the proof
+ * watermark was too invasive) — two rounds of owner decisions, both dated
+ * 2026-07-31:
+ *
+ * Round 1 (opacity — CURRENT, unchanged since): `fill-opacity` and
+ * `stroke-opacity` were both turned down further than the task's own body
+ * proposed, and the stroke was kept proportionally fainter than the fill
+ * rather than dropped — a black outline at close-to-fill opacity reads as a
+ * dirty border, not a lighter mark, so the two had to move together and the
+ * stroke had to move further. These are not "moderate" values by design;
+ * they are deliberately subdued. Do not lower them again without another
+ * explicit owner decision — the mark is the photographer's pre-payment
+ * leverage, and subtle is not the same request as invisible.
+ *
+ * Round 2 (tile size — SUPERSEDED by round 3 below, kept for the trail): the
+ * owner was shown three density options rendered against a real
+ * light-background sample — not estimated, actually looked at — and chose
+ * the densest of the three that still fit at 3 marks in a small reference
+ * crop. 560x280 produced only 2 marks in that crop; 520x260 was tried and
+ * still produced 2; 480x240 was the first size that produced 3, so that
+ * shipped. At the time, the mark count over a full 1400x933 photo was
+ * reported as ~11 (extrapolated from the crop's density, not itself a
+ * full-photo render).
+ *
+ * Round 3 (tile size — CURRENT): the owner then looked at 480x240 rendered
+ * on an actual full photo (not a crop) and asked for more spacing. The
+ * "~14 actual visible marks" figure relayed at the time for 480x240 on
+ * that full photo was an EYEBALLED ESTIMATE, not a verified measurement,
+ * and it is above the hard ceiling: `composite({ tile: true })` starts at
+ * (0,0) and paints one `<text>` per tile instance, so the most tile
+ * instances that can touch a 1400x933 canvas at 480x240 is exactly
+ * `ceil(1400/480) * ceil(933/240) = 3 * 4 = 12`. Round 2's own ~11
+ * crop-extrapolated estimate was the closer of the two. 640x320 was
+ * rendered next and approved by looking at it: `ceil(1400/640) *
+ * ceil(933/320) = 3 * 3 = 9`, which matches the ~9 visible marks counted
+ * on that render.
+ *
+ * IMPORTANT for whoever revisits this: only two of the visible-mark counts
+ * above are CONFIRMED — 12 at 480x240 and 9 at 640x320, both directly
+ * rendered and both matching `ceil(canvasWidth / tileWidth) *
+ * ceil(canvasHeight / tileHeight)` on the 1400x933 reference exactly. The
+ * earlier figures (~8 at 560x280, ~11 for 480x240 extrapolated from a
+ * crop) were relayed estimates that were never checked against a render or
+ * this formula — treat them as historical color, not ground truth. Naive
+ * FLOOR arithmetic (`floor(w/tile) * floor(h/tile)`) UNDERCOUNTS what a
+ * person actually sees, because `composite({ tile: true })` also paints
+ * partial, cropped tiles along the canvas's right and bottom edges — a
+ * cropped word at an edge still reads as "a mark" to a human looking at the
+ * image, even though it is not a complete tile. Before writing a mark count
+ * down as a measurement, either render and count directly or use the
+ * CEILING formula above as a hard sanity check; do not relay an eyeballed
+ * guess as a verified figure the way this comment once did with a wrong
+ * "~14" — that is exactly the kind of over-claiming this task exists to
+ * catch, and it is what caught it.
  *
  * `tileWidth`/`tileHeight` default to the design size but can be smaller —
  * `processProof` clamps them to the output canvas, since sharp's
@@ -153,9 +207,9 @@ async function buildWatermarkTile(
         font-weight="bold"
         font-size="${WATERMARK_FONT_SIZE}"
         fill="#ffffff"
-        fill-opacity="0.35"
+        fill-opacity="0.16"
         stroke="#000000"
-        stroke-opacity="0.30"
+        stroke-opacity="0.12"
         stroke-width="1.5"
         paint-order="stroke"
       >${WATERMARK_TEXT}</text>

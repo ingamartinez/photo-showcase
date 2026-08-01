@@ -279,14 +279,15 @@ export function GalleryWorkspace({
   // matters for taps ON the handle itself.
   //
   // AT 390PX (the dashboard epic's own mobile reference, #125): the control
-  // row (this handle + "Eliminar") was measured, not eyeballed — a real
-  // Chromium instance rendering the exact JSX/compiled Tailwind output at a
-  // 390px viewport, three tiles per row (the actual column count `grid-
-  // cols-[repeat(auto-fill,minmax(92px,1fr))]` produces once `main`'s own
-  // `px-4` is subtracted, per PLAN.md's mobile reference), measured
-  // ~101px of usable tile width against a combined ~69px for the handle
-  // (24px) + "Eliminar" (~45px) — roughly 30px of slack, no overflow, no
-  // wrap. That check was NOT run through the committed `e2e/` capture
+  // row (this handle + "Eliminar") was measured, not eyeballed — a
+  // standalone HTML page reproducing the control row's own markup, loaded in
+  // a real Chromium instance against this project's own compiled Tailwind
+  // output, at a 390px viewport, three tiles per row (the actual column
+  // count `grid-cols-[repeat(auto-fill,minmax(92px,1fr))]` produces once
+  // `main`'s own `px-4` is subtracted), measured ~101px of usable tile width
+  // against a combined ~69px for the handle (24px) + "Eliminar" (~45px) —
+  // roughly 30px of slack, no overflow, no wrap. That check was NOT run
+  // through the committed `e2e/` capture
   // harness: `global-setup.ts`'s fixture-gallery seeding currently fails
   // against this dev database independently of this slice (task #100's
   // `galleries_active_client_check` trigger rejects the gallery insert

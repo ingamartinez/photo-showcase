@@ -308,10 +308,10 @@ describe("SelectionTray — collapsible tray with a height-capped list (task #20
     // `<div>` or the `<ul>` itself" — a reviewer proved this by pointing the
     // flat measurement at `list.parentElement` instead of the first item and
     // watching this exact test stay green. Per-element-type mocks, same
-    // treatment as #204's own by-person fix a few lines below (:455): the
-    // real row lands only on `HTMLLIElement`, every OTHER element type gets
-    // an implausibly large height, so measuring the wrong node produces an
-    // unmistakably wrong cap instead of a coincidentally-close one.
+    // treatment as #204's own by-person fix below (:805): the real row lands
+    // only on `HTMLLIElement`, every OTHER element type gets an implausibly
+    // large height, so measuring the wrong node produces an unmistakably
+    // wrong cap instead of a coincidentally-close one.
     const rowHeightPx = 120; // stand-in for one real item + its label
     const wrongElementHeightPx = 4_000;
     vi.spyOn(HTMLLIElement.prototype, "getBoundingClientRect").mockReturnValue({
@@ -485,18 +485,19 @@ describe("SelectionTray — the type line (task #206)", () => {
   // at two rows.
   //
   // ⚠️ NOT the blind uniform `HTMLElement.prototype` mock the flat cap's own
-  // ORIGINAL test still uses (task #208's own recorded gap: that mock cannot
+  // ORIGINAL test used to use, before task #208 fixed it: that mock could not
   // tell "measured the right `<li>`" from "measured the wrong element" — a
   // reviewer proved this by pointing flat's own measurement at the SCROLL
   // CONTAINER instead of the first item and watching that blind test stay
-  // green). This test's own change (the type line) does not touch WHICH
+  // green. This test's own change (the type line) does not touch WHICH
   // element gets measured, but the task's own instruction is explicit: any
   // test this slice needs the flat cap to hold through follows the CORRECTED
-  // per-element-type pattern (#204's own fix for by-person mode), not the
-  // blind one. `HTMLLIElement` gets the real row height; every OTHER element
-  // type (the `<ul>`, the scroll `<div>`) gets an implausibly large one, so a
-  // regression that measured the wrong element produces an unmistakably
-  // wrong cap instead of a coincidentally-close one.
+  // per-element-type pattern (#204's own fix for by-person mode), same
+  // pattern #208 later applied to flat's own test too. `HTMLLIElement` gets
+  // the real row height; every OTHER element type (the `<ul>`, the scroll
+  // `<div>`) gets an implausibly large one, so a regression that measured the
+  // wrong element produces an unmistakably wrong cap instead of a
+  // coincidentally-close one.
   it("still caps the scrollable list to two rows worth of height with 50 picks, some of them original", () => {
     const itemHeightPx = 132; // stand-in for one real item + label + type line
     const wrongElementHeightPx = 4_000;
@@ -888,8 +889,9 @@ describe("SelectionTray — by-person mode (task #204)", () => {
   // this file's cap at all: an extra line per item is exactly the kind of
   // change that could silently move it). Same corrected per-element-type
   // mocking as the test above — a wrong-element regression must still be
-  // unmistakable, not just "the flat mode's own blind test happens to stay
-  // green" (task #208's own warning).
+  // unmistakable, not just "the flat mode's own test happens to stay green
+  // regardless of which element got measured", which is what task #208 later
+  // fixed for flat mode's own tests.
   it("keeps by-person's own height cap correct with 50 picks across 3 groups, some marked original", () => {
     const itemHeightPx = 132; // one real item + label + type line
     const groupWrapperHeightPx = 4_000;

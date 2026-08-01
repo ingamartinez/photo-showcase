@@ -1,9 +1,30 @@
 // @vitest-environment jsdom
+import type { ReactElement } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { DndContext } from "@dnd-kit/core";
+import { SortableContext } from "@dnd-kit/sortable";
 import { AssetTile } from "./asset-tile";
 import type { WorkspaceAsset } from "./gallery-workspace";
+
+// Task #199: <AssetTile> calls `useSortable()` itself now (see its own
+// header comment) — dnd-kit's hooks read from React context, so every test
+// below renders through this same minimal <DndContext>/<SortableContext>
+// pair rather than the bare `<ul>` the pre-#199 suite used. `items={[id]}`
+// is a single-item list on purpose: these are all UNIT tests of one tile in
+// isolation (open/mark/delete/final-upload), not of reordering itself —
+// gallery-workspace.test.tsx is where a REAL multi-tile drag/keyboard
+// reorder is exercised end to end.
+function renderTile(ui: ReactElement, id = "a1") {
+  return render(
+    <DndContext>
+      <SortableContext items={[id]}>
+        <ul>{ui}</ul>
+      </SortableContext>
+    </DndContext>,
+  );
+}
 
 function jsonResponse(status: number, body: unknown): Response {
   return {
@@ -28,7 +49,6 @@ function assetFor(overrides: Partial<WorkspaceAsset> = {}): WorkspaceAsset {
 }
 
 let onDeleted: ReturnType<typeof vi.fn<(assetId: string) => void>>;
-let onMoved: ReturnType<typeof vi.fn<(updates: { id: string; sortOrder: number }[]) => void>>;
 let onFinalUploaded: ReturnType<typeof vi.fn<(assetId: string) => void>>;
 // Task #195: every test below that doesn't specifically exercise these two
 // controls just needs a stub — `isMarked` defaults to `false` so the
@@ -39,7 +59,6 @@ let onToggleMarked: ReturnType<typeof vi.fn<(assetId: string) => void>>;
 
 beforeEach(() => {
   onDeleted = vi.fn();
-  onMoved = vi.fn();
   onFinalUploaded = vi.fn();
   onOpen = vi.fn();
   onToggleMarked = vi.fn();
@@ -53,20 +72,15 @@ afterEach(() => {
 
 describe("AssetTile", () => {
   it("renders the thumbnail (by its actual URL) and the filename", () => {
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor()}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+    renderTile(
+      <AssetTile
+        asset={assetFor()}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={false}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
     const img = screen.getByRole("img") as HTMLImageElement;
@@ -82,20 +96,15 @@ describe("AssetTile", () => {
   // this test passing vacuously — the exact trap this repo's kanban body
   // calls out by name.
   it("marks the thumbnail lazy and async-decoded, so a long grid doesn't fetch every proof eagerly", () => {
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor()}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+    renderTile(
+      <AssetTile
+        asset={assetFor()}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={false}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
     const img = screen.getByAltText("IMG_0001.JPG") as HTMLImageElement;
@@ -117,20 +126,15 @@ describe("AssetTile", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor()}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+    renderTile(
+      <AssetTile
+        asset={assetFor()}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={false}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
     const img = screen.getByRole("img") as HTMLImageElement;
@@ -153,20 +157,15 @@ describe("AssetTile", () => {
   // Real click, real DOM — not a prop-existence check.
   it("calls onOpen when the thumbnail image is clicked", async () => {
     const user = userEvent.setup();
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor()}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+    renderTile(
+      <AssetTile
+        asset={assetFor()}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={false}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
     await user.click(screen.getByRole("button", { name: "Ver IMG_0001.JPG en grande" }));
@@ -181,20 +180,15 @@ describe("AssetTile", () => {
   // the "Elegida" text or accidentally replaced it.
   it("renders the marking checkbox as a distinct control from the 'Elegida' badge, and reports a toggle via onToggleMarked", async () => {
     const user = userEvent.setup();
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor({ isSelected: true })}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+    renderTile(
+      <AssetTile
+        asset={assetFor({ isSelected: true })}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={false}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
     // Both present at once: the client's "Elegida" fact and the
@@ -213,45 +207,47 @@ describe("AssetTile", () => {
   });
 
   it("labels the marking checkbox as 'Desmarcar' once isMarked is true", () => {
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor()}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={true}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+    renderTile(
+      <AssetTile
+        asset={assetFor()}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={true}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
     const markButton = screen.getByRole("button", { name: "Desmarcar IMG_0001.JPG" });
     expect(markButton.getAttribute("aria-pressed")).toBe("true");
   });
 
-  it("disables 'move up' for the first tile and 'move down' for the last tile", () => {
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor()}
-          isFirst={true}
-          isLast={true}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+  // Task #199: the up/down "move" buttons are gone, replaced by a single
+  // drag handle — see the component's own header for why it is a dedicated
+  // control rather than the whole tile. This only asserts the handle EXISTS
+  // and is independently focusable/labelled — dnd-kit's own pointer/keyboard
+  // sensors are exercised for real (a real reorder result, not a mocked
+  // handler call) in gallery-workspace.test.tsx, where more than one
+  // sortable item actually exists to move between.
+  it("renders a dedicated, labelled drag handle, distinct from the open-viewer and marking controls", () => {
+    renderTile(
+      <AssetTile
+        asset={assetFor()}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={false}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
-    expect(screen.getByRole("button", { name: "Mover antes" })).toHaveProperty("disabled", true);
-    expect(screen.getByRole("button", { name: "Mover después" })).toHaveProperty("disabled", true);
+    const handle = screen.getByRole("button", { name: "Reordenar IMG_0001.JPG" });
+    expect(handle.tagName).toBe("BUTTON");
+    // Distinct controls, all three present at once: opening the viewer,
+    // marking for deletion, and the drag handle are three separate buttons,
+    // not one control wearing three labels.
+    expect(screen.getByRole("button", { name: "Ver IMG_0001.JPG en grande" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Marcar IMG_0001.JPG para borrar" })).toBeDefined();
   });
 
   it("refetches a fresh presigned URL and swaps the <img> src when the original one fails to load", async () => {
@@ -260,20 +256,15 @@ describe("AssetTile", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor()}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+    renderTile(
+      <AssetTile
+        asset={assetFor()}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={false}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
     const img = screen.getByRole("img") as HTMLImageElement;
@@ -289,20 +280,15 @@ describe("AssetTile", () => {
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
 
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor()}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+    renderTile(
+      <AssetTile
+        asset={assetFor()}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={false}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
     await user.click(screen.getByRole("button", { name: "Eliminar" }));
@@ -317,20 +303,15 @@ describe("AssetTile", () => {
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
 
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor()}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+    renderTile(
+      <AssetTile
+        asset={assetFor()}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={false}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
     await user.click(screen.getByRole("button", { name: "Eliminar" }));
@@ -345,20 +326,15 @@ describe("AssetTile", () => {
     vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
 
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor()}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+    renderTile(
+      <AssetTile
+        asset={assetFor()}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={false}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
     await user.click(screen.getByRole("button", { name: "Eliminar" }));
@@ -367,68 +343,18 @@ describe("AssetTile", () => {
     expect(onDeleted).not.toHaveBeenCalled();
   });
 
-  it("moves the asset up and reports the server's updated sort orders via onMoved", async () => {
-    const fetchMock = vi.fn(() =>
-      Promise.resolve(
-        jsonResponse(200, {
-          updated: [
-            { id: "a1", sortOrder: 0 },
-            { id: "a0", sortOrder: 1 },
-          ],
-        }),
-      ),
-    );
-    vi.stubGlobal("fetch", fetchMock);
-    const user = userEvent.setup();
-
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor()}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
-    );
-
-    await user.click(screen.getByRole("button", { name: "Mover antes" }));
-
-    await waitFor(() =>
-      expect(onMoved).toHaveBeenCalledWith([
-        { id: "a1", sortOrder: 0 },
-        { id: "a0", sortOrder: 1 },
-      ]),
-    );
-    expect(fetchMock).toHaveBeenCalledWith("/api/assets/a1/reorder", {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ direction: "up" }),
-    });
-  });
-
   // Task #26: the final-upload control is only ever rendered for a
   // SELECTED asset — see the component's own comment for why.
   it("does not render the final-upload control for an unselected asset", () => {
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor({ isSelected: false })}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+    renderTile(
+      <AssetTile
+        asset={assetFor({ isSelected: false })}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={false}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
     expect(screen.queryByText("Subir final")).toBeNull();
@@ -436,20 +362,15 @@ describe("AssetTile", () => {
   });
 
   it("shows 'Falta el final' with a 'Subir final' control for a selected asset with no final yet", () => {
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor({ isSelected: true, hasFinal: false })}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+    renderTile(
+      <AssetTile
+        asset={assetFor({ isSelected: true, hasFinal: false })}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={false}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
     expect(screen.getByText("Falta el final")).toBeDefined();
@@ -457,20 +378,15 @@ describe("AssetTile", () => {
   });
 
   it("shows 'Final subido' with a 'Reemplazar' control for a selected asset that already has one", () => {
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor({ isSelected: true, hasFinal: true })}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+    renderTile(
+      <AssetTile
+        asset={assetFor({ isSelected: true, hasFinal: true })}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={false}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
     expect(screen.getByText("Final subido")).toBeDefined();
@@ -488,77 +404,67 @@ describe("AssetTile", () => {
   // cannot see at all.
   describe("state legibility on the thumbnail itself (task #134)", () => {
     it("shows no 'Elegida' badge on the thumbnail for an unselected asset", () => {
-      render(
-        <ul>
-          <AssetTile
-            asset={assetFor({ isSelected: false })}
-            isFirst={false}
-            isLast={false}
-            onDeleted={onDeleted}
-            onMoved={onMoved}
-            onFinalUploaded={onFinalUploaded}
-            isMarked={false}
-            onOpen={onOpen}
-            onToggleMarked={onToggleMarked}
-          />
-        </ul>,
+      renderTile(
+        <AssetTile
+          asset={assetFor({ isSelected: false })}
+          onDeleted={onDeleted}
+          onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
+        />,
       );
 
       expect(screen.queryByText("Elegida")).toBeNull();
     });
 
     it("shows an 'Elegida' badge on the thumbnail for a selected asset", () => {
-      render(
-        <ul>
-          <AssetTile
-            asset={assetFor({ isSelected: true, hasFinal: false })}
-            isFirst={false}
-            isLast={false}
-            onDeleted={onDeleted}
-            onMoved={onMoved}
-            onFinalUploaded={onFinalUploaded}
-            isMarked={false}
-            onOpen={onOpen}
-            onToggleMarked={onToggleMarked}
-          />
-        </ul>,
+      renderTile(
+        <AssetTile
+          asset={assetFor({ isSelected: true, hasFinal: false })}
+          onDeleted={onDeleted}
+          onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
+        />,
       );
 
       expect(screen.getByText("Elegida")).toBeDefined();
     });
 
     it("shows the '✓' final badge on the thumbnail only once selected AND a final exists, never for a selected asset still missing one", () => {
-      const { rerender } = render(
-        <ul>
-          <AssetTile
-            asset={assetFor({ isSelected: true, hasFinal: false })}
-            isFirst={false}
-            isLast={false}
-            onDeleted={onDeleted}
-            onMoved={onMoved}
-            onFinalUploaded={onFinalUploaded}
-            isMarked={false}
-            onOpen={onOpen}
-            onToggleMarked={onToggleMarked}
-          />
-        </ul>,
+      const { rerender } = renderTile(
+        <AssetTile
+          asset={assetFor({ isSelected: true, hasFinal: false })}
+          onDeleted={onDeleted}
+          onFinalUploaded={onFinalUploaded}
+          isMarked={false}
+          onOpen={onOpen}
+          onToggleMarked={onToggleMarked}
+        />,
       );
       expect(screen.queryByTitle("Final subido")).toBeNull();
 
+      // `rerender` replaces the WHOLE tree at the same root — it needs the
+      // same <DndContext>/<SortableContext> wrapper `renderTile` used for
+      // the initial render, not the bare tile, or the second pass would
+      // lose the provider `useSortable()` reads from.
       rerender(
-        <ul>
-          <AssetTile
-            asset={assetFor({ isSelected: true, hasFinal: true })}
-            isFirst={false}
-            isLast={false}
-            onDeleted={onDeleted}
-            onMoved={onMoved}
-            onFinalUploaded={onFinalUploaded}
-            isMarked={false}
-            onOpen={onOpen}
-            onToggleMarked={onToggleMarked}
-          />
-        </ul>,
+        <DndContext>
+          <SortableContext items={["a1"]}>
+            <ul>
+              <AssetTile
+                asset={assetFor({ isSelected: true, hasFinal: true })}
+                onDeleted={onDeleted}
+                onFinalUploaded={onFinalUploaded}
+                isMarked={false}
+                onOpen={onOpen}
+                onToggleMarked={onToggleMarked}
+              />
+            </ul>
+          </SortableContext>
+        </DndContext>,
       );
       const finalBadge = screen.getByTitle("Final subido");
       expect(finalBadge.textContent).toBe("✓");
@@ -572,20 +478,15 @@ describe("AssetTile", () => {
     });
     vi.stubGlobal("fetch", fetchMock);
 
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor({ isSelected: true, hasFinal: false })}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+    renderTile(
+      <AssetTile
+        asset={assetFor({ isSelected: true, hasFinal: false })}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={false}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
     const input = screen.getByLabelText("Subir final") as HTMLInputElement;
@@ -608,20 +509,15 @@ describe("AssetTile", () => {
     );
     vi.stubGlobal("fetch", fetchMock);
 
-    render(
-      <ul>
-        <AssetTile
-          asset={assetFor({ isSelected: true, hasFinal: false })}
-          isFirst={false}
-          isLast={false}
-          onDeleted={onDeleted}
-          onMoved={onMoved}
-          onFinalUploaded={onFinalUploaded}
-          isMarked={false}
-          onOpen={onOpen}
-          onToggleMarked={onToggleMarked}
-        />
-      </ul>,
+    renderTile(
+      <AssetTile
+        asset={assetFor({ isSelected: true, hasFinal: false })}
+        onDeleted={onDeleted}
+        onFinalUploaded={onFinalUploaded}
+        isMarked={false}
+        onOpen={onOpen}
+        onToggleMarked={onToggleMarked}
+      />,
     );
 
     const input = screen.getByLabelText("Subir final") as HTMLInputElement;

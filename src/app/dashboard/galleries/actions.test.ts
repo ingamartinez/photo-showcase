@@ -647,6 +647,49 @@ describe("createGallery success + frozen terms", () => {
     });
   });
 
+  // Task #193 — REVIEW FINDING: the blank-field test right above only pins
+  // `""` — the empty-string half of `optionalNonNegativeInt`'s own
+  // `trimmed === undefined || trimmed === ""` check (that function's header
+  // comment). Nothing pinned the OTHER half, `.trim()` itself: a
+  // whitespace-only field (a stray space from a fumbled tap, or a browser
+  // extension that pads inputs) is a genuinely empty field in every way that
+  // matters here, and has to inherit the package exactly like `""` does —
+  // not become a `0` override because it happens to be non-empty BEFORE
+  // trimming.
+  //
+  // MUTATION-PROVEN: removing `.trim()` alone (keeping the `|| trimmed ===
+  // ""` clause intact) turns this red — `" ".trim()` never runs, so `value`
+  // stays `" "`, which is neither `undefined` nor `""` and sails through as
+  // a "typed" value. `Number(" ")` is `0` (JS's `Number()` strips
+  // whitespace, unlike the `Number.isInteger`/`>= 0` refine that runs on the
+  // STRING first), so this reached exactly the same corruption as the
+  // untrimmed `""` case did before the fix: `includedPhotosSnapshot: 0`,
+  // `extraPhotoPriceCopSnapshot: 0`, `termsOverridden: true`, despite the
+  // admin never typing a digit.
+  it("treats a whitespace-only override field the same as an untouched one — inherits the package, never overridden", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    await createGallery(
+      { status: "idle" },
+      formDataWith({
+        clientIds: ["client-1"],
+        packageId: "1",
+        title: "Boda con campos de espacios",
+        sessionDate: "2026-08-01",
+        includedPhotos: " ",
+        extraPhotoPriceCop: "  ",
+      }),
+    );
+
+    const stored = db.__rows.galleries.find((g) => g.title === "Boda con campos de espacios");
+    expect(stored).toMatchObject({
+      includedPhotosSnapshot: 13,
+      extraPhotoPriceCopSnapshot: 5_000,
+      termsOverridden: false,
+    });
+  });
+
   // Task #193 — both override fields typed together replace BOTH snapshots,
   // and the gallery is flagged as overridden.
   it("writes the manually typed override values instead of the package's own terms, and flags the gallery as overridden", async () => {
@@ -837,9 +880,9 @@ describe("createGallery success + frozen terms", () => {
     // own review finding above. A derivation that compared these frozen
     // snapshots against the package's CURRENT row (still sitting at
     // `includedPhotos: 1` / `extraPhotoPriceCop: 999_999` from the mutation
-    // above) would call the FIRST gallery overridden (13 ≠ 1) and the
-    // SECOND one NOT overridden by coincidence only if the admin had typed
-    // exactly the live values — neither matches what this asserts.
+    // above) would call the FIRST gallery overridden (13 ≠ 1) — that
+    // mismatches the `false` this asserts for it, and is what actually flips
+    // this test red under that derivation.
     const galleryId = db.__rows.galleries.find((g) => g.title === "Boda Ana y Beto")!.id as string;
     const overriddenGalleryId = db.__rows.galleries.find((g) => g.title === "Boda Overrideada")!
       .id as string;

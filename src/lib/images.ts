@@ -89,8 +89,8 @@ const WEBP_QUALITY = 82;
 // option. Tiling (rather than one mark in a corner) is deliberate: it is
 // far harder to crop out without destroying the photo, and it survives
 // screenshots/crops of any region.
-const WATERMARK_TILE_WIDTH = 560;
-const WATERMARK_TILE_HEIGHT = 280;
+const WATERMARK_TILE_WIDTH = 480;
+const WATERMARK_TILE_HEIGHT = 240;
 const WATERMARK_ROTATION_DEG = -28;
 const WATERMARK_FONT_SIZE = 30;
 
@@ -130,16 +130,31 @@ export async function assertTileHasInk(tile: Buffer): Promise<void> {
  * (`paint-order="stroke"` draws the stroke first) keeps the text legible
  * over both light and dark frames.
  *
- * Opacity, task #201 (owner decision, 2026-07-31, following real client
- * complaints that the mark was too invasive): both fill and stroke opacity
- * were deliberately turned down further than that task's own body proposed,
- * and the stroke was kept proportionally fainter than the fill rather than
- * dropped — a black outline at close-to-fill opacity reads as a dirty
- * border, not a lighter mark, so the two had to move together and the
- * stroke had to move further. These are not "moderate" values anymore by
- * design; they are deliberately subdued. Do not lower them again without
- * another explicit owner decision — the mark is the photographer's
- * pre-payment leverage, and subtle is not the same request as invisible.
+ * Full decision trail, task #201 (real client complaints that the proof
+ * watermark was too invasive) — two rounds of owner decisions, both dated
+ * 2026-07-31:
+ *
+ * Round 1 (opacity — CURRENT, unchanged since): `fill-opacity` and
+ * `stroke-opacity` were both turned down further than the task's own body
+ * proposed, and the stroke was kept proportionally fainter than the fill
+ * rather than dropped — a black outline at close-to-fill opacity reads as a
+ * dirty border, not a lighter mark, so the two had to move together and the
+ * stroke had to move further. These are not "moderate" values by design;
+ * they are deliberately subdued. Do not lower them again without another
+ * explicit owner decision — the mark is the photographer's pre-payment
+ * leverage, and subtle is not the same request as invisible.
+ *
+ * Round 2 (tile size — CURRENT): after round 1 shipped, the owner was shown
+ * three density options rendered against a real light-background sample —
+ * not estimated, actually looked at — and chose the densest of the three
+ * that still fit at 3 marks in the reference crop. 560x280 (round 1's tile
+ * size) produced only 2 marks in that crop; 520x260 was tried and still
+ * produced 2; 480x240 was the first size that produced 3, so that is what
+ * shipped. Over a full 1400x933 photo this raises the mark count from ~8 to
+ * ~11. If tile size is revisited again, treat "how many marks appear in a
+ * rendered sample" as the thing that was actually decided, not the pixel
+ * numbers themselves — the numbers are a byproduct of that visual count at
+ * this specific font size/rotation, not an independently chosen quantity.
  *
  * `tileWidth`/`tileHeight` default to the design size but can be smaller —
  * `processProof` clamps them to the output canvas, since sharp's

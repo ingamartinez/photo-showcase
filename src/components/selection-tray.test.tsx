@@ -435,21 +435,53 @@ describe("SelectionTray — the type line (task #206)", () => {
   // Criterion 7 — the type line must not silently reintroduce #203's bug for
   // a gallery that DOES have originals: 50 picks, some original, still caps
   // at two rows.
+  //
+  // ⚠️ NOT the blind uniform `HTMLElement.prototype` mock the flat cap's own
+  // ORIGINAL test still uses (task #208's own recorded gap: that mock cannot
+  // tell "measured the right `<li>`" from "measured the wrong element" — a
+  // reviewer proved this by pointing flat's own measurement at the SCROLL
+  // CONTAINER instead of the first item and watching that blind test stay
+  // green). This test's own change (the type line) does not touch WHICH
+  // element gets measured, but the task's own instruction is explicit: any
+  // test this slice needs the flat cap to hold through follows the CORRECTED
+  // per-element-type pattern (#204's own fix for by-person mode), not the
+  // blind one. `HTMLLIElement` gets the real row height; every OTHER element
+  // type (the `<ul>`, the scroll `<div>`) gets an implausibly large one, so a
+  // regression that measured the wrong element produces an unmistakably
+  // wrong cap instead of a coincidentally-close one.
   it("still caps the scrollable list to two rows worth of height with 50 picks, some of them original", () => {
-    const rowHeightPx = 132; // stand-in for one real item + label + type line
-    vi.spyOn(HTMLElement.prototype, "getBoundingClientRect").mockReturnValue({
-      height: rowHeightPx,
+    const itemHeightPx = 132; // stand-in for one real item + label + type line
+    const wrongElementHeightPx = 4_000;
+    vi.spyOn(HTMLLIElement.prototype, "getBoundingClientRect").mockReturnValue({
+      height: itemHeightPx,
       width: 96,
       top: 0,
       left: 0,
       right: 96,
-      bottom: rowHeightPx,
+      bottom: itemHeightPx,
       x: 0,
       y: 0,
       toJSON() {
         return {};
       },
     });
+    const wrongElementRect = {
+      height: wrongElementHeightPx,
+      width: 96,
+      top: 0,
+      left: 0,
+      right: 96,
+      bottom: wrongElementHeightPx,
+      x: 0,
+      y: 0,
+      toJSON() {
+        return {};
+      },
+    };
+    // Both the scroll `<div>` AND the `<ul>` itself — either one is "the
+    // wrong element" if a regression measured it instead of the first `<li>`.
+    vi.spyOn(HTMLDivElement.prototype, "getBoundingClientRect").mockReturnValue(wrongElementRect);
+    vi.spyOn(HTMLUListElement.prototype, "getBoundingClientRect").mockReturnValue(wrongElementRect);
     const picks = Array.from({ length: 50 }, (_, index) =>
       pick({
         assetId: `asset-${index}`,
@@ -462,7 +494,7 @@ describe("SelectionTray — the type line (task #206)", () => {
 
     expect(screen.getAllByRole("listitem")).toHaveLength(50);
     const scrollContainer = container.querySelector(".overflow-y-auto") as HTMLElement;
-    expect(scrollContainer.style.maxHeight).toBe(`${rowHeightPx * 2 + 12}px`);
+    expect(scrollContainer.style.maxHeight).toBe(`${itemHeightPx * 2 + 12}px`);
   });
 
   it("shows the type line in by-person mode too, per item within each group", () => {
@@ -801,5 +833,68 @@ describe("SelectionTray — by-person mode (task #204)", () => {
       ".overflow-y-auto",
     ) as HTMLElement;
     expect(flippedScrollContainer.style.maxHeight).toBe(`${expectedMaxHeightPx}px`);
+  });
+
+  // Task #206, criterion 7 — the SAME 50-pick, lopsided-groups stress case
+  // above, but with originals mixed in (task #206's own reason to re-check
+  // this file's cap at all: an extra line per item is exactly the kind of
+  // change that could silently move it). Same corrected per-element-type
+  // mocking as the test above — a wrong-element regression must still be
+  // unmistakable, not just "the flat mode's own blind test happens to stay
+  // green" (task #208's own warning).
+  it("keeps by-person's own height cap correct with 50 picks across 3 groups, some marked original", () => {
+    const itemHeightPx = 132; // one real item + label + type line
+    const groupWrapperHeightPx = 4_000;
+
+    vi.spyOn(HTMLLIElement.prototype, "getBoundingClientRect").mockReturnValue({
+      height: itemHeightPx,
+      width: 96,
+      top: 0,
+      left: 0,
+      right: 96,
+      bottom: itemHeightPx,
+      x: 0,
+      y: 0,
+      toJSON() {
+        return {};
+      },
+    });
+    vi.spyOn(HTMLDivElement.prototype, "getBoundingClientRect").mockReturnValue({
+      height: groupWrapperHeightPx,
+      width: 96,
+      top: 0,
+      left: 0,
+      right: 96,
+      bottom: groupWrapperHeightPx,
+      x: 0,
+      y: 0,
+      toJSON() {
+        return {};
+      },
+    });
+
+    const picks = [
+      ...Array.from({ length: 40 }, (_unused, index) =>
+        pick({
+          assetId: `big-${index}`,
+          pickedBy: { id: "client-a", label: "Ana Gómez" },
+          selectionKind: index % 4 === 0 ? "original" : "edited",
+        }),
+      ),
+      ...Array.from({ length: 5 }, (_unused, index) =>
+        pick({ assetId: `mid-${index}`, pickedBy: { id: "client-b", label: "Beto Ruiz" } }),
+      ),
+      ...Array.from({ length: 5 }, (_unused, index) =>
+        pick({ assetId: `small-${index}`, pickedBy: { id: "client-c", label: "Caro Ruiz" } }),
+      ),
+    ];
+
+    const { container } = renderTray({ mode: "by-person", picks });
+
+    expect(screen.getAllByRole("listitem")).toHaveLength(50);
+    const scrollContainer = container.querySelector(".overflow-y-auto") as HTMLElement;
+    expect(scrollContainer.style.maxHeight).toBe(`${itemHeightPx * 2 + 12}px`);
+    // And the type line really is there, in this mode too.
+    expect(within(scrollContainer).getAllByText("Original").length).toBeGreaterThan(0);
   });
 });

@@ -12,7 +12,40 @@
 // even once per batch) would re-run `getGalleryDetail()` and re-presign
 // every asset's URL for no reason — the response each request already
 // carries is enough to update local state exactly, and cheaply.
+//
+// TASK #195 — THE MARKED SET LIVES HERE, ABOVE THE GRID AND THE VIEWER
+// ========================================================================
+// The owner's own requirement: "sin que abrir una en grande le pierda lo que
+// ya marcó". <GalleryWorkspace> is already the single owner of `assets`
+// (this same header, above) — the bulk-op `markedIds` set belongs at the
+// exact same level, for the exact same reason: it is the one component that
+// sits ABOVE both <AssetTile> (the grid) and <AdminAssetViewer> (the
+// full-screen viewer), so neither surface can lose it by unmounting. If this
+// set lived inside a tile, it would die with that tile on every re-render of
+// the list; if it lived inside the viewer, closing the viewer would forget
+// it. Putting it here is not an added feature on top of "don't lose the
+// mark on open" — it IS how that requirement is satisfied, structurally,
+// the same way `pendingFinalsCount`'s own bug (task #86, see this file's own
+// comment below) was fixed by moving the ONE live value up here instead of
+// letting a sibling read a stale snapshot.
+//
+// NAMING — NOT `selected`/`selection`, ANYWHERE IN THIS FEATURE
+// ================================================================
+// This codebase's `isSelected`/`selected` already names a DIFFERENT,
+// pre-existing fact: the CLIENT's own pick during proofing (PLAN.md §2,
+// `assets.isSelected`, `computeQuota`), which `asset-tile.tsx` already
+// renders as an "Elegida" badge. The photographer's bulk-delete mark added
+// here is a SEPARATE, ephemeral, UI-only concept — it carries no money, no
+// quota, and does not survive a reload — so it gets its own name throughout:
+// `markedIds` (a `Set<string>` of asset ids), never `selectedIds`. A reader
+// skimming this file for "selection" state must find exactly the client's
+// fact and nothing else; a same-named UI concern sitting right next to it
+// would be the kind of collision that gets a photographer bulk-deleting
+// photos they believe are still just the client's picks. See
+// asset-tile.tsx's own header for the other half of this same guard (the
+// "Elegida" badge vs. the marking checkbox's own distinct styling).
 import { useCallback, useMemo, useState } from "react";
+import { AdminAssetViewer } from "@/components/admin-asset-viewer";
 import { AssetTile } from "@/components/asset-tile";
 import { ProofUploader } from "@/components/proof-uploader";
 import { DeliverGalleryButton } from "@/components/deliver-gallery-button";
@@ -112,6 +145,115 @@ export function GalleryWorkspace({
     );
   }, []);
 
+  // Task #195: the bulk-op mark — see this file's own header comment for why
+  // it lives here and not inside a tile or the viewer, and why it is never
+  // named `selected`.
+  const [markedIds, setMarkedIds] = useState<Set<string>>(() => new Set());
+
+  const handleToggleMarked = useCallback((assetId: string) => {
+    setMarkedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(assetId)) {
+        next.delete(assetId);
+      } else {
+        next.add(assetId);
+      }
+      return next;
+    });
+  }, []);
+
+  // The full-screen viewer's open asset, tracked by ID rather than by index
+  // into `sorted`. An index would go stale the instant a bulk delete (or any
+  // future reorder) shifts what sits at that position; resolving the index
+  // fresh from `sorted` on every render — see `viewerIndex` below — means
+  // the viewer always shows exactly the asset it claims to, or closes itself
+  // outright when that asset no longer exists (see `handleBulkDeleted`).
+  const [viewerAssetId, setViewerAssetId] = useState<string | null>(null);
+  const viewerIndex = useMemo(
+    () => (viewerAssetId ? sorted.findIndex((asset) => asset.id === viewerAssetId) : -1),
+    [sorted, viewerAssetId],
+  );
+
+  const handleOpenViewer = useCallback((assetId: string) => {
+    setViewerAssetId(assetId);
+  }, []);
+  const handleCloseViewer = useCallback(() => {
+    setViewerAssetId(null);
+  }, []);
+  const handleNavigateViewer = useCallback(
+    (nextIndex: number) => {
+      setViewerAssetId(sorted[nextIndex]?.id ?? null);
+    },
+    [sorted],
+  );
+
+  const [bulkDeleteBusy, setBulkDeleteBusy] = useState(false);
+  const [bulkDeleteError, setBulkDeleteError] = useState<string | null>(null);
+
+  // Task #195: one request for the whole marked set — see
+  // src/app/api/assets/bulk-delete/route.ts's own header for why this is a
+  // dedicated endpoint rather than N calls to the single-asset DELETE route.
+  //
+  // RECONCILED AGAINST THE SERVER'S OWN ANSWER, NOT ASSUMED OPTIMISTICALLY:
+  // this only ever removes ids the response actually reports `deleted`, and
+  // only ever clears the mark for THOSE ids — an id the gate refused (still
+  // `gallery_locked`, say) stays both in `assets` and in `markedIds`, exactly
+  // as if the photographer had never clicked anything for it. An optimistic
+  // "clear everything marked, then reconcile" would briefly show the grid
+  // lying about what the server actually did.
+  const handleBulkDelete = useCallback(async () => {
+    if (bulkDeleteBusy || markedIds.size === 0) return;
+    const assetIds = [...markedIds];
+    if (
+      !window.confirm(
+        `¿Eliminar ${assetIds.length} foto${assetIds.length === 1 ? "" : "s"} marcada${assetIds.length === 1 ? "" : "s"}? Esta acción no se puede deshacer.`,
+      )
+    ) {
+      return;
+    }
+    setBulkDeleteBusy(true);
+    setBulkDeleteError(null);
+    try {
+      const response = await fetch("/api/assets/bulk-delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ assetIds }),
+      });
+      if (!response.ok) {
+        setBulkDeleteError("No se pudo eliminar.");
+        return;
+      }
+      const body = (await response.json()) as {
+        deleted: string[];
+        failed: { id: string; error: string }[];
+      };
+      const deletedSet = new Set(body.deleted);
+      setAssets((prev) => prev.filter((asset) => !deletedSet.has(asset.id)));
+      setMarkedIds((prev) => {
+        const next = new Set(prev);
+        for (const id of body.deleted) next.delete(id);
+        return next;
+      });
+      // The viewer was showing an asset that just got deleted out from under
+      // it — close it rather than leave it pointing at nothing (`asset` in
+      // <AdminAssetViewer> would be `undefined` for an out-of-range index,
+      // which it already treats as "render nothing", but closing is the
+      // honest state here, not a silent blank screen).
+      if (viewerAssetId && deletedSet.has(viewerAssetId)) {
+        setViewerAssetId(null);
+      }
+      if (body.failed.length > 0) {
+        setBulkDeleteError(
+          `No se ${body.failed.length === 1 ? "pudo eliminar 1 foto" : `pudieron eliminar ${body.failed.length} fotos`}.`,
+        );
+      }
+    } catch {
+      setBulkDeleteError("No se pudo conectar.");
+    } finally {
+      setBulkDeleteBusy(false);
+    }
+  }, [bulkDeleteBusy, markedIds, viewerAssetId]);
+
   return (
     <div className="flex flex-col gap-6">
       <ProofUploader galleryId={galleryId} onUploaded={handleUploaded} />
@@ -133,12 +275,76 @@ export function GalleryWorkspace({
               asset={asset}
               isFirst={index === 0}
               isLast={index === sorted.length - 1}
+              isMarked={markedIds.has(asset.id)}
               onDeleted={handleDeleted}
               onMoved={handleMoved}
               onFinalUploaded={handleFinalUploaded}
+              onOpen={() => handleOpenViewer(asset.id)}
+              onToggleMarked={handleToggleMarked}
             />
           ))}
         </ul>
+      )}
+
+      {/* Task #195: the bulk-delete bar, only present once at least one
+          photo is marked — no reason to occupy space in the common case
+          (nothing marked). Placement mirrors the sticky "Entregar galería"
+          bar right below it (task #133's own reasoning: reachable one-handed
+          after scrolling past a long grid), but this is a SEPARATE bar, not
+          folded into that one — the two are unrelated actions gated on
+          unrelated state (`markedIds` here vs. `canDeliver`/`selectedCount`
+          there), and conflating them would make either one harder to reason
+          about in isolation. */}
+      {markedIds.size > 0 && (
+        <div className="bg-bg/90 sticky bottom-[calc(var(--app-tabbar-h)+8px)] z-20 flex flex-wrap items-center justify-between gap-4 rounded-[6px] border border-[#e0796b]/60 p-3 backdrop-blur-sm lg:static lg:bg-transparent lg:backdrop-blur-none">
+          <p className="text-fg-dim text-sm">
+            {markedIds.size} foto{markedIds.size === 1 ? "" : "s"} marcada
+            {markedIds.size === 1 ? "" : "s"} para borrar.
+          </p>
+          <div className="flex items-center gap-3">
+            {bulkDeleteError && (
+              <p className="text-xs text-[#e0796b]" role="alert">
+                {bulkDeleteError}
+              </p>
+            )}
+            {/* `#e0796b` directly, not the `app-danger` Tailwind utility —
+                see asset-tile.tsx's own comment on this same choice: that
+                utility only paints under `[data-surface="app"]`, and this
+                file's name doesn't qualify for eslint.config.mjs's
+                `no-restricted-syntax` exemption even though it only ever
+                renders inside the dashboard. */}
+            <button
+              type="button"
+              disabled={bulkDeleteBusy}
+              onClick={() => void handleBulkDelete()}
+              className="min-h-9 rounded-[4px] border border-[#e0796b] px-3 text-xs font-semibold tracking-[0.04em] text-[#e0796b] uppercase transition-colors hover:bg-[#e0796b] hover:text-[#1a0d0a] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {bulkDeleteBusy
+                ? "Eliminando…"
+                : `Eliminar ${markedIds.size} marcada${markedIds.size === 1 ? "" : "s"}`}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Task #195: mounted only while an asset is actually being viewed —
+          `viewerIndex` resolves fresh from `sorted` on every render (see its
+          own comment above), so this naturally stops rendering the instant
+          the asset it was showing no longer exists, with no separate
+          "close because deleted" branch to keep in sync. `markedIds`/
+          `handleToggleMarked` are the SAME instances the grid above uses —
+          this is the "state lives above both surfaces" requirement made
+          concrete: there is exactly one Set, read and written from either
+          place. */}
+      {viewerIndex !== -1 && (
+        <AdminAssetViewer
+          assets={sorted}
+          index={viewerIndex}
+          markedIds={markedIds}
+          onToggleMarked={handleToggleMarked}
+          onClose={handleCloseViewer}
+          onNavigate={handleNavigateViewer}
+        />
       )}
 
       {/* Task #133's mobile-first note, LA decisión de esta pantalla: after

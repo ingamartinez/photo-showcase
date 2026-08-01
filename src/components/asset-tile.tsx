@@ -17,6 +17,25 @@
 // unchanged in text/role, on purpose: this file's own existing tests (task
 // #20/#26) already prove those interactions work, and this slice is a
 // restyle, not a rewrite of the interaction model.
+//
+// Task #195 adds two more controls on THIS thumbnail: clicking the image
+// opens <AdminAssetViewer> (the full-screen, object-contain view — the
+// mirror-image request the owner made of #134's own crop) via `onOpen`, and
+// a bulk-op "marked" checkbox via `isMarked`/`onToggleMarked`. Neither piece
+// of state is OWNED here: both are lifted to <GalleryWorkspace>, which is
+// what makes "open a marked photo full screen without losing the mark" true
+// — see that file's own header comment. This tile only ever reads
+// `isMarked` and reports a toggle upward; it holds no state of its own for
+// either feature.
+//
+// NAMING, ON PURPOSE: `isMarked`/`onToggleMarked`, never `selected`/
+// `isSelected`/`onToggleSelection` — `asset.isSelected` two lines below is
+// already a DIFFERENT fact (the CLIENT's choice, task #24), and the
+// "Elegida" badge already renders it. Confusing the two names here would be
+// exactly the trap gallery-workspace.tsx's header comment calls out: a
+// photographer bulk-deleting what they believe is their own admin-side
+// pick, when the code actually marked the client's already-committed
+// selection.
 import { useRef, useState } from "react";
 import type { WorkspaceAsset } from "@/components/gallery-workspace";
 import { cn } from "@/lib/utils";
@@ -25,16 +44,29 @@ export function AssetTile({
   asset,
   isFirst,
   isLast,
+  isMarked,
   onDeleted,
   onMoved,
   onFinalUploaded,
+  onOpen,
+  onToggleMarked,
 }: {
   asset: WorkspaceAsset;
   isFirst: boolean;
   isLast: boolean;
+  // Task #195: whether the PHOTOGRAPHER marked this tile for a bulk
+  // operation — owned by <GalleryWorkspace>, read-only here. Distinct from
+  // `asset.isSelected` (the client's own pick) — see the file header.
+  isMarked: boolean;
   onDeleted: (assetId: string) => void;
   onMoved: (updates: { id: string; sortOrder: number }[]) => void;
   onFinalUploaded: (assetId: string) => void;
+  // Task #195: opens <AdminAssetViewer> on this tile's own asset. Takes no
+  // argument — <GalleryWorkspace> already knows which asset this tile is
+  // for (it's the one bound in the `.map()` that renders this component),
+  // so there is nothing this tile needs to hand back beyond "open".
+  onOpen: () => void;
+  onToggleMarked: (assetId: string) => void;
 }) {
   const [src, setSrc] = useState(asset.proofUrl);
   const [refreshedOnce, setRefreshedOnce] = useState(false);
@@ -187,22 +219,41 @@ export function AssetTile({
             `getPresignedUrl` or the read route — signing is a local HMAC,
             not an R2 round trip, so 84 signatures were never the cost (see
             this task's own kanban body for why that's a decoy). */}
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={src}
-          alt={asset.originalFilename}
-          loading="lazy"
-          decoding="async"
-          onError={() => void handleImgError()}
-          className="h-full w-full object-cover"
-        />
+        {/* Task #195: the whole image is the "open full screen" control.
+            A real <button>, not a click handler on a bare <img> or a
+            keyboard-inaccessible <div>, so Enter/Space already work with no
+            extra wiring. The badges, filename and marking checkbox below
+            are SIBLINGS, not children — an interactive <button> (the
+            marking checkbox) cannot legally nest inside another <button>
+            (this one). They paint on top of this one by ordinary DOM
+            stacking (later siblings paint over earlier ones at the same
+            `z-index: auto`), and a click always targets the topmost element
+            at that point, so the checkbox intercepts its own clicks without
+            needing `stopPropagation` — they are siblings, not ancestor and
+            descendant, so a click on one never bubbles into the other. */}
+        <button
+          type="button"
+          onClick={onOpen}
+          aria-label={`Ver ${asset.originalFilename} en grande`}
+          className="absolute inset-0 block h-full w-full cursor-zoom-in"
+        >
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img
+            src={src}
+            alt={asset.originalFilename}
+            loading="lazy"
+            decoding="async"
+            onError={() => void handleImgError()}
+            className="h-full w-full object-cover"
+          />
+        </button>
 
         {/* State badges, at a glance across the whole grid — task #134.
             Neither is colour-only: "Elegida" is a real word, and the final
             badge carries a "✓" glyph plus a title, matching the mock's own
             `.asset__flag` / `.asset__final` (dashboard.html:443-455). */}
         {asset.isSelected && (
-          <span className="bg-accent absolute top-1 left-1 rounded-full px-1.5 py-0.5 text-[9px] font-bold tracking-[0.04em] text-[#14100a] uppercase">
+          <span className="bg-accent pointer-events-none absolute top-1 left-1 rounded-full px-1.5 py-0.5 text-[9px] font-bold tracking-[0.04em] text-[#14100a] uppercase">
             Elegida
           </span>
         )}
@@ -210,7 +261,7 @@ export function AssetTile({
           <span
             title="Final subido"
             aria-hidden="true"
-            className="absolute top-1 right-1 flex size-4 items-center justify-center rounded-full bg-[#7a9b82] text-[10px] font-bold text-[#08150c]"
+            className="pointer-events-none absolute top-1 right-1 flex size-4 items-center justify-center rounded-full bg-[#7a9b82] text-[10px] font-bold text-[#08150c]"
           >
             ✓
           </span>
@@ -229,8 +280,45 @@ export function AssetTile({
           aria-hidden="true"
           className="pointer-events-none absolute inset-x-0 bottom-0 h-8 bg-gradient-to-t from-black/75 to-transparent"
         />
+
+        {/* Task #195's "marked" checkbox — bottom-left, over the same scrim
+            the filename sits on. Deliberately NOT styled like "Elegida"
+            (top-left, brass pill, plain text): different corner, different
+            shape (a small square checkbox instead of a text pill), and the
+            SAME `#e0796b` danger red this file already uses for its own
+            inline error text (the `error`/`finalError` paragraphs below) —
+            reused, not a new colour invented for this, and a semantically
+            honest one: the only thing this mark does is queue the photo for
+            bulk deletion. `#e0796b` directly, not the `app-danger` Tailwind
+            utility: that utility only paints under `[data-surface="app"]`
+            (globals.css, task #175) and eslint.config.mjs's own
+            `no-restricted-syntax` rule refuses it outside
+            `src/app/dashboard/**`/`src/components/dashboard-*`, which this
+            file's own name is neither — even though it only ever renders
+            inside the dashboard. See the file header for why this is
+            `isMarked`/`onToggleMarked`, never `selected`. */}
+        <button
+          type="button"
+          onClick={() => onToggleMarked(asset.id)}
+          aria-pressed={isMarked}
+          aria-label={
+            isMarked
+              ? `Desmarcar ${asset.originalFilename}`
+              : `Marcar ${asset.originalFilename} para borrar`
+          }
+          className={cn(
+            "absolute bottom-1.5 left-1.5 flex size-4 items-center justify-center rounded-[3px] border transition-colors",
+            isMarked
+              ? "border-[#e0796b] bg-[#e0796b] text-[#1a0d0a]"
+              : "border-fg-dim/70 bg-black/40 text-transparent hover:border-[#e0796b]",
+          )}
+        >
+          <span aria-hidden="true" className="text-[10px] leading-none font-bold">
+            ✓
+          </span>
+        </button>
         <p
-          className="text-fg-dim absolute right-1.5 bottom-1 left-1.5 truncate font-mono text-[9px]"
+          className="text-fg-dim pointer-events-none absolute right-1.5 bottom-1 left-7 truncate font-mono text-[9px]"
           title={asset.originalFilename}
         >
           {asset.originalFilename}

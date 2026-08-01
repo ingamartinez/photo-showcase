@@ -71,11 +71,12 @@ function eqConditions(condition: unknown): { column?: string; value?: unknown }[
 }
 
 vi.mock("@/lib/db", async () => {
-  const { assets, galleries, galleryClients } = await import("@/lib/db/schema");
+  const { assets, galleries, galleryClients, users } = await import("@/lib/db/schema");
 
   const assetRows: Row[] = [];
   const galleryRows: Row[] = [];
   const galleryClientRows: Row[] = [];
+  const userRows: Row[] = [];
 
   function project(row: Row, columns: Record<string, unknown> | undefined): Row {
     if (!columns) return row;
@@ -88,6 +89,10 @@ vi.mock("@/lib/db", async () => {
     if (table === assets) return assetRows;
     if (table === galleries) return galleryRows;
     if (table === galleryClients) return galleryClientRows;
+    // Task #206 — the type-only-change branch looks up a DIFFERENT picker's
+    // name when the acting session isn't the original one; see this route's
+    // own comment on why it never substitutes the acting session's name.
+    if (table === users) return userRows;
     throw new Error("fake db: unsupported table in select().where()");
   }
 
@@ -137,14 +142,19 @@ vi.mock("@/lib/db", async () => {
         }),
       }),
       // Test-only escape hatch, not part of the real `db` shape.
-      __rows: { assets: assetRows, galleries: galleryRows, galleryClients: galleryClientRows },
+      __rows: {
+        assets: assetRows,
+        galleries: galleryRows,
+        galleryClients: galleryClientRows,
+        users: userRows,
+      },
     },
   };
 });
 
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
-    db: { __rows: { assets: Row[]; galleries: Row[]; galleryClients: Row[] } };
+    db: { __rows: { assets: Row[]; galleries: Row[]; galleryClients: Row[]; users: Row[] } };
   };
   return db;
 }
@@ -204,6 +214,9 @@ function assetRow(overrides: Partial<Row> = {}): Row {
     proofHeight: 1067,
     isSelected: false,
     selectedAt: null,
+    // Task #206 — the domain's own default; the tests exercising a type
+    // change override this explicitly.
+    selectionKind: "edited",
     isEdited: false,
     sortOrder: 0,
     createdAt: new Date("2026-07-02"),
@@ -216,6 +229,14 @@ function requestFor(assetId: string, selected: boolean): NextRequest {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ selected }),
+  });
+}
+
+function requestBody(assetId: string, body: Record<string, unknown>): NextRequest {
+  return new NextRequest(`http://localhost:3300/api/assets/${assetId}/selection`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
   });
 }
 
@@ -233,6 +254,7 @@ beforeEach(async () => {
   db.__rows.galleries.length = 0;
   db.__rows.assets.length = 0;
   db.__rows.galleryClients.length = 0;
+  db.__rows.users.length = 0;
   db.__rows.galleries.push(galleryRow());
   db.__rows.assets.push(assetRow({ id: ASSET_1_ID, sortOrder: 0 }));
   // Task #94: ownership is now a `gallery_clients` row, not a `clientId`
@@ -637,6 +659,247 @@ describe("PATCH /api/assets/[assetId]/selection — persistence and quota recomp
       originalsSurchargeCop: 0,
       surchargeCop: 5_000,
     });
+  });
+});
+
+describe("PATCH /api/assets/[assetId]/selection — setting the type (task #206)", () => {
+  // Criterion 1 — mark a picked photo `original`, then back to `edited`.
+  it("sets selection_kind on an already-selected asset without touching is_selected", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.assets[0] = assetRow({ isSelected: true, selectionKind: "edited" });
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+    const body = (await response.json()) as {
+      asset: { isSelected: boolean; selectionKind: string };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.asset.isSelected).toBe(true);
+    expect(body.asset.selectionKind).toBe("original");
+    expect(db.__rows.assets[0]?.selectionKind).toBe("original");
+    expect(db.__rows.assets[0]?.isSelected).toBe(true);
+
+    // And back — criterion 1's own round trip.
+    const back = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "edited" }),
+      paramsFor(ASSET_1_ID),
+    );
+    const backBody = (await back.json()) as { asset: { selectionKind: string } };
+    expect(backBody.asset.selectionKind).toBe("edited");
+    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
+  });
+
+  // Criterion 2, first half — a type change is not a deselect.
+  it("never touches is_selected, selected_at or selected_by on a type-only change", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    const selectedAt = new Date("2026-07-10T00:00:00.000Z");
+    db.__rows.assets[0] = assetRow({
+      isSelected: true,
+      selectedAt,
+      selectedBy: "client-a",
+      selectionKind: "edited",
+    });
+    const { PATCH } = await import("./route");
+
+    await PATCH(requestBody(ASSET_1_ID, { selectionKind: "original" }), paramsFor(ASSET_1_ID));
+
+    expect(db.__rows.assets[0]?.isSelected).toBe(true);
+    expect(db.__rows.assets[0]?.selectedAt).toBe(selectedAt);
+    expect(db.__rows.assets[0]?.selectedBy).toBe("client-a");
+  });
+
+  // Criterion 2, second half — deselecting and re-selecting returns to
+  // `edited`, even though the asset was `original` a moment ago.
+  it("resets selection_kind to edited when the plain select control re-selects a photo that was marked original", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.assets[0] = assetRow({ isSelected: true, selectionKind: "original" });
+    const { PATCH } = await import("./route");
+
+    // Deselect (the plain toggle, no `selectionKind` in the body).
+    await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
+
+    // Re-select.
+    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
+    const body = (await response.json()) as { asset: { selectionKind: string } };
+
+    expect(body.asset.selectionKind).toBe("edited");
+    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
+  });
+
+  // The trap named in the task body: a photo that is not selected has no
+  // type. Refused with 409, the same "authorized caller, wrong asset state"
+  // shape the lock gate above uses — not silently accepted, not a 404 (the
+  // asset is real and this client does own it).
+  it("refuses a type-only change on an asset that is not selected", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.assets[0] = assetRow({ isSelected: false, selectionKind: "edited" });
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "asset_not_selected" });
+    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
+  });
+
+  // The state gate applies to a type change exactly as it applies to a
+  // toggle — the task body's own named trap ("es fácil acordarse de gatear
+  // 'elegir' y olvidarse de gatear 'cambiar el tipo'"). At least two of the
+  // three locked statuses, per criterion 6.
+  it.each(["selected", "delivered"])(
+    "refuses a type-only change with 409 when the gallery status is %s, without touching selection_kind",
+    async (status) => {
+      authMock.mockResolvedValue(clientASession());
+      const db = await seededDb();
+      db.__rows.galleries.length = 0;
+      db.__rows.galleries.push(galleryRow({ status }));
+      db.__rows.assets[0] = assetRow({ isSelected: true, selectionKind: "edited" });
+      const { PATCH } = await import("./route");
+
+      const response = await PATCH(
+        requestBody(ASSET_1_ID, { selectionKind: "original" }),
+        paramsFor(ASSET_1_ID),
+      );
+
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({ error: "gallery_locked" });
+      expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
+    },
+  );
+
+  it("refuses a type-only change with 409 when the gallery status is archived, for an admin too — the lock applies to everyone", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ status: "archived" }));
+    db.__rows.assets[0] = assetRow({ isSelected: true, selectionKind: "edited" });
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "gallery_locked" });
+    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
+  });
+
+  it("rejects a body with neither selected nor selectionKind", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestBody(ASSET_1_ID, {}), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_body" });
+  });
+
+  it("rejects an invalid selectionKind value", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.assets[0] = assetRow({ isSelected: true });
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "premium" }),
+      paramsFor(ASSET_1_ID),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_body" });
+  });
+
+  // The quota split: an original never draws from the included-photos quota,
+  // no matter how much room the quota has left. THE test that distinguishes
+  // a correct implementation from one that ignores the split — both terms
+  // non-zero, chosen so neither is a multiple of the other.
+  it("recomputes the quota split between edited and original picks after a type change", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ includedPhotosSnapshot: 2 }));
+    // ASSET_1 is about to become `original`. Three more edited picks put the
+    // edited count at 3, one over the included 2.
+    db.__rows.assets[0] = assetRow({ isSelected: true, selectionKind: "edited" });
+    db.__rows.assets.push(
+      assetRow({ id: ASSET_2_ID, isSelected: true, selectionKind: "edited", sortOrder: 1 }),
+      assetRow({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
+        isSelected: true,
+        selectionKind: "edited",
+        sortOrder: 2,
+      }),
+      assetRow({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4",
+        isSelected: true,
+        selectionKind: "edited",
+        sortOrder: 3,
+      }),
+    );
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+    const body = (await response.json()) as {
+      quota: {
+        selectedEdited: number;
+        selectedOriginal: number;
+        extras: number;
+        originals: number;
+        surchargeCop: number;
+      };
+    };
+
+    // 3 edited (ASSET_2/3/4) -> 1 over the 2 included -> 5_000 edited surcharge.
+    // 1 original (ASSET_1) -> 2_000 more, additive, never drawing from the
+    // included quota that still has room.
+    expect(body.quota.selectedEdited).toBe(3);
+    expect(body.quota.selectedOriginal).toBe(1);
+    expect(body.quota.extras).toBe(1);
+    expect(body.quota.originals).toBe(1);
+    expect(body.quota.surchargeCop).toBe(5_000 + 2_000);
+  });
+
+  // The race this route's OWN attribution logic guards against: client B
+  // changes the type of a photo client A picked. The response must name A,
+  // not mislabel B's own name onto A's id.
+  it("reports the ORIGINAL picker's own name, not the acting session's, on a type-only change made by someone else", async () => {
+    authMock.mockResolvedValue({
+      user: { id: "client-b", role: "client", email: "b@example.com", name: "Beto Ruiz" },
+      expires: "2099-01-01T00:00:00.000Z",
+    });
+    const db = await seededDb();
+    // Task #94: both clients attached to the same gallery.
+    db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
+    db.__rows.assets[0] = assetRow({ isSelected: true, selectedBy: "client-a" });
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+    const body = (await response.json()) as { asset: { pickedBy: { id: string; label: string } } };
+
+    // Not seeded into the fake `users` table at all in this suite, so the
+    // lookup finds nothing and this asserts the SAFE fallback — see the
+    // route's own comment on why it never substitutes the acting session's
+    // name for a different picker's id.
+    expect(body.asset.pickedBy).toBeNull();
   });
 });
 

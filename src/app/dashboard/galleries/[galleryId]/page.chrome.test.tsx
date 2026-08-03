@@ -378,8 +378,14 @@ describe("GalleryDetailPage chrome", () => {
     const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
     render(element);
 
-    expect(screen.getByText("IMG_0001.JPG")).toBeDefined();
-    expect(screen.getByText("IMG_0002.JPG")).toBeDefined();
+    // `getByTitle`, not `getByText`: task #216's <SelectedPhotosList> also
+    // renders the selected asset's own filename (IMG_0002.JPG, in its own
+    // copyable list further down the page), so a bare `getByText` would now
+    // find it twice. The tile's filename caption is the only element with a
+    // `title` attribute set to it (asset-tile.tsx), which keeps this
+    // assertion pinned to the GRID specifically.
+    expect(screen.getByTitle("IMG_0001.JPG")).toBeDefined();
+    expect(screen.getByTitle("IMG_0002.JPG")).toBeDefined();
     const images = screen.getAllByRole("img");
     expect(images).toHaveLength(2);
     expect(images[0]?.getAttribute("src")).toBe(

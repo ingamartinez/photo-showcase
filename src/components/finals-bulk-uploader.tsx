@@ -76,17 +76,40 @@ function statusLabel(item: UploadItem): string {
   }
 }
 
+/** Several ambiguity reasons list assets/files that can legitimately share
+ * the EXACT same displayed name — "duplicate_asset_basename" is precisely
+ * the case of two selected assets whose `originalFilename` is identical
+ * (the "two memory cards" scenario), and once that pairing also ambiguates
+ * a file (`file_matches_multiple_assets`), that reason's own `assets` list
+ * carries the same literal string twice. Showing it twice ("coincide con
+ * varias fotos elegidas (DSC_0001.JPG, DSC_0001.JPG)") tells the
+ * photographer nothing they didn't already know from the first name — de-
+ * duplicated, order preserved. */
+function dedupeNames(names: string[]): string[] {
+  return [...new Set(names)];
+}
+
 /** Spanish, one-line explanation of WHY a pairing was excluded — the
  * reviewer's whole job is to make this legible without the photographer
  * having to reason about the matcher's own rules. */
 function ambiguousReasonText(entry: AmbiguousMatch): string {
   switch (entry.reason) {
-    case "duplicate_asset_basename":
-      return `${entry.assets.map((asset) => asset.originalFilename).join(" / ")}: mismo nombre entre fotos elegidas, no se puede distinguir cuál es cuál.`;
-    case "file_matches_multiple_assets":
-      return `${entry.fileName} coincide con varias fotos elegidas (${entry.assets.map((asset) => asset.originalFilename).join(", ")}).`;
-    case "asset_matches_multiple_files":
-      return `${entry.asset.originalFilename} coincide con varios archivos (${entry.fileNames.join(", ")}).`;
+    case "duplicate_asset_basename": {
+      const names = dedupeNames(entry.assets.map((asset) => asset.originalFilename));
+      return `${names.join(" / ")}: mismo nombre entre fotos elegidas, no se puede distinguir cuál es cuál.`;
+    }
+    case "file_matches_multiple_assets": {
+      const names = dedupeNames(entry.assets.map((asset) => asset.originalFilename));
+      return names.length === 1
+        ? `${entry.fileName} coincide con varias fotos elegidas que comparten el nombre ${names[0]}.`
+        : `${entry.fileName} coincide con varias fotos elegidas (${names.join(", ")}).`;
+    }
+    case "asset_matches_multiple_files": {
+      const names = dedupeNames(entry.fileNames);
+      return names.length === 1
+        ? `${entry.asset.originalFilename} coincide con varios archivos con el mismo nombre (${names[0]}).`
+        : `${entry.asset.originalFilename} coincide con varios archivos (${names.join(", ")}).`;
+    }
   }
 }
 

@@ -105,6 +105,45 @@ describe("matchFinalFiles", () => {
     expect(plan.assetsWithoutFile).toEqual([a2]);
   });
 
+  // Review-caught gap (#217 secundario 3): only `-` and `_` were exercised
+  // among the five characters in `SUFFIX_SEPARATORS` — reducing the set to
+  // just those two left the suite green. One test per remaining separator.
+  it("matches a suffix separated by a space", () => {
+    const plan = matchFinalFiles([asset("a1", "DSC_0123.JPG")], ["DSC_0123 final.jpg"]);
+    expect(plan.matches).toHaveLength(1);
+    expect(plan.matches[0]).toMatchObject({ asset: asset("a1", "DSC_0123.JPG"), fileIndex: 0 });
+  });
+
+  it("matches a suffix separated by an opening parenthesis", () => {
+    const plan = matchFinalFiles([asset("a1", "DSC_0123.JPG")], ["DSC_0123(1).jpg"]);
+    expect(plan.matches).toHaveLength(1);
+    expect(plan.matches[0]).toMatchObject({ asset: asset("a1", "DSC_0123.JPG"), fileIndex: 0 });
+  });
+
+  it("matches a suffix separated by a dot — e.g. DSC_0123.final.jpg, only the LAST dot is stripped as the extension", () => {
+    const plan = matchFinalFiles([asset("a1", "DSC_0123.JPG")], ["DSC_0123.final.jpg"]);
+    expect(plan.matches).toHaveLength(1);
+    expect(plan.matches[0]).toMatchObject({ asset: asset("a1", "DSC_0123.JPG"), fileIndex: 0 });
+  });
+
+  // Review-caught gap (#217 secundario 4): the asset-side precedence guard
+  // (`assetsWithExact`, skipping an asset that already has an exact match
+  // before even trying a suffix pass) is covered above ("prefers an exact
+  // match…"), but the FILE-side guard (`filesWithExact`, refusing to let a
+  // file that already has an exact match with one asset ALSO suffix-match a
+  // different asset) had no test of its own.
+  it("does not let a file that already has an exact match steal a suffix match with a different asset", () => {
+    const a1 = asset("a1", "IMG_1.JPG");
+    const a2 = asset("a2", "IMG.JPG");
+    const plan = matchFinalFiles([a1, a2], ["IMG_1.jpg"]);
+    // Without the file-side guard, "IMG_1.jpg" would ALSO suffix-match a2
+    // ("img" + "_1" — "_" is a valid separator), turning a1's clean exact
+    // match into a false "file matches multiple assets" ambiguity.
+    expect(plan.matches).toEqual([{ asset: a1, fileIndex: 0, fileName: "IMG_1.jpg" }]);
+    expect(plan.ambiguous).toEqual([]);
+    expect(plan.assetsWithoutFile).toEqual([a2]);
+  });
+
   it("prefers an exact match over a suffix match for the same asset when both are present among different files", () => {
     const a1 = asset("a1", "DSC_0123.JPG");
     const plan = matchFinalFiles([a1], ["DSC_0123-Edit.jpg", "DSC_0123.jpg"]);

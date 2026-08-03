@@ -176,6 +176,68 @@ describe("FinalsBulkUploader", () => {
     );
   });
 
+  // Review-caught gap (#217 bloqueante 1): `handleConfirm` reads
+  // `pendingFiles[match.fileIndex]`, NOT `pendingFiles[index]` — `index` is
+  // the match's position within `plan.matches`, `fileIndex` is its position
+  // within the ORIGINAL chosen-file list. The two only coincide when every
+  // chosen file matched something, which every other test in this file
+  // happens to set up. A stray unmatched file placed BEFORE the matching
+  // ones is what makes them diverge — this is the ordinary shape of a real
+  // batch (some exported extras, some leftovers), not a contrived edge case.
+  it("uploads each match's own file, not the file sitting at that match's position — a stray unmatched file earlier in the list must not shift the pairing", async () => {
+    const calls: { url: string; fileName: string | undefined }[] = [];
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      const formData = init!.body as FormData;
+      const file = formData.get("file") as File | null;
+      calls.push({ url: String(url), fileName: file?.name });
+      return Promise.resolve(jsonResponse(200, {}));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const a1 = makeAsset({ id: "a1", originalFilename: "DSC_0002.JPG" });
+    const a2 = makeAsset({ id: "a2", originalFilename: "DSC_0003.JPG" });
+    const user = userEvent.setup();
+    render(<FinalsBulkUploader selectedAssets={[a1, a2]} onFinalUploaded={onFinalUploaded} />);
+
+    await user.upload(document.querySelector("input[type=file]")!, [
+      makeFile("STRAY.jpg"),
+      makeFile("DSC_0002.jpg"),
+      makeFile("DSC_0003.jpg"),
+    ]);
+    await screen.findByText(/2 emparejadas/);
+
+    await user.click(screen.getByRole("button", { name: /Confirmar y subir/ }));
+
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(2));
+
+    expect(calls).toEqual([
+      { url: "/api/assets/a1/final", fileName: "DSC_0002.jpg" },
+      { url: "/api/assets/a2/final", fileName: "DSC_0003.jpg" },
+    ]);
+  });
+
+  // Review-caught gap (#217 secundario 5): when the SAME `originalFilename`
+  // shows up more than once in an ambiguity's own asset list (the "two
+  // memory cards" scenario, which trips BOTH `duplicate_asset_basename` and
+  // `file_matches_multiple_assets` for the same file — see
+  // final-filename-match.test.ts's own note on that), the message must not
+  // repeat the identical name.
+  it("de-duplicates a repeated asset name in the 'file matches multiple assets' message instead of showing it twice", async () => {
+    const a1 = makeAsset({ id: "a1", originalFilename: "DSC_0001.JPG" });
+    const a2 = makeAsset({ id: "a2", originalFilename: "DSC_0001.JPG" });
+    const user = userEvent.setup();
+    render(<FinalsBulkUploader selectedAssets={[a1, a2]} onFinalUploaded={onFinalUploaded} />);
+
+    await user.upload(document.querySelector("input[type=file]")!, [makeFile("DSC_0001.jpg")]);
+
+    expect(
+      await screen.findByText(
+        "DSC_0001.jpg coincide con varias fotos elegidas que comparten el nombre DSC_0001.JPG.",
+      ),
+    ).toBeDefined();
+    expect(screen.queryByText(/DSC_0001\.JPG, DSC_0001\.JPG/)).toBeNull();
+  });
+
   it("cancelling the proposed mapping clears it without uploading anything", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

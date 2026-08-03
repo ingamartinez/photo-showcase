@@ -209,6 +209,82 @@ describe("GalleryWorkspace", () => {
     await waitFor(() => expect(deliverButton()).toHaveProperty("disabled", false));
   });
 
+  // Review-caught gap (#217 bloqueante 2): neither of <FinalsBulkUploader>'s
+  // two props was exercised at the mount site — only finals-bulk-uploader
+  // .test.tsx's own unit tests, which never touch <GalleryWorkspace> at all.
+  describe("task #217 — bulk final upload, mounted", () => {
+    it("only maps chosen files against SELECTED assets — an unselected asset must never be an upload candidate", async () => {
+      const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(200, {})));
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      render(
+        <GalleryWorkspace
+          galleryId={GALLERY_ID}
+          initialAssets={[
+            assetFor({ id: "a1", originalFilename: "DSC_0001.JPG", isSelected: true }),
+            assetFor({ id: "a2", originalFilename: "DSC_0002.JPG", isSelected: false }),
+          ]}
+          clientEmails={[CLIENT_EMAIL]}
+          canDeliver={false}
+        />,
+      );
+
+      await user.upload(screen.getByLabelText("Elegir archivos"), [
+        new File(["bytes"], "DSC_0001.jpg", { type: "image/jpeg" }),
+        new File(["bytes"], "DSC_0002.jpg", { type: "image/jpeg" }),
+      ]);
+
+      // If the unselected a2 leaked into the matcher's candidate pool, this
+      // would read "2 emparejadas" and DSC_0002.jpg would never show up as
+      // unmatched below.
+      expect(await screen.findByText(/1 emparejada/)).toBeDefined();
+      expect(screen.getByText(/Sin destino: DSC_0002\.jpg/)).toBeDefined();
+    });
+
+    it("wires the bulk uploader's onFinalUploaded into the SAME live pending-finals counter the per-tile upload updates", async () => {
+      const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(200, {})));
+      vi.stubGlobal("fetch", fetchMock);
+      const user = userEvent.setup();
+
+      render(
+        <GalleryWorkspace
+          galleryId={GALLERY_ID}
+          initialAssets={[
+            assetFor({
+              id: "a1",
+              originalFilename: "DSC_0001.JPG",
+              isSelected: true,
+              hasFinal: false,
+            }),
+            assetFor({
+              id: "a2",
+              originalFilename: "DSC_0002.JPG",
+              isSelected: true,
+              hasFinal: false,
+            }),
+          ]}
+          clientEmails={[CLIENT_EMAIL]}
+          canDeliver={false}
+        />,
+      );
+
+      expect(screen.getByText("Faltan 2 de 2 finales por subir.")).toBeDefined();
+
+      await user.upload(screen.getByLabelText("Elegir archivos"), [
+        new File(["bytes"], "DSC_0001.jpg", { type: "image/jpeg" }),
+        new File(["bytes"], "DSC_0002.jpg", { type: "image/jpeg" }),
+      ]);
+      await screen.findByText(/2 emparejadas/);
+
+      await user.click(screen.getByRole("button", { name: /Confirmar y subir/ }));
+
+      await waitFor(() =>
+        expect(screen.getByText("Los 2 finales de la selección ya están subidos.")).toBeDefined(),
+      );
+    });
+  });
+
   describe("task #195 — full-screen viewer and bulk-delete marking", () => {
     it("opens the full-screen viewer on the asset whose thumbnail was clicked", async () => {
       const user = userEvent.setup();

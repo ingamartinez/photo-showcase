@@ -84,6 +84,7 @@ import {
 import { AdminAssetViewer } from "@/components/admin-asset-viewer";
 import { AssetTile } from "@/components/asset-tile";
 import { ProofUploader } from "@/components/proof-uploader";
+import { FinalsBulkUploader } from "@/components/finals-bulk-uploader";
 import { DeliverGalleryButton } from "@/components/deliver-gallery-button";
 import { compareByFilenameNatural } from "@/lib/natural-sort";
 
@@ -152,7 +153,8 @@ export function GalleryWorkspace({
   // that) — the bug this fixed was exactly two counters over the same fact,
   // disagreeing because only one of them updated after an upload. There is
   // only one now.
-  const selectedCount = useMemo(() => sorted.filter((asset) => asset.isSelected).length, [sorted]);
+  const selectedAssets = useMemo(() => sorted.filter((asset) => asset.isSelected), [sorted]);
+  const selectedCount = selectedAssets.length;
   const pendingFinalsCount = useMemo(
     () => sorted.filter((asset) => asset.isSelected && !asset.hasFinal).length,
     [sorted],
@@ -473,6 +475,19 @@ export function GalleryWorkspace({
   return (
     <div className="flex flex-col gap-6">
       <ProofUploader galleryId={galleryId} onUploaded={handleUploaded} />
+
+      {/* Task #217: bulk final upload, proposed-then-confirmed by filename
+          match — only meaningful once at least one photo is selected (no
+          candidates to map against otherwise). Shares the exact same
+          `handleFinalUploaded` the per-tile "Subir final" control already
+          uses (asset-tile.tsx), which stays untouched and reachable right
+          on the grid below — see this file's own header on
+          `pendingFinalsCount` for why there is exactly one live counter to
+          keep in sync, and this component updates it the same way a
+          single-tile upload does. */}
+      {selectedAssets.length > 0 && (
+        <FinalsBulkUploader selectedAssets={selectedAssets} onFinalUploaded={handleFinalUploaded} />
+      )}
 
       {/* Task #199: the alphabetical-sort action — an ACTION, not a mode
           (the owner's own explicit decision, this task's kanban body): once

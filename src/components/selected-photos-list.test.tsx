@@ -59,6 +59,26 @@ describe("SelectedPhotosList — summary count", () => {
     const summary = screen.getByText("Fotos seleccionadas (2)");
     expect(summary.closest("details")?.hasAttribute("open")).toBe(false);
   });
+
+  // A single-kind fixture makes `items.length` and `edited.length` (or
+  // `original.length`) the SAME number, so it cannot tell "counts the whole
+  // `items` array" apart from "counts one already-filtered group" — a 2-edited
+  // fixture would still read "(2)" even if `summary.tsx:85` were mutated from
+  // `items.length` to `edited.length`. Only a MIXED fixture, where the total
+  // (3) differs from either group (2 and 1), can distinguish the two.
+  it("counts the whole selection, not just one selectionKind group", () => {
+    render(
+      <SelectedPhotosList
+        items={[
+          makeItem("a", "IMG_1.JPG", "edited"),
+          makeItem("b", "IMG_2.JPG", "edited"),
+          makeItem("c", "IMG_3.JPG", "original"),
+        ]}
+      />,
+    );
+
+    expect(screen.getByText("Fotos seleccionadas (3)")).toBeDefined();
+  });
 });
 
 describe("SelectedPhotosList — mixed selectionKind (criterion 4, mixed branch)", () => {

@@ -396,6 +396,22 @@ describe("GalleryDetailPage chrome", () => {
     // stored, per PLAN.md §6) computed straight off the assets array.
     expect(screen.getByText("2")).toBeDefined();
     expect(screen.getByText("1")).toBeDefined();
+
+    // Task #216, and the guard a review caught missing: <SelectedPhotosList>
+    // must actually be mounted on this page (not just built and unused), AND
+    // it must receive the FILTERED list — only `a2` (`isSelected: true`), not
+    // `a1`. If the page's `.filter((asset) => asset.isSelected)` were ever
+    // deleted, a photographer reading "Fotos seleccionadas (N)" here would
+    // import the gallery's whole upload batch into Lightroom believing it was
+    // the client's pick — the exact "two reads subtracted" risk PLAN.md and
+    // this page's own comment on `selectedPhotos` call out for #206/#210.
+    // Scoped to the `<details>` element, not `screen`, because
+    // `IMG_0001.JPG`/`IMG_0002.JPG` also exist as tile captions in the grid
+    // above (see the `getByTitle` comment two assertions up).
+    const selectedList = screen.getByText("Fotos seleccionadas (1)").closest("details");
+    if (!selectedList) throw new Error("expected <SelectedPhotosList> to render a <details>");
+    expect(within(selectedList).getByText("IMG_0002.JPG")).toBeDefined();
+    expect(within(selectedList).queryByText("IMG_0001.JPG")).toBeNull();
   });
 
   it("renders the empty state and the upload widget when there are no assets yet", async () => {

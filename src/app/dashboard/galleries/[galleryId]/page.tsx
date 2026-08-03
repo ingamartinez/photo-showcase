@@ -24,6 +24,7 @@ import { AttachGalleryClientsForm } from "@/components/attach-gallery-clients-fo
 import { EditGalleryTermsDialog } from "@/components/edit-gallery-terms-dialog";
 import { AllowsOriginalSelectionControl } from "@/components/allows-original-selection-control";
 import { SelectionTrayModeControl } from "@/components/selection-tray-mode-control";
+import { SelectedPhotosList } from "@/components/selected-photos-list";
 import type { Gallery } from "@/lib/db/schema";
 
 export const metadata: Metadata = {
@@ -160,6 +161,18 @@ export default async function GalleryDetailPage({
     (asset) => asset.isSelected && asset.selectionKind === "original",
   ).length;
   const selectedEditedCount = selectedCount - selectedOriginalCount;
+  // Task #216 — the same `gallery.assets` filter as `selectedCount` above,
+  // not a second read of a different shape: only `id`/`originalFilename`/
+  // `selectionKind` survive the map, so <SelectedPhotosList> can never reach
+  // an R2 key even by accident (see that component's own header comment on
+  // why this apartado is text-only).
+  const selectedPhotos = gallery.assets
+    .filter((asset) => asset.isSelected)
+    .map((asset) => ({
+      id: asset.id,
+      originalFilename: asset.originalFilename,
+      selectionKind: asset.selectionKind,
+    }));
   // Task #86 fix: this page used to also compute `pendingFinalsCount` here
   // and hand it to <DeliverGalleryButton> as a sibling prop — a snapshot
   // that never updated after an upload, while <GalleryWorkspace>'s own
@@ -537,6 +550,8 @@ export default async function GalleryDetailPage({
           )}
         </aside>
       </div>
+
+      <SelectedPhotosList items={selectedPhotos} />
 
       <div className="mt-10">
         <GalleryWorkspace

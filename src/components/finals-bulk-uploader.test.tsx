@@ -236,6 +236,12 @@ describe("FinalsBulkUploader", () => {
       ),
     ).toBeDefined();
     expect(screen.queryByText(/DSC_0001\.JPG, DSC_0001\.JPG/)).toBeNull();
+    // The `duplicate_asset_basename` line renders directly ABOVE the one
+    // asserted above, for this same file, and joins its names with " / "
+    // rather than ", " — so the negative assertion on the comma-joined form
+    // cannot see it. Re-review finding: without this line, dropping
+    // `dedupeNames` from that arm alone leaves the whole suite green.
+    expect(screen.queryByText(/DSC_0001\.JPG \/ DSC_0001\.JPG/)).toBeNull();
   });
 
   it("cancelling the proposed mapping clears it without uploading anything", async () => {

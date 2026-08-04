@@ -16,12 +16,13 @@ vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 // wiring above it.
 const getPresignedUrlMock = vi.fn();
 const putObjectMock = vi.fn();
-// `deleteObject` is mocked even though the route under test never imports
-// it — its ABSENCE from the route's own imports is exactly what the "no
-// compensating delete on DB-update failure" test below has to prove. If a
-// future edit ever added a compensating delete, this mock existing already
-// means that test would start observing calls instead of silently having
-// nothing to spy on.
+// Task #220: `deleteObject` IS now imported and called by the route — the
+// stale-object cleanup that runs after a successful DB update when a
+// re-upload changed format. The "no compensating delete on DB-update
+// failure" describe block below still proves the ABSENCE of a call on that
+// specific branch; the dedicated "stale-object cleanup" describe block
+// further down proves the PRESENCE of one on the branch that actually needs
+// it.
 const deleteObjectMock = vi.fn();
 // Task #93: defaults to "present" so every PRE-EXISTING test in this file
 // (none of which is about this gap) keeps exercising the happy path exactly
@@ -33,9 +34,11 @@ vi.mock("@/lib/r2", () => ({
   // A deterministic fake, not src/lib/r2.ts's real (environment-namespaced)
   // format — same reasoning as the proofs route's own test file: what
   // matters here is only that this route reuses the SAME key on a
-  // re-upload, not the real `dev/` prefix this suite never stubs `APP_ENV`
+  // same-format re-upload (and a DIFFERENT key on a different-format one,
+  // task #220), not the real `dev/` prefix this suite never stubs `APP_ENV`
   // for.
-  finalKey: (galleryId: string, assetId: string) => `galleries/${galleryId}/finals/${assetId}.jpg`,
+  finalKey: (galleryId: string, assetId: string, extension: string) =>
+    `galleries/${galleryId}/finals/${assetId}.${extension}`,
   // Task #89: the same deterministic-fake treatment as `finalKey` above.
   // POST now writes TWO objects per upload — the full-resolution final AND
   // its browsing-sized, unwatermarked derivative — and several tests below
@@ -299,6 +302,7 @@ beforeEach(async () => {
   putObjectMock.mockReset();
   putObjectMock.mockResolvedValue(undefined);
   deleteObjectMock.mockReset();
+  deleteObjectMock.mockResolvedValue(undefined);
   objectExistsMock.mockReset();
   objectExistsMock.mockResolvedValue(true);
   notifyAdminOfMissingFinalMock.mockReset();
@@ -355,7 +359,11 @@ describe("GET /api/assets/[assetId]/final — authorization", () => {
     const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
 
     expect(response.status).toBe(200);
-    const expectedFilename = buildFinalDownloadFilename("Boda Ana y Beto", "IMG_0001.JPG");
+    const expectedFilename = buildFinalDownloadFilename(
+      "Boda Ana y Beto",
+      "IMG_0001.JPG",
+      FINAL_KEY,
+    );
     expect(getPresignedUrlMock).toHaveBeenCalledWith(FINAL_KEY, {
       contentDisposition: `attachment; filename="${expectedFilename}"`,
     });
@@ -376,7 +384,11 @@ describe("GET /api/assets/[assetId]/final — the admin preview exception", () =
     const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
 
     expect(response.status).toBe(200);
-    const expectedFilename = buildFinalDownloadFilename("Boda Ana y Beto", "IMG_0001.JPG");
+    const expectedFilename = buildFinalDownloadFilename(
+      "Boda Ana y Beto",
+      "IMG_0001.JPG",
+      FINAL_KEY,
+    );
     expect(getPresignedUrlMock).toHaveBeenCalledWith(FINAL_KEY, {
       contentDisposition: `attachment; filename="${expectedFilename}"`,
     });
@@ -433,7 +445,11 @@ describe("GET /api/assets/[assetId]/final — the final-specific gate", () => {
     await expect(response.json()).resolves.toEqual({
       url: "https://r2.example.com/presigned-final-url",
     });
-    const expectedFilename = buildFinalDownloadFilename("Boda Ana y Beto", "IMG_0001.JPG");
+    const expectedFilename = buildFinalDownloadFilename(
+      "Boda Ana y Beto",
+      "IMG_0001.JPG",
+      FINAL_KEY,
+    );
     expect(getPresignedUrlMock).toHaveBeenCalledWith(FINAL_KEY, {
       contentDisposition: `attachment; filename="${expectedFilename}"`,
     });
@@ -729,17 +745,41 @@ describe("POST /api/assets/[assetId]/final — validation", () => {
     expect(putObjectMock).not.toHaveBeenCalled();
   });
 
-  // TASK #218's own tightened gate: the old check was `file.type.startsWith(
-  // "image/")`, which accepted any image MIME type. A PNG (or a HEIC, or
-  // anything else the client's camera might produce) must now be refused —
-  // not merely "not an image", but "not the ONE image type this route stores
-  // byte-for-byte". Mutation proof: reverting the gate to `startsWith("image/")`
-  // turns this test red (a `image/png` file passes the gate and reaches
-  // `processDisplay`) while leaving the `text/plain` test above green, which is
-  // exactly why that older test alone was not sufficient coverage for this
-  // task.
-  it("returns 415 for a real image MIME type that is not JPEG, e.g. PNG", async () => {
+  // TASK #218's gate (JPEG-only) was widened by #220 to a small allowlist
+  // (JPEG + PNG) — a real image MIME type that is in NEITHER, e.g. GIF, must
+  // still be refused: not merely "not an image", but "not one of the formats
+  // this route stores byte-for-byte". Mutation proof (task #220's own
+  // required coverage, item #6): reverting the gate back to
+  // `file.type.startsWith("image/")` turns this test red (a `image/gif` file
+  // passes the gate and reaches `processDisplay`) while leaving the
+  // `text/plain` test above green, which is exactly why that older test
+  // alone was never sufficient coverage for this gate.
+  it("returns 415 for a real image MIME type that isn't in the allowlist, e.g. GIF", async () => {
     authMock.mockResolvedValue(adminSession());
+    const gif = new File(["fake-gif-bytes"], "edit.gif", { type: "image/gif" });
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(gif)),
+      paramsFor(ASSET_A_ID),
+    );
+
+    expect(response.status).toBe(415);
+    await expect(response.json()).resolves.toEqual({ error: "not_an_image" });
+    expect(processDisplayMock).not.toHaveBeenCalled();
+    expect(putObjectMock).not.toHaveBeenCalled();
+  });
+
+  // Task #220's own required coverage, item #6's complement: PNG is no
+  // longer "not JPEG", it is now one of the two accepted formats. MUTATION
+  // PROOF: reverting `ACCEPTED_FINAL_FORMATS` to a bare `file.type !==
+  // "image/jpeg"` check (#218's own gate) turns this test red — the same
+  // PNG upload that must succeed here would 415 instead.
+  it("accepts a PNG upload, storing it at a .png key with an image/png Content-Type", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(assetRow({ isSelected: true, finalKey: null, isEdited: false }));
     const png = new File(["fake-png-bytes"], "edit.png", { type: "image/png" });
     const { POST } = await import("./route");
 
@@ -748,10 +788,16 @@ describe("POST /api/assets/[assetId]/final — validation", () => {
       paramsFor(ASSET_A_ID),
     );
 
-    expect(response.status).toBe(415);
-    await expect(response.json()).resolves.toEqual({ error: "not_an_image" });
-    expect(processDisplayMock).not.toHaveBeenCalled();
-    expect(putObjectMock).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    const pngKey = `galleries/${GALLERY_A_ID}/finals/${ASSET_A_ID}.png`;
+    await expect(response.json()).resolves.toEqual({
+      asset: { id: ASSET_A_ID, finalKey: pngKey, isEdited: true },
+    });
+    expect(putObjectMock).toHaveBeenCalledWith(
+      pngKey,
+      expect.anything(),
+      expect.objectContaining({ contentType: "image/png" }),
+    );
   });
 
   it("returns 413 for a file larger than the configured cap, without calling processDisplay", async () => {
@@ -921,12 +967,15 @@ describe("POST /api/assets/[assetId]/final — success and re-upload", () => {
     expect(row?.isEdited).toBe(true);
   });
 
-  // The acceptance criterion: re-uploading a final replaces it without
-  // orphaning the previous R2 object. `finalKey()` is DETERMINISTIC per
-  // (galleryId, assetId) — this test proves the route reuses that same key
-  // on a second upload rather than minting a new one, which is exactly what
-  // makes the old object get overwritten instead of orphaned.
-  it("re-uploading a final overwrites the SAME R2 key, it never mints a new one", async () => {
+  // The acceptance criterion: re-uploading a final in the SAME format
+  // replaces it without orphaning the previous R2 object. `finalKey()` is
+  // DETERMINISTIC per (galleryId, assetId, extension) — this test proves the
+  // route reuses that same key on a second same-format upload rather than
+  // minting a new one, which is exactly what makes the old object get
+  // overwritten instead of orphaned, AND (task #220's own required coverage,
+  // item #5) that the stale-object cleanup never fires when there is no
+  // stale object — same key in, same key out.
+  it("same-extension re-upload still overwrites in place and deletes nothing", async () => {
     authMock.mockResolvedValue(adminSession());
     // Starting state already has a final (assetRow()'s own default).
     const { POST } = await import("./route");
@@ -941,9 +990,82 @@ describe("POST /api/assets/[assetId]/final — success and re-upload", () => {
     // Per-key count, see the DB-update-failure test above for why.
     expect(writesTo(firstKeyCall)).toHaveLength(1);
     expect(putObjectMock).toHaveBeenCalledWith(firstKeyCall, expect.anything(), expect.anything());
+    expect(deleteObjectMock).not.toHaveBeenCalled();
 
     const db = await seededDb();
     const [row] = db.__rows.assets;
+    expect(row?.finalKey).toBe(FINAL_KEY);
+  });
+
+  // Task #220's own required coverage, item #4: an extension-change
+  // re-upload must write the new key, point the DB at it, AND delete the
+  // OLD object — and the delete must happen ONLY AFTER the DB update
+  // succeeds. MUTATION PROOF: moving the `deleteObject` call to BEFORE the
+  // `db.update` call (an ordering inversion of the route's own comment)
+  // still passes the first three assertions below but turns the LAST test
+  // in this file's own DB-update-failure-with-a-prior-final describe block
+  // red — see that block for the ordering half of this proof; this test
+  // covers the happy-path shape.
+  it("extension-change re-upload writes the new key, updates the DB, and deletes the OLD object", async () => {
+    authMock.mockResolvedValue(adminSession());
+    // Starting state already has a .jpg final (assetRow()'s own default,
+    // FINAL_KEY).
+    const { POST } = await import("./route");
+    const png = new File(["fake-png-bytes"], "edit.png", { type: "image/png" });
+
+    const response = await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(png)),
+      paramsFor(ASSET_A_ID),
+    );
+
+    expect(response.status).toBe(200);
+    const pngKey = `galleries/${GALLERY_A_ID}/finals/${ASSET_A_ID}.png`;
+    await expect(response.json()).resolves.toEqual({
+      asset: { id: ASSET_A_ID, finalKey: pngKey, isEdited: true },
+    });
+    expect(writesTo(pngKey)).toHaveLength(1);
+
+    const db = await seededDb();
+    const [row] = db.__rows.assets;
+    expect(row?.finalKey).toBe(pngKey);
+
+    expect(deleteObjectMock).toHaveBeenCalledTimes(1);
+    expect(deleteObjectMock).toHaveBeenCalledWith(FINAL_KEY);
+  });
+
+  // The ordering half of item #4: a failed DB update must leave the OLD
+  // object intact — `deleteObject` must never be reached at all on that
+  // branch, even for an extension-changing upload. MUTATION PROOF: moving
+  // the cleanup block above the `db.update` try/catch in the route turns
+  // this test red — `deleteObjectMock` would then be called even though the
+  // update itself failed.
+  it("never deletes the old object when the DB update fails on an extension-change re-upload", async () => {
+    authMock.mockResolvedValue(adminSession());
+    // Starting state already has a .jpg final (assetRow()'s own default).
+    const { db: rawDb } = (await import("@/lib/db")) as unknown as {
+      db: { update: (table: unknown) => unknown };
+    };
+    const realUpdate = rawDb.update;
+    rawDb.update = () => {
+      throw new Error("simulated update failure");
+    };
+    const png = new File(["fake-png-bytes"], "edit.png", { type: "image/png" });
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(png)),
+      paramsFor(ASSET_A_ID),
+    );
+
+    rawDb.update = realUpdate;
+
+    expect(response.status).toBe(500);
+    await expect(response.json()).resolves.toEqual({ error: "update_failed" });
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+
+    const db = await seededDb();
+    const [row] = db.__rows.assets;
+    // Still the ORIGINAL .jpg final — the DB update never committed.
     expect(row?.finalKey).toBe(FINAL_KEY);
   });
 
@@ -977,8 +1099,12 @@ describe("POST /api/assets/[assetId]/final — success and re-upload", () => {
 
     const finalWrite = writesTo(FINAL_KEY)[0];
     expect(finalWrite).toBeDefined();
-    const storedBytes = finalWrite?.[1] as Buffer;
-    expect(Buffer.isBuffer(storedBytes)).toBe(true);
+    // Task #220: `putObject` now receives the raw `ArrayBuffer`
+    // `file.arrayBuffer()` returns, never a `Buffer.from()` copy (see the
+    // route's own comment on why) — `Buffer.from()` here is the TEST reading
+    // that ArrayBuffer back for comparison, not evidence of a copy in the
+    // route itself.
+    const storedBytes = Buffer.from(finalWrite?.[1] as ArrayBuffer);
     expect(Buffer.compare(storedBytes, uploadedBytes)).toBe(0);
     expect(storedBytes.equals(uploadedBytes)).toBe(true);
   });
@@ -1047,9 +1173,9 @@ describe("POST /api/assets/[assetId]/final — the display derivative (task #89)
     );
 
     expect(processDisplayMock).toHaveBeenCalledTimes(1);
-    const displayInput = processDisplayMock.mock.calls[0]?.[0] as Buffer;
+    const displayInput = processDisplayMock.mock.calls[0]?.[0] as ArrayBuffer;
     const finalWrite = writesTo(FINAL_KEY)[0];
-    const storedFinalBytes = finalWrite?.[1] as Buffer;
+    const storedFinalBytes = Buffer.from(finalWrite?.[1] as ArrayBuffer);
     expect(Buffer.from(displayInput).toString()).toBe("raw-lightroom-export-bytes");
     expect(Buffer.compare(Buffer.from(displayInput), storedFinalBytes)).toBe(0);
   });
@@ -1152,34 +1278,46 @@ describe("POST /api/assets/[assetId]/final — the display derivative (task #89)
 // tests exercise `buildFinalDownloadFilename` directly, independent of the
 // route's own request/response wiring above.
 describe("buildFinalDownloadFilename", () => {
-  it("combines a slugified gallery title with a slugified original filename, always ending in .jpg", async () => {
+  it("combines a slugified gallery title with a slugified original filename, ending in the STORED key's extension", async () => {
     const { buildFinalDownloadFilename } = await import("./route");
-    expect(buildFinalDownloadFilename("Boda Ana y Beto", "IMG_0001.JPG")).toBe(
+    expect(buildFinalDownloadFilename("Boda Ana y Beto", "IMG_0001.JPG", FINAL_KEY)).toBe(
       "boda-ana-y-beto-img-0001.jpg",
     );
   });
 
-  it("forces a .jpg extension regardless of the original upload's own extension", async () => {
+  // Task #220's own required coverage: item #2 (key really ends in the right
+  // extension) and #3 (download filename carries it), for BOTH formats.
+  // MUTATION PROOF: reverting `extensionFromKey(finalKeyValue)` to a
+  // hardcoded `"jpg"` literal turns this test red — the PNG case would still
+  // produce a `.jpg` filename.
+  it("ends in .png for a final stored at a .png key, not a hardcoded .jpg", async () => {
     const { buildFinalDownloadFilename } = await import("./route");
-    // The POST handler's upload gate (task #218) only ever accepts
-    // `image/jpeg` — this function just always assumes that, it does not
-    // re-derive it from `originalFilename`'s own extension, which is the
-    // ORIGINAL name recorded at proof-upload time and could be anything
-    // (.png, .heic, whatever the client's camera produced).
-    expect(buildFinalDownloadFilename("Sesion", "foto.png")).toBe("sesion-foto.jpg");
-    expect(buildFinalDownloadFilename("Sesion", "foto.HEIC")).toBe("sesion-foto.jpg");
+    const pngKey = `galleries/${GALLERY_A_ID}/finals/${ASSET_A_ID}.png`;
+    expect(buildFinalDownloadFilename("Boda Ana y Beto", "IMG_0001.JPG", pngKey)).toBe(
+      "boda-ana-y-beto-img-0001.png",
+    );
+  });
+
+  it("derives the extension from the STORED key, not from the original upload's own filename extension", async () => {
+    const { buildFinalDownloadFilename } = await import("./route");
+    // `originalFilename` is the name recorded at PROOF-upload time and could
+    // be anything (.png, .heic, whatever the client's camera produced) — it
+    // has never driven the download extension, and still doesn't after task
+    // #220. Only `finalKeyValue` (the STORED object's own key) does.
+    expect(buildFinalDownloadFilename("Sesion", "foto.png", FINAL_KEY)).toBe("sesion-foto.jpg");
+    expect(buildFinalDownloadFilename("Sesion", "foto.HEIC", FINAL_KEY)).toBe("sesion-foto.jpg");
   });
 
   it("strips accents so Spanish gallery titles and filenames stay ASCII-safe", async () => {
     const { buildFinalDownloadFilename } = await import("./route");
-    expect(buildFinalDownloadFilename("Bautizo de María José", "Sesión_01.jpg")).toBe(
+    expect(buildFinalDownloadFilename("Bautizo de María José", "Sesión_01.jpg", FINAL_KEY)).toBe(
       "bautizo-de-maria-jose-sesion-01.jpg",
     );
   });
 
   it("never produces a raw asset id or R2 key as the filename", async () => {
     const { buildFinalDownloadFilename } = await import("./route");
-    const filename = buildFinalDownloadFilename("Boda Ana y Beto", "IMG_0001.JPG");
+    const filename = buildFinalDownloadFilename("Boda Ana y Beto", "IMG_0001.JPG", FINAL_KEY);
     expect(filename).not.toContain(ASSET_A_ID);
     expect(filename).not.toContain("galleries/");
     expect(filename).not.toContain("finals/");
@@ -1187,6 +1325,6 @@ describe("buildFinalDownloadFilename", () => {
 
   it("falls back to generic words rather than producing a degenerate filename when an input slugifies to nothing", async () => {
     const { buildFinalDownloadFilename } = await import("./route");
-    expect(buildFinalDownloadFilename("🎉🎉", "🎉🎉.jpg")).toBe("galeria-foto.jpg");
+    expect(buildFinalDownloadFilename("🎉🎉", "🎉🎉.jpg", FINAL_KEY)).toBe("galeria-foto.jpg");
   });
 });

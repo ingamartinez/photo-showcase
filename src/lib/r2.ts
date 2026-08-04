@@ -159,15 +159,30 @@ export function proofKey(galleryId: string, assetId: string): R2Key {
  * BYTE-FOR-BYTE as the admin uploaded it (task #218) — there is no sharp pass
  * on this path any more.
  *
- * The `.jpg` extension is hardcoded, not derived from the upload's own
- * filename or content type. That is only honest because the final upload
- * route (POST /api/assets/[assetId]/final) tightened its gate to accept
- * `image/jpeg` only (task #218) — see that route's own comment for why: it
- * is what keeps this extension, this key's determinism (a re-upload of the
- * SAME asset overwrites the SAME key rather than orphaning it), and
- * `putObject`'s hardcoded `image/jpeg` content type all simultaneously true. */
-export function finalKey(galleryId: string, assetId: string): R2Key {
-  return namespacedKey(`galleries/${galleryId}/finals/${assetId}.jpg`);
+ * `extension` is a REQUIRED argument, not defaulted to `"jpg"` (task #220,
+ * reversing #218's own "do not make the extension dynamic" ruling once the
+ * premise behind it — every final is a Lightroom JPEG — turned out to be
+ * false: the owner's real finals include PNG exports from a second editing
+ * pass). #218 could hardcode `.jpg` here only because its upload gate
+ * accepted `image/jpeg` alone, which made the extension, this key's
+ * determinism, and `putObject`'s content type all trivially consistent. #220
+ * widens the gate to a small MIME-type allowlist (see
+ * `ACCEPTED_FINAL_FORMATS` in the final upload route), so the extension is no
+ * longer implied by anything this function alone knows — the one caller that
+ * mints this key (POST /api/assets/[assetId]/final) resolves `extension` from
+ * that allowlist and passes it in. A default of `"jpg"` here would let a
+ * caller silently reproduce the exact bug #220 exists to fix (a PNG landing
+ * at a `.jpg` key, served with the wrong Content-Type) instead of failing to
+ * compile.
+ *
+ * Determinism is now CONDITIONAL, not absolute: the same (galleryId, assetId,
+ * extension) triple always yields the same string, so a re-upload in the SAME
+ * format still overwrites in place exactly as before. A re-upload in a
+ * DIFFERENT format now mints a genuinely different key on purpose — see the
+ * final route's own POST handler for the stale-object cleanup that keeps that
+ * from silently orphaning the previous object. */
+export function finalKey(galleryId: string, assetId: string, extension: string): R2Key {
+  return namespacedKey(`galleries/${galleryId}/finals/${assetId}.${extension}`);
 }
 
 /** Browsing-sized, no watermark — the derivative a DELIVERED gallery shows in

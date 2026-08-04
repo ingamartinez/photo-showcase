@@ -532,6 +532,74 @@ describe("GET /api/galleries/[galleryId]/download-all — the filter itself", ()
       rmSync(dir, { recursive: true, force: true });
     }
   });
+
+  // Task #220's own required coverage, item #3, at the archive level: the
+  // owner's ACTUAL situation is a gallery whose finals are a MIX of JPEG and
+  // PNG. Each entry must carry its own real extension and its own real
+  // bytes, not one format assumed for the whole archive. MUTATION PROOF:
+  // hardcoding `buildZipEntryFilename`'s extension back to `.jpg` turns this
+  // red — the PNG entry's name would end in `.jpg` while still containing
+  // PNG bytes, and `zipinfo`'s own listing would show `img-0002.jpg` instead
+  // of `img-0002.png`.
+  it("zips a mixed-format gallery with each entry carrying its own real extension and bytes", async () => {
+    authMock.mockResolvedValue(clientSession());
+    const db = await seededDb();
+    db.__rows.galleries.push(galleryRow());
+    store.set("finals/a.jpg", { data: Buffer.from("JPEG BYTES") });
+    store.set("finals/b.png", { data: Buffer.from("PNG BYTES") });
+    db.__rows.assets.push(
+      assetRow({
+        id: ASSET_1_ID,
+        originalFilename: "IMG_0001.JPG",
+        isSelected: true,
+        isEdited: true,
+        finalKey: "finals/a.jpg",
+        sortOrder: 0,
+      }),
+      assetRow({
+        id: ASSET_2_ID,
+        originalFilename: "IMG_0002.PNG",
+        isSelected: true,
+        isEdited: true,
+        finalKey: "finals/b.png",
+        sortOrder: 1,
+      }),
+    );
+
+    const { GET } = await import("./route");
+    const response = await GET(requestFor(), paramsFor(GALLERY_ID));
+    expect(response.status).toBe(200);
+
+    let unzipAvailable = true;
+    try {
+      execFileSync("unzip", ["-v"], { stdio: "ignore" });
+    } catch {
+      unzipAvailable = false;
+    }
+    if (!unzipAvailable) return;
+
+    const zipBuffer = Buffer.from(await response.arrayBuffer());
+    const dir = mkdtempSync(path.join(tmpdir(), "download-all-mixed-test-"));
+    const zipPath = path.join(dir, "galeria.zip");
+    try {
+      writeFileSync(zipPath, zipBuffer);
+      const names = execFileSync("zipinfo", ["-1", zipPath], { encoding: "utf-8" })
+        .trim()
+        .split("\n");
+      expect(names).toEqual(["img-0001.jpg", "img-0002.png"]);
+
+      const jpegContent = execFileSync("unzip", ["-p", zipPath, "img-0001.jpg"], {
+        encoding: "utf-8",
+      });
+      const pngContent = execFileSync("unzip", ["-p", zipPath, "img-0002.png"], {
+        encoding: "utf-8",
+      });
+      expect(jpegContent).toBe("JPEG BYTES");
+      expect(pngContent).toBe("PNG BYTES");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
 });
 
 // Task #29 review follow-up: this format's writer has no way to abort
@@ -765,14 +833,36 @@ describe("buildZipDownloadFilename / buildZipEntryFilename", () => {
   it("dedupes two assets that share the same original filename with a numeric suffix", async () => {
     const { buildZipEntryFilename } = await import("./route");
     const used = new Set<string>();
-    expect(buildZipEntryFilename("IMG_0001.JPG", used)).toBe("img-0001.jpg");
-    expect(buildZipEntryFilename("IMG_0001.JPG", used)).toBe("img-0001-2.jpg");
-    expect(buildZipEntryFilename("IMG_0001.JPG", used)).toBe("img-0001-3.jpg");
+    expect(buildZipEntryFilename("IMG_0001.JPG", "finals/a.jpg", used)).toBe("img-0001.jpg");
+    expect(buildZipEntryFilename("IMG_0001.JPG", "finals/b.jpg", used)).toBe("img-0001-2.jpg");
+    expect(buildZipEntryFilename("IMG_0001.JPG", "finals/c.jpg", used)).toBe("img-0001-3.jpg");
   });
 
   it("never produces a raw asset id as an entry name", async () => {
     const { buildZipEntryFilename } = await import("./route");
-    const name = buildZipEntryFilename("IMG_0001.JPG", new Set());
+    const name = buildZipEntryFilename("IMG_0001.JPG", "finals/a.jpg", new Set());
     expect(name).not.toContain(ASSET_1_ID);
+  });
+
+  // Task #220's own required coverage, item #3: the entry name must carry
+  // the REAL stored extension, driven by the asset's own `finalKey`, not a
+  // hardcoded `.jpg` — the mixed-format-gallery case is the owner's actual
+  // situation.
+  it("ends in .png for a final stored at a .png key, not a hardcoded .jpg", async () => {
+    const { buildZipEntryFilename } = await import("./route");
+    const name = buildZipEntryFilename("IMG_0002.PNG", "finals/asset-2.png", new Set());
+    expect(name).toBe("img-0002.png");
+  });
+
+  it("dedupes a .jpg and a .png entry that would otherwise share the same slugified base name", async () => {
+    const { buildZipEntryFilename } = await import("./route");
+    const used = new Set<string>();
+    expect(buildZipEntryFilename("IMG_0001.JPG", "finals/a.jpg", used)).toBe("img-0001.jpg");
+    // Same slug base ("img-0001"), different stored extension — must NOT
+    // collide with the entry above just because the base matches; each
+    // entry's OWN extension is what its candidate name is built from before
+    // the collision check ever runs, so this lands as a genuinely distinct
+    // name on the first try, not a numeric suffix.
+    expect(buildZipEntryFilename("IMG_0001.PNG", "finals/b.png", used)).toBe("img-0001.png");
   });
 });

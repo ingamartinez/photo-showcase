@@ -35,8 +35,11 @@
 // this route NEVER buffers. `src/lib/zip-stream.ts` streams each entry
 // through — one R2 object open at a time (`ZipEntry.openStream` is a lazy
 // factory, invoked only when that entry's turn arrives, see that module's
-// own comment) — and STORE-only (no re-compression of already-JPEG bytes),
-// so peak memory is "one entry's current chunk plus a handful of tiny
+// own comment) — and STORE-only (no re-compression of already-compressed
+// bytes — JPEG or PNG, task #220 widened this app's finals to include both,
+// and both are already-compressed formats with nothing left for a second
+// compression pass to usefully do), so peak memory is "one entry's
+// current chunk plus a handful of tiny
 // per-entry bookkeeping records", NOT "the whole gallery" and not even "one
 // whole final". scripts/measure-zip-memory.ts measures this directly rather
 // than assuming it: see that script's own output/comments for the numbers,
@@ -85,6 +88,19 @@ function stripExtension(filename: string): string {
   return dot > 0 ? filename.slice(0, dot) : filename;
 }
 
+/** Extracts the extension actually stored in an R2 key — duplicated from
+ * src/app/api/assets/[assetId]/final/route.ts's own `extensionFromKey`
+ * rather than imported, same "each route owns its own small validation
+ * helpers" convention as `stripExtension`/`slugifyForFilename` above. Task
+ * #220 made `finalKey()`'s extension a function of the upload's accepted
+ * MIME type, so this archive's per-entry names can no longer assume `.jpg`
+ * for every entry — a gallery's finals can be a MIX of `.jpg` and `.png`
+ * objects, and each entry must be named for what IT actually is. */
+function extensionFromKey(key: string): string {
+  const dot = key.lastIndexOf(".");
+  return dot >= 0 && dot < key.length - 1 ? key.slice(dot + 1) : "jpg";
+}
+
 /** Same slugifier as buildFinalDownloadFilename's own — ASCII-only
  * `[a-z0-9-]` output by construction, which is what makes both this
  * function's result and buildZipEntryFilename's result below safe to embed
@@ -112,18 +128,29 @@ export function buildZipDownloadFilename(galleryTitle: string): string {
 
 /** One entry's name INSIDE the archive: the asset's own original filename
  * (recognizable to the client, same reasoning as buildFinalDownloadFilename),
- * slugified and always `.jpg` (`processFinal` always outputs JPEG). `used`
- * is the set of names already assigned to EARLIER entries in the same
- * archive — two assets can share an original filename (a camera's own
- * numbering resetting across cards/sessions is common), and a zip with two
- * entries of the same name silently loses one of them in most readers, so a
- * collision gets a numeric suffix instead of colliding. */
-export function buildZipEntryFilename(originalFilename: string, used: Set<string>): string {
+ * slugified, ending in whatever extension `finalKeyValue` (the asset's OWN
+ * stored `finalKey`) is actually stored under (task #220 — this used to
+ * always be `.jpg`, justified by "`processFinal` always outputs JPEG", a
+ * function #218 already deleted; the final upload gate now accepts JPEG or
+ * PNG, so a gallery's finals can be a MIX of both, and this archive must be
+ * honest per entry about which is which, not one hardcoded extension for the
+ * whole zip). `used` is the set of names already assigned to EARLIER entries
+ * in the same archive — two assets can share an original filename (a
+ * camera's own numbering resetting across cards/sessions is common), or even
+ * the same slug-plus-extension pair across a mixed-format gallery, and a zip
+ * with two entries of the same name silently loses one of them in most
+ * readers, so a collision gets a numeric suffix instead of colliding. */
+export function buildZipEntryFilename(
+  originalFilename: string,
+  finalKeyValue: string,
+  used: Set<string>,
+): string {
   const base = slugifyForFilename(stripExtension(originalFilename)) || "foto";
-  let candidate = `${base}.jpg`;
+  const extension = extensionFromKey(finalKeyValue);
+  let candidate = `${base}.${extension}`;
   let suffix = 2;
   while (used.has(candidate)) {
-    candidate = `${base}-${suffix}.jpg`;
+    candidate = `${base}-${suffix}.${extension}`;
     suffix++;
   }
   used.add(candidate);
@@ -236,7 +263,7 @@ export const GET = withApiSession(async function GET(
   // as it dedupes, so it must run in this exact order exactly once, not be
   // re-derived a second time for the check.
   const zipEntryNames = deliverable.map((asset) =>
-    buildZipEntryFilename(asset.originalFilename, usedNames),
+    buildZipEntryFilename(asset.originalFilename, asset.finalKey, usedNames),
   );
 
   // The rest of the pre-flight capacity check: every entry's R2 object

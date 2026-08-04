@@ -70,14 +70,49 @@ describe("key builders", () => {
     expect(proofKey("gallery-1", "asset-1")).toBe("galleries/gallery-1/proofs/asset-1.webp");
   });
 
-  it("builds the final key under galleries/{galleryId}/finals/{assetId}.jpg", async () => {
+  it("builds the final key under galleries/{galleryId}/finals/{assetId}.{extension}", async () => {
     const { finalKey } = await import("./r2");
-    expect(finalKey("gallery-1", "asset-1")).toBe("galleries/gallery-1/finals/asset-1.jpg");
+    expect(finalKey("gallery-1", "asset-1", "jpg")).toBe("galleries/gallery-1/finals/asset-1.jpg");
+  });
+
+  // Task #220: the extension is no longer hardcoded to `.jpg` — it comes
+  // from the caller (the final upload route's own MIME-type allowlist).
+  it("uses whatever extension the caller passes, e.g. png", async () => {
+    const { finalKey } = await import("./r2");
+    expect(finalKey("gallery-1", "asset-1", "png")).toBe("galleries/gallery-1/finals/asset-1.png");
+  });
+
+  // Task #220: same (galleryId, assetId) pair, different extension, must
+  // produce a DIFFERENT key — this is the property the final route's
+  // stale-object cleanup depends on to even know an old object exists.
+  it("produces a different key for the same gallery/asset pair when the extension differs", async () => {
+    const { finalKey } = await import("./r2");
+    expect(finalKey("g", "a", "jpg")).not.toBe(finalKey("g", "a", "png"));
   });
 
   it("keeps proof and final keys distinct for the same gallery/asset pair", async () => {
     const { proofKey, finalKey } = await import("./r2");
-    expect(proofKey("g", "a")).not.toBe(finalKey("g", "a"));
+    expect(proofKey("g", "a")).not.toBe(finalKey("g", "a", "jpg"));
+  });
+
+  // Task #220's own acceptance criterion, pinned the same way task #78's
+  // `R2Key` branding is (see the "branding" describe block near the end of
+  // this file): `extension` must be a REQUIRED argument, not defaulted to
+  // `"jpg"` — a default would let a future caller silently reproduce the
+  // exact bug #220 exists to fix. `@ts-expect-error` fails `tsc --noEmit` in
+  // BOTH directions: today, because the 2-argument call is missing a required
+  // parameter, and forever after, because if a future change ever gave
+  // `extension` a default (silently un-doing this requirement), the
+  // `@ts-expect-error` comment would stop being needed and typecheck would
+  // fail on THAT instead.
+  it("requires an extension argument at compile time — see the @ts-expect-error immediately below", async () => {
+    const { finalKey } = await import("./r2");
+
+    // @ts-expect-error — `extension` is required; omitting it would silently
+    // reproduce #218's hardcoded-`.jpg` bug for every future caller.
+    const key = finalKey("g", "a");
+
+    expect(key).toBe("galleries/g/finals/a.undefined");
   });
 
   // Task #89: the browsing-sized, unwatermarked derivative of a final.
@@ -89,7 +124,7 @@ describe("key builders", () => {
   it("keeps the display key distinct from BOTH the proof and the final for the same pair", async () => {
     const { proofKey, finalKey, displayKey } = await import("./r2");
     expect(displayKey("g", "a")).not.toBe(proofKey("g", "a"));
-    expect(displayKey("g", "a")).not.toBe(finalKey("g", "a"));
+    expect(displayKey("g", "a")).not.toBe(finalKey("g", "a", "jpg"));
   });
 
   // The property task #89 rests its "no migration needed" argument on, and
@@ -106,7 +141,7 @@ describe("key builders", () => {
     // Interleave other key builders and another pair, so a hidden counter or
     // any call-order dependence would show up as a different second result.
     proofKey("g", "a");
-    finalKey("other-gallery", "other-asset");
+    finalKey("other-gallery", "other-asset", "jpg");
     displayKey("other-gallery", "other-asset");
 
     expect(displayKey("g", "a")).toBe(first);
@@ -130,7 +165,9 @@ describe("environment namespacing (task #38)", () => {
   it("prefixes final keys with dev/ outside production", async () => {
     vi.stubEnv("APP_ENV", "development");
     const { finalKey } = await import("./r2");
-    expect(finalKey("gallery-1", "asset-1")).toBe("dev/galleries/gallery-1/finals/asset-1.jpg");
+    expect(finalKey("gallery-1", "asset-1", "jpg")).toBe(
+      "dev/galleries/gallery-1/finals/asset-1.jpg",
+    );
   });
 
   // Task #89's new key builder inherits the namespacing "for free by
@@ -161,14 +198,14 @@ describe("environment namespacing (task #38)", () => {
     vi.stubEnv("APP_ENV", undefined);
     const { proofKey, finalKey } = await import("./r2");
     expect(proofKey("g", "a")).toBe("dev/galleries/g/proofs/a.webp");
-    expect(finalKey("g", "a")).toBe("dev/galleries/g/finals/a.jpg");
+    expect(finalKey("g", "a", "jpg")).toBe("dev/galleries/g/finals/a.jpg");
   });
 
   it("never prefixes in production, so keys written before this change keep resolving", async () => {
     vi.stubEnv("APP_ENV", "production");
     const { proofKey, finalKey } = await import("./r2");
     expect(proofKey("g", "a")).toBe("galleries/g/proofs/a.webp");
-    expect(finalKey("g", "a")).toBe("galleries/g/finals/a.jpg");
+    expect(finalKey("g", "a", "jpg")).toBe("galleries/g/finals/a.jpg");
   });
 
   it("keeps a dev-built key and a prod-built key distinct for the same gallery/asset pair, so a dev process can never address a production object", async () => {
@@ -233,7 +270,7 @@ describe("putObject", () => {
 describe("getPresignedUrl", () => {
   it("presigns the given key with the named TTL constant", async () => {
     const { finalKey, getPresignedUrl, PRESIGNED_URL_TTL_SECONDS } = await import("./r2");
-    const key = finalKey("g", "a");
+    const key = finalKey("g", "a", "jpg");
     const url = getPresignedUrl(key);
     expect(url).toBe("https://example.com/presigned-url");
     expect(presign).toHaveBeenCalledWith(key, {
@@ -254,7 +291,7 @@ describe("getPresignedUrl", () => {
   // becomes the signed `response-content-disposition` query parameter.
   it("forwards contentDisposition to the underlying presign call when given", async () => {
     const { finalKey, getPresignedUrl, PRESIGNED_URL_TTL_SECONDS } = await import("./r2");
-    const key = finalKey("g", "a");
+    const key = finalKey("g", "a", "jpg");
     getPresignedUrl(key, {
       contentDisposition: 'attachment; filename="foto.jpg"',
     });

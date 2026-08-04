@@ -63,18 +63,22 @@ describe("FinalsBulkUploader", () => {
     expect(container.firstChild).toBeNull();
   });
 
-  // TASK #218: the server-side upload gate was tightened to `image/jpeg`
-  // only, and the file picker's `accept` was narrowed to match — a hint for
-  // the OS file dialog, not the real gate (the server check is what actually
-  // enforces it). MUTATION PROOF: reverting the input's `accept` back to
-  // `"image/*"` turns this test red.
-  it("narrows the file picker's accept to image/jpeg only", () => {
+  // TASK #220: the file picker's `accept` must match the server's own
+  // format allowlist (`ACCEPTED_FINAL_FORMATS`, JPEG + PNG) exactly — a hint
+  // for the OS file dialog, not the real gate (the server check is what
+  // actually enforces it). #218 left this at `image/jpeg` only once already
+  // and nothing caught it drifting from the server, which is exactly what
+  // blocked the owner from selecting his own PNG finals even after the
+  // server-side fix shipped; this assertion exists so that gap can't reopen
+  // silently. MUTATION PROOF: reverting the input's `accept` back to
+  // `"image/jpeg"` (or `"image/*"`) turns this test red.
+  it("narrows the file picker's accept to the server's own format allowlist (JPEG + PNG)", () => {
     const asset = makeAsset({ id: "a1", originalFilename: "DSC_0001.JPG" });
     render(<FinalsBulkUploader selectedAssets={[asset]} onFinalUploaded={onFinalUploaded} />);
 
     const input = document.querySelector("input[type=file]");
     expect(input).not.toBeNull();
-    expect(input?.getAttribute("accept")).toBe("image/jpeg");
+    expect(input?.getAttribute("accept")).toBe("image/jpeg,image/png");
   });
 
   it("shows the proposed mapping BEFORE uploading anything — no request goes out on file choice alone", async () => {

@@ -39,14 +39,24 @@
 // faster way to exceed the droplet's memory cap than a parallel batch of
 // proofs ever was.
 //
-// UPLOAD GATE: the file picker below narrows `accept` to `image/jpeg` only
-// (task #218) — the server-side route now rejects anything else with a 415,
-// tightened specifically because the final is stored byte-for-byte and needs
-// its `.jpg`/`image/jpeg` shape guaranteed (see final/route.ts's own
-// comment). `accept` is a hint, not a gate — a photographer can still pick a
-// non-JPEG file past it on some OSes/browsers, which is exactly what the
-// server check exists to catch; this narrowing only saves a round trip for
-// the common case of picking the wrong export by mistake.
+// UPLOAD GATE: the file picker below narrows `accept` to match the server's
+// own format allowlist — `ACCEPTED_FINAL_FORMATS` in
+// src/app/api/assets/[assetId]/final/route.ts, JPEG and PNG as of task #220
+// (JPEG-only under #218). `accept` is a hint, not a gate — a photographer can
+// still pick an unsupported file past it on some OSes/browsers, which is
+// exactly what the server check exists to catch; this narrowing only saves a
+// round trip for the common case of picking the wrong export by mistake.
+// KEEP THIS STRING'S FORMAT LIST IN SYNC WITH THAT MAP'S KEYS BY HAND: #220
+// found these two already drifted (#218 left this at `image/jpeg` only after
+// the server had nothing wider to gate against yet, and nothing caught it
+// once the server WAS widened) — a route-handler module is server-only and
+// cannot be imported into this client component to derive the string
+// instead, so there is no compiler-enforced link between them, only this
+// comment on both ends (final/route.ts's own header points back here too).
+// The consequence of letting them drift again is exactly what blocked the
+// owner after #220's server-side fix alone: a format the server would
+// happily accept, greyed out in the native file dialog before he could ever
+// select it.
 import { useState } from "react";
 import type { WorkspaceAsset } from "@/components/gallery-workspace";
 import {
@@ -245,7 +255,7 @@ export function FinalsBulkUploader({
           Elegir archivos
           <input
             type="file"
-            accept="image/jpeg"
+            accept="image/jpeg,image/png"
             multiple
             className="sr-only"
             onChange={(event) => {

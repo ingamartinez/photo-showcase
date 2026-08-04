@@ -129,7 +129,18 @@ export const MAX_FINAL_UPLOAD_BYTES = 150 * 1024 * 1024;
  * neither is added speculatively here — there is no evidence today's
  * photographer produces either. Anything not in this map is refused 415
  * `not_an_image`, same status code #218 already used for its (then wider)
- * rejection. */
+ * rejection.
+ *
+ * THE SOURCE OF TRUTH for two client-side `accept` attributes that CANNOT
+ * import this module (it is a route handler, server-only): the per-tile
+ * uploader's `<input accept>` in src/components/asset-tile.tsx and the bulk
+ * uploader's in src/components/finals-bulk-uploader.tsx. Both are hand-kept
+ * in sync with this map's keys — there is no compiler-enforced link, only
+ * this comment and the matching one at each of those two call sites. #220
+ * found them already drifted once (#218 left both at `image/jpeg` only,
+ * which meant the owner's PNG finals were greyed out in the native file
+ * dialog even after this map itself was widened) — if a format is ever added
+ * or removed here, update those two `accept` strings in the same change. */
 const ACCEPTED_FINAL_FORMATS: Record<string, string> = {
   "image/jpeg": "jpg",
   "image/png": "png",
@@ -552,14 +563,33 @@ export const POST = withApiSession(async function POST(
   // outage) leaves `previousFinalKey`'s object as an ORPHAN — unreferenced,
   // unreachable through any read path (`assets.finalKey` already points at
   // `key`), costing storage and nothing else. That is the strictly cheaper
-  // failure this design accepts, which is why this is wrapped in its own
-  // try/catch that swallows rather than failing a request whose client
-  // already has their new final.
+  // failure this design accepts, which is why this NEVER fails the request
+  // whose client already has their new final — but "never fails the
+  // request" is not the same as "nobody ever finds out": a silent swallow
+  // here means storage leaks forever with no signal to anyone. `console.error`
+  // logged, request still succeeds — the cheap middle between failing the
+  // upload and losing the orphan entirely.
   if (previousFinalKey !== null && previousFinalKey !== key) {
     try {
       await deleteObject(storedKey(previousFinalKey));
-    } catch {
-      // Swallowed on purpose — see the cleanup comment immediately above.
+    } catch (error) {
+      // `no-console` is a project-wide error (eslint.config.mjs) with no
+      // exception for `src/app/api/**` — this is deliberately the FIRST
+      // `console.*` call in this codebase outside `scripts/`/`tooling/`, not
+      // a precedent to reach for elsewhere. There is no logging utility here
+      // to route this through instead (checked — none exists), and this
+      // specific failure has no OTHER signal anywhere: it must never fail
+      // the response (the client already has their new final — see the
+      // comment above), so the only way anyone ever learns storage is
+      // leaking is a line in the server's own stderr, picked up by whatever
+      // already captures `systemd`/`journalctl` output for this service.
+      // eslint-disable-next-line no-console -- see comment above; this exact call is the one deliberate exception.
+      console.error(
+        `Failed to delete stale final object at "${previousFinalKey}" after a ` +
+          `format-changing re-upload for asset ${asset.id} (now at "${key}"). ` +
+          `The old object is now an orphan — costs storage, not correctness.`,
+        error,
+      );
     }
   }
 

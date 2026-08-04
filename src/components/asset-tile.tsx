@@ -411,12 +411,22 @@ export function AssetTile({
               <input
                 ref={finalInputRef}
                 type="file"
-                // Narrowed to JPEG-only (task #218): the server-side upload
-                // gate now rejects anything else with a 415, since the final
-                // is stored byte-for-byte and needs its `.jpg`/`image/jpeg`
-                // shape guaranteed (see final/route.ts's own comment). This
-                // is a hint for the file picker, not the real gate.
-                accept="image/jpeg"
+                // Narrowed to match the server's own format allowlist
+                // (`ACCEPTED_FINAL_FORMATS` in
+                // src/app/api/assets/[assetId]/final/route.ts) — JPEG and PNG
+                // as of task #220. This is a HINT for the OS file dialog, not
+                // the real gate (the server 415s anything else regardless).
+                // #220 fixed a real instance of these two drifting: #218 left
+                // this at `image/jpeg` only, which meant a PNG the server
+                // would now happily accept was greyed out in the native
+                // picker — the owner could never SELECT the files that
+                // started this whole task, even after the server-side fix
+                // shipped. Keep this string's format list literally in sync
+                // with that map's keys by hand; a route-handler module is
+                // server-only and cannot be imported here to derive it (see
+                // this task's own report for why that was tried and
+                // rejected, not merely skipped).
+                accept="image/jpeg,image/png"
                 disabled={finalBusy}
                 className="sr-only"
                 onChange={(event) => {

@@ -34,11 +34,12 @@
 // deleted the route's OTHER sharp pass, `processFinal`, entirely — the final
 // is now stored byte-for-byte) — concurrent requests would just queue there,
 // still holding their raw bytes resident. Finals make this worse than
-// proofs: their cap is 150 MB (`MAX_FINAL_UPLOAD_BYTES`, final/route.ts —
-// raised from 80 MB by task #220, see that constant's own comment for the
-// measured memory arithmetic behind the number) against the proofs route's
-// 50 MB — a parallel batch of finals is a much faster way to exceed the
-// droplet's memory cap than a parallel batch of proofs ever was.
+// proofs: their cap is 80 MB (`MAX_FINAL_UPLOAD_BYTES`, final/route.ts — task
+// #220 raised it to 150 MB then reverted it back to 80 MB, an owner decision
+// dated 2026-08-04 recorded on that constant's own comment along with the
+// measured memory arithmetic, not merely a rollback) against the proofs
+// route's 50 MB — a parallel batch of finals is still a faster way to exceed
+// the droplet's memory cap than a parallel batch of proofs.
 //
 // UPLOAD GATE: the file picker below narrows `accept` to
 // `FINAL_UPLOAD_ACCEPT` (src/lib/final-formats.ts) — DERIVED from the same

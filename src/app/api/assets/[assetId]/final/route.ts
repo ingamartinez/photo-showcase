@@ -83,78 +83,121 @@ const assetIdSchema = z.uuid();
 // #220 widened accepted formats beyond JPEG-only, see
 // `ACCEPTED_FINAL_FORMATS` in src/lib/final-formats.ts) is much bigger than a
 // proof (task #26's own memory note) — commonly 15-40 MB for a 24-45 MP JPEG
-// at high quality, and meaningfully MORE for a PNG of the same photo. Raised
-// from #218's 80 MB to 150 MB (task #220's own instruction: no higher in this
-// slice).
+// at high quality, and meaningfully MORE for a PNG of the same photo.
 //
-// THE NUMBER BELOW IS MEASURED, NOT REASONED — this is the SECOND version of
-// this comment. The first version reasoned that removing this route's
-// `Buffer.from()` copy left ~150 MB resident for a 150 MB upload through the
-// decode step, giving ~700 MB total against the 768 MB cap: ~68 MB of
-// headroom, "not comfortable but shipped anyway." A reviewer measured it
-// instead and found the real number was ~300 MB, not 150 MB — off by exactly
-// one more copy the first version's own reasoning missed (see
-// `readUploadedFinal`'s own comment above for what that copy was and how it
-// was actually removed this time). That is the whole reason this project
-// rule exists for this exact constant now: reasoning about allocations reads
-// exactly like measuring them, right up until someone measures.
+// OWNER DECISION, 2026-08-04 (task #220, third review round): kept at #218's
+// original 80 MB, NOT raised. This constant was raised to 150 MB and lowered
+// back to 80 MB inside this same task, twice, before landing here — the
+// number was WRONG three separate times along the way (see below), and each
+// wrong number was caught by someone actually measuring, never by re-reading
+// the reasoning. The owner was asked directly what his real PNG finals
+// weigh: all of them are under 60 MB. 80 MB covers that with real margin and
+// carries none of the risk the larger cap turned out to have — this is a
+// product decision (accept the current real files, don't buy headroom for a
+// hypothetical future file), not a memory-safety compromise, and it is
+// recorded here as one so nobody re-derives 150 MB from this comment's own
+// old numbers without knowing the owner already chose not to carry that
+// risk.
+//
+// THE NUMBERS BELOW ARE MEASURED, NOT REASONED — and this comment's own
+// history is the reason that rule exists at all for this one constant:
+//   - v1 reasoned that removing this route's `Buffer.from()` copy left
+//     ~150 MB resident for a 150 MB upload through the decode step:
+//     ~700 MB total against the 768 MB cap, "not comfortable but shipped
+//     anyway." A reviewer MEASURED it instead and found ~300 MB, not
+//     150 MB — the `request.formData()` parse produces a `File` with its
+//     OWN backing buffer, a second copy v1's reasoning never accounted for.
+//   - v2 (the first version of `scripts/measure-final-upload-memory.ts`)
+//     measured the FULL request path but built its synthetic `Request` with
+//     `body: formData` — a `FormData` OBJECT. Bun special-cases that: no
+//     real multipart parse ever happens, `request.formData()` just hands the
+//     same object back. v2's own header claimed this made the harness
+//     CONSERVATIVE. That was BACKWARDS — it skipped the single most
+//     expensive step in the real request path (the parse itself), so v2's
+//     numbers were systematically LOW, not high.
+//   - v3 (current) builds REAL multipart bytes — a boundary, headers, the
+//     file's bytes, the closing boundary — as a `ReadableStream<Uint8Array>`
+//     with an explicit `multipart/form-data; boundary=...` header, so
+//     `request.formData()` has to actually parse. See that script's own
+//     header for the full account of v2's bug and why it took a second
+//     reviewer measurement to catch.
 //
 // `scripts/measure-final-upload-memory.ts` (`bun run
 // measure:final:upload:memory`) measures the REAL request path end to end —
-// `Request` → `readUploadedFinal` → `processDisplay` — not `processDisplay`
-// in isolation (that is scripts/measure-final-memory.ts's own job, still
-// true and still cheaper: see its own comment). TWO fixture profiles, because
-// "the exact file the cap raise exists for" turned out to have two different
-// dangerous shapes — see that script's own header for the full reasoning on
-// each:
-//   - REALISTIC (a genuinely large, poorly-compressible 45 MP 8-bit PNG,
-//     ~136 MiB, fits under this cap): peak RSS through the whole request —
-//     OLD shape (the first version of this route) ~521 MiB, NEW shape (the
-//     `readUploadedFinal` fix) ~466 MiB. `processDisplay` ALONE on this
-//     fixture, independently cross-checked with
-//     scripts/measure-final-memory.ts's own `maxRSS`-delta methodology: only
-//     ~57 MiB — PNG's inability to shrink-on-load (`MAX_INPUT_PIXELS`'s own
-//     note, src/lib/images.ts) turned out NOT to mean libvips holds the
-//     entire decoded frame in memory at once for this resize; the measured
-//     cost is far below what that comment's own "~400 MB worst case" figure
-//     assumes, and that figure was ALSO reasoned rather than measured — worth
-//     a follow-up to correct once #220 is done, not touched here
-//     (`MAX_INPUT_PIXELS` itself guards `processProof` too and stays
-//     out of scope for this task).
-//   - CEILING (a highly-compressible, near-flat 16-bit PNG at 96 MP — just
-//     under `MAX_INPUT_PIXELS`'s 100 MP ceiling — only ~3.8 MiB on disk,
-//     because near-flat content crushes down almost regardless of pixel
-//     count or bit depth): `processDisplay` ALONE, same independent
-//     cross-check, costs ~151-161 MiB (two separate runs, same order of
-//     magnitude) — again far below a naive "96,000,000 px × 3 channels ×
-//     2 bytes ≈ 549 MiB raw" estimate. This profile is the one that actually
-//     matters for the WORST case: `MAX_FINAL_UPLOAD_BYTES` gates the
-//     COMPRESSED file size, not the decoded buffer size, so a highly
-//     compressible image can carry far more decoded bytes per uploaded byte
-//     than an incompressible one of the same file size — this is what
-//     reaches close to `MAX_INPUT_PIXELS`'s pixel ceiling at only a few MiB
-//     of upload cost, not the REALISTIC profile above.
+// `Request` (real multipart bytes) → `readUploadedFinal` → `processDisplay`
+// — against THREE fixture profiles, because summing two separately-measured
+// worst cases (one big-file, one big-pixel-count) turned out not to be
+// legitimate: decode cost varies with input SHAPE at a FIXED pixel count
+// (8-bit vs 16-bit alone differed ~2x in this measurement), so the real
+// worst case has to be measured as one fixture near BOTH limits at once, not
+// inferred by adding two independent maxima. Full fixture reasoning lives in
+// that script's own header; the run that shipped with this comment (single
+// observations, not repeated — the script's own comment on why):
 //
-// Both fixture profiles were measured with the SAME test-harness overhead
-// (constructing a synthetic multipart `Request` from a `FormData` costs its
-// own upload-sized copy that a REAL incoming HTTP request never pays, since
-// the bytes already arrive multipart-encoded off the wire) — if anything
-// these numbers are conservative, not optimistic, for what a warm production
-// process actually does.
+//   REALISTIC (24.6 MP, 8-bit RGB noise, 74.5 MiB — comfortably under this
+//   80 MB cap): peak RSS — OLD shape (the route's first version) 328.8 MiB,
+//   NEW shape (the `readUploadedFinal` fix) 286.0 MiB.
+//   CEILING (96 MP, 16-bit RGB near-flat, only 3.8 MiB on disk — this cap
+//   does nothing to bound THIS profile, its danger is pixel count, not file
+//   size): peak RSS — OLD 223.8 MiB, NEW 221.3 MiB. `processDisplay` alone,
+//   independent maxRSS cross-check: ~150 MiB.
+//   BOTH (96 MP, 8-bit RGB, moderately compressible, 76.3 MiB — near BOTH
+//   the byte cap AND the pixel ceiling at once, the case the other two
+//   profiles individually miss): peak RSS — OLD 343.6 MiB, NEW 293.8 MiB.
+//   `processDisplay` alone, independent cross-check: ~78.5 MiB.
 //
-// COMBINED WORST CASE, using the higher of the two measured decode costs
-// (CEILING's ~161 MiB) plus the full upload cap plus this service's own
-// separately-measured production steady-state (task #218, ~150 MB):
-//   150 MB (upload, held once, post-fix) + 150 MB (baseline) + 161 MB
-//   (decode) ≈ 461 MB, against the 768 MB `MemoryMax` this service shares
-//   with `findash` on a 2 GB droplet — roughly 300 MB of headroom. THIS IS
-//   COMFORTABLE, unlike the first version of this comment's own conclusion.
+// WHAT THE readUploadedFinal FIX ACTUALLY BUYS — restated here because an
+// earlier version of this comment overstated it. On a real multipart
+// request, `file.arrayBuffer()` unavoidably produces a moment where the
+// parsed `File`'s own storage AND the fresh `ArrayBuffer` copy are BOTH
+// resident — that moment is identical whether or not `file` stays referenced
+// afterward, so it is not what the fix removes (confirmed directly above:
+// OLD's `afterArrayBuffer` reading and NEW's `afterRead` reading land within
+// noise of each other in every profile measured). What the fix removes is
+// what happens AFTER that moment: the OLD shape kept `file` referenced
+// through `processDisplay`'s decode (reading `file.type` at the `putObject`
+// call site, below), so the parsed File's storage stayed resident for the
+// REST of the request, and the decode's own cost stacked on top of it. The
+// NEW shape drops that reference the moment `readUploadedFinal` returns, so
+// the File's storage is collectible before the decode runs. The measured
+// effect: for CEILING (decode cost, ~150 MiB, dwarfs the tiny 3.8 MiB file),
+// the fix barely moves the peak (223.8 → 221.3 MiB) — there was almost
+// nothing to reclaim. For REALISTIC and BOTH (decode cost comparable to or
+// smaller than the file itself), the fix DOES reduce the measured peak by a
+// real amount (~43-50 MiB in this run) — the reclaimed File storage makes
+// room during the decode instead of piling on top of it. Either way, the
+// benefit that reliably matters — largest, and present in every profile — is
+// POST-DECODE RESIDENCY, not peak: `afterHandlerEnd` in the NEW shape is
+// roughly one upload's worth of memory below OLD's in every profile (e.g.
+// REALISTIC: 328.8 MiB old vs 252.1 MiB new, final reading). That residency
+// is what matters for a SECOND request queued behind `processDisplay`'s
+// process-wide `runExclusive` mutex (src/lib/images.ts) — it sits behind
+// whatever the first request is still holding onto, and the fix is what
+// keeps that not include a whole extra File's worth of dead weight. It is
+// not, by itself, what keeps this cap's own peak under the cgroup ceiling —
+// the cap value is what does that, per the arithmetic below.
+//
+// COMBINED WORST CASE at the 80 MB cap: the BOTH profile is the one that
+// actually stresses it (near both limits at once). Marginal cost added by
+// ONE request, NEW shape (peak 293.8 MiB, this script's own harness baseline
+// 133.5 MiB before any request-handling work starts): ~160 MiB. Added to
+// this service's own separately-measured production steady state (task
+// #218, ~150 MB, which already includes sharp/libvips loaded — not stacked
+// on top of this script's own baseline a second time): ≈ 310 MB against the
+// 768 MB `MemoryMax` this service shares with `findash` on a 2 GB droplet —
+// comfortable, with real margin left over even under the OLD shape's own
+// worse marginal cost (~210 MiB, ≈ 360 MB combined).
+//
 // Platform caveat, same as every sibling measurement script: laptop-measured
 // (macOS), not droplet-measured (Linux) — see kanban #57. Re-run
 // `measure:final:upload:memory` on the droplet before treating the exact
 // numbers above as authoritative there; the qualitative conclusion (real
-// margin, not reasoned margin) is what this comment is actually vouching for.
-export const MAX_FINAL_UPLOAD_BYTES = 150 * 1024 * 1024;
+// margin, measured three times over now, not reasoned) is what this comment
+// is actually vouching for. Do not raise this cap again without a NEW owner
+// decision — the 80 MB ceiling above is the owner's choice, not a
+// memory-derived limit; the memory arithmetic on its own permits headroom to
+// spare.
+export const MAX_FINAL_UPLOAD_BYTES = 80 * 1024 * 1024;
 
 // ACCEPTED_FINAL_FORMATS moved to src/lib/final-formats.ts (task #220 review
 // follow-up): MIME type → the extension `finalKey()` stores the object
@@ -368,34 +411,37 @@ type ReadUploadedFinalResult =
  * size cap, an accepted format) and reads its bytes — all in its OWN
  * function frame, separate from the POST handler below.
  *
- * THIS SCOPING IS LOAD-BEARING, NOT STYLISTIC (task #220 review follow-up).
- * `MAX_FINAL_UPLOAD_BYTES`'s own comment above got the memory arithmetic
- * WRONG the first time this task shipped — reasoned instead of measured, per
- * that task's own instruction, and off by exactly the copy this function
- * exists to stop holding onto. `request.formData()` parses the whole
- * multipart body into a `FormData` whose `File` entry retains its OWN
- * backing buffer, roughly the size of the upload — a SEPARATE allocation
- * from the ArrayBuffer `file.arrayBuffer()` copies out of it below. Calling
- * `.arrayBuffer()` does not free that first copy; nothing does, until every
- * reference to `file`/`formData` themselves is gone and the garbage
- * collector actually reclaims them. The version of this route that shipped
- * first kept BOTH alive through the whole request: `file` was still
- * referenced AFTER `processDisplay`'s decode, at
- * `putObject(key, uploadedBytes, { contentType: file.type })` — so the
- * FormData-owned copy sat resident through the decode too, not just the
- * ArrayBuffer copy. Measured directly (not re-reasoned about a second time —
- * see `scripts/measure-final-upload-memory.ts` and this task's own report
- * for the actual numbers, not an estimate): a 150 MB upload cost roughly
- * TWICE the assumed 150 MB resident through the decode step.
- *
- * Returning only PRIMITIVES (`contentType`, `extension`) and the ArrayBuffer
- * itself — never `file` or `formData` — means neither is reachable from the
- * caller's scope the moment this function returns, so a `.type` read the
- * caller used to need `file` for now comes off this function's own return
- * value instead. That is what actually lets the FormData-owned copy become
- * COLLECTIBLE before `processDisplay`'s decode ever runs, rather than
- * staying pinned alive for the rest of the request by a reference the
- * caller never needed to keep.
+ * THIS SCOPING IS LOAD-BEARING, NOT STYLISTIC (task #220 review follow-up) —
+ * but what it buys was ALSO measured wrong on the first pass, and the
+ * corrected claim is more modest than the original one. `request.formData()`
+ * parses the whole multipart body into a `FormData` whose `File` entry
+ * retains its OWN backing buffer, roughly the size of the upload — a
+ * SEPARATE allocation from the ArrayBuffer `file.arrayBuffer()` copies out of
+ * it below. That moment — the File's own storage AND the fresh ArrayBuffer
+ * copy both resident at once — is UNAVOIDABLE on a real multipart request
+ * and happens identically whether or not `file` stays referenced afterward;
+ * no amount of scoping removes it (measured directly:
+ * scripts/measure-final-upload-memory.ts's OLD and NEW shapes land within
+ * noise of each other at that exact point, in every fixture profile). What
+ * scoping this function DOES change is what happens AFTER that moment: the
+ * route's first version kept `file` referenced all the way past
+ * `processDisplay`'s decode, reading `file.type` at the `putObject` call
+ * site below — so the File's storage stayed resident for the REST of the
+ * request, with the decode's own cost stacking on top of it instead of
+ * reusing that space. Returning only PRIMITIVES (`contentType`, `extension`)
+ * and the ArrayBuffer itself — never `file` or `formData` — means neither is
+ * reachable from the caller's scope the moment this function returns, so the
+ * File's storage is collectible BEFORE the decode runs rather than
+ * afterward. Measured effect (see `MAX_FINAL_UPLOAD_BYTES`'s own comment
+ * above for the exact figures): a modest, shape-dependent PEAK reduction
+ * where decode cost is comparable to the upload size, and — reliably, in
+ * every profile measured — roughly one upload's worth LESS memory resident
+ * after the decode completes. That post-decode residency is what actually
+ * matters for a request queued behind `processDisplay`'s process-wide
+ * `runExclusive` mutex (src/lib/images.ts): it determines how much dead
+ * weight the FIRST request is still holding while a second one waits its
+ * turn, not the single-request peak `MAX_FINAL_UPLOAD_BYTES` is sized
+ * against.
  */
 async function readUploadedFinal(request: NextRequest): Promise<ReadUploadedFinalResult> {
   let formData: FormData;

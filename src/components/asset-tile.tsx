@@ -411,7 +411,12 @@ export function AssetTile({
               <input
                 ref={finalInputRef}
                 type="file"
-                accept="image/*"
+                // Narrowed to JPEG-only (task #218): the server-side upload
+                // gate now rejects anything else with a 415, since the final
+                // is stored byte-for-byte and needs its `.jpg`/`image/jpeg`
+                // shape guaranteed (see final/route.ts's own comment). This
+                // is a hint for the file picker, not the real gate.
+                accept="image/jpeg"
                 disabled={finalBusy}
                 className="sr-only"
                 onChange={(event) => {

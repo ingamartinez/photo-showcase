@@ -375,6 +375,13 @@ describe("AssetTile", () => {
 
     expect(screen.getByText("Falta el final")).toBeDefined();
     expect(screen.getByText("Subir final")).toBeDefined();
+
+    // TASK #218: the server-side gate tightened to `image/jpeg` only, and
+    // the file picker's `accept` was narrowed to match — a hint for the OS
+    // file dialog, not the real gate. MUTATION PROOF: reverting the input's
+    // `accept` back to `"image/*"` turns this assertion red.
+    const finalInput = screen.getByLabelText("Subir final") as HTMLInputElement;
+    expect(finalInput.accept).toBe("image/jpeg");
   });
 
   it("shows 'Final subido' with a 'Reemplazar' control for a selected asset that already has one", () => {

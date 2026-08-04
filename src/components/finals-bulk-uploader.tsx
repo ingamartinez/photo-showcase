@@ -29,13 +29,24 @@
 // `Promise.all`. Same reasoning as proof-uploader.tsx's own header, made
 // worse here: `request.formData()` buffers the whole multipart body in the
 // droplet process (`photoshowcase.service`'s `MemoryMax=768M`, shared with
-// findash), and `processFinal`'s own mutex (`runExclusive`,
-// src/lib/images.ts) already serializes the decode/re-encode step
-// process-wide — concurrent requests would just queue there, still holding
-// their raw bytes resident. Finals make this worse than proofs: their cap
-// is 80 MB (`MAX_FINAL_UPLOAD_BYTES`, final/route.ts) against the proofs
-// route's 50 MB — a parallel batch of finals is a much faster way to exceed
-// the droplet's memory cap than a parallel batch of proofs ever was.
+// findash), and `processDisplay`'s own mutex (`runExclusive`,
+// src/lib/images.ts) already serializes that pass process-wide (task #218
+// deleted the route's OTHER sharp pass, `processFinal`, entirely — the final
+// is now stored byte-for-byte) — concurrent requests would just queue there,
+// still holding their raw bytes resident. Finals make this worse than
+// proofs: their cap is 80 MB (`MAX_FINAL_UPLOAD_BYTES`, final/route.ts)
+// against the proofs route's 50 MB — a parallel batch of finals is a much
+// faster way to exceed the droplet's memory cap than a parallel batch of
+// proofs ever was.
+//
+// UPLOAD GATE: the file picker below narrows `accept` to `image/jpeg` only
+// (task #218) — the server-side route now rejects anything else with a 415,
+// tightened specifically because the final is stored byte-for-byte and needs
+// its `.jpg`/`image/jpeg` shape guaranteed (see final/route.ts's own
+// comment). `accept` is a hint, not a gate — a photographer can still pick a
+// non-JPEG file past it on some OSes/browsers, which is exactly what the
+// server check exists to catch; this narrowing only saves a round trip for
+// the common case of picking the wrong export by mistake.
 import { useState } from "react";
 import type { WorkspaceAsset } from "@/components/gallery-workspace";
 import {
@@ -234,7 +245,7 @@ export function FinalsBulkUploader({
           Elegir archivos
           <input
             type="file"
-            accept="image/*"
+            accept="image/jpeg"
             multiple
             className="sr-only"
             onChange={(event) => {

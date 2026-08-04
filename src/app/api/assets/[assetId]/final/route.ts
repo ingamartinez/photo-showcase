@@ -62,7 +62,7 @@ import { assets } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
 import { loadOwnedAsset } from "@/lib/asset-access";
 import { canReadFinalDeliverable } from "@/lib/final-access";
-import { processDisplay, processFinal } from "@/lib/images";
+import { processDisplay } from "@/lib/images";
 import { notifyAdminOfMissingFinal } from "@/lib/missing-final-notification-email";
 import {
   displayKey,
@@ -82,10 +82,12 @@ const assetIdSchema = z.uuid();
 // a 24-45 MP body at high quality. This is set generously above that, same
 // "don't discover the limit in production" reasoning as the proofs route's
 // own `MAX_UPLOAD_BYTES` (src/app/api/galleries/[galleryId]/proofs/route.ts).
-// The real memory bound is `processFinal`'s own `limitInputPixels` guard
-// (src/lib/images.ts) — decode/re-encode cost scales with PIXEL COUNT, not
-// file size, and `scripts/measure-final-memory.ts` measures that cost
-// directly rather than guessing it from this number.
+// TASK #218: the final itself no longer goes through sharp at all — it is
+// written to R2 byte-for-byte, so this cap now bounds only the request body
+// size, not a decode cost. The one remaining sharp pass on this route is
+// `processDisplay`'s own `limitInputPixels` guard (src/lib/images.ts), whose
+// decode cost scales with PIXEL COUNT, not file size — measured directly by
+// `scripts/measure-final-memory.ts` rather than guessed from this number.
 export const MAX_FINAL_UPLOAD_BYTES = 80 * 1024 * 1024;
 
 /** Parses the `Content-Length` header into a byte count, or `null` if it is
@@ -139,8 +141,10 @@ function slugifyForFilename(value: string): string {
  * folder can still tell them apart) with the asset's ORIGINAL filename's own
  * base name (recognizable to the client from their own camera/export, set at
  * proof-upload time — see `assets.originalFilename` in schema.ts), and always
- * ends in `.jpg`: `processFinal` (src/lib/images.ts) always outputs JPEG,
- * regardless of what the original upload's own extension was.
+ * ends in `.jpg`: the POST handler below (task #218) only ever accepts an
+ * `image/jpeg` upload, so every final that ever reaches this route really is
+ * one — this is the upload GATE guaranteeing it now, not a re-encode step
+ * (there isn't one any more; the final is stored byte-for-byte).
  *
  * Both inputs are slugified to plain ASCII `[a-z0-9-]` before being combined
  * — not because a `Content-Disposition` filename technically requires ASCII
@@ -302,40 +306,45 @@ export const POST = withApiSession(async function POST(
   if (file.size > MAX_FINAL_UPLOAD_BYTES) {
     return errorResponse("file_too_large", 413);
   }
-  if (!file.type.startsWith("image/")) {
+  // TIGHTENED to JPEG-only, not merely "any image" (task #218): the final is
+  // now stored BYTE-FOR-BYTE below, which means the same file that lands at
+  // `finalKey` is the one served under a hardcoded `.jpg` extension AND a
+  // hardcoded `image/jpeg` Content-Type on `putObject` further down. All
+  // three of those — the extension, the content type, and `finalKey`'s
+  // determinism (a re-upload of the SAME asset overwrites the SAME key in
+  // place rather than orphaning it) — stay simultaneously true only because
+  // every accepted upload really is a JPEG. A PNG (or anything else) accepted
+  // here would sit at a `.jpg` key served with the wrong Content-Type, and —
+  // because the key never changes shape — a later real JPEG re-upload for the
+  // same asset would land on that SAME key rather than replacing a
+  // differently-shaped orphan. This costs nothing real: the product is always
+  // a Lightroom JPEG export.
+  if (file.type !== "image/jpeg") {
     return errorResponse("not_an_image", 415);
   }
 
-  // The uploaded bytes exist only in this local variable, for exactly as
-  // long as `processFinal` needs them — same "never stored, never
-  // referenced again" shape as the proofs route's original bytes.
+  // The uploaded bytes are read into a Buffer ONCE and reused for both
+  // writes below: `finalBytes` IS what gets stored at `finalKey` (task #218
+  // — byte-for-byte, no sharp pass on this path at all) and is also what
+  // feeds `processDisplay`, never a pre-filtered intermediate (there isn't
+  // one any more).
   const uploadedBytes = await file.arrayBuffer();
+  const finalBytes = Buffer.from(uploadedBytes);
 
-  let processed;
   let display;
   try {
-    processed = await processFinal(uploadedBytes);
-    // Task #89: the browsing-sized, unwatermarked derivative a DELIVERED
-    // gallery shows in its grid and lightbox. Derived from the FINAL's own
-    // bytes (`processed.data`), never from `uploadedBytes` — two reasons,
-    // both deliberate:
-    //   - Semantics: `processDisplay` is documented as "the final at
-    //     browsing size" (src/lib/images.ts). Feeding it the raw upload would
-    //     make it a general-purpose downscaler over arbitrary originals,
-    //     which is precisely the "resize only" primitive that module's header
-    //     refuses to provide.
-    //   - Metadata: `processed.data` has already been through
-    //     `processFinal`'s EXIF allowlist, so this derivative cannot possibly
-    //     carry a field (a location leak, task #26) the final itself dropped.
-    // BOTH passes run before either object is written, so a failure in the
-    // second one leaves R2 untouched by this request rather than half
-    // updated. They cannot overlap in memory: both go through the shared
-    // `runExclusive` mutex in src/lib/images.ts.
-    display = await processDisplay(processed.data);
+    // Task #89's browsing-sized, unwatermarked derivative a DELIVERED
+    // gallery shows in its grid and lightbox. Fed the SAME raw bytes that
+    // get stored at `finalKey` — see src/lib/images.ts's file header and
+    // `processDisplay`'s own section header for why that function is now the
+    // ONLY thing in this pipeline that strips metadata (GPS included) from a
+    // final-shaped image. This still runs BEFORE either object is written,
+    // so a failure here leaves R2 untouched by this request rather than half
+    // updated.
+    display = await processDisplay(finalBytes);
   } catch {
-    // Covers a genuinely corrupt/undecodable body and `processFinal`'s own
-    // guard (the shared pixel-count bomb check in src/lib/images.ts) —
-    // both collapse to "could not produce a final".
+    // Covers a genuinely corrupt/undecodable body and `processDisplay`'s own
+    // guard (the shared pixel-count bomb check in src/lib/images.ts).
     return errorResponse("processing_failed", 422);
   }
 
@@ -351,7 +360,12 @@ export const POST = withApiSession(async function POST(
   const displayObjectKey = displayKey(gallery.id, asset.id);
 
   try {
-    await putObject(key, processed.data, { contentType: "image/jpeg" });
+    // TASK #218: `finalBytes` is written VERBATIM — the exact bytes the admin
+    // uploaded, no sharp pass in between. `contentType: "image/jpeg"` stays
+    // hardcoded rather than reading `file.type` back, correct only because of
+    // the upload gate above (see its own comment) — every accepted upload
+    // really is a JPEG, so there is nothing this could get wrong.
+    await putObject(key, finalBytes, { contentType: "image/jpeg" });
     // Written in the SAME request, and its failure fails the whole upload
     // (502, same as the final's own). A partial success here would leave the
     // photographer believing the photo is delivered while the client keeps

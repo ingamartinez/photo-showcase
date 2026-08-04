@@ -155,7 +155,17 @@ export function proofKey(galleryId: string, assetId: string): R2Key {
   return namespacedKey(`galleries/${galleryId}/proofs/${assetId}.webp`);
 }
 
-/** Full-res, no watermark. Exists only for assets the client selected. */
+/** Full-res, no watermark. Exists only for assets the client selected. Stored
+ * BYTE-FOR-BYTE as the admin uploaded it (task #218) — there is no sharp pass
+ * on this path any more.
+ *
+ * The `.jpg` extension is hardcoded, not derived from the upload's own
+ * filename or content type. That is only honest because the final upload
+ * route (POST /api/assets/[assetId]/final) tightened its gate to accept
+ * `image/jpeg` only (task #218) — see that route's own comment for why: it
+ * is what keeps this extension, this key's determinism (a re-upload of the
+ * SAME asset overwrites the SAME key rather than orphaning it), and
+ * `putObject`'s hardcoded `image/jpeg` content type all simultaneously true. */
 export function finalKey(galleryId: string, assetId: string): R2Key {
   return namespacedKey(`galleries/${galleryId}/finals/${assetId}.jpg`);
 }

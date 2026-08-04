@@ -4,7 +4,7 @@
 // argument. This codebase has produced exactly that trap more than once (see
 // task #28's own body, which names three real examples from review), so this
 // suite deliberately does the opposite: it runs the REAL `@/lib/images`
-// pipeline (`processProof`/`processFinal`, unmocked) and the REAL
+// pipeline (`processProof`/`processDisplay`, unmocked) and the REAL
 // `@/lib/r2` module (key builders + `getPresignedUrl`, unmocked) through the
 // ACTUAL `GET /api/assets/[assetId]/final` and `GET
 // /api/assets/[assetId]/proof` route handlers, backed only by an in-memory
@@ -16,6 +16,12 @@
 // width/height/format — proving the final route serves a genuinely
 // different object from the proof route for the SAME asset, not merely a
 // same-shaped response.
+//
+// TASK #218: the final object this suite seeds at `finalKey` is now written
+// EXACTLY as an admin upload would land there — the raw fixture bytes,
+// untouched, no `processFinal` call (that function is deleted; there is no
+// sharp pass on the final's own write path any more). See
+// `seedGalleryAndAsset` below.
 //
 // Only the DB and the `Bun` global are faked; everything from the route
 // handler down to the encoded bytes is real.
@@ -143,6 +149,25 @@ vi.mock("@/lib/db", async () => {
           },
         }),
       }),
+      // TASK #218: the new real-pipeline POST tests below need this — the
+      // route's own POST handler calls `db.update(assets).set(...).where(...)`
+      // after a successful upload. Same shape as ./route.test.ts's own fake.
+      update: (table: unknown) => ({
+        set: (patch: Row) => ({
+          where: async (condition: unknown) => {
+            if (table !== assets) throw new Error("fake db: unsupported table in update()");
+            const conditions = eqConditions(condition);
+            if (conditions.length === 0 || conditions.some((c) => !c.column)) {
+              throw new Error("eqConditions: not a supported eq()/and(eq(), eq()) condition");
+            }
+            for (const row of assetRows) {
+              if (conditions.every(({ column, value }) => row[column!] === value)) {
+                Object.assign(row, patch);
+              }
+            }
+          },
+        }),
+      }),
       __rows: { assets: assetRows, galleries: galleryRows, galleryClients: galleryClientRows },
     },
   };
@@ -168,6 +193,13 @@ function clientASession(): Session {
 function clientBSession(): Session {
   return {
     user: { id: "client-b", role: "client", email: "b@example.com" },
+    expires: "2099-01-01T00:00:00.000Z",
+  } as Session;
+}
+
+function adminSession(): Session {
+  return {
+    user: { id: "admin-1", role: "admin", email: "photographer@example.com" },
     expires: "2099-01-01T00:00:00.000Z",
   } as Session;
 }
@@ -201,18 +233,27 @@ async function seedGalleryAndAsset(overrides: {
   isEdited: boolean;
   galleryStatus: string;
   clientId?: string;
-}): Promise<{ realProofKey: string; realFinalKey: string }> {
+  // TASK #218: lets a test seed the final with a SPECIFIC fixture (e.g. one
+  // carrying a location-leak marker) instead of the plain default. Defaults
+  // to `makeLargeSourceFixture()` when omitted.
+  sourceOverride?: Buffer;
+}): Promise<{ realProofKey: string; realFinalKey: string; sourceBytes: Buffer }> {
   const { proofKey, finalKey } = await import("@/lib/r2");
-  const { processProof, processFinal } = await import("@/lib/images");
+  const { processProof } = await import("@/lib/images");
 
-  const source = await makeLargeSourceFixture();
+  const source = overrides.sourceOverride ?? (await makeLargeSourceFixture());
   const proof = await processProof(source);
-  const final = await processFinal(source);
 
   const realProofKey = proofKey(GALLERY_ID, ASSET_ID);
   const realFinalKey = finalKey(GALLERY_ID, ASSET_ID);
   store.set(realProofKey, { data: proof.data, contentType: "image/webp" });
-  store.set(realFinalKey, { data: final.data, contentType: "image/jpeg" });
+  // TASK #218: the final is stored EXACTLY as an admin upload would land
+  // here — `source` itself, untouched. There is no `processFinal` call any
+  // more; the POST route's own contract (proven in route.test.ts's byte-
+  // identity test) is that `finalKey`'s bytes ARE the upload's bytes, so this
+  // fake-R2 seed reproduces that contract directly rather than routing
+  // through a function that no longer exists.
+  store.set(realFinalKey, { data: source, contentType: "image/jpeg" });
 
   const db = await seededDb();
   db.__rows.galleries.push({
@@ -236,7 +277,7 @@ async function seedGalleryAndAsset(overrides: {
     isEdited: overrides.isEdited,
   });
 
-  return { realProofKey, realFinalKey };
+  return { realProofKey, realFinalKey, sourceBytes: source };
 }
 
 beforeEach(async () => {
@@ -265,7 +306,11 @@ beforeEach(async () => {
 describe("GET .../final vs GET .../proof — real bytes, real dimensions (task #28)", () => {
   it("serves the full-resolution, unwatermarked final — genuinely different bytes, dimensions, and format from the same asset's proof", async () => {
     authMock.mockResolvedValue(clientASession());
-    await seedGalleryAndAsset({ isSelected: true, isEdited: true, galleryStatus: "delivered" });
+    const { sourceBytes } = await seedGalleryAndAsset({
+      isSelected: true,
+      isEdited: true,
+      galleryStatus: "delivered",
+    });
 
     const { GET: getFinal } = await import("./route");
     const { GET: getProof } = await import("../proof/route");
@@ -294,10 +339,15 @@ describe("GET .../final vs GET .../proof — real bytes, real dimensions (task #
     expect(keyFromFakeUrl(finalUrl)).not.toBe(keyFromFakeUrl(proofUrl));
     expect(Buffer.compare(servedFinal.data, servedProof.data)).not.toBe(0);
 
+    // TASK #218's own acceptance criterion, at the real-pipeline layer: the
+    // served final is `Buffer.equals` to what was "uploaded" (the fixture
+    // this suite seeded), not merely a same-format/same-size re-encode.
+    expect(servedFinal.data.equals(sourceBytes)).toBe(true);
+
     // Decode the FINAL bytes independently: full resolution (no downscale),
     // JPEG. This is the acceptance criterion's own "check the actual bytes
-    // and dimensions" — not a re-assertion of what `processFinal` claims to
-    // have done.
+    // and dimensions" — not a re-assertion of what the route claims to have
+    // done.
     const finalMeta = await sharp(servedFinal.data).metadata();
     expect(finalMeta.format).toBe("jpeg");
     expect(finalMeta.width).toBe(LARGE_WIDTH);
@@ -355,5 +405,153 @@ describe("GET .../final vs GET .../proof — real bytes, real dimensions (task #
     );
 
     expect(response.status).toBe(404);
+  });
+});
+
+// TASK #218's own required coverage, run through the REAL POST handler, REAL
+// `@/lib/images` pipeline and REAL `@/lib/r2` key builders — only the DB and
+// the `Bun` global (the fake bucket) are faked, same discipline as the GET
+// suite above. This is deliberately NOT covered only at ./route.test.ts's
+// mocked boundary: a mock can assert "the route called putObject with X" even
+// if X were computed wrong, but it cannot lie about what a REAL sharp pass
+// actually produced.
+describe("POST /api/assets/[assetId]/final — byte-for-byte storage and metadata (task #218)", () => {
+  // A location-leak marker stands in for a GPS tag — sharp's `Exif` type has
+  // no separate GPS-IFD support (only IFD0-3), so a raw `GPSLatitude` string
+  // round-trips unreliably through `withExif()`; an `ImageDescription`
+  // carrying a plain-text location is what src/lib/images.test.ts already
+  // uses for the identical reason, kept consistent here.
+  const LOCATION_LEAK_MARKER = "Shot at 123 Main St, Client Hometown";
+  const ORIGINAL_COPYRIGHT_MARKER = "Some Other Photographer Studio";
+
+  async function makeGpsFixture(): Promise<Buffer> {
+    return sharp({
+      create: { width: LARGE_WIDTH, height: LARGE_HEIGHT, channels: 3, background: BACKGROUND },
+    })
+      .jpeg()
+      .withExif({
+        IFD0: { Copyright: ORIGINAL_COPYRIGHT_MARKER, ImageDescription: LOCATION_LEAK_MARKER },
+      })
+      .toBuffer();
+  }
+
+  const BACKGROUND = { r: 120, g: 140, b: 160 };
+
+  function jpegFile(bytes: Buffer, name = "IMG_0001-edit.jpg"): File {
+    // `Buffer`'s `ArrayBufferLike` backing is not assignable to `BlobPart`
+    // (`SharedArrayBuffer` is a valid `Buffer` backing store but not a valid
+    // `File`/`Blob` part) — a `Uint8Array` view over the same bytes is.
+    return new File([new Uint8Array(bytes)], name, { type: "image/jpeg" });
+  }
+
+  async function postFinal(bytes: Buffer) {
+    const { POST } = await import("./route");
+    const formData = new FormData();
+    formData.set("file", jpegFile(bytes));
+    const request = new NextRequest(`http://localhost/api/assets/${ASSET_ID}/final`, {
+      method: "POST",
+      body: formData,
+    });
+    return POST(request, paramsFor(ASSET_ID));
+  }
+
+  beforeEach(async () => {
+    const db = await seededDb();
+    db.__rows.galleries.push({ id: GALLERY_ID, title: "Boda Ana y Beto", status: "delivered" });
+    db.__rows.galleryClients.push({ galleryId: GALLERY_ID, userId: "client-a" });
+    db.__rows.assets.push({
+      id: ASSET_ID,
+      galleryId: GALLERY_ID,
+      originalFilename: "IMG_0001.JPG",
+      isSelected: true,
+      isEdited: false,
+      finalKey: null,
+    });
+    authMock.mockResolvedValue(adminSession());
+  });
+
+  // Required coverage #1 (task #218's own list): byte-for-byte identity, at
+  // the real R2/pipeline layer this time (the mocked-boundary version lives
+  // in ./route.test.ts). MUTATION PROOF: reverting the route's
+  // `putObject(key, finalBytes, ...)` call to write `display.data` instead
+  // turns this test red — the stored bytes decode as WebP, not JPEG, and
+  // `Buffer.equals` against the uploaded JPEG fails outright.
+  it("stores the uploaded bytes at finalKey byte-for-byte, no re-encode", async () => {
+    const { finalKey } = await import("@/lib/r2");
+    const uploaded = await makeGpsFixture();
+
+    const response = await postFinal(uploaded);
+
+    expect(response.status).toBe(200);
+    const stored = store.get(finalKey(GALLERY_ID, ASSET_ID));
+    if (!stored) throw new Error("final object missing from fake store");
+    expect(stored.data.equals(uploaded)).toBe(true);
+  });
+
+  // Required coverage #2: EXIF survives on the stored final — this is the
+  // owner's accepted trade (task #218), pinned by a test so nobody "fixes"
+  // it later without another explicit decision.
+  it("keeps the full, unfiltered EXIF on the stored final — including the location leak (owner's accepted trade)", async () => {
+    const { finalKey } = await import("@/lib/r2");
+    const uploaded = await makeGpsFixture();
+
+    const response = await postFinal(uploaded);
+
+    expect(response.status).toBe(200);
+    const stored = store.get(finalKey(GALLERY_ID, ASSET_ID));
+    if (!stored) throw new Error("final object missing from fake store");
+    const storedMeta = await sharp(stored.data).metadata();
+    expect(storedMeta.exif).toBeDefined();
+    expect(stored.data.includes(LOCATION_LEAK_MARKER)).toBe(true);
+    expect(stored.data.includes(ORIGINAL_COPYRIGHT_MARKER)).toBe(true);
+  });
+
+  // Required coverage #3: the invariant that still matters after task #218 —
+  // the display derivative must NOT carry what the final now does.
+  // MUTATION PROOF: feeding `processDisplay` the wrong thing would not catch
+  // this (there is no wrong thing left to feed it — the route has exactly one
+  // buffer), but reverting `processDisplay`'s own `.withExif()` allowlist
+  // call in src/lib/images.ts to a no-op (or removing it) turns this red: the
+  // location marker would then survive into the display bytes too.
+  it("does NOT carry the location leak (or the original studio's copyright) on the display derivative", async () => {
+    const { displayKey } = await import("@/lib/r2");
+    const uploaded = await makeGpsFixture();
+
+    const response = await postFinal(uploaded);
+
+    expect(response.status).toBe(200);
+    const storedDisplay = store.get(displayKey(GALLERY_ID, ASSET_ID));
+    if (!storedDisplay) throw new Error("display object missing from fake store");
+    expect(storedDisplay.data.includes(LOCATION_LEAK_MARKER)).toBe(false);
+    expect(storedDisplay.data.includes(ORIGINAL_COPYRIGHT_MARKER)).toBe(false);
+    // And it DOES carry the app's own authorship allowlist — proving the
+    // absence above is `processDisplay` actively filtering, not merely sharp
+    // stripping everything (which would also make the negative assertions
+    // above trivially true for the wrong reason).
+    const { FINAL_EXIF_ARTIST, FINAL_EXIF_COPYRIGHT } = await import("@/lib/images");
+    expect(storedDisplay.data.includes(FINAL_EXIF_COPYRIGHT)).toBe(true);
+    expect(storedDisplay.data.includes(FINAL_EXIF_ARTIST)).toBe(true);
+  });
+
+  // Required coverage #4: a non-JPEG upload is rejected with 415, exercised
+  // through the REAL route (not the mocked one) so nothing about the fake
+  // pipeline could mask the gate being skipped.
+  it("rejects a non-JPEG upload with 415 and writes nothing to the real fake bucket", async () => {
+    const { POST } = await import("./route");
+    const png = new File(["not-a-real-png-but-has-the-right-mime"], "edit.png", {
+      type: "image/png",
+    });
+    const formData = new FormData();
+    formData.set("file", png);
+    const request = new NextRequest(`http://localhost/api/assets/${ASSET_ID}/final`, {
+      method: "POST",
+      body: formData,
+    });
+
+    const response = await POST(request, paramsFor(ASSET_ID));
+
+    expect(response.status).toBe(415);
+    await expect(response.json()).resolves.toEqual({ error: "not_an_image" });
+    expect(store.size).toBe(0);
   });
 });

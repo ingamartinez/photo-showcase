@@ -969,6 +969,187 @@ describe("ProofGrid", () => {
     });
   });
 
+  // Task #222 — the delivered grid splits into chosen-first + a closed
+  // accordion for the rest.
+  //
+  // EVERY FIXTURE HERE INTERLEAVES SELECTED AND UNSELECTED ON PURPOSE. A
+  // fixture where "first N selected, rest not" happens to leave group order
+  // equal to flat upload order would let a group-local index silently pass
+  // as a flat index — the exact bug task #222's own body calls THE TRAP,
+  // and the one this repo has already shipped once before under a uniform
+  // fixture. Interleaving is what makes group order and flat order diverge,
+  // which is the only thing that can catch it.
+  describe("delivered gallery: chosen-first split (task #222)", () => {
+    // A: unselected, B: selected, C: unselected, D: selected, E: selected —
+    // both "unselected between two selected" and "two selected in a row"
+    // appear, and every asset keeps its own distinguishable filename
+    // (assetsFor's IMG_000N.JPG) so an assertion can name exactly which
+    // photo it means.
+    const interleaved = assetsFor([
+      { isSelected: false }, // A — IMG_0001.JPG
+      { isSelected: true }, //  B — IMG_0002.JPG
+      { isSelected: false }, // C — IMG_0003.JPG
+      { isSelected: true }, //  D — IMG_0004.JPG
+      { isSelected: true }, //  E — IMG_0005.JPG
+    ]);
+
+    it("puts chosen photos above the fold, not wrapped in the collapsed section, and the rest inside it, closed", () => {
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: interleaved,
+      });
+
+      const details = container.querySelector("details");
+      expect(details).not.toBeNull();
+      // Closed on first render — the literal meaning of "closed by
+      // default": no open/closed state is read from anywhere, a plain
+      // <details> starts closed unless told otherwise.
+      expect(details?.open).toBe(false);
+
+      // Chosen (B, D, E): reachable directly, and NOT inside the <details>.
+      for (const filename of ["IMG_0002.JPG", "IMG_0004.JPG", "IMG_0005.JPG"]) {
+        const tile = screen.getByRole("button", { name: `Ver ${filename}` });
+        expect(tile.closest("details")).toBeNull();
+      }
+
+      // Unselected (A, C): inside the <details>, not above the fold.
+      for (const filename of ["IMG_0001.JPG", "IMG_0003.JPG"]) {
+        const tile = screen.getByRole("button", { name: `Ver ${filename}` });
+        expect(tile.closest("details")).toBe(details);
+      }
+    });
+
+    it("opens the accordion on interaction", async () => {
+      const user = userEvent.setup();
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: interleaved,
+      });
+
+      const details = container.querySelector("details") as HTMLDetailsElement;
+      expect(details.open).toBe(false);
+
+      await user.click(screen.getByText(/no elegiste/));
+
+      expect(details.open).toBe(true);
+    });
+
+    // THE TRAP ITSELF. B and D are BOTH chosen, but B sits at flat index 1
+    // and D at flat index 3 — while D is only the SECOND chosen photo
+    // (group-local index 1). Tapping D must open D. A component that (bug)
+    // opens the lightbox by group-local index against the FLAT array would
+    // open B instead — a different, wrong photo, and every tile would still
+    // have rendered correctly, which is exactly why this needs a real
+    // interaction and a real fixture rather than counting elements.
+    it("tapping the Nth chosen photo opens THAT photo in the lightbox, not whatever sits at that flat index", async () => {
+      const user = userEvent.setup();
+      renderGrid({ initialStatus: "delivered", initialAssets: interleaved });
+
+      await user.click(screen.getByRole("button", { name: "Ver IMG_0004.JPG" }));
+
+      expect(screen.getByRole("dialog")).toBeDefined();
+      expect(screen.getByText("IMG_0004.JPG", { exact: false })).toBeDefined();
+      // 3 chosen photos total (B, D, E); D is the 2nd.
+      expect(screen.getByText(/2 \/ 3/)).toBeDefined();
+    });
+
+    // Lightbox navigation stays inside its own group: C (unselected) sits
+    // BETWEEN B and D in upload order. Opened from the chosen group, "next"
+    // from B must never land on C.
+    it("keeps lightbox navigation inside the group it was opened from", async () => {
+      const user = userEvent.setup();
+      renderGrid({ initialStatus: "delivered", initialAssets: interleaved });
+
+      await user.click(screen.getByRole("button", { name: "Ver IMG_0002.JPG" }));
+      expect(screen.getByText("IMG_0002.JPG", { exact: false })).toBeDefined();
+
+      await user.click(screen.getByRole("button", { name: "Foto siguiente" }));
+
+      // Next chosen photo (D), never the unselected C sitting between them
+      // in upload order.
+      expect(screen.getByText("IMG_0004.JPG", { exact: false })).toBeDefined();
+      expect(screen.queryByText("IMG_0003.JPG", { exact: false })).toBeNull();
+
+      // And the LAST chosen photo has nowhere further to go — advancing
+      // does not silently fall through to the unchosen group.
+      await user.click(screen.getByRole("button", { name: "Foto siguiente" }));
+      expect(screen.getByText("IMG_0005.JPG", { exact: false })).toBeDefined();
+      expect(screen.getByRole("button", { name: "Foto siguiente" })).toHaveProperty(
+        "disabled",
+        true,
+      );
+    });
+
+    it("restarts the position number at 01 within each group", async () => {
+      const user = userEvent.setup();
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: interleaved,
+      });
+
+      const chosenUl = container.querySelector("ul") as HTMLUListElement;
+      expect([...chosenUl.querySelectorAll("span.tabular-nums")].map((s) => s.textContent)).toEqual(
+        ["01", "02", "03"],
+      );
+
+      // Open the accordion so its own numbering is on screen too (jsdom
+      // renders a closed <details>'s children regardless — see this
+      // describe block's own "closed on first render" test for the real
+      // gate — but opening it here keeps this assertion honest about what
+      // a client actually sees before reading it).
+      await user.click(screen.getByText(/no elegiste/));
+      const unchosenUl = container.querySelector("details ul") as HTMLUListElement;
+      expect(
+        [...unchosenUl.querySelectorAll("span.tabular-nums")].map((s) => s.textContent),
+      ).toEqual(["01", "02"]);
+    });
+
+    it("renders no accordion at all when every photo was chosen", () => {
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }]),
+      });
+
+      expect(container.querySelector("details")).toBeNull();
+      expect(screen.queryByText(/no elegiste/)).toBeNull();
+    });
+
+    it("renders no accordion either, and no bare empty grid, when nothing was chosen — every photo lands in the collapsed section instead", () => {
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([{ isSelected: false }, { isSelected: false }]),
+      });
+
+      expect(screen.getByText("No elegiste ninguna foto en esta galería.")).toBeDefined();
+      const details = container.querySelector("details");
+      expect(details).not.toBeNull();
+      expect(details?.open).toBe(false);
+      expect(screen.getByRole("button", { name: "Ver IMG_0001.JPG" }).closest("details")).toBe(
+        details,
+      );
+    });
+
+    it("does not wrap proofing's or selected's flat grid in an accordion, even with a mixed selection", () => {
+      for (const initialStatus of ["proofing", "selected"] as const) {
+        const { container, unmount } = renderGrid({ initialStatus, initialAssets: interleaved });
+
+        expect(container.querySelector("details")).toBeNull();
+        // Every asset is directly reachable — nothing moved into a
+        // collapsed section.
+        for (const filename of [
+          "IMG_0001.JPG",
+          "IMG_0002.JPG",
+          "IMG_0003.JPG",
+          "IMG_0004.JPG",
+          "IMG_0005.JPG",
+        ]) {
+          expect(screen.getByRole("button", { name: `Ver ${filename}` })).toBeDefined();
+        }
+        unmount();
+      }
+    });
+  });
+
   // Task #28: the delivered-gallery download affordance. `hasFinal` is a UI
   // hint only (see <ProofGrid>'s own comment on `ProofAsset.hasFinal`) — the
   // real gate is `GET /api/assets/[assetId]/final` itself, proven separately

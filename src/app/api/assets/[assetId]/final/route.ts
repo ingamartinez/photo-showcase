@@ -62,6 +62,7 @@ import { assets } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
 import { loadOwnedAsset } from "@/lib/asset-access";
 import { canReadFinalDeliverable } from "@/lib/final-access";
+import { ACCEPTED_FINAL_FORMATS } from "@/lib/final-formats";
 import { processDisplay } from "@/lib/images";
 import { notifyAdminOfMissingFinal } from "@/lib/missing-final-notification-email";
 import {
@@ -80,71 +81,92 @@ const assetIdSchema = z.uuid();
 
 // A real edited export (full-resolution JPEG OR PNG out of Lightroom — task
 // #220 widened accepted formats beyond JPEG-only, see
-// `ACCEPTED_FINAL_FORMATS` below) is much bigger than a proof (task #26's own
-// memory note) — commonly 15-40 MB for a 24-45 MP JPEG at high quality, and
-// meaningfully MORE for a PNG of the same photo. Raised from #218's 80 MB to
-// 150 MB (task #220's own instruction: no higher in this slice). The
-// arithmetic behind 150 MB, not a guess:
+// `ACCEPTED_FINAL_FORMATS` in src/lib/final-formats.ts) is much bigger than a
+// proof (task #26's own memory note) — commonly 15-40 MB for a 24-45 MP JPEG
+// at high quality, and meaningfully MORE for a PNG of the same photo. Raised
+// from #218's 80 MB to 150 MB (task #220's own instruction: no higher in this
+// slice).
 //
-// - This route no longer makes a `Buffer.from()` copy of the uploaded bytes
-//   (task #220 removed it): both `putObject` and `processDisplay` accept the
-//   `ArrayBuffer` `file.arrayBuffer()` already returns (see their own
-//   types/comments), so a 150 MB upload costs ~150 MB resident for the raw
-//   bytes, not ~300 MB the way the old defensive copy would have.
-// - `processDisplay`'s one remaining sharp pass is still fed those same raw
-//   bytes. PNG cannot shrink-on-load (see `MAX_INPUT_PIXELS`'s own note in
-//   src/lib/images.ts) — sharp decodes the FULL frame before this route's
-//   `resize()` ever runs. For a REALISTIC 24 MP photo that is ~96 MB raw
-//   (24,000,000 px × 4 bytes/px); at `MAX_INPUT_PIXELS`'s own 100-megapixel
-//   guard ceiling — the worst case this route will ever actually decode, not
-//   the common one — that is ~400 MB raw, the exact figure that guard's own
-//   comment already commits to as "painful but survivable".
-// - Held CONCURRENTLY, not sequentially: the raw upload buffer stays
-//   referenced through BOTH the `processDisplay` call and the later
-//   `putObject(key, uploadedBytes, ...)` call below, so the WORST case is
-//   150 MB (upload) + up to ~400 MB (decode) ≈ 550 MB transient, on top of
-//   this service's own ~150 MB steady-state footprint (task #218's own
-//   measurement) — roughly 700 MB against the 768 MB `MemoryMax` this
-//   service shares with `findash` on a 2 GB droplet.
+// THE NUMBER BELOW IS MEASURED, NOT REASONED — this is the SECOND version of
+// this comment. The first version reasoned that removing this route's
+// `Buffer.from()` copy left ~150 MB resident for a 150 MB upload through the
+// decode step, giving ~700 MB total against the 768 MB cap: ~68 MB of
+// headroom, "not comfortable but shipped anyway." A reviewer measured it
+// instead and found the real number was ~300 MB, not 150 MB — off by exactly
+// one more copy the first version's own reasoning missed (see
+// `readUploadedFinal`'s own comment above for what that copy was and how it
+// was actually removed this time). That is the whole reason this project
+// rule exists for this exact constant now: reasoning about allocations reads
+// exactly like measuring them, right up until someone measures.
 //
-// THAT LAST NUMBER IS NOT COMFORTABLE — ~68 MB of headroom under a hard
-// cgroup cap, on a droplet that also runs a second service with its own
-// separate footprint, is margin that holds right up until it doesn't. It was
-// shipped anyway (see this task's own final report for the explicit call)
-// because the WORST case above only materializes for an input at
-// `MAX_INPUT_PIXELS`'s own 100-megapixel ceiling — a size no real camera in
-// this photographer's actual output has ever produced — while the REALISTIC
-// case (an actual 24 MP export, ~96 MB decode, ~250 MB transient, ~400 MB
-// total) is comfortable. Revisit this cap DOWN, or move `MAX_INPUT_PIXELS`
-// itself down, before ever raising this cap further.
+// `scripts/measure-final-upload-memory.ts` (`bun run
+// measure:final:upload:memory`) measures the REAL request path end to end —
+// `Request` → `readUploadedFinal` → `processDisplay` — not `processDisplay`
+// in isolation (that is scripts/measure-final-memory.ts's own job, still
+// true and still cheaper: see its own comment). TWO fixture profiles, because
+// "the exact file the cap raise exists for" turned out to have two different
+// dangerous shapes — see that script's own header for the full reasoning on
+// each:
+//   - REALISTIC (a genuinely large, poorly-compressible 45 MP 8-bit PNG,
+//     ~136 MiB, fits under this cap): peak RSS through the whole request —
+//     OLD shape (the first version of this route) ~521 MiB, NEW shape (the
+//     `readUploadedFinal` fix) ~466 MiB. `processDisplay` ALONE on this
+//     fixture, independently cross-checked with
+//     scripts/measure-final-memory.ts's own `maxRSS`-delta methodology: only
+//     ~57 MiB — PNG's inability to shrink-on-load (`MAX_INPUT_PIXELS`'s own
+//     note, src/lib/images.ts) turned out NOT to mean libvips holds the
+//     entire decoded frame in memory at once for this resize; the measured
+//     cost is far below what that comment's own "~400 MB worst case" figure
+//     assumes, and that figure was ALSO reasoned rather than measured — worth
+//     a follow-up to correct once #220 is done, not touched here
+//     (`MAX_INPUT_PIXELS` itself guards `processProof` too and stays
+//     out of scope for this task).
+//   - CEILING (a highly-compressible, near-flat 16-bit PNG at 96 MP — just
+//     under `MAX_INPUT_PIXELS`'s 100 MP ceiling — only ~3.8 MiB on disk,
+//     because near-flat content crushes down almost regardless of pixel
+//     count or bit depth): `processDisplay` ALONE, same independent
+//     cross-check, costs ~151-161 MiB (two separate runs, same order of
+//     magnitude) — again far below a naive "96,000,000 px × 3 channels ×
+//     2 bytes ≈ 549 MiB raw" estimate. This profile is the one that actually
+//     matters for the WORST case: `MAX_FINAL_UPLOAD_BYTES` gates the
+//     COMPRESSED file size, not the decoded buffer size, so a highly
+//     compressible image can carry far more decoded bytes per uploaded byte
+//     than an incompressible one of the same file size — this is what
+//     reaches close to `MAX_INPUT_PIXELS`'s pixel ceiling at only a few MiB
+//     of upload cost, not the REALISTIC profile above.
+//
+// Both fixture profiles were measured with the SAME test-harness overhead
+// (constructing a synthetic multipart `Request` from a `FormData` costs its
+// own upload-sized copy that a REAL incoming HTTP request never pays, since
+// the bytes already arrive multipart-encoded off the wire) — if anything
+// these numbers are conservative, not optimistic, for what a warm production
+// process actually does.
+//
+// COMBINED WORST CASE, using the higher of the two measured decode costs
+// (CEILING's ~161 MiB) plus the full upload cap plus this service's own
+// separately-measured production steady-state (task #218, ~150 MB):
+//   150 MB (upload, held once, post-fix) + 150 MB (baseline) + 161 MB
+//   (decode) ≈ 461 MB, against the 768 MB `MemoryMax` this service shares
+//   with `findash` on a 2 GB droplet — roughly 300 MB of headroom. THIS IS
+//   COMFORTABLE, unlike the first version of this comment's own conclusion.
+// Platform caveat, same as every sibling measurement script: laptop-measured
+// (macOS), not droplet-measured (Linux) — see kanban #57. Re-run
+// `measure:final:upload:memory` on the droplet before treating the exact
+// numbers above as authoritative there; the qualitative conclusion (real
+// margin, not reasoned margin) is what this comment is actually vouching for.
 export const MAX_FINAL_UPLOAD_BYTES = 150 * 1024 * 1024;
 
-/** Accepted final-upload formats: MIME type → the extension `finalKey()`
- * stores the object under. An ALLOWLIST of two, not "any `image/*`" (task
- * #220, reversing #218's JPEG-only gate once the owner's actual finals turned
- * out to include PNG exports from a second editing pass) — every accepted
- * entry must have a KNOWN extension (what `finalKey()` needs) and be
- * something `processDisplay` can decode into the browsing derivative both
- * formats still get. Adding TIFF/WebP later is a one-line change to this map;
- * neither is added speculatively here — there is no evidence today's
- * photographer produces either. Anything not in this map is refused 415
- * `not_an_image`, same status code #218 already used for its (then wider)
- * rejection.
- *
- * THE SOURCE OF TRUTH for two client-side `accept` attributes that CANNOT
- * import this module (it is a route handler, server-only): the per-tile
- * uploader's `<input accept>` in src/components/asset-tile.tsx and the bulk
- * uploader's in src/components/finals-bulk-uploader.tsx. Both are hand-kept
- * in sync with this map's keys — there is no compiler-enforced link, only
- * this comment and the matching one at each of those two call sites. #220
- * found them already drifted once (#218 left both at `image/jpeg` only,
- * which meant the owner's PNG finals were greyed out in the native file
- * dialog even after this map itself was widened) — if a format is ever added
- * or removed here, update those two `accept` strings in the same change. */
-const ACCEPTED_FINAL_FORMATS: Record<string, string> = {
-  "image/jpeg": "jpg",
-  "image/png": "png",
-};
+// ACCEPTED_FINAL_FORMATS moved to src/lib/final-formats.ts (task #220 review
+// follow-up): MIME type → the extension `finalKey()` stores the object
+// under. It used to live here as a route-local const, and the two client
+// pickers that need the SAME list (asset-tile.tsx, finals-bulk-uploader.tsx)
+// hand-copied it into their own `accept` attribute — with nothing enforcing
+// the two stayed in sync, they drifted for real, twice, inside this one
+// task. That module has no server-only imports specifically so both client
+// components can import it directly and derive their `accept` string from
+// it, instead of re-typing the list — see its own header for the full
+// reasoning and the two prior extractions (final-access.ts, task #103;
+// final-filename-match.ts, task #217) this follows the same shape as.
 
 /** Parses the `Content-Length` header into a byte count, or `null` if it is
  * absent or not a sane non-negative number. Same shape as the proofs
@@ -175,9 +197,10 @@ function stripExtension(filename: string): string {
 /** Extracts the extension actually stored in an R2 key — the part after the
  * LAST `.` — rather than assuming `.jpg` (task #220). `finalKey()`'s own
  * extension is now a function of the upload's accepted MIME type
- * (`ACCEPTED_FINAL_FORMATS` above), so a download filename can no longer just
- * append a hardcoded `.jpg` and be right for every final: it has to read back
- * whatever THIS SPECIFIC object's key actually ends in. Duplicated in
+ * (`ACCEPTED_FINAL_FORMATS` in src/lib/final-formats.ts), so a download
+ * filename can no longer just append a hardcoded `.jpg` and be right for
+ * every final: it has to read back whatever THIS SPECIFIC object's key
+ * actually ends in. Duplicated in
  * download-all/route.ts rather than imported — same "each route owns its own
  * small validation helpers" convention as `stripExtension`/
  * `slugifyForFilename` above/below.
@@ -223,8 +246,9 @@ function slugifyForFilename(value: string): string {
  *
  * TASK #220: this used to always end in `.jpg`, justified by "the POST
  * handler only ever accepts `image/jpeg`" — that gate widened to a small
- * format allowlist (`ACCEPTED_FINAL_FORMATS` above), so a stored final can
- * now genuinely be a PNG, and handing a client `foto.jpg` full of PNG bytes
+ * format allowlist (`ACCEPTED_FINAL_FORMATS`, src/lib/final-formats.ts), so a
+ * stored final can now genuinely be a PNG, and handing a client `foto.jpg`
+ * full of PNG bytes
  * would be exactly the kind of dishonesty task #218 fixed for file size.
  * `extensionFromKey` reads the REAL stored extension off the key rather than
  * re-deriving it from an upload's MIME type, so this stays correct for a
@@ -324,12 +348,106 @@ export const GET = withApiSession(async function GET(
   return NextResponse.json({ url });
 });
 
+type ReadUploadedFinalResult =
+  | {
+      ok: true;
+      /** Exactly what `file.arrayBuffer()` returned — never re-wrapped in a
+       * `Buffer`, see the `putObject` call site's own comment. */
+      bytes: ArrayBuffer;
+      /** The upload's declared MIME type — already checked against
+       * `ACCEPTED_FINAL_FORMATS`, so this is one of that map's own keys. */
+      contentType: string;
+      /** `ACCEPTED_FINAL_FORMATS[contentType]`, resolved once here so
+       * nothing downstream re-indexes the map a second time. */
+      extension: string;
+    }
+  | { ok: false; error: string; status: number };
+
+/**
+ * Parses the multipart body, validates the uploaded file (present, under the
+ * size cap, an accepted format) and reads its bytes — all in its OWN
+ * function frame, separate from the POST handler below.
+ *
+ * THIS SCOPING IS LOAD-BEARING, NOT STYLISTIC (task #220 review follow-up).
+ * `MAX_FINAL_UPLOAD_BYTES`'s own comment above got the memory arithmetic
+ * WRONG the first time this task shipped — reasoned instead of measured, per
+ * that task's own instruction, and off by exactly the copy this function
+ * exists to stop holding onto. `request.formData()` parses the whole
+ * multipart body into a `FormData` whose `File` entry retains its OWN
+ * backing buffer, roughly the size of the upload — a SEPARATE allocation
+ * from the ArrayBuffer `file.arrayBuffer()` copies out of it below. Calling
+ * `.arrayBuffer()` does not free that first copy; nothing does, until every
+ * reference to `file`/`formData` themselves is gone and the garbage
+ * collector actually reclaims them. The version of this route that shipped
+ * first kept BOTH alive through the whole request: `file` was still
+ * referenced AFTER `processDisplay`'s decode, at
+ * `putObject(key, uploadedBytes, { contentType: file.type })` — so the
+ * FormData-owned copy sat resident through the decode too, not just the
+ * ArrayBuffer copy. Measured directly (not re-reasoned about a second time —
+ * see `scripts/measure-final-upload-memory.ts` and this task's own report
+ * for the actual numbers, not an estimate): a 150 MB upload cost roughly
+ * TWICE the assumed 150 MB resident through the decode step.
+ *
+ * Returning only PRIMITIVES (`contentType`, `extension`) and the ArrayBuffer
+ * itself — never `file` or `formData` — means neither is reachable from the
+ * caller's scope the moment this function returns, so a `.type` read the
+ * caller used to need `file` for now comes off this function's own return
+ * value instead. That is what actually lets the FormData-owned copy become
+ * COLLECTIBLE before `processDisplay`'s decode ever runs, rather than
+ * staying pinned alive for the rest of the request by a reference the
+ * caller never needed to keep.
+ */
+async function readUploadedFinal(request: NextRequest): Promise<ReadUploadedFinalResult> {
+  let formData: FormData;
+  try {
+    formData = await request.formData();
+  } catch {
+    return { ok: false, error: "invalid_multipart_body", status: 400 };
+  }
+
+  const file = formData.get("file");
+  if (!(file instanceof File)) {
+    return { ok: false, error: "missing_file", status: 400 };
+  }
+
+  // Second size gate off the parsed file itself — catches a missing or
+  // understated Content-Length (e.g. chunked transfer encoding). The FIRST
+  // gate, off the Content-Length header alone, runs in the caller BEFORE
+  // this function is ever invoked — see POST's own comment on why that one
+  // stays outside this function (it needs no multipart parse at all).
+  if (file.size > MAX_FINAL_UPLOAD_BYTES) {
+    return { ok: false, error: "file_too_large", status: 413 };
+  }
+
+  // TASK #220: widened from #218's JPEG-only gate to the small MIME-type
+  // allowlist in src/lib/final-formats.ts — the final is still stored
+  // BYTE-FOR-BYTE below, but which extension/Content-Type it gets now
+  // follows the upload's own declared format instead of a single hardcoded
+  // assumption. `file.type` is still the BROWSER's own extension-based
+  // guess, not a sniff of the actual bytes (unchanged from #218 — that
+  // reasoning is still accurate): a PNG renamed `edit.jpg` still passes this
+  // gate — as a "jpg" — and gets stored/served as if it really were one; it
+  // is still exactly the bytes the admin uploaded, just mislabeled. What
+  // this gate DOES reliably stop is the ordinary case both tasks exist for:
+  // an honestly-typed export whose format ISN'T in the allowlist at all (a
+  // raw HEIC straight off a phone, some other screenshot format) landing at
+  // a key/Content-Type that lies about what it actually is.
+  const extension = ACCEPTED_FINAL_FORMATS[file.type];
+  if (extension === undefined) {
+    return { ok: false, error: "not_an_image", status: 415 };
+  }
+
+  const bytes = await file.arrayBuffer();
+  return { ok: true, bytes, contentType: file.type, extension };
+}
+
 // POST — task #26: the admin attaches an edited, full-resolution export to
 // an existing asset. See the file header for the shared ownership check;
 // this handler adds the admin-only + selected-only gates on top of it.
 //
-// TASK #220: accepts JPEG **or** PNG (`ACCEPTED_FINAL_FORMATS` below), not
-// JPEG-only. #218 tightened the gate to `image/jpeg` because — at the time —
+// TASK #220: accepts JPEG **or** PNG (`ACCEPTED_FINAL_FORMATS`,
+// src/lib/final-formats.ts), not JPEG-only. #218 tightened the gate to
+// `image/jpeg` because — at the time —
 // every final really was a Lightroom JPEG export; that premise turned out to
 // be false (the owner's own finals include PNG exports from a second editing
 // pass). Widening the gate means `finalKey()` (src/lib/r2.ts) now takes the
@@ -391,50 +509,17 @@ export const POST = withApiSession(async function POST(
     return errorResponse("file_too_large", 413);
   }
 
-  let formData: FormData;
-  try {
-    formData = await request.formData();
-  } catch {
-    return errorResponse("invalid_multipart_body", 400);
+  // Parses, validates and reads the upload in its OWN function frame — see
+  // `readUploadedFinal`'s own comment for why that scoping is load-bearing,
+  // not stylistic: it is what actually lets the multipart-parsed `File`'s
+  // own backing buffer become collectible before the decode below runs,
+  // instead of staying pinned alive by a `file`/`formData` reference this
+  // handler never holds at all any more.
+  const uploadResult = await readUploadedFinal(request);
+  if (!uploadResult.ok) {
+    return errorResponse(uploadResult.error, uploadResult.status);
   }
-
-  const file = formData.get("file");
-  if (!(file instanceof File)) {
-    return errorResponse("missing_file", 400);
-  }
-
-  // Second size gate off the parsed file itself — catches a missing or
-  // understated Content-Length (e.g. chunked transfer encoding).
-  if (file.size > MAX_FINAL_UPLOAD_BYTES) {
-    return errorResponse("file_too_large", 413);
-  }
-  // TASK #220: widened from #218's JPEG-only gate to the small MIME-type
-  // allowlist above (`ACCEPTED_FINAL_FORMATS`) — the final is still stored
-  // BYTE-FOR-BYTE below, but which extension/Content-Type it gets now follows
-  // the upload's own declared format instead of a single hardcoded
-  // assumption. `file.type` is still the BROWSER's own extension-based guess,
-  // not a sniff of the actual bytes (unchanged from #218 — that reasoning is
-  // still accurate): a PNG renamed `edit.jpg` still passes this gate — as a
-  // "jpg" — and gets stored/served as if it really were one; it is still
-  // exactly the bytes the admin uploaded, just mislabeled. What this gate
-  // DOES reliably stop is the ordinary case both tasks exist for: an
-  // honestly-typed export whose format ISN'T in the allowlist at all (a raw
-  // HEIC straight off a phone, some other screenshot format) landing at a
-  // key/Content-Type that lies about what it actually is.
-  const extension = ACCEPTED_FINAL_FORMATS[file.type];
-  if (extension === undefined) {
-    return errorResponse("not_an_image", 415);
-  }
-
-  // No `Buffer.from()` copy any more (task #220) — Bun's `S3Client.write`
-  // (behind `putObject`) and `processDisplay` both accept an `ArrayBuffer`
-  // directly (see their own type signatures), so the ArrayBuffer
-  // `file.arrayBuffer()` already returns is reused as-is for both writes
-  // below, never copied into a `Buffer` first. This halves peak resident
-  // memory for this request compared to the old `Buffer.from()` copy — see
-  // `MAX_FINAL_UPLOAD_BYTES`'s own comment above for the full arithmetic that
-  // depends on this.
-  const uploadedBytes = await file.arrayBuffer();
+  const { bytes: uploadedBytes, contentType, extension } = uploadResult;
 
   let display;
   try {
@@ -469,16 +554,20 @@ export const POST = withApiSession(async function POST(
 
   try {
     // TASK #218: `uploadedBytes` is written VERBATIM — the exact bytes the
-    // admin uploaded, no sharp pass in between. `contentType: file.type`
-    // (task #220 — no longer hardcoded to `"image/jpeg"`): `file.type` was
-    // already checked against `ACCEPTED_FINAL_FORMATS` above, so it is one of
-    // that map's own keys here, honestly describing whichever format was
-    // actually accepted. Same caveat as #218's original comment: `file.type`
-    // is still the browser's own extension-based guess, not a sniff of the
-    // actual bytes, so a PNG renamed `edit.jpg` still stores as a real PNG
-    // under a `.jpg` key labeled `image/jpeg` — an unchanged risk, just no
-    // longer the ONLY format this route will ever honestly store.
-    await putObject(key, uploadedBytes, { contentType: file.type });
+    // admin uploaded, no sharp pass in between. `contentType: contentType`
+    // (task #220 — no longer hardcoded to `"image/jpeg"`): this string came
+    // off `readUploadedFinal`'s own `file.type` read, already checked
+    // against `ACCEPTED_FINAL_FORMATS` there, so it is one of that map's own
+    // keys here, honestly describing whichever format was actually accepted
+    // — and, per that function's own comment, reading it from THIS returned
+    // value rather than a `file.type` dereference here is what keeps the
+    // original `File` object out of this handler's scope entirely. Same
+    // caveat as #218's original comment: this is still the browser's own
+    // extension-based guess, not a sniff of the actual bytes, so a PNG
+    // renamed `edit.jpg` still stores as a real PNG under a `.jpg` key
+    // labeled `image/jpeg` — an unchanged risk, just no longer the ONLY
+    // format this route will ever honestly store.
+    await putObject(key, uploadedBytes, { contentType });
     // Written in the SAME request, and its failure fails the whole upload
     // (502, same as the final's own). A partial success here would leave the
     // photographer believing the photo is delivered while the client keeps

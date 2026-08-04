@@ -34,31 +34,29 @@
 // deleted the route's OTHER sharp pass, `processFinal`, entirely — the final
 // is now stored byte-for-byte) — concurrent requests would just queue there,
 // still holding their raw bytes resident. Finals make this worse than
-// proofs: their cap is 80 MB (`MAX_FINAL_UPLOAD_BYTES`, final/route.ts)
-// against the proofs route's 50 MB — a parallel batch of finals is a much
-// faster way to exceed the droplet's memory cap than a parallel batch of
-// proofs ever was.
+// proofs: their cap is 150 MB (`MAX_FINAL_UPLOAD_BYTES`, final/route.ts —
+// raised from 80 MB by task #220, see that constant's own comment for the
+// measured memory arithmetic behind the number) against the proofs route's
+// 50 MB — a parallel batch of finals is a much faster way to exceed the
+// droplet's memory cap than a parallel batch of proofs ever was.
 //
-// UPLOAD GATE: the file picker below narrows `accept` to match the server's
-// own format allowlist — `ACCEPTED_FINAL_FORMATS` in
-// src/app/api/assets/[assetId]/final/route.ts, JPEG and PNG as of task #220
-// (JPEG-only under #218). `accept` is a hint, not a gate — a photographer can
-// still pick an unsupported file past it on some OSes/browsers, which is
-// exactly what the server check exists to catch; this narrowing only saves a
-// round trip for the common case of picking the wrong export by mistake.
-// KEEP THIS STRING'S FORMAT LIST IN SYNC WITH THAT MAP'S KEYS BY HAND: #220
-// found these two already drifted (#218 left this at `image/jpeg` only after
-// the server had nothing wider to gate against yet, and nothing caught it
-// once the server WAS widened) — a route-handler module is server-only and
-// cannot be imported into this client component to derive the string
-// instead, so there is no compiler-enforced link between them, only this
-// comment on both ends (final/route.ts's own header points back here too).
-// The consequence of letting them drift again is exactly what blocked the
-// owner after #220's server-side fix alone: a format the server would
-// happily accept, greyed out in the native file dialog before he could ever
-// select it.
+// UPLOAD GATE: the file picker below narrows `accept` to
+// `FINAL_UPLOAD_ACCEPT` (src/lib/final-formats.ts) — DERIVED from the same
+// map the server's upload gate uses, JPEG and PNG as of task #220 (JPEG-only
+// under #218). `accept` is a hint, not a gate — a photographer can still
+// pick an unsupported file past it on some OSes/browsers, which is exactly
+// what the server check exists to catch; this narrowing only saves a round
+// trip for the common case of picking the wrong export by mistake. Importing
+// the shared constant, rather than hand-typing the format list here, is what
+// closes a real instance of these two drifting: #220's own first pass
+// widened the server's format map to include PNG but left this component's
+// literal at `image/jpeg` only — the owner's PNG finals were greyed out in
+// the native file dialog even after the server-side fix had already
+// shipped. A future format added to that shared map now widens this picker
+// for free, with no second string to remember to update.
 import { useState } from "react";
 import type { WorkspaceAsset } from "@/components/gallery-workspace";
+import { FINAL_UPLOAD_ACCEPT } from "@/lib/final-formats";
 import {
   matchFinalFiles,
   type AmbiguousMatch,
@@ -255,7 +253,7 @@ export function FinalsBulkUploader({
           Elegir archivos
           <input
             type="file"
-            accept="image/jpeg,image/png"
+            accept={FINAL_UPLOAD_ACCEPT}
             multiple
             className="sr-only"
             onChange={(event) => {

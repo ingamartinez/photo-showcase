@@ -67,6 +67,7 @@ import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical } from "lucide-react";
 import type { WorkspaceAsset } from "@/components/gallery-workspace";
+import { FINAL_UPLOAD_ACCEPT } from "@/lib/final-formats";
 import { cn } from "@/lib/utils";
 
 export function AssetTile({
@@ -411,22 +412,19 @@ export function AssetTile({
               <input
                 ref={finalInputRef}
                 type="file"
-                // Narrowed to match the server's own format allowlist
-                // (`ACCEPTED_FINAL_FORMATS` in
-                // src/app/api/assets/[assetId]/final/route.ts) — JPEG and PNG
-                // as of task #220. This is a HINT for the OS file dialog, not
-                // the real gate (the server 415s anything else regardless).
-                // #220 fixed a real instance of these two drifting: #218 left
-                // this at `image/jpeg` only, which meant a PNG the server
-                // would now happily accept was greyed out in the native
-                // picker — the owner could never SELECT the files that
-                // started this whole task, even after the server-side fix
-                // shipped. Keep this string's format list literally in sync
-                // with that map's keys by hand; a route-handler module is
-                // server-only and cannot be imported here to derive it (see
-                // this task's own report for why that was tried and
-                // rejected, not merely skipped).
-                accept="image/jpeg,image/png"
+                // `FINAL_UPLOAD_ACCEPT` (src/lib/final-formats.ts) is
+                // DERIVED from the same map the server's upload gate uses —
+                // JPEG and PNG as of task #220. This is a HINT for the OS
+                // file dialog, not the real gate (the server 415s anything
+                // else regardless). Importing the shared constant instead of
+                // a hand-typed string is what closes a real instance of this
+                // drifting: #218 narrowed this to `image/jpeg` only, and
+                // #220's own first pass widened the server's format map to
+                // include PNG but left this literal untouched — the owner's
+                // PNG finals were greyed out in the native picker even after
+                // the server-side fix had already shipped. A future format
+                // added to that shared map now widens this picker for free.
+                accept={FINAL_UPLOAD_ACCEPT}
                 disabled={finalBusy}
                 className="sr-only"
                 onChange={(event) => {

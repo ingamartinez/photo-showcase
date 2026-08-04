@@ -455,6 +455,34 @@ describe("GET /api/assets/[assetId]/final — the final-specific gate", () => {
     });
   });
 
+  // Review follow-up (task #220): the download-filename extension had NO
+  // route-level proof, only a pure-function one (`buildFinalDownloadFilename`'s
+  // own describe block below) — replacing the route's real third argument
+  // with a hardcoded `"whatever/x.jpg"` literal left every test in this file
+  // green. This drives the ACTUAL GET handler with an asset whose stored
+  // `finalKey` ends in `.png` and asserts the PRESIGNED URL's own
+  // Content-Disposition carries that real extension, not an assumed `.jpg`.
+  // MUTATION PROOF: reverting the route's `buildFinalDownloadFilename(...)`
+  // call to pass a literal `.jpg`-shaped string instead of `asset.finalKey`
+  // turns this test red — the asserted filename would still end in `.jpg`.
+  it("carries the real .png extension in the download filename for a PNG final", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const pngKey = `galleries/${GALLERY_A_ID}/finals/${ASSET_A_ID}.png`;
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(assetRow({ finalKey: pngKey }));
+    const { GET, buildFinalDownloadFilename } = await import("./route");
+
+    const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
+
+    expect(response.status).toBe(200);
+    const expectedFilename = buildFinalDownloadFilename("Boda Ana y Beto", "IMG_0001.JPG", pngKey);
+    expect(expectedFilename.endsWith(".png")).toBe(true);
+    expect(getPresignedUrlMock).toHaveBeenCalledWith(pngKey, {
+      contentDisposition: `attachment; filename="${expectedFilename}"`,
+    });
+  });
+
   // Task #28's own acceptance criterion: "Only assets that were selected AND
   // edited are downloadable" — checked as an INDEPENDENT condition from
   // `finalKey`, not inferred from it (see the route's own comment). Proves
@@ -1067,6 +1095,45 @@ describe("POST /api/assets/[assetId]/final — success and re-upload", () => {
     const [row] = db.__rows.assets;
     // Still the ORIGINAL .jpg final — the DB update never committed.
     expect(row?.finalKey).toBe(FINAL_KEY);
+  });
+
+  // Review follow-up (task #220): the cleanup delete's own "never fails the
+  // request" guarantee had ZERO coverage — deleting the entire try/catch
+  // around `deleteObject` left all 1847 tests green, because nothing ever
+  // made `deleteObject` reject. Regressed, an ordinary R2 hiccup on the
+  // best-effort cleanup step would turn a FULLY SUCCESSFUL delivery (new
+  // object written, DB already pointing at it) into a 500 — the photographer
+  // sees "update_failed" and re-uploads a final that was never actually
+  // broken. MUTATION PROOF: removing the try/catch around `deleteObject` in
+  // the route (`await deleteObject(...)` bare, no swallow) turns this test
+  // red — the response stops being 200 and becomes an unhandled rejection /
+  // 500 instead, and the row assertion below would never be reached.
+  it("still returns 200 and lands the DB on the new key when the best-effort cleanup delete rejects", async () => {
+    authMock.mockResolvedValue(adminSession());
+    // Starting state already has a .jpg final (assetRow()'s own default,
+    // FINAL_KEY) — a real object for `deleteObject` to (fail to) delete.
+    deleteObjectMock.mockRejectedValue(new Error("R2 unreachable"));
+    const png = new File(["fake-png-bytes"], "edit.png", { type: "image/png" });
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(png)),
+      paramsFor(ASSET_A_ID),
+    );
+
+    expect(response.status).toBe(200);
+    const pngKey = `galleries/${GALLERY_A_ID}/finals/${ASSET_A_ID}.png`;
+    await expect(response.json()).resolves.toEqual({
+      asset: { id: ASSET_A_ID, finalKey: pngKey, isEdited: true },
+    });
+    expect(deleteObjectMock).toHaveBeenCalledWith(FINAL_KEY);
+
+    const db = await seededDb();
+    const [row] = db.__rows.assets;
+    // The DB already committed to the new key BEFORE the delete ever ran —
+    // a failed best-effort cleanup must not undo, or block, that.
+    expect(row?.finalKey).toBe(pngKey);
+    expect(row?.isEdited).toBe(true);
   });
 
   // TASK #218's own acceptance criterion, at the route's mocked-boundary

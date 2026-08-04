@@ -66,17 +66,17 @@ vi.mock("@/lib/missing-final-notification-email", () => ({
 // under test here, not sharp's pipeline (proven for real in
 // src/lib/images.test.ts) — same boundary-mocking philosophy as the proofs
 // route's own test file.
-const processFinalMock = vi.fn();
-// Task #89: the route runs a SECOND sharp pass over the final's own output
-// bytes to produce the browsing-sized derivative. Mocked at the same
-// boundary and for the same reason as `processFinal` — the pipeline itself
-// (no watermark, capped long edge, real bytes) is proven in
+//
+// TASK #218: the route no longer calls `processFinal` at all — it writes the
+// uploaded bytes to `finalKey` verbatim. `processDisplay` (task #89) is the
+// ONLY sharp pass left on this route, producing the browsing-sized derivative
+// from those SAME raw bytes (never a pre-filtered intermediate — there isn't
+// one any more). Mocked at the same boundary as before: the pipeline itself
+// (downscale, no watermark, EXIF allowlist) is proven for real in
 // src/lib/images.test.ts; what this suite owns is that the route calls it,
-// feeds it the FINAL's bytes rather than the raw upload, and stores the
-// result under the display key.
+// feeds it the RIGHT bytes, and stores the result under the display key.
 const processDisplayMock = vi.fn();
 vi.mock("@/lib/images", () => ({
-  processFinal: (...args: unknown[]) => processFinalMock(...args),
   processDisplay: (...args: unknown[]) => processDisplayMock(...args),
 }));
 
@@ -303,8 +303,6 @@ beforeEach(async () => {
   objectExistsMock.mockResolvedValue(true);
   notifyAdminOfMissingFinalMock.mockReset();
   notifyAdminOfMissingFinalMock.mockResolvedValue(undefined);
-  processFinalMock.mockReset();
-  processFinalMock.mockResolvedValue({ data: Buffer.from("fake-final-jpeg-bytes") });
   processDisplayMock.mockReset();
   processDisplayMock.mockResolvedValue({
     data: Buffer.from("fake-display-webp-bytes"),
@@ -604,7 +602,7 @@ describe("POST /api/assets/[assetId]/final — authorization", () => {
 
     expect(response.status).toBe(401);
     await expect(response.json()).resolves.toEqual({ error: "unauthorized" });
-    expect(processFinalMock).not.toHaveBeenCalled();
+    expect(processDisplayMock).not.toHaveBeenCalled();
   });
 
   it("refuses a signed-in CLIENT with a 403, without processing or storing anything", async () => {
@@ -615,7 +613,7 @@ describe("POST /api/assets/[assetId]/final — authorization", () => {
       POST(postRequestFor(ASSET_A_ID, formDataWith(imageFile())), paramsFor(ASSET_A_ID)),
     ).rejects.toMatchObject({ digest: "NEXT_HTTP_ERROR_FALLBACK;403" });
 
-    expect(processFinalMock).not.toHaveBeenCalled();
+    expect(processDisplayMock).not.toHaveBeenCalled();
     expect(putObjectMock).not.toHaveBeenCalled();
   });
 });
@@ -632,7 +630,7 @@ describe("POST /api/assets/[assetId]/final — the core rule: selected assets on
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: "invalid_asset_id" });
-    expect(processFinalMock).not.toHaveBeenCalled();
+    expect(processDisplayMock).not.toHaveBeenCalled();
   });
 
   it("returns 404 when the asset does not exist", async () => {
@@ -648,7 +646,7 @@ describe("POST /api/assets/[assetId]/final — the core rule: selected assets on
 
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({ error: "asset_not_found" });
-    expect(processFinalMock).not.toHaveBeenCalled();
+    expect(processDisplayMock).not.toHaveBeenCalled();
   });
 
   // The acceptance criterion this task exists to enforce: `final_key` is
@@ -669,7 +667,7 @@ describe("POST /api/assets/[assetId]/final — the core rule: selected assets on
 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({ error: "asset_not_selected" });
-    expect(processFinalMock).not.toHaveBeenCalled();
+    expect(processDisplayMock).not.toHaveBeenCalled();
     expect(putObjectMock).not.toHaveBeenCalled();
 
     const [row] = db.__rows.assets;
@@ -696,7 +694,7 @@ describe("POST /api/assets/[assetId]/final — the core rule: selected assets on
     );
 
     expect(response.status).toBe(200);
-    expect(processFinalMock).toHaveBeenCalledTimes(1);
+    expect(processDisplayMock).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -712,10 +710,10 @@ describe("POST /api/assets/[assetId]/final — validation", () => {
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: "missing_file" });
-    expect(processFinalMock).not.toHaveBeenCalled();
+    expect(processDisplayMock).not.toHaveBeenCalled();
   });
 
-  it("returns 415 for a non-image content type, without calling processFinal", async () => {
+  it("returns 415 for a non-image content type, without calling processDisplay", async () => {
     authMock.mockResolvedValue(adminSession());
     const notAnImage = new File(["hello"], "notes.txt", { type: "text/plain" });
     const { POST } = await import("./route");
@@ -727,10 +725,36 @@ describe("POST /api/assets/[assetId]/final — validation", () => {
 
     expect(response.status).toBe(415);
     await expect(response.json()).resolves.toEqual({ error: "not_an_image" });
-    expect(processFinalMock).not.toHaveBeenCalled();
+    expect(processDisplayMock).not.toHaveBeenCalled();
+    expect(putObjectMock).not.toHaveBeenCalled();
   });
 
-  it("returns 413 for a file larger than the configured cap, without calling processFinal", async () => {
+  // TASK #218's own tightened gate: the old check was `file.type.startsWith(
+  // "image/")`, which accepted any image MIME type. A PNG (or a HEIC, or
+  // anything else the client's camera might produce) must now be refused —
+  // not merely "not an image", but "not the ONE image type this route stores
+  // byte-for-byte". Mutation proof: reverting the gate to `startsWith("image/")`
+  // turns this test red (a `image/png` file passes the gate and reaches
+  // `processDisplay`) while leaving the `text/plain` test above green, which is
+  // exactly why that older test alone was not sufficient coverage for this
+  // task.
+  it("returns 415 for a real image MIME type that is not JPEG, e.g. PNG", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const png = new File(["fake-png-bytes"], "edit.png", { type: "image/png" });
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(png)),
+      paramsFor(ASSET_A_ID),
+    );
+
+    expect(response.status).toBe(415);
+    await expect(response.json()).resolves.toEqual({ error: "not_an_image" });
+    expect(processDisplayMock).not.toHaveBeenCalled();
+    expect(putObjectMock).not.toHaveBeenCalled();
+  });
+
+  it("returns 413 for a file larger than the configured cap, without calling processDisplay", async () => {
     authMock.mockResolvedValue(adminSession());
     const { MAX_FINAL_UPLOAD_BYTES } = await import("./route");
     const tooLarge = new File([new Uint8Array(MAX_FINAL_UPLOAD_BYTES + 1)], "big.jpg", {
@@ -745,12 +769,12 @@ describe("POST /api/assets/[assetId]/final — validation", () => {
 
     expect(response.status).toBe(413);
     await expect(response.json()).resolves.toEqual({ error: "file_too_large" });
-    expect(processFinalMock).not.toHaveBeenCalled();
+    expect(processDisplayMock).not.toHaveBeenCalled();
   });
 
-  it("returns 422 when processFinal rejects, and never calls putObject", async () => {
+  it("returns 422 when processDisplay rejects, and never calls putObject", async () => {
     authMock.mockResolvedValue(adminSession());
-    processFinalMock.mockRejectedValue(new Error("not a real image"));
+    processDisplayMock.mockRejectedValue(new Error("not a real image"));
     const { POST } = await import("./route");
 
     const response = await POST(
@@ -923,7 +947,43 @@ describe("POST /api/assets/[assetId]/final — success and re-upload", () => {
     expect(row?.finalKey).toBe(FINAL_KEY);
   });
 
-  it("passes the uploaded file's own bytes to processFinal, never a stale reference", async () => {
+  // TASK #218's own acceptance criterion, at the route's mocked-boundary
+  // level (the REAL-pipeline version of this same claim lives in
+  // route.download.test.ts, which never mocks @/lib/images or @/lib/r2 at
+  // all): the bytes handed to `putObject` for `finalKey` must be
+  // `Buffer.equals` to the uploaded bytes — not "similar size", not "still
+  // starts the same", genuinely identical. `imageFile()` defaults to
+  // `"fake-edited-bytes"`; this test uses a distinct payload so a bug that
+  // accidentally wrote some OTHER buffer already in scope (`display.data`,
+  // an empty buffer, a stale closure) could not coincidentally pass.
+  //
+  // MUTATION PROOF: reverting the `putObject(key, finalBytes, ...)` call
+  // below to `putObject(key, display.data, ...)` turns this red — the
+  // asserted bytes stop matching (`"distinctive-edit-bytes"` vs
+  // `"fake-display-webp-bytes"`, `processDisplayMock`'s own default mock
+  // value) and `Buffer.equals` fails.
+  it("writes the exact uploaded bytes to finalKey, byte-for-byte — not a processed derivative", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(assetRow({ isSelected: true, finalKey: null, isEdited: false }));
+    const { POST } = await import("./route");
+    const uploadedBytes = Buffer.from("distinctive-edit-bytes");
+
+    await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(imageFile(uploadedBytes))),
+      paramsFor(ASSET_A_ID),
+    );
+
+    const finalWrite = writesTo(FINAL_KEY)[0];
+    expect(finalWrite).toBeDefined();
+    const storedBytes = finalWrite?.[1] as Buffer;
+    expect(Buffer.isBuffer(storedBytes)).toBe(true);
+    expect(Buffer.compare(storedBytes, uploadedBytes)).toBe(0);
+    expect(storedBytes.equals(uploadedBytes)).toBe(true);
+  });
+
+  it("feeds processDisplay the uploaded file's own bytes, never a stale reference", async () => {
     authMock.mockResolvedValue(adminSession());
     const db = await seededDb();
     db.__rows.assets.length = 0;
@@ -935,9 +995,9 @@ describe("POST /api/assets/[assetId]/final — success and re-upload", () => {
       paramsFor(ASSET_A_ID),
     );
 
-    expect(processFinalMock).toHaveBeenCalledTimes(1);
-    const uploadedBytes = processFinalMock.mock.calls[0]?.[0] as ArrayBuffer;
-    expect(Buffer.from(uploadedBytes).toString()).toBe("distinctive-edit-bytes");
+    expect(processDisplayMock).toHaveBeenCalledTimes(1);
+    const displayInput = processDisplayMock.mock.calls[0]?.[0] as Buffer;
+    expect(Buffer.from(displayInput).toString()).toBe("distinctive-edit-bytes");
   });
 });
 
@@ -967,19 +1027,18 @@ describe("POST /api/assets/[assetId]/final — the display derivative (task #89)
     );
   });
 
-  // The distinction task #89 turns on: `processDisplay` is "the final at
-  // browsing size", NOT a general-purpose downscaler pointed at whatever the
-  // photographer uploaded. Feeding it the raw upload would make it exactly
-  // the "resize only" primitive src/lib/images.ts's header refuses to
-  // provide, and would let it re-introduce EXIF the final's own allowlist had
-  // already dropped. This asserts the actual bytes handed over, not just that
-  // the call happened.
-  it("derives the display bytes from processFinal's OUTPUT, not from the raw upload", async () => {
+  // TASK #218 inverted this claim from what it used to be: before this task,
+  // `processDisplay` had to be fed `processFinal`'s pre-filtered OUTPUT, never
+  // the raw upload directly (that function no longer exists). Now the route
+  // has no intermediate to feed it at all — `processDisplay` gets the SAME
+  // raw bytes that get written to `finalKey`, and this is what makes it the
+  // only remaining filter for GPS/EXIF (src/lib/images.ts's own comment).
+  // Asserts the actual bytes handed over, not just that the call happened.
+  it("feeds processDisplay the SAME raw upload bytes written to finalKey", async () => {
     authMock.mockResolvedValue(adminSession());
     const db = await seededDb();
     db.__rows.assets.length = 0;
     db.__rows.assets.push(assetRow({ isSelected: true, finalKey: null, isEdited: false }));
-    processFinalMock.mockResolvedValue({ data: Buffer.from("processed-final-output") });
     const { POST } = await import("./route");
 
     await POST(
@@ -989,8 +1048,10 @@ describe("POST /api/assets/[assetId]/final — the display derivative (task #89)
 
     expect(processDisplayMock).toHaveBeenCalledTimes(1);
     const displayInput = processDisplayMock.mock.calls[0]?.[0] as Buffer;
-    expect(Buffer.from(displayInput).toString()).toBe("processed-final-output");
-    expect(Buffer.from(displayInput).toString()).not.toBe("raw-lightroom-export-bytes");
+    const finalWrite = writesTo(FINAL_KEY)[0];
+    const storedFinalBytes = finalWrite?.[1] as Buffer;
+    expect(Buffer.from(displayInput).toString()).toBe("raw-lightroom-export-bytes");
+    expect(Buffer.compare(Buffer.from(displayInput), storedFinalBytes)).toBe(0);
   });
 
   // Both sharp passes run BEFORE either object is written, so a failure in
@@ -1100,8 +1161,11 @@ describe("buildFinalDownloadFilename", () => {
 
   it("forces a .jpg extension regardless of the original upload's own extension", async () => {
     const { buildFinalDownloadFilename } = await import("./route");
-    // `processFinal` always outputs JPEG (src/lib/images.ts) — the original
-    // could have been a .png, .heic, whatever the client's camera produced.
+    // The POST handler's upload gate (task #218) only ever accepts
+    // `image/jpeg` — this function just always assumes that, it does not
+    // re-derive it from `originalFilename`'s own extension, which is the
+    // ORIGINAL name recorded at proof-upload time and could be anything
+    // (.png, .heic, whatever the client's camera produced).
     expect(buildFinalDownloadFilename("Sesion", "foto.png")).toBe("sesion-foto.jpg");
     expect(buildFinalDownloadFilename("Sesion", "foto.HEIC")).toBe("sesion-foto.jpg");
   });

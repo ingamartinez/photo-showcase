@@ -2,20 +2,36 @@
 // protected, web-sized proof. `processProof` is the ONLY export that produces
 // PROOF bytes — there is deliberately no "resize only" or "watermark only"
 // helper, so no caller can walk away with downscaled-but-unwatermarked bytes.
-// Finals (full-res, unwatermarked, PLAN.md §5) are exactly the "different
-// pipeline" this file anticipated: `processFinal` below is that pipeline's
-// own function, built from scratch rather than by pulling pieces out of
-// `processProof` — see its own section header further down for the full
-// reasoning and task #26's EXIF-allowlist decision.
 //
-// A THIRD pipeline lives at the bottom of this file: `processDisplay` (task
+// Finals (full-res, unwatermarked, PLAN.md §5) do NOT go through this file at
+// all (task #218, reversing task #26's own decision below). The final upload
+// route (POST /api/assets/[assetId]/final) writes the admin's uploaded bytes
+// to `finalKey` VERBATIM — no sharp pass, no resize (there never was one),
+// no re-encode, no metadata change. There used to be a `processFinal`
+// function here that re-encoded the upload (EXIF authorship allowlist, ICC
+// kept, JPEG re-encode at quality 92 with mozjpeg); it has been deleted,
+// along with the `FINAL_JPEG_QUALITY` constant it used, because that
+// re-encode — compounded by sharp's default 4:2:0 chroma subsampling — was
+// silently throwing away most of a real camera export's quality (task #218's
+// verified root cause: a 16.8 MB Lightroom export came back as a 2.5 MB
+// download). The owner was shown the GPS/EXIF consequence explicitly and
+// chose byte-for-byte storage anyway — see task #218 for the full decision
+// trail. `FINAL_EXIF_ARTIST`/`FINAL_EXIF_COPYRIGHT` below survive that
+// deletion: `processDisplay` still uses them.
+//
+// A SECOND pipeline lives at the bottom of this file: `processDisplay` (task
 // #89), the browsing-sized version of a FINAL. Read its section header
 // before assuming it violates the paragraph above — the short version is
 // that the prohibition protects PROOFS (pre-payment, the photographer's
-// leverage), and `processDisplay`'s input is a final, an artifact that only
-// exists after the commercial event. `processProof` is untouched by it: it
-// does not call `processDisplay`, `processDisplay` does not call it, and
-// neither grew an option to skip anything.
+// leverage), and `processDisplay`'s input is the raw bytes of an
+// already-selected, already-edited final upload (identical to what gets
+// stored at `finalKey`, task #218), an artifact that only exists after the
+// commercial event. `processProof` is untouched by it: it does not call
+// `processDisplay`, `processDisplay` does not call it, and neither grew an
+// option to skip anything. `processDisplay` is now the ONLY function left in
+// this file — in this whole pipeline — that strips metadata from a
+// final-shaped image; see its own section header for why that is intentional,
+// not an oversight.
 //
 // Memory story (this droplet's main pressure source — 2 GB shared with
 // findash, `photoshowcase.service` caps at 768 MB). Applies to BOTH pipelines
@@ -25,21 +41,22 @@
 // - `sharp.cache(false)` stops libvips from retaining decoded pixel data
 //   across calls; this process handles unique images once each, so the
 //   cache would only cost memory, never save time.
-// - `runExclusive` below serializes calls to `processProof`, `processFinal`
-//   AND `processDisplay` process-wide (one shared queue), so even if a future
+// - `runExclusive` below serializes calls to `processProof` AND
+//   `processDisplay` process-wide (one shared queue), so even if a future
 //   caller (e.g. a multi-file upload route) fires several calls without
 //   awaiting between them, only one full-size decode is ever resident at a
-//   time. This is what keeps the final-upload route's now-TWO sharp passes
-//   (`processFinal` then `processDisplay`, task #89) additive-in-sequence
-//   rather than additive-in-peak: the two never overlap, not even with
-//   another request's own pass.
+//   time. Task #218 REMOVED the final-upload route's own full-frame decode
+//   (the old `processFinal` was the one pass that could not shrink-on-load —
+//   see MAX_INPUT_PIXELS's own note below): that route now runs a single
+//   sharp pass (`processDisplay`), so memory here got strictly BETTER, not
+//   worse. Do not read that as the mutex becoming unnecessary — it still
+//   protects concurrent REQUESTS from overlapping with each other.
 // - `resize()` is called with explicit dimensions before any pixel op, which
 //   lets libvips shrink-on-load JPEGs (decode at a reduced resolution
 //   instead of full-size then downscale) — the single biggest win for peak
-//   memory on a big camera JPEG. PROOF-ONLY: `processFinal` never resizes
-//   (full resolution IS the product), so it cannot use this trick and
-//   decodes the whole frame every time — see its own comment for why that
-//   makes the shared mutex matter even more for finals.
+//   memory on a big camera JPEG. Both `processProof` and `processDisplay` use
+//   this trick; neither pipeline in this file ever decodes a full frame at
+//   full resolution any more.
 // - `limitInputPixels` rejects anything above ~100 megapixels before it is
 //   decoded at all, so a hostile or mis-exported huge image can't be used to
 //   exhaust memory.
@@ -48,7 +65,7 @@
 //   intermediate buffer is already capped at PROOF_MAX_LONG_EDGE, so it stays
 //   small; the point is to read back its real width/height (see the pixel
 //   guard note on `buildWatermarkTile` below) without paying for a second
-//   lossy encode/decode round trip. PROOF-ONLY: `processFinal` has no
+//   lossy encode/decode round trip. PROOF-ONLY: `processDisplay` has no
 //   watermark step at all.
 import sharp from "sharp";
 
@@ -72,10 +89,10 @@ export const WATERMARK_TEXT = "alejoframes";
 // but survivable under the 768 MB service cap, and rejected outright above
 // this line.
 //
-// Shared by `processFinal` below, not re-declared: the guard's reasoning
+// Shared by `processDisplay` below, not re-declared: the guard's reasoning
 // (real cameras stay well under this, a hostile input doesn't get decoded at
-// all) applies identically to a finished export as to an unedited original —
-// only the pipeline AFTER this guard differs between the two.
+// all) applies identically there — only the pipeline AFTER this guard differs
+// between the two.
 const MAX_INPUT_PIXELS = 100_000_000;
 
 // Output quality for the WebP proof. 82 is a standard "visually lossless
@@ -229,16 +246,14 @@ export type ProcessedProof = {
   height: number;
 };
 
-// Serializes calls to `processProof` AND `processFinal` across the whole
+// Serializes calls to `processProof` AND `processDisplay` across the whole
 // process — one shared queue, not one per function. Not a per-call
 // optimization — it exists so this module never has more than one full-size
 // decode resident at once, no matter how a future caller (a multi-file
 // upload route, say) invokes it, and no matter which of the two pipelines it
-// calls. This matters at least as much for finals as for proofs: finals are
-// larger to begin with (task #26) and `processFinal` skips the one thing
-// that shrinks `processProof`'s memory the most — resizing before any pixel
-// op — so two finals decoding concurrently would be the worst case this
-// mutex exists to prevent. See the memory story above.
+// calls. See the memory story above for why task #218 (removing the old
+// `processFinal`, the one pass that could not shrink-on-load) made this
+// guard's job easier, not moot.
 let queue: Promise<void> = Promise.resolve();
 
 function runExclusive<T>(fn: () => Promise<T>): Promise<T> {
@@ -326,105 +341,47 @@ export async function processProof(
 }
 
 // ---------------------------------------------------------------------------
-// Final processing pipeline (task #26, PLAN.md §5's "Final upload" section):
-// turns an admin-uploaded, ALREADY-EDITED full-resolution export (Lightroom
-// or similar, finished locally by the photographer) into the stored
-// deliverable. This is a DIFFERENT pipeline from `processProof` above, not a
-// variant of it built by pulling pieces out of that one — see this file's
-// header comment for why `processProof` must never grow a flag to skip its
-// watermark. `processFinal` is the only function that can ever emit final
-// bytes, the same "one function, one guarantee" shape as `processProof`: a
-// caller has no lower-level export to compose around either guarantee.
-//
-// What this pipeline deliberately does NOT do:
-//   - No resize. Full resolution IS the product (PLAN.md §5) — finals are
-//     the finished, edited export the client paid for, not a derivative sized
-//     for browsing. This also means it CANNOT benefit from `processProof`'s
-//     shrink-on-load trick (resizing before any pixel op, decoding straight
-//     to a smaller raster) — the full frame is always decoded. That is
-//     exactly why finals need the shared mutex above more than proofs do,
-//     not less.
-//   - No watermark. These are the paid deliverables, not a selection aid.
+// Authorship EXIF constants (task #26's original decision). Used ONLY by
+// `processDisplay` below now — task #218 deleted the `processFinal` pipeline
+// that used to apply this allowlist to the FINAL itself; the stored final is
+// now the upload's bytes verbatim, carrying whatever EXIF the camera and
+// Lightroom actually wrote (GPS included — see below).
 //
 // EXIF policy — allowlist, not blocklist (owner decision, 2026-07-28, task
-// #26's third appended note, closing the open question in its body):
-// `sharp` strips every EXIF/XMP/IPTC field by default, same as
-// `processProof` above (see its own "no `.withMetadata()` call" comment) —
-// `withExif()` below then re-adds ONLY the two authorship tags named here,
-// nothing else. A blocklist ("strip the GPS tags") only covers what you
-// anticipated: location leaks through more than the GPS IFD alone (XMP
-// location fields, IPTC, whatever else the editing software wrote), and an
-// allowlist cannot leak a field it never copied in the first place. This
-// risk is bigger here than for proofs: finals are downloaded and forwarded
-// on by the client, and a session photo routinely carries the GPS
-// coordinates of wherever it was shot — often a client's own home.
+// #26's third appended note): `sharp` strips every EXIF/XMP/IPTC field by
+// default, same as `processProof` above (see its own "no `.withMetadata()`
+// call" comment) — `processDisplay`'s `withExif()` then re-adds ONLY the two
+// authorship tags named here, nothing else. A blocklist ("strip the GPS
+// tags") only covers what you anticipated: location leaks through more than
+// the GPS IFD alone (XMP location fields, IPTC, whatever else the editing
+// software wrote), and an allowlist cannot leak a field it never copied in
+// the first place.
 //
 // `Copyright`/`Artist` are CONSTANTS, never read from the uploaded file and
 // never made per-gallery configuration — the photographer is always the same
 // person (same "no invented brand asset" stance as `WATERMARK_TEXT` above;
 // reusing that exact string here rather than inventing a second one).
-// Deliberately NOT preserved this round: camera/lens/aperture/ISO/shutter
-// (the capture data) — the owner chose authorship-only for now. Additive
-// later: reading those fields from the upload and copying them across needs
-// no migration and touches no already-delivered file.
 //
-// `keepIccProfile()` is a SEPARATE call, not folded into the EXIF decision
-// above: the ICC profile is colour fidelity, not metadata, and colour
-// fidelity is part of what the client paid for.
+// `keepIccProfile()` (in `processDisplay`) is a SEPARATE call, not folded
+// into the EXIF decision above: the ICC profile is colour fidelity, not
+// metadata, and colour fidelity is part of what the client paid for.
+//
 // Plain ASCII, deliberately — the EXIF `Copyright`/`Artist` tags are typed
 // ASCII by the TIFF/EXIF spec, and libvips' own EXIF writer transliterates a
 // "©" character down to "(C)" on write rather than preserving it (verified
 // directly against the actual output bytes, not assumed). Writing plain
 // ASCII here means the stored value is exactly this string, not a
 // silently-rewritten one a future reader would have to know to expect.
+//
+// TASK #218: the stored FINAL itself now carries the full, unfiltered EXIF
+// the camera/Lightroom wrote — including GPS — because the final is stored
+// byte-for-byte as uploaded (owner decision, 2026-08-04, shown the GPS
+// consequence explicitly before choosing it). These constants and this
+// allowlist policy apply only to `processDisplay`'s output below, which
+// remains the one thing in this pipeline that strips metadata from a
+// final-shaped image.
 export const FINAL_EXIF_ARTIST = WATERMARK_TEXT;
 export const FINAL_EXIF_COPYRIGHT = `Copyright ${WATERMARK_TEXT}`;
-
-// A full re-encode is unavoidable here — writing the EXIF allowlist and
-// keeping the ICC profile both happen at encode time, so there is no
-// "pass the bytes through untouched" option once even one metadata field
-// changes. 92 with `mozjpeg: true` is "optimised" (PLAN.md §5's own word for
-// this step): visually indistinguishable from a high-quality Lightroom
-// export at 100, while mozjpeg's encoder produces a meaningfully smaller
-// file than libjpeg-turbo's default would at the same quality, for zero
-// additional pixel loss.
-const FINAL_JPEG_QUALITY = 92;
-
-export type ProcessedFinal = {
-  data: Buffer;
-};
-
-/** Turns an admin-uploaded, already-edited full-resolution export into the
- * stored final: EXIF stripped down to the authorship allowlist above, ICC
- * profile kept, re-encoded as JPEG. No resize, no watermark — see the
- * section header above for why. Shares `processProof`'s process-wide mutex
- * (`runExclusive`) rather than getting its own: see the queue's own comment
- * for why serializing matters at least as much here. */
-export async function processFinal(
-  input: Buffer | ArrayBuffer | Uint8Array,
-): Promise<ProcessedFinal> {
-  return runExclusive(async () => {
-    const source = Buffer.isBuffer(input)
-      ? input
-      : input instanceof ArrayBuffer
-        ? Buffer.from(input)
-        : Buffer.from(input.buffer, input.byteOffset, input.byteLength);
-
-    const data = await sharp(source, { limitInputPixels: MAX_INPUT_PIXELS })
-      // Bakes any EXIF Orientation into the pixels before metadata is
-      // stripped below — same reasoning as `processProof`'s own `.rotate()`
-      // call above: once the Orientation tag itself is gone (it is not on
-      // the allowlist), a viewer that correctly ignores metadata-less
-      // orientation must still see the photo upright.
-      .rotate()
-      .withExif({ IFD0: { Copyright: FINAL_EXIF_COPYRIGHT, Artist: FINAL_EXIF_ARTIST } })
-      .keepIccProfile()
-      .jpeg({ quality: FINAL_JPEG_QUALITY, mozjpeg: true })
-      .toBuffer();
-
-    return { data };
-  });
-}
 
 // ---------------------------------------------------------------------------
 // Display processing pipeline (task #89): the browsing-sized version of a
@@ -436,7 +393,7 @@ export async function processFinal(
 // there is deliberately no "resize only" helper "so no caller can walk away
 // with downscaled-but-unwatermarked bytes", and this function is, literally,
 // downscale-without-watermark. The distinction is the INPUT, and it is the
-// same one task #26 drew for `processFinal`:
+// same one task #26 originally drew for the (now-deleted) `processFinal`:
 //   - The prohibition protects PROOFS. A proof is what a client browses
 //     BEFORE paying and BEFORE selecting; the watermark is the photographer's
 //     leverage over exactly those bytes, and the guarantee that protects it
@@ -449,13 +406,14 @@ export async function processFinal(
 //     because the photographer uploaded an edited export for an asset the
 //     client had already selected. The commercial event has happened. There
 //     is nothing left to protect with a watermark on that photo, which is why
-//     `processFinal` (unwatermarked, full-res) was allowed to exist at all —
-//     this is the same artifact at browsing size, not a new class of bytes.
-//   - It is a THIRD named pipeline, not a primitive the other two are
-//     composed from. Deleting it would not change one line of `processProof`
-//     or `processFinal`. #26 faced this same temptation ("just add a flag to
-//     processProof") and correctly wrote a separate path; this follows that
-//     precedent rather than reopening it.
+//     the final is stored unwatermarked, full-resolution, in the first place
+//     (task #26, now byte-for-byte per task #218) — this is the same
+//     artifact at browsing size, not a new class of bytes.
+//   - It is a SECOND named pipeline, not a primitive `processProof` is
+//     composed from. Deleting it would not change one line of `processProof`.
+//     #26 faced this same temptation ("just add a flag to processProof") and
+//     correctly wrote a separate path; this follows that precedent rather
+//     than reopening it.
 // The gate that actually keeps these bytes away from an unpaid client is not
 // in this module at all — it is the same gate the download uses (gallery
 // `delivered`, asset selected AND edited, session owns the gallery), shared
@@ -471,15 +429,23 @@ export async function processFinal(
 // the same quality as a proof keeps a delivered gallery's page weight in the
 // same class as the proofing view it replaces.
 //
-// Metadata: the same authorship allowlist and ICC handling as `processFinal`
-// — deliberately reusing that decision's constants (`FINAL_EXIF_COPYRIGHT` /
-// `FINAL_EXIF_ARTIST`) rather than inventing a second policy. These bytes are
-// unwatermarked and sit in an <img> a phone can long-press and save, so they
-// are the one place left where authorship is worth carrying; and since the
-// input is a final that already went through that allowlist, this can never
-// re-introduce a field the final itself had already dropped. sharp writes
-// both an EXIF chunk and an ICC chunk into WebP (verified against the actual
-// output bytes, not assumed).
+// Metadata: the same authorship allowlist and ICC handling task #26
+// originally applied to the final itself — deliberately reusing those
+// constants (`FINAL_EXIF_COPYRIGHT` / `FINAL_EXIF_ARTIST`) rather than
+// inventing a second policy. These bytes are unwatermarked and sit in an
+// <img> a phone can long-press and save, so they are the one place left
+// where authorship is worth carrying.
+//
+// TASK #218 changed what feeds this function: the input is now the RAW
+// uploaded bytes (identical to what is stored at `finalKey`), not a
+// pre-filtered `processFinal` output — that function is gone, and the stored
+// final itself now carries the camera's full, unfiltered EXIF, GPS included
+// (owner decision, 2026-08-04). That makes `processDisplay` the ONLY function
+// left in this module — in this whole pipeline — that strips metadata from a
+// final-shaped image, and that is LOAD-BEARING, not incidental: it is what
+// keeps the browsing-sized grid/lightbox view free of GPS even though the
+// downloadable final is not. sharp writes both an EXIF chunk and an ICC
+// chunk into WebP (verified against the actual output bytes, not assumed).
 const DISPLAY_WEBP_QUALITY = WEBP_QUALITY;
 
 export type ProcessedDisplay = {
@@ -491,9 +457,9 @@ export type ProcessedDisplay = {
 /** Turns a FINAL's bytes into the browsing-sized, unwatermarked derivative a
  * delivered gallery shows in its grid and lightbox: downscaled to
  * `PROOF_MAX_LONG_EDGE`, WebP, authorship EXIF only, ICC kept. Read this
- * section's header before calling it with anything other than a final —
- * `processFinal`'s output (or the bytes already stored at `finalKey`) is the
- * only input this pipeline is for.
+ * section's header before calling it with anything other than a final — the
+ * raw uploaded bytes for a final (identical to what is stored at `finalKey`,
+ * task #218) are the only input this pipeline is for.
  *
  * `width`/`height` come back from the actual output bytes for the same
  * reason `processProof` re-reads its own: a caller must never have to trust
@@ -502,10 +468,9 @@ export type ProcessedDisplay = {
  * see the display route and the client gallery page for why that needs no
  * new column — but a caller that wants them should not have to re-decode.)
  *
- * Shares `processProof`/`processFinal`'s process-wide mutex (`runExclusive`)
- * rather than getting its own: the final-upload route calls `processFinal`
- * and then this, so without the shared queue those two passes could overlap
- * with a THIRD request's own pass under the same 768 MB cap. */
+ * Shares `processProof`'s process-wide mutex (`runExclusive`) rather than
+ * getting its own: without the shared queue, this pass could overlap with
+ * another request's own pass under the same 768 MB cap. */
 export async function processDisplay(
   input: Buffer | ArrayBuffer | Uint8Array,
 ): Promise<ProcessedDisplay> {
@@ -517,17 +482,19 @@ export async function processDisplay(
         : Buffer.from(input.buffer, input.byteOffset, input.byteLength);
 
     const data = await sharp(source, { limitInputPixels: MAX_INPUT_PIXELS })
-      // Same reasoning as both pipelines above. A stored final always comes
-      // out of `processFinal` already baked upright, so this is a no-op on
-      // that path — kept because it costs nothing and this function must not
-      // silently depend on its caller having rotated first.
+      // TASK #218: this is doing real, necessary work now, not the
+      // "kept for defense, costs nothing" no-op it used to be. Before this
+      // task, `processDisplay`'s input always came out of `processFinal`
+      // already baked upright (Orientation stripped, pixels rotated), so
+      // `.rotate()` here never had anything left to do. Now the input is the
+      // raw upload, which still carries its own EXIF Orientation tag
+      // untouched — this call is what keeps the display derivative upright
+      // even though nothing upstream bakes it in any more.
       .rotate()
       // Declared BEFORE any pixel op so libvips can shrink-on-load the JPEG
       // (decode straight to a reduced resolution instead of decoding the full
       // frame and then downscaling) — the same trick that keeps
-      // `processProof` cheap, and the reason this second pass costs far less
-      // than `processFinal`'s own full-frame decode. See the memory story at
-      // the top of this file.
+      // `processProof` cheap. See the memory story at the top of this file.
       .resize(PROOF_MAX_LONG_EDGE, PROOF_MAX_LONG_EDGE, {
         fit: "inside",
         withoutEnlargement: true,

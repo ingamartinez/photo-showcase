@@ -7,7 +7,6 @@ import {
   PROOF_MAX_LONG_EDGE,
   assertTileHasInk,
   processDisplay,
-  processFinal,
   processProof,
 } from "./images";
 import type { ProcessedProof } from "./images";
@@ -83,12 +82,13 @@ function seededRandom(seed: number): () => number {
  * Why not per-pixel random noise, which is the obvious way to build a
  * "detailed" fixture and is what this test used first: noise is the
  * pathological worst case for any DCT/VP8 encoder — maximum entropy, nothing
- * to predict — and `processFinal` encodes with `mozjpeg: true`, whose trellis
- * quantization then explores the whole search space. Measured on the same
- * machine, that one call took 1829ms of the test's 2521ms total, and at ~5x
- * on `ubuntu-latest` it blew the (then 5000ms) timeout and turned CI red.
- * This fixture is FASTER (~1650ms end to end vs ~2520ms), and it is not a
- * trade of rigour for speed — it is strictly the better measurement:
+ * to predict — and this suite used to run every fixture through the
+ * now-deleted `processFinal` (task #218), which encoded with `mozjpeg: true`;
+ * its trellis quantization then explored the whole search space. Measured on
+ * the same machine, that one call took 1829ms of the test's 2521ms total, and
+ * at ~5x on `ubuntu-latest` it blew the (then 5000ms) timeout and turned CI
+ * red. This fixture is FASTER (~1650ms end to end vs ~2520ms), and it is not
+ * a trade of rigour for speed — it is strictly the better measurement:
  *
  *   - It is what the assertion is actually about. At identical dimensions
  *     noise inflates page-weight figures ~2x over photographic content
@@ -142,11 +142,11 @@ async function makePhotographicFixture(): Promise<Buffer> {
 }
 
 /** Counts how many sampled pixels differ from `background` — the same ink
- * assay `assertHasWatermarkInk` above and processFinal's own no-ink test
- * perform, extracted so task #89's display tests can assert BOTH directions
- * with one instrument. Sampling every 8th pixel across a 6x6 grid of cells
- * is exactly the existing tests' stride; a return of 0 means nothing painted
- * onto a flat frame, a positive return means something did. */
+ * assay `assertHasWatermarkInk` above performs, extracted so task #89's
+ * display tests can assert BOTH directions with one instrument. Sampling
+ * every 8th pixel across a 6x6 grid of cells is exactly the existing tests'
+ * stride; a return of 0 means nothing painted onto a flat frame, a positive
+ * return means something did. */
 async function countInkedSamples(
   bytes: Buffer,
   background: { r: number; g: number; b: number },
@@ -431,14 +431,19 @@ describe("processProof", () => {
   });
 });
 
-// Fixtures below carry BOTH an EXIF Copyright marker AND a GPS tag — the
-// GPS tag specifically proves the allowlist, not just "some EXIF is gone":
-// task #26's whole reason to choose an allowlist over a blocklist is that
-// location leaks through more than a hand-picked "strip GPS" rule would
-// catch (see images.ts's own comment on `processFinal`). If GPS survived
-// while Copyright/Artist were merely OVERWRITTEN with the app's own values,
-// a test that only checked for the app's own constants being present could
-// still pass with a location leak sitting right next to them.
+// Fixtures below carry BOTH an EXIF Copyright marker AND a GPS-shaped tag —
+// used directly as `processDisplay` INPUT now (task #218 deleted
+// `processFinal`; a stored final is the raw upload, so `processDisplay`'s own
+// real input is exactly this kind of fixture, not a pre-filtered
+// intermediate). The GPS-shaped marker specifically proves the allowlist, not
+// just "some EXIF is gone": task #26's whole reason to choose an allowlist
+// over a blocklist is that location leaks through more than a hand-picked
+// "strip GPS" rule would catch (see images.ts's own comment on
+// `processDisplay`, now the only function in the module that applies this
+// allowlist). If GPS survived while Copyright/Artist were merely OVERWRITTEN
+// with the app's own values, a test that only checked for the app's own
+// constants being present could still pass with a location leak sitting
+// right next to them.
 // A free-text field, not a structured GPS tag: sharp's `Exif` type only
 // covers IFD0-IFD3, with no separate GPS-IFD support, so a raw
 // `GPSLatitude` string round-trips unreliably through `withExif()`. An
@@ -449,6 +454,11 @@ describe("processProof", () => {
 const LOCATION_LEAK_MARKER = "Shot at 123 Main St, Client Hometown";
 const ORIGINAL_COPYRIGHT_MARKER = "Some Other Photographer Studio";
 
+/** A fixture shaped like what an admin actually uploads for a final (task
+ * #218: raw camera/Lightroom bytes, untouched — there is no `processFinal`
+ * step to run this through any more). Carries a third-party copyright marker
+ * and a location leak so `processDisplay` tests below can prove it strips
+ * both, not merely that its own constants appear. */
 async function makeLargeFinalFixture(): Promise<Buffer> {
   return sharp({
     create: { width: LARGE_WIDTH, height: LARGE_HEIGHT, channels: 3, background: BACKGROUND },
@@ -460,155 +470,6 @@ async function makeLargeFinalFixture(): Promise<Buffer> {
     .withIccProfile("srgb")
     .toBuffer();
 }
-
-describe("processFinal", () => {
-  it("keeps only the authorship EXIF allowlist, keeps the ICC profile, and does not resize", async () => {
-    const fixture = await makeLargeFinalFixture();
-
-    // Sanity-check the fixture itself carries what we're about to prove is
-    // gone — same "prove the negative actually proves something" shape as
-    // processProof's own EXIF test above.
-    const fixtureMeta = await sharp(fixture).metadata();
-    expect(fixtureMeta.exif).toBeDefined();
-    expect(fixtureMeta.icc).toBeDefined();
-    expect(fixture.includes(ORIGINAL_COPYRIGHT_MARKER)).toBe(true);
-    expect(fixture.includes(LOCATION_LEAK_MARKER)).toBe(true);
-
-    const result = await processFinal(fixture);
-
-    const outputMeta = await sharp(result.data).metadata();
-    expect(outputMeta.format).toBe("jpeg");
-
-    // No resize: full resolution IS the product (unlike processProof, which
-    // caps at PROOF_MAX_LONG_EDGE). The fixture is already far above that
-    // cap, so this also proves the two pipelines genuinely differ here, not
-    // just in name.
-    expect(outputMeta.width).toBe(LARGE_WIDTH);
-    expect(outputMeta.height).toBe(LARGE_HEIGHT);
-
-    // The original studio's copyright marker and the free-text location are
-    // BOTH gone — checked as raw byte search, not just "exif is defined",
-    // since `withExif()` replaces the whole EXIF blob rather than editing it
-    // in place.
-    expect(result.data.includes(ORIGINAL_COPYRIGHT_MARKER)).toBe(false);
-    expect(result.data.includes(LOCATION_LEAK_MARKER)).toBe(false);
-
-    // The app's own authorship constants ARE present — this is the
-    // allowlist actually writing something back, not just stripping.
-    expect(result.data.includes(FINAL_EXIF_COPYRIGHT)).toBe(true);
-    expect(result.data.includes(FINAL_EXIF_ARTIST)).toBe(true);
-    expect(outputMeta.exif).toBeDefined();
-
-    // ICC profile survives `keepIccProfile()` — a separate call from the
-    // EXIF allowlist above, and this is what proves it actually ran.
-    expect(outputMeta.icc).toBeDefined();
-  });
-
-  it("produces no watermark ink — the output matches the flat background it started from", async () => {
-    const fixture = await sharp({
-      create: { width: LARGE_WIDTH, height: LARGE_HEIGHT, channels: 3, background: BACKGROUND },
-    })
-      .jpeg()
-      .toBuffer();
-
-    const result = await processFinal(fixture);
-
-    const { data: raw, info } = await sharp(result.data)
-      .raw()
-      .toBuffer({ resolveWithObject: true });
-    const { width, height, channels } = info;
-
-    // Same sampling-grid shape as processProof's watermark-coverage test,
-    // inverted: every sampled cell should be UNDER the threshold here, since
-    // a flat background run through processFinal must come out flat — any
-    // cell that differs would mean something painted pixels onto it.
-    const threshold = 10;
-    const gridSize = 6;
-    const cellWidth = Math.floor(width / gridSize);
-    const cellHeight = Math.floor(height / gridSize);
-    let cellsWithInk = 0;
-
-    for (let row = 0; row < gridSize; row++) {
-      for (let col = 0; col < gridSize; col++) {
-        for (let sy = 0; sy < cellHeight; sy += 8) {
-          for (let sx = 0; sx < cellWidth; sx += 8) {
-            const x = col * cellWidth + sx;
-            const y = row * cellHeight + sy;
-            const offset = (y * width + x) * channels;
-            if (
-              Math.abs(raw[offset] - BACKGROUND.r) > threshold ||
-              Math.abs(raw[offset + 1] - BACKGROUND.g) > threshold ||
-              Math.abs(raw[offset + 2] - BACKGROUND.b) > threshold
-            ) {
-              cellsWithInk++;
-            }
-          }
-        }
-      }
-    }
-
-    expect(cellsWithInk).toBe(0);
-  });
-
-  it("bakes EXIF Orientation into the pixels before metadata is stripped", async () => {
-    // A 400x300 (landscape) raster with EXIF Orientation 6 ("rotate 90°
-    // CW to display upright") — a real photo shot in portrait with the
-    // camera held sideways looks exactly like this on disk. Orientation is
-    // NOT on the authorship allowlist, so if `.rotate()` didn't bake it into
-    // the pixels first, the tag would simply vanish and a viewer that
-    // (correctly) ignores metadata-less orientation would render this
-    // sideways — same reasoning as processProof's own `.rotate()` call.
-    const fixture = await sharp({
-      create: { width: 400, height: 300, channels: 3, background: BACKGROUND },
-    })
-      .jpeg()
-      .withMetadata({ orientation: 6 })
-      .toBuffer();
-
-    const result = await processFinal(fixture);
-
-    const outputMeta = await sharp(result.data).metadata();
-    // Baked upright: what was 400 wide x 300 tall is now displayed 300 wide
-    // x 400 tall. `orientation` reads back as 1 ("normal", i.e. no rotation
-    // needed) rather than `undefined` — once processFinal writes ANY EXIF
-    // blob (it always does, for the Copyright/Artist allowlist), sharp's own
-    // metadata reader reports 1 by default rather than leaving the field
-    // absent; what matters is that it is 1 and NOT the original 6, which
-    // would mean a viewer still had rotating left to do on its own.
-    expect(outputMeta.width).toBe(300);
-    expect(outputMeta.height).toBe(400);
-    expect(outputMeta.orientation).toBe(1);
-  });
-
-  it("does not leak an unhandled rejection when a queued call fails, and still serves the next call", async () => {
-    const unhandledRejections: unknown[] = [];
-    const onUnhandledRejection = (reason: unknown) => {
-      unhandledRejections.push(reason);
-    };
-    process.on("unhandledRejection", onUnhandledRejection);
-
-    try {
-      const garbage = Buffer.from("not an image, just garbage bytes");
-      await expect(processFinal(garbage)).rejects.toThrow();
-
-      const validFixture = await sharp({
-        create: { width: 400, height: 300, channels: 3, background: BACKGROUND },
-      })
-        .jpeg()
-        .toBuffer();
-      const result = await processFinal(validFixture);
-      const meta = await sharp(result.data).metadata();
-      expect(meta.width).toBe(400);
-      expect(meta.height).toBe(300);
-
-      await new Promise((resolve) => setImmediate(resolve));
-      await new Promise((resolve) => setImmediate(resolve));
-      expect(unhandledRejections).toHaveLength(0);
-    } finally {
-      process.off("unhandledRejection", onUnhandledRejection);
-    }
-  });
-});
 
 describe("limitInputPixels guard", () => {
   it("rejects an image whose declared dimensions exceed the pixel limit, before decoding it", async () => {
@@ -650,9 +511,9 @@ describe("limitInputPixels guard", () => {
 
   // Shared guard: `MAX_INPUT_PIXELS` in images.ts is deliberately declared
   // once and reused by both pipelines (see its own comment) — this is the
-  // proof that `processFinal` actually inherits it too, not just
+  // proof that `processDisplay` actually inherits it too, not just
   // `processProof`.
-  it("rejects the same pixel bomb via processFinal, not just processProof", async () => {
+  it("rejects the same pixel bomb via processDisplay, not just processProof", async () => {
     const tiny = await sharp({
       create: { width: 64, height: 64, channels: 3, background: BACKGROUND },
     })
@@ -660,20 +521,17 @@ describe("limitInputPixels guard", () => {
       .toBuffer();
     const bomb = patchJpegDimensions(tiny, 20000, 20000);
 
-    await expect(processFinal(bomb)).rejects.toThrow(/exceeds pixel limit/i);
+    await expect(processDisplay(bomb)).rejects.toThrow(/exceeds pixel limit/i);
   });
 });
 
-// Task #89's third pipeline: the browsing-sized, UNWATERMARKED derivative a
-// delivered gallery shows. Fixtures here deliberately go through
-// `processFinal` first where the point is "derived from the final" — that is
-// the input this pipeline exists for, and running the real one keeps these
-// tests honest about what the route actually hands it.
+// Task #89's second pipeline: the browsing-sized, UNWATERMARKED derivative a
+// delivered gallery shows. Fixtures here are fed directly to `processDisplay`
+// — task #218 deleted `processFinal`, so a stored final's own bytes ARE the
+// raw upload, and that is exactly what the route now hands this function.
 describe("processDisplay", () => {
   it("downscales a full-resolution final to the display cap and outputs WebP", async () => {
-    const final = await processFinal(await makeLargeFinalFixture());
-
-    const result = await processDisplay(final.data);
+    const result = await processDisplay(await makeLargeFinalFixture());
 
     const outputMeta = await sharp(result.data).metadata();
     expect(outputMeta.format).toBe("webp");
@@ -693,21 +551,54 @@ describe("processDisplay", () => {
     expect(result.height).toBe(outputMeta.height);
   });
 
+  // TASK #218 REVIEW FINDING: `.rotate()` went from a documented no-op (the
+  // old `processFinal` always baked Orientation into the pixels first, so a
+  // stored final's own bytes never carried a non-1 Orientation tag by the
+  // time they reached this function) to load-bearing — `processDisplay` now
+  // gets the RAW upload directly, which still carries its own EXIF
+  // Orientation tag untouched. This is exactly `processFinal`'s own deleted
+  // orientation test, re-homed to the function that now actually needs it. A
+  // 400x300 (landscape) raster with EXIF Orientation 6 ("rotate 90° CW to
+  // display upright") — a real photo shot in portrait with the camera held
+  // sideways looks exactly like this on disk. Concrete failure this guards:
+  // a portrait shot with the camera rotated shows sideways in the delivered
+  // grid/lightbox while the downloaded final looks fine — an asymmetry
+  // nobody notices until a client complains.
+  it("bakes EXIF Orientation into the pixels before metadata is stripped", async () => {
+    const fixture = await sharp({
+      create: { width: 400, height: 300, channels: 3, background: BACKGROUND },
+    })
+      .jpeg()
+      .withMetadata({ orientation: 6 })
+      .toBuffer();
+
+    const result = await processDisplay(fixture);
+
+    const outputMeta = await sharp(result.data).metadata();
+    // Baked upright: what was 400 wide x 300 tall is now displayed 300 wide
+    // x 400 tall (both well under PROOF_MAX_LONG_EDGE, so this is purely
+    // about orientation, not the resize cap). `orientation` reads back as 1
+    // ("normal", i.e. no rotation needed) rather than the original 6, which
+    // would mean a viewer still had rotating left to do on its own.
+    expect(outputMeta.width).toBe(300);
+    expect(outputMeta.height).toBe(400);
+    expect(outputMeta.width).toBeLessThan(outputMeta.height!);
+    expect(outputMeta.orientation).toBe(1);
+  });
+
   // THE acceptance criterion, asserted the way #14 and #26 assert theirs: on
   // the real output pixels, not on the absence of a `composite()` call. A
   // flat-background final must come out flat — any pixel that differs from
   // the background is ink something painted onto it, and the only thing in
   // this module that paints is the watermark.
   it("paints NO watermark ink — the output pixels match the flat background it started from", async () => {
-    const flatFinal = await processFinal(
-      await sharp({
-        create: { width: LARGE_WIDTH, height: LARGE_HEIGHT, channels: 3, background: BACKGROUND },
-      })
-        .jpeg()
-        .toBuffer(),
-    );
+    const flatFixture = await sharp({
+      create: { width: LARGE_WIDTH, height: LARGE_HEIGHT, channels: 3, background: BACKGROUND },
+    })
+      .jpeg()
+      .toBuffer();
 
-    const result = await processDisplay(flatFinal.data);
+    const result = await processDisplay(flatFixture);
 
     expect(await countInkedSamples(result.data, BACKGROUND)).toBe(0);
   });
@@ -729,14 +620,22 @@ describe("processDisplay", () => {
     expect(await countInkedSamples(watermarked.data, BACKGROUND)).toBeGreaterThan(0);
   });
 
-  it("keeps the same authorship EXIF allowlist and ICC profile as the final it came from", async () => {
-    const final = await processFinal(await makeLargeFinalFixture());
-    // Sanity-check the input: the final really does still carry these, so the
-    // assertions below prove propagation rather than coincidence.
-    expect(final.data.includes(FINAL_EXIF_COPYRIGHT)).toBe(true);
-    expect((await sharp(final.data).metadata()).icc).toBeDefined();
+  // TASK #218's own invariant, pinned directly at this function: with
+  // `processFinal` gone, `processDisplay` is the ONLY place left that strips
+  // metadata from a final-shaped image, so this has to be tested against a
+  // RAW, unfiltered fixture (third-party copyright AND a location leak, both
+  // still present going in) rather than a pre-filtered one — feeding it an
+  // already-clean fixture (the old shape of this test) could no longer tell
+  // "processDisplay stripped this" apart from "it was never there".
+  it("strips the raw upload's own EXIF down to the authorship allowlist, drops the location leak, and keeps the ICC profile", async () => {
+    const fixture = await makeLargeFinalFixture();
+    // Sanity-check the fixture itself: it really carries a third-party
+    // marker and a location leak, so proving them gone below proves
+    // something instead of restating an already-clean input.
+    expect(fixture.includes(ORIGINAL_COPYRIGHT_MARKER)).toBe(true);
+    expect(fixture.includes(LOCATION_LEAK_MARKER)).toBe(true);
 
-    const result = await processDisplay(final.data);
+    const result = await processDisplay(fixture);
 
     const outputMeta = await sharp(result.data).metadata();
     expect(outputMeta.exif).toBeDefined();
@@ -744,39 +643,40 @@ describe("processDisplay", () => {
     expect(result.data.includes(FINAL_EXIF_COPYRIGHT)).toBe(true);
     expect(result.data.includes(FINAL_EXIF_ARTIST)).toBe(true);
 
-    // And nothing the final itself had already dropped comes back — these
-    // bytes are unwatermarked and sit in an <img> a phone can long-press and
-    // save, so a location leak here would travel exactly as far as one in the
-    // final would (task #26's own threat model).
+    // The requirement task #218 exists to protect: these bytes are
+    // unwatermarked and sit in an <img> a phone can long-press and save, so
+    // this is what keeps the delivered gallery's GRID free of GPS even
+    // though the downloadable FINAL, as of this task, is not.
     expect(result.data.includes(LOCATION_LEAK_MARKER)).toBe(false);
     expect(result.data.includes(ORIGINAL_COPYRIGHT_MARKER)).toBe(false);
   });
 
   it("does not upscale a final that is already smaller than the display cap", async () => {
-    const small = await processFinal(
-      await sharp({ create: { width: 400, height: 300, channels: 3, background: BACKGROUND } })
-        .jpeg()
-        .toBuffer(),
-    );
+    const small = await sharp({
+      create: { width: 400, height: 300, channels: 3, background: BACKGROUND },
+    })
+      .jpeg()
+      .toBuffer();
 
-    const result = await processDisplay(small.data);
+    const result = await processDisplay(small);
 
     expect(result.width).toBe(400);
     expect(result.height).toBe(300);
   });
 
   // The page weight claim task #89 asks to be stated with a number: a
-  // display derivative must be in the PROOF's size class, not the final's.
-  // Asserted as a ratio rather than an absolute byte count so it stays
-  // meaningful if sharp's encoder output shifts between versions.
+  // display derivative must be in the PROOF's size class, not a
+  // full-resolution final's. Asserted as a ratio rather than an absolute
+  // byte count so it stays meaningful if sharp's encoder output shifts
+  // between versions. `final` below is the RAW fixture bytes themselves
+  // (task #218: that is what a stored final actually is now, byte-for-byte).
   it("produces bytes in the proof's size class, not the full-resolution final's", async () => {
     const original = await makePhotographicFixture();
 
-    const final = await processFinal(original);
-    const display = await processDisplay(final.data);
+    const display = await processDisplay(original);
     const proof = await processProof(original);
 
-    expect(display.data.length).toBeLessThan(final.data.length / 4);
+    expect(display.data.length).toBeLessThan(original.length / 4);
     expect(display.data.length).toBeLessThan(proof.data.length * 3);
   });
 
@@ -807,13 +707,13 @@ describe("processDisplay", () => {
     }
   });
 
-  // The shared mutex is what keeps the final-upload route's now-TWO sharp
-  // passes from ever being resident at the same time as a third request's
-  // own pass, under the same 768 MB cap. `runExclusive` is module-private, so
-  // this proves membership behaviourally: interleave calls to all three
-  // pipelines and check every one still returns its own correct answer,
-  // which a broken queue (shared state leaking between calls) would not.
-  it("shares the process-wide mutex with processProof and processFinal", async () => {
+  // The shared mutex is what keeps concurrent requests' sharp passes from
+  // ever being resident in memory at the same time, under the same 768 MB
+  // cap. `runExclusive` is module-private, so this proves membership
+  // behaviourally: interleave calls to both pipelines and check every one
+  // still returns its own correct answer, which a broken queue (shared state
+  // leaking between calls) would not.
+  it("shares the process-wide mutex with processProof", async () => {
     const landscape = await sharp({
       create: { width: 2000, height: 1000, channels: 3, background: BACKGROUND },
     })
@@ -825,15 +725,13 @@ describe("processDisplay", () => {
       .jpeg()
       .toBuffer();
 
-    const [proof, final, displayA, displayB] = await Promise.all([
+    const [proof, displayA, displayB] = await Promise.all([
       processProof(landscape),
-      processFinal(portrait),
       processDisplay(landscape),
       processDisplay(portrait),
     ]);
 
     expect(proof.width).toBe(PROOF_MAX_LONG_EDGE);
-    expect((await sharp(final.data).metadata()).height).toBe(2000);
     expect(displayA.width).toBe(PROOF_MAX_LONG_EDGE);
     expect(displayA.height).toBe(800);
     expect(displayB.height).toBe(PROOF_MAX_LONG_EDGE);
@@ -896,7 +794,6 @@ describe("processProof's no-unwatermarked-bytes guarantee (task #89)", () => {
       "WATERMARK_TEXT",
       "assertTileHasInk",
       "processDisplay",
-      "processFinal",
       "processProof",
     ]);
   });

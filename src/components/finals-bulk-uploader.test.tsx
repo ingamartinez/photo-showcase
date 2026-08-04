@@ -63,6 +63,20 @@ describe("FinalsBulkUploader", () => {
     expect(container.firstChild).toBeNull();
   });
 
+  // TASK #218: the server-side upload gate was tightened to `image/jpeg`
+  // only, and the file picker's `accept` was narrowed to match — a hint for
+  // the OS file dialog, not the real gate (the server check is what actually
+  // enforces it). MUTATION PROOF: reverting the input's `accept` back to
+  // `"image/*"` turns this test red.
+  it("narrows the file picker's accept to image/jpeg only", () => {
+    const asset = makeAsset({ id: "a1", originalFilename: "DSC_0001.JPG" });
+    render(<FinalsBulkUploader selectedAssets={[asset]} onFinalUploaded={onFinalUploaded} />);
+
+    const input = document.querySelector("input[type=file]");
+    expect(input).not.toBeNull();
+    expect(input?.getAttribute("accept")).toBe("image/jpeg");
+  });
+
   it("shows the proposed mapping BEFORE uploading anything — no request goes out on file choice alone", async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);

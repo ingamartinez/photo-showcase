@@ -551,6 +551,41 @@ describe("processDisplay", () => {
     expect(result.height).toBe(outputMeta.height);
   });
 
+  // TASK #218 REVIEW FINDING: `.rotate()` went from a documented no-op (the
+  // old `processFinal` always baked Orientation into the pixels first, so a
+  // stored final's own bytes never carried a non-1 Orientation tag by the
+  // time they reached this function) to load-bearing — `processDisplay` now
+  // gets the RAW upload directly, which still carries its own EXIF
+  // Orientation tag untouched. This is exactly `processFinal`'s own deleted
+  // orientation test, re-homed to the function that now actually needs it. A
+  // 400x300 (landscape) raster with EXIF Orientation 6 ("rotate 90° CW to
+  // display upright") — a real photo shot in portrait with the camera held
+  // sideways looks exactly like this on disk. Concrete failure this guards:
+  // a portrait shot with the camera rotated shows sideways in the delivered
+  // grid/lightbox while the downloaded final looks fine — an asymmetry
+  // nobody notices until a client complains.
+  it("bakes EXIF Orientation into the pixels before metadata is stripped", async () => {
+    const fixture = await sharp({
+      create: { width: 400, height: 300, channels: 3, background: BACKGROUND },
+    })
+      .jpeg()
+      .withMetadata({ orientation: 6 })
+      .toBuffer();
+
+    const result = await processDisplay(fixture);
+
+    const outputMeta = await sharp(result.data).metadata();
+    // Baked upright: what was 400 wide x 300 tall is now displayed 300 wide
+    // x 400 tall (both well under PROOF_MAX_LONG_EDGE, so this is purely
+    // about orientation, not the resize cap). `orientation` reads back as 1
+    // ("normal", i.e. no rotation needed) rather than the original 6, which
+    // would mean a viewer still had rotating left to do on its own.
+    expect(outputMeta.width).toBe(300);
+    expect(outputMeta.height).toBe(400);
+    expect(outputMeta.width).toBeLessThan(outputMeta.height!);
+    expect(outputMeta.orientation).toBe(1);
+  });
+
   // THE acceptance criterion, asserted the way #14 and #26 assert theirs: on
   // the real output pixels, not on the absence of a `composite()` call. A
   // flat-background final must come out flat — any pixel that differs from

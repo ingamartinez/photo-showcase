@@ -312,13 +312,19 @@ export const POST = withApiSession(async function POST(
   // hardcoded `image/jpeg` Content-Type on `putObject` further down. All
   // three of those — the extension, the content type, and `finalKey`'s
   // determinism (a re-upload of the SAME asset overwrites the SAME key in
-  // place rather than orphaning it) — stay simultaneously true only because
-  // every accepted upload really is a JPEG. A PNG (or anything else) accepted
-  // here would sit at a `.jpg` key served with the wrong Content-Type, and —
-  // because the key never changes shape — a later real JPEG re-upload for the
-  // same asset would land on that SAME key rather than replacing a
-  // differently-shaped orphan. This costs nothing real: the product is always
-  // a Lightroom JPEG export.
+  // place rather than orphaning it) — depend on every accepted upload being
+  // DECLARED as a JPEG. `file.type` is the browser's own extension-based
+  // guess, not a sniff of the actual bytes (deliberately — task #218 scoped
+  // this gate to the MIME check, not magic-byte sniffing), so a PNG renamed
+  // `edit.jpg` still passes this check and gets stored/served as if it were
+  // one; it is still exactly the bytes the admin uploaded, just mislabeled.
+  // What this gate DOES reliably stop is the ordinary case task #218 exists
+  // for: a real, honestly-typed non-JPEG export (HEIC straight off a phone,
+  // a PNG screenshot) landing at a `.jpg` key with the wrong Content-Type,
+  // and — because the key never changes shape — a later real JPEG re-upload
+  // for the same asset landing on that SAME key rather than replacing a
+  // differently-shaped orphan. This costs nothing real for the honest case:
+  // the product is always a Lightroom JPEG export.
   if (file.type !== "image/jpeg") {
     return errorResponse("not_an_image", 415);
   }
@@ -362,9 +368,15 @@ export const POST = withApiSession(async function POST(
   try {
     // TASK #218: `finalBytes` is written VERBATIM — the exact bytes the admin
     // uploaded, no sharp pass in between. `contentType: "image/jpeg"` stays
-    // hardcoded rather than reading `file.type` back, correct only because of
-    // the upload gate above (see its own comment) — every accepted upload
-    // really is a JPEG, so there is nothing this could get wrong.
+    // hardcoded rather than reading `file.type` back, on the strength of the
+    // upload gate above (see its own comment) — but that gate only trusts
+    // the browser-reported MIME type, which is itself the browser's own
+    // extension-based guess, not a sniff of the actual bytes. A PNG renamed
+    // `edit.jpg` passes it. This is not sniffed or verified anywhere in this
+    // route (deliberately — task #218 scoped the gate to the MIME check, not
+    // magic-byte sniffing), so if an admin's browser lies here, the stored
+    // object ends up a real PNG at a `.jpg` key served with an `image/jpeg`
+    // Content-Type: still byte-for-byte what was uploaded, just mislabeled.
     await putObject(key, finalBytes, { contentType: "image/jpeg" });
     // Written in the SAME request, and its failure fails the whole upload
     // (502, same as the final's own). A partial success here would leave the

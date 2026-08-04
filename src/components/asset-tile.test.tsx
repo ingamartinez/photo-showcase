@@ -376,12 +376,15 @@ describe("AssetTile", () => {
     expect(screen.getByText("Falta el final")).toBeDefined();
     expect(screen.getByText("Subir final")).toBeDefined();
 
-    // TASK #218: the server-side gate tightened to `image/jpeg` only, and
-    // the file picker's `accept` was narrowed to match — a hint for the OS
-    // file dialog, not the real gate. MUTATION PROOF: reverting the input's
-    // `accept` back to `"image/*"` turns this assertion red.
+    // TASK #220: the picker's `accept` must match the server's own format
+    // allowlist (`ACCEPTED_FINAL_FORMATS`, JPEG + PNG) exactly — a hint for
+    // the OS file dialog, not the real gate. #218 left this narrower than
+    // the server (JPEG only) once already, which meant a format the server
+    // accepted was invisible in the native picker; this assertion exists so
+    // that gap can't reopen silently. MUTATION PROOF: reverting the input's
+    // `accept` back to `"image/jpeg"` (or `"image/*"`) turns this red.
     const finalInput = screen.getByLabelText("Subir final") as HTMLInputElement;
-    expect(finalInput.accept).toBe("image/jpeg");
+    expect(finalInput.accept).toBe("image/jpeg,image/png");
   });
 
   it("shows 'Final subido' with a 'Reemplazar' control for a selected asset that already has one", () => {

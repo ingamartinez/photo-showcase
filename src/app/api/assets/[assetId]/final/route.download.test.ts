@@ -44,11 +44,19 @@ const store = new Map<string, StoredObject>();
 
 class FakeS3Client {
   async write(key: string, body: unknown, opts: { type: string }): Promise<number> {
+    // Task #220: the real route no longer copies the upload into a `Buffer`
+    // before calling `putObject` — it passes the raw `ArrayBuffer`
+    // `file.arrayBuffer()` returns (see that route's own comment on why).
+    // This fake must accept the SAME shapes Bun's real `S3Client.write`
+    // does, so this suite keeps exercising what the route actually sends,
+    // not a shape only the OLD `Buffer.from()` copy ever produced.
     const buf = Buffer.isBuffer(body)
       ? body
-      : body instanceof Uint8Array
+      : body instanceof ArrayBuffer
         ? Buffer.from(body)
-        : Buffer.from(String(body));
+        : body instanceof Uint8Array
+          ? Buffer.from(body)
+          : Buffer.from(String(body));
     store.set(key, { data: buf, contentType: opts.type });
     return buf.byteLength;
   }
@@ -245,7 +253,7 @@ async function seedGalleryAndAsset(overrides: {
   const proof = await processProof(source);
 
   const realProofKey = proofKey(GALLERY_ID, ASSET_ID);
-  const realFinalKey = finalKey(GALLERY_ID, ASSET_ID);
+  const realFinalKey = finalKey(GALLERY_ID, ASSET_ID, "jpg");
   store.set(realProofKey, { data: proof.data, contentType: "image/webp" });
   // TASK #218: the final is stored EXACTLY as an admin upload would land
   // here — `source` itself, untouched. There is no `processFinal` call any
@@ -483,7 +491,7 @@ describe("POST /api/assets/[assetId]/final — byte-for-byte storage and metadat
     const response = await postFinal(uploaded);
 
     expect(response.status).toBe(200);
-    const stored = store.get(finalKey(GALLERY_ID, ASSET_ID));
+    const stored = store.get(finalKey(GALLERY_ID, ASSET_ID, "jpg"));
     if (!stored) throw new Error("final object missing from fake store");
     expect(stored.data.equals(uploaded)).toBe(true);
   });
@@ -498,7 +506,7 @@ describe("POST /api/assets/[assetId]/final — byte-for-byte storage and metadat
     const response = await postFinal(uploaded);
 
     expect(response.status).toBe(200);
-    const stored = store.get(finalKey(GALLERY_ID, ASSET_ID));
+    const stored = store.get(finalKey(GALLERY_ID, ASSET_ID, "jpg"));
     if (!stored) throw new Error("final object missing from fake store");
     const storedMeta = await sharp(stored.data).metadata();
     expect(storedMeta.exif).toBeDefined();
@@ -533,16 +541,17 @@ describe("POST /api/assets/[assetId]/final — byte-for-byte storage and metadat
     expect(storedDisplay.data.includes(FINAL_EXIF_ARTIST)).toBe(true);
   });
 
-  // Required coverage #4: a non-JPEG upload is rejected with 415, exercised
-  // through the REAL route (not the mocked one) so nothing about the fake
-  // pipeline could mask the gate being skipped.
-  it("rejects a non-JPEG upload with 415 and writes nothing to the real fake bucket", async () => {
+  // Required coverage #4 (task #218's list; the format itself widened by
+  // #220): a format outside the allowlist is still rejected with 415,
+  // exercised through the REAL route (not the mocked one) so nothing about
+  // the fake pipeline could mask the gate being skipped.
+  it("rejects an unsupported image format (GIF) with 415 and writes nothing to the real fake bucket", async () => {
     const { POST } = await import("./route");
-    const png = new File(["not-a-real-png-but-has-the-right-mime"], "edit.png", {
-      type: "image/png",
+    const gif = new File(["not-a-real-gif-but-has-the-right-mime"], "edit.gif", {
+      type: "image/gif",
     });
     const formData = new FormData();
-    formData.set("file", png);
+    formData.set("file", gif);
     const request = new NextRequest(`http://localhost/api/assets/${ASSET_ID}/final`, {
       method: "POST",
       body: formData,
@@ -553,5 +562,190 @@ describe("POST /api/assets/[assetId]/final — byte-for-byte storage and metadat
     expect(response.status).toBe(415);
     await expect(response.json()).resolves.toEqual({ error: "not_an_image" });
     expect(store.size).toBe(0);
+  });
+});
+
+// TASK #220's own required coverage, run through the REAL POST handler, REAL
+// `@/lib/images` pipeline (unmocked `processDisplay`) and REAL `@/lib/r2` key
+// builders — same discipline as the #218 describe block above, extended to
+// the format this task actually adds: PNG. This is deliberately NOT covered
+// only at ./route.test.ts's mocked boundary — a mock can assert "the route
+// called processDisplay with a PNG" without proving sharp can actually decode
+// one, downscale it, and still strip metadata correctly.
+describe("POST /api/assets/[assetId]/final — PNG finals, real pipeline (task #220)", () => {
+  const PNG_LOCATION_LEAK_MARKER = "Shot at 456 Second St, Client Hometown";
+  const BACKGROUND = { r: 90, g: 110, b: 200 };
+
+  async function makePngGpsFixture(): Promise<Buffer> {
+    return sharp({
+      create: { width: LARGE_WIDTH, height: LARGE_HEIGHT, channels: 3, background: BACKGROUND },
+    })
+      .png()
+      .withExif({ IFD0: { ImageDescription: PNG_LOCATION_LEAK_MARKER } })
+      .toBuffer();
+  }
+
+  function pngFile(bytes: Buffer, name = "IMG_0002-edit.png"): File {
+    return new File([new Uint8Array(bytes)], name, { type: "image/png" });
+  }
+
+  async function postPngFinal(bytes: Buffer) {
+    const { POST } = await import("./route");
+    const formData = new FormData();
+    formData.set("file", pngFile(bytes));
+    const request = new NextRequest(`http://localhost/api/assets/${ASSET_ID}/final`, {
+      method: "POST",
+      body: formData,
+    });
+    return POST(request, paramsFor(ASSET_ID));
+  }
+
+  beforeEach(async () => {
+    const db = await seededDb();
+    db.__rows.galleries.push({ id: GALLERY_ID, title: "Boda Ana y Beto", status: "delivered" });
+    db.__rows.galleryClients.push({ galleryId: GALLERY_ID, userId: "client-a" });
+    db.__rows.assets.push({
+      id: ASSET_ID,
+      galleryId: GALLERY_ID,
+      originalFilename: "IMG_0002.PNG",
+      isSelected: true,
+      isEdited: false,
+      finalKey: null,
+    });
+    authMock.mockResolvedValue(adminSession());
+  });
+
+  // Required coverage #1/#2: byte-for-byte identity AND the key really ends
+  // in .png, at the real R2/pipeline layer. MUTATION PROOF: reverting
+  // `ACCEPTED_FINAL_FORMATS["image/png"]` to some other extension (or
+  // removing the entry) turns this red — either the key stops ending in
+  // `.png` or the upload 415s outright.
+  it("stores a PNG upload byte-for-byte at a key ending in .png", async () => {
+    const { finalKey } = await import("@/lib/r2");
+    const uploaded = await makePngGpsFixture();
+
+    const response = await postPngFinal(uploaded);
+
+    expect(response.status).toBe(200);
+    const expectedKey = finalKey(GALLERY_ID, ASSET_ID, "png");
+    expect(expectedKey.endsWith(".png")).toBe(true);
+    const stored = store.get(expectedKey);
+    if (!stored) throw new Error("final object missing from fake store");
+    expect(stored.data.equals(uploaded)).toBe(true);
+    expect(stored.contentType).toBe("image/png");
+  });
+
+  // Required coverage #7: the display derivative from a PNG upload is still
+  // WebP, downscaled, and GPS-free — the invariant #218 established for JPEG
+  // finals must survive the new input format. MUTATION PROOF: reverting
+  // `processDisplay`'s `.withExif()` allowlist call (src/lib/images.ts) to a
+  // no-op turns the GPS-free assertion red for a PNG input exactly the same
+  // way it would for a JPEG one — the leak marker would survive into the
+  // display bytes.
+  it("still produces a downscaled, WebP, GPS-free display derivative from a PNG upload", async () => {
+    const { displayKey } = await import("@/lib/r2");
+    const uploaded = await makePngGpsFixture();
+
+    const response = await postPngFinal(uploaded);
+
+    expect(response.status).toBe(200);
+    const storedDisplay = store.get(displayKey(GALLERY_ID, ASSET_ID));
+    if (!storedDisplay) throw new Error("display object missing from fake store");
+
+    const displayMeta = await sharp(storedDisplay.data).metadata();
+    expect(displayMeta.format).toBe("webp");
+    expect(Math.max(displayMeta.width!, displayMeta.height!)).toBeLessThan(LARGE_WIDTH);
+    expect(storedDisplay.data.includes(PNG_LOCATION_LEAK_MARKER)).toBe(false);
+  });
+
+  // Task #220's own required coverage, item #3 — a MIXED-format gallery is
+  // the owner's actual situation: one asset's final is JPEG, another's is
+  // PNG, driven end-to-end through the real route/pipeline for both.
+  it("keeps a mixed-format gallery honest: one asset's final .jpg, another's .png, each with its own extension", async () => {
+    const { finalKey, proofKey } = await import("@/lib/r2");
+    const { processProof } = await import("@/lib/images");
+    const JPEG_ASSET_ID = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+
+    const jpegSource = await makeLargeSourceFixture();
+    const jpegProof = await processProof(jpegSource);
+    store.set(proofKey(GALLERY_ID, JPEG_ASSET_ID), {
+      data: jpegProof.data,
+      contentType: "image/webp",
+    });
+    const db = await seededDb();
+    db.__rows.assets.push({
+      id: JPEG_ASSET_ID,
+      galleryId: GALLERY_ID,
+      originalFilename: "IMG_0001.JPG",
+      proofKey: proofKey(GALLERY_ID, JPEG_ASSET_ID),
+      isSelected: true,
+      isEdited: false,
+      finalKey: null,
+    });
+
+    const pngUploaded = await makePngGpsFixture();
+    const jpegFormData = new FormData();
+    jpegFormData.set(
+      "file",
+      new File([new Uint8Array(jpegSource)], "IMG_0001.jpg", {
+        type: "image/jpeg",
+      }),
+    );
+    const { POST } = await import("./route");
+    const jpegResponse = await POST(
+      new NextRequest(`http://localhost/api/assets/${JPEG_ASSET_ID}/final`, {
+        method: "POST",
+        body: jpegFormData,
+      }),
+      paramsFor(JPEG_ASSET_ID),
+    );
+    const pngResponse = await postPngFinal(pngUploaded);
+
+    expect(jpegResponse.status).toBe(200);
+    expect(pngResponse.status).toBe(200);
+
+    const jpegStored = store.get(finalKey(GALLERY_ID, JPEG_ASSET_ID, "jpg"));
+    const pngStored = store.get(finalKey(GALLERY_ID, ASSET_ID, "png"));
+    if (!jpegStored || !pngStored) throw new Error("expected both finals in the fake store");
+    expect((await sharp(jpegStored.data).metadata()).format).toBe("jpeg");
+    expect((await sharp(pngStored.data).metadata()).format).toBe("png");
+  });
+
+  // Task #220's own required coverage, item #4, at the real R2/pipeline
+  // layer: re-uploading with a different extension (a .jpg final replaced by
+  // a .png one — the owner's actual situation) must leave no orphaned
+  // object, and the old key must genuinely be gone from the (fake) bucket
+  // afterward. MUTATION PROOF: this is the same claim ./route.test.ts's
+  // mocked-boundary test proves via `deleteObjectMock`; here the proof is
+  // that `store.has(oldKey)` actually flips to `false` against a REAL
+  // (fake-backed) `deleteObject` call, not merely that a mock was invoked
+  // with the right argument.
+  it("re-uploading in a different format leaves the old real object deleted from the store", async () => {
+    const { finalKey } = await import("@/lib/r2");
+    const jpegSource = await makeLargeSourceFixture();
+    const jpegFormData = new FormData();
+    jpegFormData.set(
+      "file",
+      new File([new Uint8Array(jpegSource)], "IMG_0002.jpg", { type: "image/jpeg" }),
+    );
+    const { POST } = await import("./route");
+    const firstResponse = await POST(
+      new NextRequest(`http://localhost/api/assets/${ASSET_ID}/final`, {
+        method: "POST",
+        body: jpegFormData,
+      }),
+      paramsFor(ASSET_ID),
+    );
+    expect(firstResponse.status).toBe(200);
+    const jpgKey = finalKey(GALLERY_ID, ASSET_ID, "jpg");
+    expect(store.has(jpgKey)).toBe(true);
+
+    const pngUploaded = await makePngGpsFixture();
+    const secondResponse = await postPngFinal(pngUploaded);
+
+    expect(secondResponse.status).toBe(200);
+    const pngKey = finalKey(GALLERY_ID, ASSET_ID, "png");
+    expect(store.has(pngKey)).toBe(true);
+    expect(store.has(jpgKey)).toBe(false);
   });
 });

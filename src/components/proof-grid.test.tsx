@@ -1080,6 +1080,75 @@ describe("ProofGrid", () => {
       );
     });
 
+    // THE TRAP, MIRRORED FOR THE UNCHOSEN GROUP. The chosen-group version
+    // above (two tests up) only proves one of the two arms in the ternary
+    // that resolves `lightbox.group` to an array — a reviewer reproduced
+    // both of these independently and confirmed EACH one alone leaves the
+    // chosen-side tests fully green:
+    //   - collapsing the "unchosen" arm of that ternary to fall through to
+    //     `displayAssets` (the flat array), or
+    //   - tagging an accordion tile with the "all" group instead of
+    //     "unchosen" in `renderTile(asset, index, "unchosen")`.
+    // A and C are BOTH unchosen, but A sits at flat index 0 and C at flat
+    // index 2, while C is only the SECOND unchosen photo (group-local index
+    // 1). Either bug above resolves that group-local index 1 against
+    // `displayAssets` instead of `unchosenAssets`, landing on B — a CHOSEN
+    // photo, not even the group the client was looking at with the
+    // accordion open.
+    it("tapping the Nth unchosen photo opens THAT photo too, not whatever sits at that flat index", async () => {
+      const user = userEvent.setup();
+      renderGrid({ initialStatus: "delivered", initialAssets: interleaved });
+
+      await user.click(screen.getByText(/no elegiste/));
+      await user.click(screen.getByRole("button", { name: "Ver IMG_0003.JPG" }));
+
+      expect(screen.getByRole("dialog")).toBeDefined();
+      expect(screen.getByText("IMG_0003.JPG", { exact: false })).toBeDefined();
+      // 2 unchosen photos total (A, C); C is the 2nd.
+      expect(screen.getByText(/2 \/ 2/)).toBeDefined();
+    });
+
+    // Same "stays inside its own group" contract as the chosen-group test
+    // above, mirrored: opened from the LAST unchosen photo (C), "next" must
+    // be disabled and D — the chosen photo sitting right after C in upload
+    // order — must never appear.
+    it("keeps lightbox navigation inside the unchosen group too, never crossing into chosen photos", async () => {
+      const user = userEvent.setup();
+      renderGrid({ initialStatus: "delivered", initialAssets: interleaved });
+
+      await user.click(screen.getByText(/no elegiste/));
+      await user.click(screen.getByRole("button", { name: "Ver IMG_0003.JPG" }));
+      expect(screen.getByText("IMG_0003.JPG", { exact: false })).toBeDefined();
+
+      expect(screen.getByRole("button", { name: "Foto siguiente" })).toHaveProperty(
+        "disabled",
+        true,
+      );
+      expect(screen.queryByText("IMG_0004.JPG", { exact: false })).toBeNull();
+    });
+
+    // The count and the Spanish agreement in the summary must be REAL,
+    // never a hardcoded plural — this codebase's own convention for that
+    // (see finals-bulk-uploader.tsx's `{n === 1 ? "" : "s"}`). Asserted as
+    // the EXACT string, not a substring match: `getByText(/no elegiste/)`
+    // (used by the two tests above and below) would still pass if the
+    // wording, the count or the article were wrong.
+    it("labels the accordion with the real, correctly pluralised unchosen count", () => {
+      renderGrid({ initialStatus: "delivered", initialAssets: interleaved });
+
+      // 2 unchosen (A, C) — plural Spanish agreement ("las"/"fotos").
+      expect(screen.getByText("Ver las 2 fotos que no elegiste")).toBeDefined();
+    });
+
+    it("uses singular Spanish agreement for exactly one unchosen photo", () => {
+      renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([{ isSelected: true }, { isSelected: false }]),
+      });
+
+      expect(screen.getByText("Ver la foto que no elegiste")).toBeDefined();
+    });
+
     it("restarts the position number at 01 within each group", async () => {
       const user = userEvent.setup();
       const { container } = renderGrid({
@@ -1114,7 +1183,7 @@ describe("ProofGrid", () => {
       expect(screen.queryByText(/no elegiste/)).toBeNull();
     });
 
-    it("renders no accordion either, and no bare empty grid, when nothing was chosen — every photo lands in the collapsed section instead", () => {
+    it("renders every photo inside the still-closed accordion, and no bare empty chosen grid, when nothing was chosen", () => {
       const { container } = renderGrid({
         initialStatus: "delivered",
         initialAssets: assetsFor([{ isSelected: false }, { isSelected: false }]),

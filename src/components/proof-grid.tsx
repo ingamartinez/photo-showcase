@@ -65,6 +65,64 @@
 //     matters now — the photos are unwatermarked (#89) and the ZIP is right
 //     there — mirroring the mock's own `entregada` screen, which never shows
 //     `.tray`/`.bar` either.
+//
+// TASK #222 — DELIVERED SPLITS INTO "CHOSEN FIRST" + A CLOSED ACCORDION
+// =======================================================================
+// Before this slice, `delivered` still fell into the SAME single flat `<ul>`
+// as `proofing`/`selected` (right above), every asset interleaved in upload
+// order regardless of `isSelected`. Once a gallery ships, the client wants
+// only what they picked; making them scroll past everyone else's rejects to
+// find their own photos is backwards for the one moment they are least
+// interested in the discards. Scope is `delivered` ONLY — `proofing`'s
+// whole point is seeing everything at once to decide, so splitting there
+// would break the core flow (see epic #140).
+//
+// THE TRAP THIS SLICE EXISTS TO AVOID: a naive split is two `.map()` calls,
+// and each callback's own `index` quietly becomes a PER-GROUP index while a
+// lightbox fed the flat array still opens by NUMERIC INDEX into it — tapping
+// the third chosen photo opens whatever asset happens to sit third in
+// upload order instead. Every tile still renders correctly and nothing in a
+// shallow test catches it; the only way to see it live is to tap a photo
+// and notice a different one open. Fixed here by CONSTRUCTION, not
+// discipline: the `lightbox` state below carries a GROUP TAG ("all" |
+// "chosen" | "unchosen") next to the index, `renderTile()` is the single
+// place that pairs a group's array with an index INTO THAT SAME ARRAY, and
+// the array handed to `<ProofLightbox>` is looked up by that tag at render
+// time — there is no path left where a group-local index reaches the wrong
+// array.
+//
+// THREE DECISIONS, MADE AND NOT REOPENED HERE — see the task body for why:
+//   1. The lightbox navigates only within the group it was opened from: two
+//      independent index spaces, never one that spans both.
+//   2. The corner position number (proof-tile.tsx's own `.tile__n`) restarts
+//      at 01 per group. Preserving original positions would leave visible
+//      gaps in the chosen grid that read as missing photos.
+//   3. The accordion is closed on every render, with no persistence across
+//      reloads — a plain, UNCONTROLLED `<details>` holds no state of its
+//      own for this to even accidentally persist.
+//
+// TWO EDGE CASES, DECIDED:
+//   - Zero unselected assets (the client chose everything): no accordion at
+//     all, not an empty one — gated on `unchosenAssets.length > 0` below.
+//   - Zero selected assets (delivered with nothing chosen — an admin
+//     mistake, or a client who submitted an empty pick): not special-cased
+//     in the split itself — every asset simply lands in `unchosenAssets`,
+//     `chosenAssets` comes out empty, and the block that would have
+//     rendered a bare, confusing empty `<ul>` renders one line of text
+//     instead. The accordion below still follows decision 3: closed
+//     regardless of whether there is anything above it.
+//
+// DESIGN SURFACE: this file follows design/system/client.html, not the
+// admin design system (epic #140's own rule). That mock's `entregada`
+// screen (:934-974) shows only the delivered finals with no chosen/rejected
+// split, so it has no collapsible idiom of its own to match. The nearest
+// STRUCTURAL precedent in this codebase is `selected-photos-list.tsx`'s
+// native `<details>`/`<summary>` (task #216) — reused for the MECHANISM
+// only (a native disclosure widget gets keyboard and screen-reader
+// behaviour for free). Its ADMIN styling (the boxed `rounded-[6px] border
+// p-4` panel) is deliberately NOT carried across; the summary below reuses
+// this file's own client tokens instead (`border-line-2`, `text-fg-dim`),
+// the same ones `<SelectedStateNote>` already uses a few hundred lines down.
 import { useCallback, useMemo, useState } from "react";
 import { DownloadAllButton } from "@/components/download-all-button";
 import { ProofLightbox } from "@/components/proof-lightbox";
@@ -127,6 +185,12 @@ export type ProofAsset = {
   // can only make this component request a URL that 404s.
   displayUrl: string | null;
 };
+
+// Task #222 — which array a `lightbox` index below is meant to be read
+// against. "all" is the pre-#222, flat, `!isDelivered` case; "chosen" and
+// "unchosen" are this slice's own two groups. See this file's own header
+// comment for why this tag exists at all.
+type LightboxGroup = "all" | "chosen" | "unchosen";
 
 export function ProofGrid({
   galleryId,
@@ -244,7 +308,82 @@ export function ProofGrid({
     originalPhotoPriceCopSnapshot,
   });
 
-  const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
+  // Task #28: a gallery only ever reaches `delivered` once (PLAN.md §2's
+  // state machine has no path back out of it toward the client-visible
+  // statuses), so — unlike the live `status`/`isLocked` the hook above tracks
+  // — this never needs to flip after mount; `initialStatus` alone is enough
+  // for this component's whole lifetime.
+  //
+  // Deliberately read off `initialStatus`, NOT the live `status`, even though
+  // one now exists (task #95): the download affordances depend on per-asset
+  // facts the SERVER computed at render time (`hasFinal`, `displayUrl`),
+  // which a live status change cannot bring with it. A gallery that becomes
+  // `delivered` while a client watches would otherwise sprout download
+  // buttons for assets this page knows nothing about. It stays read-only
+  // until the client loads the page again, which is when those facts arrive.
+  // Whether a GIVEN asset's download button actually renders is
+  // still per-asset (`asset.hasFinal` below): a delivered gallery can easily
+  // contain unselected assets that were never edited and have no final at
+  // all.
+  //
+  // Computed here, ABOVE the hooks that follow, rather than right before the
+  // `return` (where it used to sit): task #222's group split below needs it
+  // inside a `useMemo`, and the Rules of Hooks require every hook to run
+  // unconditionally — i.e. before the `initialAssets.length === 0` early
+  // return further down, not after it.
+  const isDelivered = initialStatus === "delivered";
+
+  // Task #222 — every asset's CURRENT `isSelected`, resolved the SAME way
+  // each grid tile already resolved it inline before this slice
+  // (`selectionById[id] ?? asset.isSelected`), computed once here instead of
+  // per-tile. Also what the lightbox now renders in the `!isDelivered` case
+  // (`renderTile`'s own "all" group below), replacing the ad-hoc
+  // `initialAssets.map(...)` that used to get rebuilt inline on every render
+  // of the lightbox itself.
+  const displayAssets = useMemo(
+    () =>
+      initialAssets.map((asset) => ({
+        ...asset,
+        isSelected: selectionById[asset.id] ?? asset.isSelected,
+      })),
+    [initialAssets, selectionById],
+  );
+
+  // Task #222 — the split itself. `proofing`/`selected` get two empty
+  // arrays and keep rendering the one flat grid unchanged (see the return
+  // block below); `delivered` gets chosen-first, unchosen-collapsed. Order
+  // within each group is preserved from `initialAssets` — this only
+  // PARTITIONS, it never re-sorts, which is what keeps "position restarts
+  // at 01 per group" meaning "in the order they were uploaded" rather than
+  // some new ordering this slice would have to justify separately.
+  //
+  // "No selected photos at all" is not special-cased HERE: every asset
+  // simply lands in `unchosenAssets` and `chosenAssets` comes out empty,
+  // which the return block below renders as one line of text instead of a
+  // bare empty grid — see that block's own comment.
+  const { chosenAssets, unchosenAssets } = useMemo<{
+    chosenAssets: ProofAsset[];
+    unchosenAssets: ProofAsset[];
+  }>(() => {
+    if (!isDelivered) return { chosenAssets: [], unchosenAssets: [] };
+    const chosen: ProofAsset[] = [];
+    const unchosen: ProofAsset[] = [];
+    for (const asset of displayAssets) {
+      (asset.isSelected ? chosen : unchosen).push(asset);
+    }
+    return { chosenAssets: chosen, unchosenAssets: unchosen };
+  }, [displayAssets, isDelivered]);
+
+  // THE TRAP, closed (see this file's own header comment): the lightbox
+  // opens by NUMERIC INDEX, and once the grid is more than one `.map()`,
+  // that index only means something together with WHICH array it indexes
+  // into. `group` is that second half of the address. Deliberately NOT
+  // widened to carry the array itself: doing that would freeze a stale
+  // snapshot at the moment a tile was tapped, and a toggle from inside the
+  // (still-open, pre-delivery) lightbox would stop moving that asset
+  // between the arrays the grid renders. The render block below looks up
+  // the live array by tag instead, on every render.
+  const [lightbox, setLightbox] = useState<{ group: LightboxGroup; index: number } | null>(null);
 
   // Task #206 — every currently-selected asset's own type, looked up by id.
   // Built off `picks` (the shared selection's own list, which now carries
@@ -272,14 +411,19 @@ export function ProofGrid({
     [initialAssets],
   );
 
+  // Task #222 — same "-1 means nothing to open" guard as before, now
+  // resolved against `displayAssets` and setting the "all" group: this
+  // callback only ever fires from <SelectionTray>'s `onOpenAsset`, which is
+  // only rendered `!isDelivered` (see the tray's own render gate below), so
+  // "all" — the flat, pre-#222 array — is always the right group here.
   const openAssetInLightbox = useCallback(
     (assetId: string) => {
-      const index = initialAssets.findIndex((asset) => asset.id === assetId);
+      const index = displayAssets.findIndex((asset) => asset.id === assetId);
       // -1 for a pick whose asset this page never rendered — nothing to open,
       // and opening the lightbox at index -1 would blank it.
-      if (index >= 0) setLightboxIndex(index);
+      if (index >= 0) setLightbox({ group: "all", index });
     },
-    [initialAssets],
+    [displayAssets],
   );
 
   if (initialAssets.length === 0) {
@@ -290,24 +434,6 @@ export function ProofGrid({
     );
   }
 
-  // Task #28: a gallery only ever reaches `delivered` once (PLAN.md §2's
-  // state machine has no path back out of it toward the client-visible
-  // statuses), so — unlike the live `status`/`isLocked` the hook above tracks
-  // — this never needs to flip after mount; `initialStatus` alone is enough
-  // for this component's whole lifetime.
-  //
-  // Deliberately read off `initialStatus`, NOT the live `status`, even though
-  // one now exists (task #95): the download affordances depend on per-asset
-  // facts the SERVER computed at render time (`hasFinal`, `displayUrl`),
-  // which a live status change cannot bring with it. A gallery that becomes
-  // `delivered` while a client watches would otherwise sprout download
-  // buttons for assets this page knows nothing about. It stays read-only
-  // until the client loads the page again, which is when those facts arrive.
-  // Whether a GIVEN asset's download button actually renders is
-  // still per-asset (`asset.hasFinal` below): a delivered gallery can easily
-  // contain unselected assets that were never edited and have no final at
-  // all.
-  const isDelivered = initialStatus === "delivered";
   // Task #29: <DeliveredNote>'s own download-all affordance only makes sense
   // once there is at least one final to actually zip — same per-asset
   // `hasFinal` truth `showDownload` below already relies on for the
@@ -317,6 +443,36 @@ export function ProofGrid({
   // own set from the database on every request regardless of what this
   // renders — this is a UI hint only, same disclaimer as `hasFinal`'s own.
   const finalAssetCount = isDelivered ? initialAssets.filter((asset) => asset.hasFinal).length : 0;
+
+  // Task #222 — the one place that builds a tile, used by all three grids
+  // below (the flat one and this slice's own two). Pairs `group` with
+  // `index` on every single call, which is what makes "the wrong array"
+  // IMPOSSIBLE rather than merely avoided this one time — see this file's
+  // own header comment on THE TRAP for why that distinction is the whole
+  // point of this function existing.
+  function renderTile(asset: ProofAsset, index: number, group: LightboxGroup) {
+    return (
+      <ProofTile
+        key={asset.id}
+        asset={asset}
+        position={index + 1}
+        src={urls[asset.id] ?? asset.proofUrl}
+        isSelected={asset.isSelected}
+        isPending={pendingIds.has(asset.id)}
+        isLocked={isLocked}
+        showDownload={isDelivered && asset.hasFinal}
+        onError={() => void refreshUrl(asset.id)}
+        onOpen={() => setLightbox({ group, index })}
+        onToggleSelection={() => void toggleSelection(asset.id, !asset.isSelected)}
+        // Task #206 — only meaningful while `isSelected` (the tile itself
+        // gates rendering the control on that), so an unselected asset's
+        // `"edited"` fallback here is never actually shown.
+        selectionKind={selectionKindById[asset.id] ?? "edited"}
+        onSetSelectionKind={(kind) => void setSelectionKind(asset.id, kind)}
+        allowsOriginalSelection={allowsOriginalSelection}
+      />
+    );
+  }
 
   return (
     <>
@@ -383,47 +539,72 @@ export function ProofGrid({
         </p>
       )}
 
-      {/* client.html:180 (`repeat(2, 1fr)`, `gap: 2px`), :532 (three columns
-          from 620px — Tailwind's `sm` is 640px, the nearest stop in the
-          project's own scale, and no slice in this epic gets to invent a
-          breakpoint) and :556 (four columns and a 3px gap at the desk).
-          The near-zero gutter is the point rather than a detail: it buys the
-          phone's two columns their width back, which is what makes a
-          thumbnail big enough to decide on without opening it.
+      {isDelivered ? (
+        <>
+          {/* Task #222 — the chosen group, above the fold, unwrapped: this
+              IS the point of the split, so it gets no ceremony beyond what
+              the flat grid always had. */}
+          {chosenAssets.length > 0 ? (
+            <ul className="grid grid-cols-2 gap-[2px] sm:grid-cols-3 lg:grid-cols-4 lg:gap-[3px]">
+              {chosenAssets.map((asset, index) => renderTile(asset, index, "chosen"))}
+            </ul>
+          ) : (
+            // Task #222's own decided edge case: a delivered gallery with
+            // NOTHING chosen (an admin mistake, or a client whose submitted
+            // pick was empty) renders no grid here at all, rather than a
+            // bare, confusing empty `<ul>`. Nothing is lost — every asset
+            // already fell into `unchosenAssets`, rendered below.
+            <p className="text-fg-dim text-sm">No elegiste ninguna foto en esta galería.</p>
+          )}
 
-          `pb-32` only while the sticky bottom bar (below) is actually
-          mounted — `selected` and `delivered` render no bar, so nothing
-          needs clearing under the last row there. */}
-      <ul
-        className={`grid grid-cols-2 gap-[2px] sm:grid-cols-3 lg:grid-cols-4 lg:gap-[3px] ${
-          !isLocked ? "pb-32" : ""
-        }`}
-      >
-        {initialAssets.map((asset, index) => {
-          const isSelected = selectionById[asset.id] ?? asset.isSelected;
-          return (
-            <ProofTile
-              key={asset.id}
-              asset={asset}
-              position={index + 1}
-              src={urls[asset.id] ?? asset.proofUrl}
-              isSelected={isSelected}
-              isPending={pendingIds.has(asset.id)}
-              isLocked={isLocked}
-              showDownload={isDelivered && asset.hasFinal}
-              onError={() => void refreshUrl(asset.id)}
-              onOpen={() => setLightboxIndex(index)}
-              onToggleSelection={() => void toggleSelection(asset.id, !isSelected)}
-              // Task #206 — only meaningful while `isSelected` (the tile
-              // itself gates rendering the control on that), so an unselected
-              // asset's `"edited"` fallback here is never actually shown.
-              selectionKind={selectionKindById[asset.id] ?? "edited"}
-              onSetSelectionKind={(kind) => void setSelectionKind(asset.id, kind)}
-              allowsOriginalSelection={allowsOriginalSelection}
-            />
-          );
-        })}
-      </ul>
+          {/* Task #222 — the rest, collapsed by default and every time: a
+              plain, UNCONTROLLED `<details>` holds no open/closed state of
+              its own to persist across a reload, which is what "closed by
+              default" asked for literally. Structural precedent:
+              selected-photos-list.tsx's own `<details>`/`<summary>` (task
+              #216) — the MECHANISM only, not its admin styling; this reuses
+              this file's own client tokens instead (`border-line-2`,
+              `text-fg-dim`, the same ones `<SelectedStateNote>` below uses),
+              since design/system/client.html's `entregada` screen has no
+              collapsible idiom of its own to match — it never shows an
+              unchosen photo at all (see this file's header comment).
+              Rendered only when there is something to collapse: the mirror
+              of the empty-chosen case above, zero unchosen means no
+              accordion, not an empty one. */}
+          {unchosenAssets.length > 0 && (
+            <details className="border-line-2 mt-8 border-t pt-4">
+              <summary className="text-fg-dim cursor-pointer text-sm">
+                {unchosenAssets.length === 1
+                  ? "Ver la foto que no elegiste"
+                  : `Ver las ${unchosenAssets.length} fotos que no elegiste`}
+              </summary>
+              <ul className="mt-4 grid grid-cols-2 gap-[2px] sm:grid-cols-3 lg:grid-cols-4 lg:gap-[3px]">
+                {unchosenAssets.map((asset, index) => renderTile(asset, index, "unchosen"))}
+              </ul>
+            </details>
+          )}
+        </>
+      ) : (
+        /* client.html:180 (`repeat(2, 1fr)`, `gap: 2px`), :532 (three columns
+           from 620px — Tailwind's `sm` is 640px, the nearest stop in the
+           project's own scale, and no slice in this epic gets to invent a
+           breakpoint) and :556 (four columns and a 3px gap at the desk).
+           The near-zero gutter is the point rather than a detail: it buys the
+           phone's two columns their width back, which is what makes a
+           thumbnail big enough to decide on without opening it.
+
+           `pb-32` only while the sticky bottom bar (below) is actually
+           mounted — `selected` renders no bar either (see `!isLocked`
+           below); `delivered` never reaches this branch anymore, task #222
+           split it out above. */
+        <ul
+          className={`grid grid-cols-2 gap-[2px] sm:grid-cols-3 lg:grid-cols-4 lg:gap-[3px] ${
+            !isLocked ? "pb-32" : ""
+          }`}
+        >
+          {displayAssets.map((asset, index) => renderTile(asset, index, "all"))}
+        </ul>
+      )}
 
       {/* Task #147's own hardest problem, restated: the surcharge has to be
           impossible to not see BEFORE the client submits, on the phone,
@@ -487,22 +668,37 @@ export function ProofGrid({
         </div>
       )}
 
-      {lightboxIndex !== null && (
+      {lightbox && (
         <ProofLightbox
-          assets={initialAssets.map((asset) => ({
-            ...asset,
-            isSelected: selectionById[asset.id] ?? asset.isSelected,
-          }))}
+          // Task #222 — THE TRAP, closed: which array `lightbox.index` means
+          // depends on which group it was opened from. Looked up by tag here
+          // rather than carried as a snapshot inside `lightbox` itself — see
+          // that state's own comment above for why a snapshot would be
+          // wrong.
+          assets={
+            lightbox.group === "chosen"
+              ? chosenAssets
+              : lightbox.group === "unchosen"
+                ? unchosenAssets
+                : displayAssets
+          }
           urls={urls}
-          index={lightboxIndex}
+          index={lightbox.index}
           // Task #146: the same server-recomputed quota <SelectionCounter>
           // above renders, so the full-screen view can say how many are
           // chosen without the client closing it to find out. Passed whole
           // rather than as a count, because the lightbox shows the included
           // number beside it and neither value is derived twice.
           quota={quota}
-          onClose={() => setLightboxIndex(null)}
-          onNavigate={setLightboxIndex}
+          onClose={() => setLightbox(null)}
+          // Task #222 — stays inside the group it was opened from BY
+          // CONSTRUCTION: this only ever updates `index`, never `group`, and
+          // <ProofLightbox>'s own `hasNext`/`hasPrev` are bounded by
+          // `assets.length` above — which is already just the one group's
+          // array, never the full gallery's.
+          onNavigate={(index) =>
+            setLightbox((current) => (current ? { ...current, index } : current))
+          }
           onImageError={(assetId) => void refreshUrl(assetId)}
           onToggleSelection={(assetId, nextSelected) => void toggleSelection(assetId, nextSelected)}
           pendingAssetIds={pendingIds}

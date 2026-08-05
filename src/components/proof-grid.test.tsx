@@ -969,6 +969,324 @@ describe("ProofGrid", () => {
     });
   });
 
+  // Task #222 — the delivered grid splits into chosen-first + a closed
+  // accordion for the rest.
+  //
+  // EVERY FIXTURE HERE INTERLEAVES SELECTED AND UNSELECTED ON PURPOSE. A
+  // fixture where "first N selected, rest not" happens to leave group order
+  // equal to flat upload order would let a group-local index silently pass
+  // as a flat index — the exact bug task #222's own body calls THE TRAP,
+  // and the one this repo has already shipped once before under a uniform
+  // fixture. Interleaving is what makes group order and flat order diverge,
+  // which is the only thing that can catch it.
+  describe("delivered gallery: chosen-first split (task #222)", () => {
+    // A: unselected, B: selected, C: unselected, D: selected, E: selected —
+    // both "unselected between two selected" and "two selected in a row"
+    // appear, and every asset keeps its own distinguishable filename
+    // (assetsFor's IMG_000N.JPG) so an assertion can name exactly which
+    // photo it means.
+    const interleaved = assetsFor([
+      { isSelected: false }, // A — IMG_0001.JPG
+      { isSelected: true }, //  B — IMG_0002.JPG
+      { isSelected: false }, // C — IMG_0003.JPG
+      { isSelected: true }, //  D — IMG_0004.JPG
+      { isSelected: true }, //  E — IMG_0005.JPG
+    ]);
+
+    it("puts chosen photos above the fold, not wrapped in the collapsed section, and the rest inside it, closed", () => {
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: interleaved,
+      });
+
+      const details = container.querySelector("details");
+      expect(details).not.toBeNull();
+      // Closed on first render — the literal meaning of "closed by
+      // default": no open/closed state is read from anywhere, a plain
+      // <details> starts closed unless told otherwise.
+      expect(details?.open).toBe(false);
+
+      // Chosen (B, D, E): reachable directly, and NOT inside the <details>.
+      for (const filename of ["IMG_0002.JPG", "IMG_0004.JPG", "IMG_0005.JPG"]) {
+        const tile = screen.getByRole("button", { name: `Ver ${filename}` });
+        expect(tile.closest("details")).toBeNull();
+      }
+
+      // Unselected (A, C): inside the <details>, not above the fold.
+      for (const filename of ["IMG_0001.JPG", "IMG_0003.JPG"]) {
+        const tile = screen.getByRole("button", { name: `Ver ${filename}` });
+        expect(tile.closest("details")).toBe(details);
+      }
+    });
+
+    it("opens the accordion on interaction", async () => {
+      const user = userEvent.setup();
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: interleaved,
+      });
+
+      const details = container.querySelector("details") as HTMLDetailsElement;
+      expect(details.open).toBe(false);
+
+      await user.click(screen.getByText(/no elegiste/));
+
+      expect(details.open).toBe(true);
+    });
+
+    // THE TRAP ITSELF. B and D are BOTH chosen, but B sits at flat index 1
+    // and D at flat index 3 — while D is only the SECOND chosen photo
+    // (group-local index 1). Tapping D must open D. A component that (bug)
+    // opens the lightbox by group-local index against the FLAT array would
+    // open B instead — a different, wrong photo, and every tile would still
+    // have rendered correctly, which is exactly why this needs a real
+    // interaction and a real fixture rather than counting elements.
+    it("tapping the Nth chosen photo opens THAT photo in the lightbox, not whatever sits at that flat index", async () => {
+      const user = userEvent.setup();
+      renderGrid({ initialStatus: "delivered", initialAssets: interleaved });
+
+      await user.click(screen.getByRole("button", { name: "Ver IMG_0004.JPG" }));
+
+      expect(screen.getByRole("dialog")).toBeDefined();
+      expect(screen.getByText("IMG_0004.JPG", { exact: false })).toBeDefined();
+      // 3 chosen photos total (B, D, E); D is the 2nd.
+      expect(screen.getByText(/2 \/ 3/)).toBeDefined();
+    });
+
+    // Lightbox navigation stays inside its own group: C (unselected) sits
+    // BETWEEN B and D in upload order. Opened from the chosen group, "next"
+    // from B must never land on C.
+    it("keeps lightbox navigation inside the group it was opened from", async () => {
+      const user = userEvent.setup();
+      renderGrid({ initialStatus: "delivered", initialAssets: interleaved });
+
+      await user.click(screen.getByRole("button", { name: "Ver IMG_0002.JPG" }));
+      expect(screen.getByText("IMG_0002.JPG", { exact: false })).toBeDefined();
+
+      await user.click(screen.getByRole("button", { name: "Foto siguiente" }));
+
+      // Next chosen photo (D), never the unselected C sitting between them
+      // in upload order.
+      expect(screen.getByText("IMG_0004.JPG", { exact: false })).toBeDefined();
+      expect(screen.queryByText("IMG_0003.JPG", { exact: false })).toBeNull();
+
+      // And the LAST chosen photo has nowhere further to go — advancing
+      // does not silently fall through to the unchosen group.
+      await user.click(screen.getByRole("button", { name: "Foto siguiente" }));
+      expect(screen.getByText("IMG_0005.JPG", { exact: false })).toBeDefined();
+      expect(screen.getByRole("button", { name: "Foto siguiente" })).toHaveProperty(
+        "disabled",
+        true,
+      );
+    });
+
+    // THE TRAP, MIRRORED FOR THE UNCHOSEN GROUP. The chosen-group version
+    // above (two tests up) only proves one of the two arms in the ternary
+    // that resolves `lightbox.group` to an array — a reviewer reproduced
+    // both of these independently and confirmed EACH one alone leaves the
+    // chosen-side tests fully green:
+    //   - collapsing the "unchosen" arm of that ternary to fall through to
+    //     `displayAssets` (the flat array), or
+    //   - tagging an accordion tile with the "all" group instead of
+    //     "unchosen" in `renderTile(asset, index, "unchosen")`.
+    // A and C are BOTH unchosen, but A sits at flat index 0 and C at flat
+    // index 2, while C is only the SECOND unchosen photo (group-local index
+    // 1). Either bug above resolves that group-local index 1 against
+    // `displayAssets` instead of `unchosenAssets`, landing on B — a CHOSEN
+    // photo, not even the group the client was looking at with the
+    // accordion open.
+    it("tapping the Nth unchosen photo opens THAT photo too, not whatever sits at that flat index", async () => {
+      const user = userEvent.setup();
+      renderGrid({ initialStatus: "delivered", initialAssets: interleaved });
+
+      await user.click(screen.getByText(/no elegiste/));
+      await user.click(screen.getByRole("button", { name: "Ver IMG_0003.JPG" }));
+
+      expect(screen.getByRole("dialog")).toBeDefined();
+      expect(screen.getByText("IMG_0003.JPG", { exact: false })).toBeDefined();
+      // 2 unchosen photos total (A, C); C is the 2nd.
+      expect(screen.getByText(/2 \/ 2/)).toBeDefined();
+    });
+
+    // A TRUE mirror of "keeps lightbox navigation inside the group it was
+    // opened from" above — the earlier version of this test opened directly
+    // on C, already the LAST unchosen photo, and only checked the terminal
+    // disabled state, so `onNavigate` never actually ran for this group.
+    // This one opens at A (the FIRST unchosen photo), presses "next", and
+    // checks it lands on C — B, the CHOSEN photo sitting between them in
+    // upload order, must never appear.
+    it("keeps lightbox navigation inside the unchosen group too, never crossing into chosen photos", async () => {
+      const user = userEvent.setup();
+      renderGrid({ initialStatus: "delivered", initialAssets: interleaved });
+
+      await user.click(screen.getByText(/no elegiste/));
+      await user.click(screen.getByRole("button", { name: "Ver IMG_0001.JPG" }));
+      expect(screen.getByText("IMG_0001.JPG", { exact: false })).toBeDefined();
+
+      await user.click(screen.getByRole("button", { name: "Foto siguiente" }));
+
+      // Next unchosen photo (C), never the CHOSEN B sitting between them in
+      // upload order.
+      expect(screen.getByText("IMG_0003.JPG", { exact: false })).toBeDefined();
+      expect(screen.queryByText("IMG_0002.JPG", { exact: false })).toBeNull();
+
+      // And the LAST unchosen photo has nowhere further to go.
+      expect(screen.getByRole("button", { name: "Foto siguiente" })).toHaveProperty(
+        "disabled",
+        true,
+      );
+    });
+
+    // The count and the Spanish agreement in the summary must be REAL,
+    // never a hardcoded plural — this codebase's own convention for that
+    // (see finals-bulk-uploader.tsx's `{n === 1 ? "" : "s"}`). Asserted as
+    // the EXACT string, not a substring match: `getByText(/no elegiste/)`
+    // (used by the two tests above and below) would still pass if the
+    // wording, the count or the article were wrong.
+    it("labels the accordion with the real, correctly pluralised unchosen count", () => {
+      renderGrid({ initialStatus: "delivered", initialAssets: interleaved });
+
+      // 2 unchosen (A, C) — plural Spanish agreement ("las"/"fotos").
+      expect(screen.getByText("Ver las 2 fotos que no elegiste")).toBeDefined();
+    });
+
+    it("uses singular Spanish agreement for exactly one unchosen photo", () => {
+      renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([{ isSelected: true }, { isSelected: false }]),
+      });
+
+      expect(screen.getByText("Ver la foto que no elegiste")).toBeDefined();
+    });
+
+    it("restarts the position number at 01 within each group", async () => {
+      const user = userEvent.setup();
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: interleaved,
+      });
+
+      const chosenUl = container.querySelector("ul") as HTMLUListElement;
+      expect([...chosenUl.querySelectorAll("span.tabular-nums")].map((s) => s.textContent)).toEqual(
+        ["01", "02", "03"],
+      );
+
+      // Open the accordion so its own numbering is on screen too (jsdom
+      // renders a closed <details>'s children regardless — see this
+      // describe block's own "closed on first render" test for the real
+      // gate — but opening it here keeps this assertion honest about what
+      // a client actually sees before reading it).
+      await user.click(screen.getByText(/no elegiste/));
+      const unchosenUl = container.querySelector("details ul") as HTMLUListElement;
+      expect(
+        [...unchosenUl.querySelectorAll("span.tabular-nums")].map((s) => s.textContent),
+      ).toEqual(["01", "02"]);
+    });
+
+    it("renders no accordion at all when every photo was chosen", () => {
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }]),
+      });
+
+      expect(container.querySelector("details")).toBeNull();
+      expect(screen.queryByText(/no elegiste/)).toBeNull();
+    });
+
+    it("renders every photo inside the still-closed accordion, and no bare empty chosen grid, when nothing was chosen", () => {
+      const { container } = renderGrid({
+        initialStatus: "delivered",
+        initialAssets: assetsFor([{ isSelected: false }, { isSelected: false }]),
+      });
+
+      expect(screen.getByText("No elegiste ninguna foto en esta galería.")).toBeDefined();
+      const details = container.querySelector("details");
+      expect(details).not.toBeNull();
+      expect(details?.open).toBe(false);
+      expect(screen.getByRole("button", { name: "Ver IMG_0001.JPG" }).closest("details")).toBe(
+        details,
+      );
+    });
+
+    it("does not wrap proofing's or selected's flat grid in an accordion, even with a mixed selection", () => {
+      for (const initialStatus of ["proofing", "selected"] as const) {
+        const { container, unmount } = renderGrid({ initialStatus, initialAssets: interleaved });
+
+        expect(container.querySelector("details")).toBeNull();
+        // Every asset is directly reachable — nothing moved into a
+        // collapsed section.
+        for (const filename of [
+          "IMG_0001.JPG",
+          "IMG_0002.JPG",
+          "IMG_0003.JPG",
+          "IMG_0004.JPG",
+          "IMG_0005.JPG",
+        ]) {
+          expect(screen.getByRole("button", { name: `Ver ${filename}` })).toBeDefined();
+        }
+        unmount();
+      }
+    });
+
+    // Task #222's `openAssetInLightbox` (the tray's own entry point into the
+    // lightbox) and `<ProofLightbox>`'s `onNavigate` both have to tag
+    // `lightbox` with `group: "all"` while `!isDelivered` — NOT "chosen",
+    // which is empty for every gallery that has not shipped yet. Nothing
+    // else in this suite opens the lightbox from <SelectionTray>, and
+    // nothing navigates it outside the "delivered" describe block above, so
+    // a reviewer confirmed BOTH of these leave the whole suite green:
+    //   - the tray entry point tagging `{ group: "chosen", index }` instead
+    //     of `{ group: "all", index }`, or
+    //   - `onNavigate` tagging its update the same wrong way.
+    // Either one hands `<ProofLightbox>` `chosenAssets` — always `[]` here,
+    // since this gallery has not been delivered — so the asset lookup comes
+    // back `undefined` and the dialog silently fails to open (or vanishes on
+    // "next"). Not a wrong-photo bug like THE TRAP itself, but a degree of
+    // freedom this slice introduced on the PRIMARY, pre-delivery flow that
+    // did not exist before it.
+    it("opens the lightbox from a tray thumbnail using the flat group, and keeps navigating it, in proofing", async () => {
+      const user = userEvent.setup();
+      const proofingAssets = assetsFor([
+        { isSelected: false }, // A — IMG_0001.JPG
+        { isSelected: true }, //  B — IMG_0002.JPG
+        { isSelected: false }, // C — IMG_0003.JPG
+        { isSelected: true }, //  D — IMG_0004.JPG
+      ]);
+
+      renderGrid({
+        initialStatus: "proofing",
+        initialAssets: proofingAssets,
+        initialPicks: [
+          {
+            assetId: "a2",
+            selectedAt: "2026-07-30T12:00:00.000Z",
+            pickedBy: { id: "client-a", label: "Vos" },
+            selectionKind: "edited",
+          },
+          {
+            assetId: "a4",
+            selectedAt: "2026-07-30T12:05:00.000Z",
+            pickedBy: { id: "client-a", label: "Vos" },
+            selectionKind: "edited",
+          },
+        ],
+      });
+
+      const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+      await user.click(within(tray).getByRole("button", { name: /Ver IMG_0002.JPG/ }));
+
+      // Opens at all, and at the RIGHT photo — fails outright under the
+      // entry-point mutation, since `chosenAssets` is `[]` in `proofing`.
+      expect(screen.getByText("IMG_0002.JPG", { exact: false })).toBeDefined();
+
+      await user.click(screen.getByRole("button", { name: "Foto siguiente" }));
+
+      // The gallery's own next asset (C, unselected) — fails under the
+      // `onNavigate` mutation instead, for the same reason.
+      expect(screen.getByText("IMG_0003.JPG", { exact: false })).toBeDefined();
+    });
+  });
+
   // Task #28: the delivered-gallery download affordance. `hasFinal` is a UI
   // hint only (see <ProofGrid>'s own comment on `ProofAsset.hasFinal`) — the
   // real gate is `GET /api/assets/[assetId]/final` itself, proven separately

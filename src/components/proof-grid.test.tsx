@@ -1108,23 +1108,33 @@ describe("ProofGrid", () => {
       expect(screen.getByText(/2 \/ 2/)).toBeDefined();
     });
 
-    // Same "stays inside its own group" contract as the chosen-group test
-    // above, mirrored: opened from the LAST unchosen photo (C), "next" must
-    // be disabled and D — the chosen photo sitting right after C in upload
-    // order — must never appear.
+    // A TRUE mirror of "keeps lightbox navigation inside the group it was
+    // opened from" above — the earlier version of this test opened directly
+    // on C, already the LAST unchosen photo, and only checked the terminal
+    // disabled state, so `onNavigate` never actually ran for this group.
+    // This one opens at A (the FIRST unchosen photo), presses "next", and
+    // checks it lands on C — B, the CHOSEN photo sitting between them in
+    // upload order, must never appear.
     it("keeps lightbox navigation inside the unchosen group too, never crossing into chosen photos", async () => {
       const user = userEvent.setup();
       renderGrid({ initialStatus: "delivered", initialAssets: interleaved });
 
       await user.click(screen.getByText(/no elegiste/));
-      await user.click(screen.getByRole("button", { name: "Ver IMG_0003.JPG" }));
-      expect(screen.getByText("IMG_0003.JPG", { exact: false })).toBeDefined();
+      await user.click(screen.getByRole("button", { name: "Ver IMG_0001.JPG" }));
+      expect(screen.getByText("IMG_0001.JPG", { exact: false })).toBeDefined();
 
+      await user.click(screen.getByRole("button", { name: "Foto siguiente" }));
+
+      // Next unchosen photo (C), never the CHOSEN B sitting between them in
+      // upload order.
+      expect(screen.getByText("IMG_0003.JPG", { exact: false })).toBeDefined();
+      expect(screen.queryByText("IMG_0002.JPG", { exact: false })).toBeNull();
+
+      // And the LAST unchosen photo has nowhere further to go.
       expect(screen.getByRole("button", { name: "Foto siguiente" })).toHaveProperty(
         "disabled",
         true,
       );
-      expect(screen.queryByText("IMG_0004.JPG", { exact: false })).toBeNull();
     });
 
     // The count and the Spanish agreement in the summary must be REAL,
@@ -1216,6 +1226,64 @@ describe("ProofGrid", () => {
         }
         unmount();
       }
+    });
+
+    // Task #222's `openAssetInLightbox` (the tray's own entry point into the
+    // lightbox) and `<ProofLightbox>`'s `onNavigate` both have to tag
+    // `lightbox` with `group: "all"` while `!isDelivered` — NOT "chosen",
+    // which is empty for every gallery that has not shipped yet. Nothing
+    // else in this suite opens the lightbox from <SelectionTray>, and
+    // nothing navigates it outside the "delivered" describe block above, so
+    // a reviewer confirmed BOTH of these leave the whole suite green:
+    //   - the tray entry point tagging `{ group: "chosen", index }` instead
+    //     of `{ group: "all", index }`, or
+    //   - `onNavigate` tagging its update the same wrong way.
+    // Either one hands `<ProofLightbox>` `chosenAssets` — always `[]` here,
+    // since this gallery has not been delivered — so the asset lookup comes
+    // back `undefined` and the dialog silently fails to open (or vanishes on
+    // "next"). Not a wrong-photo bug like THE TRAP itself, but a degree of
+    // freedom this slice introduced on the PRIMARY, pre-delivery flow that
+    // did not exist before it.
+    it("opens the lightbox from a tray thumbnail using the flat group, and keeps navigating it, in proofing", async () => {
+      const user = userEvent.setup();
+      const proofingAssets = assetsFor([
+        { isSelected: false }, // A — IMG_0001.JPG
+        { isSelected: true }, //  B — IMG_0002.JPG
+        { isSelected: false }, // C — IMG_0003.JPG
+        { isSelected: true }, //  D — IMG_0004.JPG
+      ]);
+
+      renderGrid({
+        initialStatus: "proofing",
+        initialAssets: proofingAssets,
+        initialPicks: [
+          {
+            assetId: "a2",
+            selectedAt: "2026-07-30T12:00:00.000Z",
+            pickedBy: { id: "client-a", label: "Vos" },
+            selectionKind: "edited",
+          },
+          {
+            assetId: "a4",
+            selectedAt: "2026-07-30T12:05:00.000Z",
+            pickedBy: { id: "client-a", label: "Vos" },
+            selectionKind: "edited",
+          },
+        ],
+      });
+
+      const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+      await user.click(within(tray).getByRole("button", { name: /Ver IMG_0002.JPG/ }));
+
+      // Opens at all, and at the RIGHT photo — fails outright under the
+      // entry-point mutation, since `chosenAssets` is `[]` in `proofing`.
+      expect(screen.getByText("IMG_0002.JPG", { exact: false })).toBeDefined();
+
+      await user.click(screen.getByRole("button", { name: "Foto siguiente" }));
+
+      // The gallery's own next asset (C, unselected) — fails under the
+      // `onNavigate` mutation instead, for the same reason.
+      expect(screen.getByText("IMG_0003.JPG", { exact: false })).toBeDefined();
     });
   });
 

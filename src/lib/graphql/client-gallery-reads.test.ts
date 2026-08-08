@@ -63,6 +63,8 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
         sortOrder: 0,
         finalKey: "dev/galleries/g1/finals/a1.jpg",
         isEdited: true,
+        isExtra: false,
+        deliveredFor: null,
         selectionKind: "edited",
       },
     ],
@@ -174,6 +176,10 @@ describe("readClientGalleryBySlug", () => {
           isSelected: true,
           finalKey: "dev/galleries/g1/finals/a1.jpg",
           isEdited: true,
+          // Task #223 — part of the projection the client page renders: it
+          // decides whether a photo the client never picked still shows a
+          // download button and stays above #222's accordion fold.
+          isExtra: false,
         },
       ],
     });

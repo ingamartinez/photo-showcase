@@ -86,6 +86,11 @@ function galleryRow(assetCount: number) {
       sortOrder: index,
       finalKey: `dev/galleries/g1/finals/a${index}.jpg`,
       isEdited: true,
+      // Task #223 — the GraphQL `Asset` type exposes this as non-null, so a
+      // row without it makes the resolver throw before this file's actual
+      // subject (the QUERY COUNT) can be measured at all.
+      isExtra: false,
+      deliveredFor: null,
     })),
   };
 }

@@ -195,6 +195,8 @@ describe("GalleryDetailPage", () => {
             finalKey: null,
             isEdited: false,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
           },
           {
             id: "a2",
@@ -207,6 +209,8 @@ describe("GalleryDetailPage", () => {
             finalKey: null,
             isEdited: false,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
           },
         ],
       }),

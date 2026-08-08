@@ -49,6 +49,7 @@ export type ClientGalleryBySlugQuery = {
       isSelected: boolean;
       finalKey: string | null;
       isEdited: boolean;
+      isExtra: boolean;
     }>;
   } | null;
 };
@@ -149,6 +150,7 @@ export const ClientGalleryBySlugDocument = {
                       { kind: "Field", name: { kind: "Name", value: "isSelected" } },
                       { kind: "Field", name: { kind: "Name", value: "finalKey" } },
                       { kind: "Field", name: { kind: "Name", value: "isEdited" } },
+                      { kind: "Field", name: { kind: "Name", value: "isExtra" } },
                     ],
                   },
                 },

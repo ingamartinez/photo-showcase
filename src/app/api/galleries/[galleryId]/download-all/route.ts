@@ -217,11 +217,12 @@ export const GET = withApiSession(async function GET(
   // time one is edited). This is the one gate this whole route exists to
   // get right — it hands over an entire gallery's paid deliverables in a
   // single request, so there is no "close enough" here. An asset the client
-  // never selected, or one the photographer never finished editing, must
-  // never end up in the archive even if it happens to carry a stray
-  // `finalKey` (e.g. a mistaken upload — see the final route's own POST
-  // handler comment on why `finalKey` alone is never treated as
-  // sufficient). Calling `canReadFinalDeliverable` here re-checks the
+  // neither selected NOR was gifted (task #223's `isExtra`), or one the
+  // photographer never finished editing, must never end up in the archive
+  // even if it happens to carry a stray `finalKey` — the case that still
+  // produces exactly such a row is "picked, finished, then deselected", which
+  // keeps `finalKey`/`isEdited` and drops only the entitlement (see
+  // `assets.isExtra`'s own schema comment). Calling `canReadFinalDeliverable` here re-checks the
   // delivered/admin-carve-out leg this route already gated above at the
   // GALLERY level — redundant for a non-admin (the gallery-level check
   // above already ensures it), harmless for an admin (same carve-out
@@ -232,6 +233,11 @@ export const GET = withApiSession(async function GET(
       originalFilename: assets.originalFilename,
       finalKey: assets.finalKey,
       isSelected: assets.isSelected,
+      // Task #223 — a photographer-gifted extra is a paid deliverable too, so
+      // it belongs in the zip. Selected here purely because
+      // `canReadFinalDeliverable` below reads it; this route makes no decision
+      // about extras of its own, which is the whole point of that shared gate.
+      isExtra: assets.isExtra,
       isEdited: assets.isEdited,
       sortOrder: assets.sortOrder,
     })

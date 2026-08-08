@@ -217,6 +217,8 @@ describe("ClientGalleryPage chrome", () => {
             finalKey: null,
             isEdited: false,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
           },
         ],
       });
@@ -301,6 +303,8 @@ describe("ClientGalleryPage chrome", () => {
               finalKey: null,
               isEdited: false,
               selectionKind: "edited",
+              isExtra: false,
+              deliveredFor: null,
             },
             {
               id: "a2",
@@ -313,6 +317,8 @@ describe("ClientGalleryPage chrome", () => {
               finalKey: null,
               isEdited: false,
               selectionKind: "edited",
+              isExtra: false,
+              deliveredFor: null,
             },
           ],
         }),
@@ -380,6 +386,8 @@ describe("ClientGalleryPage chrome", () => {
             finalKey: null,
             isEdited: false,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
           })),
         }),
       );
@@ -459,6 +467,8 @@ describe("ClientGalleryPage chrome", () => {
             finalKey: null,
             isEdited: false,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
           })),
         }),
       );
@@ -595,6 +605,8 @@ describe("ClientGalleryPage chrome", () => {
             finalKey: null,
             isEdited: false,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
           },
         ],
       }),
@@ -627,6 +639,8 @@ describe("ClientGalleryPage chrome", () => {
             finalKey: null,
             isEdited: false,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
           },
           {
             id: "a2",
@@ -639,6 +653,8 @@ describe("ClientGalleryPage chrome", () => {
             finalKey: null,
             isEdited: false,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
           },
         ],
       }),
@@ -693,6 +709,8 @@ describe("ClientGalleryPage chrome", () => {
         finalKey: null,
         isEdited: false,
         selectionKind: "edited" as const,
+        isExtra: false,
+        deliveredFor: null,
       },
     ];
 
@@ -754,6 +772,8 @@ describe("ClientGalleryPage chrome", () => {
             finalKey: null,
             isEdited: false,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
           },
         ],
       }),
@@ -779,14 +799,21 @@ describe("ClientGalleryPage chrome", () => {
   });
 
   // Task #28: wired end to end through the real page — `hasFinal` is
-  // computed here (isSelected && isEdited && finalKey !== null), never off
-  // any single one of those columns alone, and the raw `finalKey` itself
-  // never appears anywhere in the rendered output.
+  // computed here ((isSelected || isExtra) && isEdited && finalKey !== null),
+  // never off any single one of those columns alone, and the raw `finalKey`
+  // itself never appears anywhere in the rendered output.
+  //
+  // Task #223 widened the first leg to admit a photographer-gifted extra.
+  // `isExtra` is therefore an OVERRIDABLE input here, not a fixed default:
+  // the whole point of the new tests below is to drive it to `true` and watch
+  // the download button appear for a photo `isSelected: false` alone would
+  // have refused.
   describe("delivered gallery downloads", () => {
     function deliveredGalleryWithAsset(assetOverrides: {
       isSelected: boolean;
       isEdited: boolean;
       finalKey: string | null;
+      isExtra?: boolean;
     }) {
       return galleryDetail({
         status: "delivered",
@@ -799,6 +826,8 @@ describe("ClientGalleryPage chrome", () => {
             proofHeight: 1067,
             sortOrder: 0,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
             ...assetOverrides,
           },
         ],
@@ -874,6 +903,8 @@ describe("ClientGalleryPage chrome", () => {
       isEdited: true,
       finalKey: "galleries/g1/finals/a1.jpg",
       selectionKind: "edited" as const,
+      isExtra: false,
+      deliveredFor: null,
     };
     const NOT_DELIVERABLE = {
       id: "a2",
@@ -886,6 +917,8 @@ describe("ClientGalleryPage chrome", () => {
       isEdited: false,
       finalKey: null,
       selectionKind: "edited" as const,
+      isExtra: false,
+      deliveredFor: null,
     };
 
     function srcsOf(container: HTMLElement): (string | null)[] {

@@ -264,6 +264,11 @@ function assetRow(overrides: Partial<Row> = {}): Row {
     isSelected: true,
     selectedAt: new Date("2026-07-11"),
     isEdited: true,
+    // Task #223 — `false` by default: the overwhelming majority of this
+    // file's cases are about a photo the client picked, and an extra is the
+    // exception that has to be asked for explicitly.
+    isExtra: false,
+    deliveredFor: null,
     sortOrder: 0,
     createdAt: new Date("2026-07-02"),
     ...overrides,
@@ -693,11 +698,13 @@ describe("POST /api/assets/[assetId]/final — the core rule: selected assets on
     expect(processDisplayMock).not.toHaveBeenCalled();
   });
 
-  // The acceptance criterion this task exists to enforce: `final_key` is
-  // nullable precisely because most assets never get one, and uploading a
-  // final for an asset the client never selected is a bug, not a
-  // convenience (epic #5).
-  it("refuses to attach a final to an asset that was never selected", async () => {
+  // TASK #223 REPLACED THE RULE THIS TEST USED TO ASSERT. Until #223 an
+  // unselected asset got `409 asset_not_selected` here — "uploading a final
+  // for an asset the client never selected is a bug, not a convenience"
+  // (epic #5). The photographer now needs exactly that, for gift photos, so
+  // the test asserts the NEW rule and, below it, the boundary that new rule
+  // must not cross.
+  it("accepts a final for an asset the client never selected, and records it as an extra", async () => {
     authMock.mockResolvedValue(adminSession());
     const db = await seededDb();
     db.__rows.assets.length = 0;
@@ -709,14 +716,60 @@ describe("POST /api/assets/[assetId]/final — the core rule: selected assets on
       paramsFor(ASSET_A_ID),
     );
 
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({ error: "asset_not_selected" });
-    expect(processDisplayMock).not.toHaveBeenCalled();
-    expect(putObjectMock).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
 
     const [row] = db.__rows.assets;
-    expect(row?.finalKey).toBeNull();
-    expect(row?.isEdited).toBe(false);
+    expect(row?.finalKey).not.toBeNull();
+    expect(row?.isEdited).toBe(true);
+    expect(row?.isExtra).toBe(true);
+  });
+
+  // THE BILLING BOUNDARY, and the single most important assertion in this
+  // file for task #223: delivering an extra must NOT make it look like a
+  // pick. `computeQuota` (src/lib/quota.ts) bills off `isSelected`, so if
+  // this route ever "helpfully" flips it to make delivery work, the client
+  // gets charged `extraPhotoPriceCopSnapshot` for a photo they never asked
+  // for. Asserted on the ROW, not on the response, because the row is what
+  // the quota reads.
+  it("never flips isSelected when delivering an extra — the client is not billed for a gift", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    // `selectedAt: null` is set EXPLICITLY rather than left to `assetRow`'s
+    // default, which stamps a date even for an unselected row: the columns
+    // are kept in lockstep in production (schema.ts), so an incoherent
+    // fixture would have this test asserting the factory's shape instead of
+    // the route's behavior.
+    db.__rows.assets.push(
+      assetRow({ isSelected: false, selectedAt: null, finalKey: null, isEdited: false }),
+    );
+    const { POST } = await import("./route");
+
+    await POST(postRequestFor(ASSET_A_ID, formDataWith(imageFile())), paramsFor(ASSET_A_ID));
+
+    const [row] = db.__rows.assets;
+    expect(row?.isSelected).toBe(false);
+    expect(row?.selectedAt).toBeNull();
+    expect(row?.selectedBy ?? null).toBeNull();
+  });
+
+  // The other direction of the same lockstep: uploading onto an asset the
+  // client HAS selected must leave `isExtra` false, including when a stale
+  // `true` is already sitting on the row (the reachable case: gifted while
+  // `proofing`, then picked by the client, then re-uploaded). Without the
+  // unconditional write in the route, that stale `true` would survive.
+  it("clears a stale isExtra when re-uploading onto an asset the client has since selected", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(
+      assetRow({ isSelected: true, isExtra: true, finalKey: null, isEdited: false }),
+    );
+    const { POST } = await import("./route");
+
+    await POST(postRequestFor(ASSET_A_ID, formDataWith(imageFile())), paramsFor(ASSET_A_ID));
+
+    expect(db.__rows.assets[0]?.isExtra).toBe(false);
   });
 
   // `isSelected` can be true while the gallery is still `proofing` (a
@@ -1322,7 +1375,33 @@ describe("POST /api/assets/[assetId]/final — the display derivative (task #89)
   // the SECOND sharp pass too, not just the first — cheap to get wrong when
   // adding a pass, and the consequence would be a decode/encode running for
   // a request that was about to be refused anyway.
-  it("never runs the display pass for an unselected asset", async () => {
+  //
+  // This case used to be driven by an UNSELECTED asset, which was a refusal
+  // until task #223 made it an accepted upload. The subject here was never
+  // "unselected" though — it is "a refusal short-circuits" — so it is driven
+  // by a refusal that still exists (a missing asset) rather than deleted
+  // along with the rule that happened to be convenient for it.
+  it("never runs the display pass for a request that is refused before processing", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(imageFile())),
+      paramsFor(ASSET_A_ID),
+    );
+
+    expect(response.status).toBe(404);
+    expect(processDisplayMock).not.toHaveBeenCalled();
+    expect(putObjectMock).not.toHaveBeenCalled();
+  });
+
+  // The positive counterpart, and the reason the rewrite above is not enough
+  // on its own: an extra is a real deliverable, so it must get the SAME
+  // display derivative every selected photo gets. Without this, the client
+  // would see a gifted photo still wearing its watermark in the grid.
+  it("runs the display pass for an extra, exactly as it does for a selected asset", async () => {
     authMock.mockResolvedValue(adminSession());
     const db = await seededDb();
     db.__rows.assets.length = 0;
@@ -1334,9 +1413,8 @@ describe("POST /api/assets/[assetId]/final — the display derivative (task #89)
       paramsFor(ASSET_A_ID),
     );
 
-    expect(response.status).toBe(409);
-    expect(processDisplayMock).not.toHaveBeenCalled();
-    expect(putObjectMock).not.toHaveBeenCalled();
+    expect(response.status).toBe(200);
+    expect(processDisplayMock).toHaveBeenCalledTimes(1);
   });
 });
 

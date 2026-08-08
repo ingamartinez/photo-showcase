@@ -420,6 +420,16 @@ export type GalleryDetailAsset = {
   // before/after preview fed `computeQuota` a hardcoded 0 originals — true
   // only while task #206 hadn't shipped selectable originals yet.
   selectionKind: (typeof assets.$inferSelect)["selectionKind"];
+  // Task #223 — the photographer deliberately delivered this photo despite
+  // the client never picking it. See `assets.isExtra`'s own schema comment
+  // for why this is a stored decision rather than derived from `finalKey &&
+  // !isSelected` (short version: a DESELECTED photo produces that exact same
+  // row state, and must not be delivered for free).
+  isExtra: boolean;
+  // Task #223 — which person an extra belongs to, for the `by-person` tray.
+  // `null` is the normal, correct state in `flat` mode and for any asset that
+  // is not an extra at all; only ever consulted alongside `isExtra`.
+  deliveredFor: string | null;
 };
 
 export type GalleryDetail = {
@@ -542,6 +552,13 @@ const galleryDetailWith = {
       // Task #210 — see `GalleryDetailAsset.selectionKind`'s own comment
       // above for why this joined the projection.
       selectionKind: true,
+      // Task #223 — see `GalleryDetailAsset.isExtra`/`deliveredFor`'s own
+      // comments above. Both are read by the admin workspace (which offers
+      // the person picker) and `isExtra` by the client gallery page (which
+      // decides whether a photo shows a download button and which group of
+      // #222's split it lands in).
+      isExtra: true,
+      deliveredFor: true,
     },
   },
 } as const;

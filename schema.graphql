@@ -12,6 +12,7 @@ type Asset {
   finalKey: String
   id: ID!
   isEdited: Boolean!
+  isExtra: Boolean!
   isSelected: Boolean!
   originalFilename: String!
   proofHeight: Int!

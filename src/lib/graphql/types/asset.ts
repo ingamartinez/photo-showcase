@@ -24,6 +24,19 @@ export type AssetRef = {
   sortOrder: number;
   finalKey: string | null;
   isEdited: boolean;
+  // Task #223 — the photographer deliberately delivered this photo even
+  // though the client never picked it. Exposed because the client gallery
+  // page reads its assets through THIS schema, and it needs the flag both to
+  // decide whether a download button renders and to keep the photo out of
+  // #222's collapsed "no elegidas" accordion.
+  //
+  // `deliveredFor` (the person attribution) is deliberately NOT exposed here.
+  // It is a USER ID, and this type is what the client-facing page reads; the
+  // by-person tray gets its attribution through the selection route's own
+  // already-labelled channel (`SelectionPicker`), which sends a display label
+  // rather than an identifier. Adding a raw user id to this schema would put
+  // one on the client for no reader that exists.
+  isExtra: boolean;
 };
 
 export const AssetType = builder.objectRef<AssetRef>("Asset").implement({
@@ -37,5 +50,6 @@ export const AssetType = builder.objectRef<AssetRef>("Asset").implement({
     sortOrder: t.exposeInt("sortOrder"),
     finalKey: t.exposeString("finalKey", { nullable: true }),
     isEdited: t.exposeBoolean("isEdited"),
+    isExtra: t.exposeBoolean("isExtra"),
   }),
 });

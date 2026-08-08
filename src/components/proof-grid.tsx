@@ -184,6 +184,16 @@ export type ProofAsset = {
   // session owns the gallery. A wrong value here cannot unlock anything; it
   // can only make this component request a URL that 404s.
   displayUrl: string | null;
+  // Task #223 — the photographer deliberately delivered this photo even
+  // though the client never picked it. Used HERE for exactly one thing: which
+  // side of #222's split the tile lands on (see `chosenAssets` below). A gift
+  // that fell into the collapsed "no elegidas" accordion would be invisible
+  // in the one gallery it was uploaded for.
+  //
+  // Not used to decide whether a download button renders — that is `hasFinal`
+  // above, which the page already widened to account for extras. Two flags,
+  // two questions, neither inferred from the other.
+  isExtra: boolean;
 };
 
 // Task #222 — which array a `lightbox` index below is meant to be read
@@ -361,6 +371,17 @@ export function ProofGrid({
   // simply lands in `unchosenAssets` and `chosenAssets` comes out empty,
   // which the return block below renders as one line of text instead of a
   // bare empty grid — see that block's own comment.
+  //
+  // TASK #223 WIDENED THE PREDICATE from `isSelected` to "delivered to this
+  // client" — picked by them, OR gifted by the photographer. Getting this
+  // wrong is not cosmetic: an extra is `isSelected: false`, so under the
+  // original predicate every gift photo landed inside a `<details>` that is
+  // closed on every render (decision 3 above) — delivered, downloadable, and
+  // effectively invisible. The top group is "your photos", and a gift is one
+  // of the client's photos.
+  //
+  // The accordion keeps meaning exactly what it did: photos that are NOT
+  // being delivered. It just stops being definable as "not selected".
   const { chosenAssets, unchosenAssets } = useMemo<{
     chosenAssets: ProofAsset[];
     unchosenAssets: ProofAsset[];
@@ -369,7 +390,7 @@ export function ProofGrid({
     const chosen: ProofAsset[] = [];
     const unchosen: ProofAsset[] = [];
     for (const asset of displayAssets) {
-      (asset.isSelected ? chosen : unchosen).push(asset);
+      (asset.isSelected || asset.isExtra ? chosen : unchosen).push(asset);
     }
     return { chosenAssets: chosen, unchosenAssets: unchosen };
   }, [displayAssets, isDelivered]);

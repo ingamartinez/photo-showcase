@@ -18,6 +18,7 @@ function assetsFor(count: number, overrides: Partial<ProofAsset>[] = []): ProofA
     hasFinal: false,
     // Task #89: see the identical default in proof-grid.test.tsx.
     displayUrl: null,
+    isExtra: false,
     ...overrides[index],
   }));
 }

@@ -28,6 +28,7 @@ const ASSET: ProofAsset = {
   proofUrl: "https://r2.example.com/proof-1",
   hasFinal: false,
   displayUrl: null,
+  isExtra: false,
 };
 
 function renderTile(overrides: Partial<Parameters<typeof ProofTile>[0]> = {}) {

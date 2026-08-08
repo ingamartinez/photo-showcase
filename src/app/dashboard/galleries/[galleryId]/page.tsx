@@ -25,6 +25,7 @@ import { EditGalleryTermsDialog } from "@/components/edit-gallery-terms-dialog";
 import { AllowsOriginalSelectionControl } from "@/components/allows-original-selection-control";
 import { SelectionTrayModeControl } from "@/components/selection-tray-mode-control";
 import { SelectedPhotosList } from "@/components/selected-photos-list";
+import { ExtrasPersonAssignment } from "@/components/extras-person-assignment";
 import type { Gallery } from "@/lib/db/schema";
 
 export const metadata: Metadata = {
@@ -173,6 +174,22 @@ export default async function GalleryDetailPage({
       originalFilename: asset.originalFilename,
       selectionKind: asset.selectionKind,
     }));
+  // Task #223 — the gifted extras, built off the SAME already-fetched
+  // `gallery.assets` array as `selectedPhotos` above (no second query), and
+  // narrowed the same way: id, filename and the attribution, never an R2 key.
+  const extraPhotos = gallery.assets
+    .filter((asset) => asset.isExtra)
+    .map((asset) => ({
+      id: asset.id,
+      originalFilename: asset.originalFilename,
+      deliveredFor: asset.deliveredFor,
+    }));
+  // `name ?? email`, the app-wide person fallback — same expression
+  // `SelectionPicker.label` uses (src/lib/gallery-selection.ts).
+  const extraPeople = gallery.clients.map((client) => ({
+    id: client.id,
+    label: client.name ?? client.email,
+  }));
   // Task #86 fix: this page used to also compute `pendingFinalsCount` here
   // and hand it to <DeliverGalleryButton> as a sibling prop — a snapshot
   // that never updated after an upload, while <GalleryWorkspace>'s own
@@ -552,6 +569,13 @@ export default async function GalleryDetailPage({
       </div>
 
       <SelectedPhotosList items={selectedPhotos} />
+
+      {/* Task #223 — only in `by-person` mode; see the component's own header
+          for why offering this in `flat` mode would be asking for a decision
+          with no effect. */}
+      {gallery.selectionTrayMode === "by-person" && (
+        <ExtrasPersonAssignment extras={extraPhotos} people={extraPeople} />
+      )}
 
       <div className="mt-10">
         <GalleryWorkspace

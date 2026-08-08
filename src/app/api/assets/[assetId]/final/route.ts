@@ -533,20 +533,34 @@ export const POST = withApiSession(async function POST(
   }
   const { asset, gallery } = lookup;
 
-  // The core rule this task exists to enforce, checked on the WRITE side
-  // (GET's own copy of this same rule lives above): `final_key` is nullable
-  // precisely because most assets never get one (PLAN.md §6, schema.ts) —
-  // uploading a final for an asset the client never selected is a bug, not
-  // a convenience, per the epic (#5) and task #26's own acceptance
-  // criterion. No gallery-status requirement is layered on top of this:
-  // `isSelected` can already be true while the gallery is still `proofing`
-  // (a client can toggle a selection before submitting — see
-  // src/app/api/assets/[assetId]/selection/route.ts), and neither the task
-  // nor the epic ties final upload to a specific gallery status beyond that
-  // — adding one here would be scope this slice was not asked to own.
-  if (!asset.isSelected) {
-    return errorResponse("asset_not_selected", 409);
-  }
+  // TASK #223 REVISED THE RULE THIS BLOCK USED TO ENFORCE. The history is
+  // kept because the old rule was deliberate, not accidental, and a future
+  // reader deserves to know it was replaced rather than forgotten:
+  //
+  //   Until #223, this returned `409 asset_not_selected` whenever
+  //   `!asset.isSelected` — "uploading a final for an asset the client never
+  //   selected is a bug, not a convenience" (epic #5, task #26). That held
+  //   for as long as the ONLY reason to deliver a photo was that the client
+  //   had asked for it.
+  //
+  // The photographer (2026-08-07) needs to deliver photos the client did NOT
+  // pick — a gift, or a shot they judged better than anything in the
+  // selection. So an unselected asset is now an accepted, RECORDED case
+  // rather than a refused one: the upload proceeds and `isExtra` is set, which
+  // is what `canReadFinalDeliverable` (src/lib/final-access.ts) reads to let
+  // the client actually reach those bytes.
+  //
+  // WHAT DELIBERATELY DID NOT CHANGE: `isSelected` is never written here.
+  // `computeQuota` (src/lib/quota.ts) bills off that exact boolean, so
+  // flipping it to make delivery "just work" would charge the client for a
+  // photo they never asked for — see `assets.isExtra`'s own schema comment.
+  // An extra is free by construction.
+  //
+  // Still no gallery-status requirement, for the same reason as before: a
+  // client can toggle a selection while the gallery is still `proofing` (see
+  // src/app/api/assets/[assetId]/selection/route.ts), so tying final upload
+  // to a status was never this route's job and is not becoming it now.
+  const isExtraUpload = !asset.isSelected;
 
   // Cheap size gate off the header, before the body is read/buffered at all
   // — same reasoning as the proofs route.
@@ -654,8 +668,20 @@ export const POST = withApiSession(async function POST(
   // The stale-object DELETE only ever runs after a SUCCESSFUL update, below —
   // see that block's own comment for why the ordering there is the part that
   // actually matters.
+  //
+  // Task #223 — `isExtra` rides along in this SAME update rather than a
+  // second one: the flag and the `finalKey` it qualifies must land together
+  // or not at all. A separate write could leave an asset delivered but
+  // unmarked (the client cannot reach it) or marked but undelivered (the flag
+  // outlives nothing). It is written UNCONDITIONALLY, not only when true, so
+  // a re-upload onto an asset the client selected in the meantime clears a
+  // now-wrong `true` instead of leaving it stale — the "kept in lockstep,
+  // never left stale" discipline `selectedBy` already documents.
   try {
-    await db.update(assets).set({ finalKey: key, isEdited: true }).where(eq(assets.id, asset.id));
+    await db
+      .update(assets)
+      .set({ finalKey: key, isEdited: true, isExtra: isExtraUpload })
+      .where(eq(assets.id, asset.id));
   } catch {
     return errorResponse("update_failed", 500);
   }

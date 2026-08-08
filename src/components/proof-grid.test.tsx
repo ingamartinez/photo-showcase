@@ -35,6 +35,7 @@ function assetsFor(overrides: Partial<ProofAsset>[] = [{}]): ProofAsset[] {
     // URL once its gallery is delivered AND it has a final. The tests that
     // exercise the unwatermarked path override this explicitly.
     displayUrl: null,
+    isExtra: false,
     ...override,
   }));
 }
@@ -1206,6 +1207,87 @@ describe("ProofGrid", () => {
       expect(screen.getByRole("button", { name: "Ver IMG_0001.JPG" }).closest("details")).toBe(
         details,
       );
+    });
+
+    // TASK #223 — the split's predicate is "delivered to this client", not
+    // "selected". An extra is `isSelected: false`, so under #222's original
+    // predicate every photographer-gifted photo landed inside a <details>
+    // that is closed on every render: delivered, downloadable, and invisible.
+    //
+    // Each test below fails if the `|| asset.isExtra` leg is removed — that
+    // is the point of asserting `closest("details")` rather than merely that
+    // the tile exists, which was true under the broken behavior too.
+    describe("photographer-gifted extras (task #223)", () => {
+      // A: unchosen and NOT gifted (stays in the accordion), B: chosen,
+      // C: unchosen but GIFTED — the one the widened predicate promotes.
+      const withExtra = assetsFor([
+        { isSelected: false, isExtra: false }, // A — IMG_0001.JPG
+        { isSelected: true, isExtra: false }, //  B — IMG_0002.JPG
+        { isSelected: false, isExtra: true }, //  C — IMG_0003.JPG
+      ]);
+
+      it("puts a gifted photo above the fold with the chosen ones, not in the accordion", () => {
+        const { container } = renderGrid({
+          initialStatus: "delivered",
+          initialAssets: withExtra,
+        });
+
+        const details = container.querySelector("details");
+        expect(
+          screen.getByRole("button", { name: "Ver IMG_0003.JPG" }).closest("details"),
+        ).toBeNull();
+        // …and the genuinely-unchosen one is still inside it, so this is a
+        // widening of the top group, not a collapse of the split itself.
+        expect(screen.getByRole("button", { name: "Ver IMG_0001.JPG" }).closest("details")).toBe(
+          details,
+        );
+      });
+
+      it("counts a gifted photo as delivered, not as one the client did not choose", () => {
+        renderGrid({ initialStatus: "delivered", initialAssets: withExtra });
+
+        // Exactly ONE photo (A) is genuinely unchosen. A count of 2 would
+        // mean the gift is still being tallied as a reject.
+        expect(screen.getByText("Ver la foto que no elegiste")).toBeDefined();
+      });
+
+      it("numbers the gifted photo inside the chosen group, not the accordion", () => {
+        const { container } = renderGrid({
+          initialStatus: "delivered",
+          initialAssets: withExtra,
+        });
+
+        // Chosen group holds B and C — two tiles, numbered 01 and 02.
+        const chosenUl = container.querySelector("ul") as HTMLUListElement;
+        expect(
+          [...chosenUl.querySelectorAll("span.tabular-nums")].map((s) => s.textContent),
+        ).toEqual(["01", "02"]);
+      });
+
+      it("renders no accordion when the only unchosen photos were all gifted", () => {
+        const { container } = renderGrid({
+          initialStatus: "delivered",
+          initialAssets: assetsFor([
+            { isSelected: true, isExtra: false },
+            { isSelected: false, isExtra: true },
+          ]),
+        });
+
+        expect(container.querySelector("details")).toBeNull();
+        expect(screen.queryByText(/no elegiste/)).toBeNull();
+      });
+
+      // The boundary the widened predicate must not cross: `isExtra` only
+      // means something once the gallery is delivered. Before that, the grid
+      // is one flat list and a gift is just another proof.
+      it("changes nothing about proofing's flat grid", () => {
+        const { container } = renderGrid({
+          initialStatus: "proofing",
+          initialAssets: withExtra,
+        });
+
+        expect(container.querySelector("details")).toBeNull();
+      });
     });
 
     it("does not wrap proofing's or selected's flat grid in an accordion, even with a mixed selection", () => {

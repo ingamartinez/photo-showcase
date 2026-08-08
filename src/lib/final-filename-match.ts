@@ -35,15 +35,30 @@
 // copy here, not a shared import, matching that established precedent
 // rather than inventing a fourth semantics.
 
-export type SelectedAsset = {
+/** One asset a bulk upload may be paired against.
+ *
+ * Named for what it IS to this module rather than for the client's decision
+ * about it: until task #223 the only pairable asset was a selected one, so
+ * this type's former name (`SelectedAsset`) was accurate. It no longer is —
+ * the photographer can now deliver a photo the client never picked (an
+ * EXTRA), and this module has to be able to propose exactly that. */
+export type MatchableAsset = {
   id: string;
   originalFilename: string;
+  /** Task #223 — whether the CLIENT picked this photo. `false` means a match
+   * against it would be an extra: still a legitimate upload, but one the
+   * photographer must see counted separately before confirming, since a
+   * folder of exports can otherwise pair against an entire gallery's worth of
+   * photos nobody asked for. This module never DECIDES anything from it —
+   * matching is purely by filename — it only carries it through so the
+   * review screen can split what it shows. */
+  isSelected: boolean;
 };
 
 /** One proposed pairing: `asset` gets `fileName` (found at `fileIndex` in
  * the caller's own file list) uploaded as its final. */
 export type FinalMatch = {
-  asset: SelectedAsset;
+  asset: MatchableAsset;
   fileIndex: number;
   fileName: string;
 };
@@ -58,17 +73,17 @@ export type AmbiguousMatch =
       // Two or more SELECTED assets whose normalized basename collides —
       // the "two memory cards" case. Whichever of these matched a file, all
       // of them did, and none of those matches is trustworthy.
-      assets: SelectedAsset[];
+      assets: MatchableAsset[];
     }
   | {
       reason: "file_matches_multiple_assets";
       fileIndex: number;
       fileName: string;
-      assets: SelectedAsset[];
+      assets: MatchableAsset[];
     }
   | {
       reason: "asset_matches_multiple_files";
-      asset: SelectedAsset;
+      asset: MatchableAsset;
       fileIndexes: number[];
       fileNames: string[];
     };
@@ -79,12 +94,19 @@ export type FinalMatchPlan = {
   matches: FinalMatch[];
   /** Every pairing excluded from `matches`, with why. */
   ambiguous: AmbiguousMatch[];
-  /** Chosen files that matched no selected asset at all. */
+  /** Chosen files that matched no asset at all. */
   unmatchedFiles: { fileIndex: number; fileName: string }[];
-  /** Selected assets that matched no chosen file at all — "qué falta
+  /** SELECTED assets that matched no chosen file at all — "qué falta
    * exportar", reported with the same weight as the reverse case (rule e of
-   * the task body). */
-  assetsWithoutFile: SelectedAsset[];
+   * the task body).
+   *
+   * Task #223 — deliberately still SELECTED-only, even though this module now
+   * matches against unselected assets too. This list answers "what does the
+   * client still owe me an export for", and an unselected photo is not owed:
+   * a typical gallery has hundreds of them, so including them would bury the
+   * handful of genuinely-missing exports under noise and make the one number
+   * the photographer actually acts on useless. */
+  assetsWithoutFile: MatchableAsset[];
 };
 
 /** Non-alphanumeric characters allowed to separate an asset's base filename
@@ -120,20 +142,31 @@ type Candidate = { assetId: string; fileIndex: number };
 
 /**
  * Proposes a mapping from `fileNames` (a bulk file selection) onto
- * `selectedAssets` (the gallery's currently-selected assets only — an
- * unselected asset can never receive a final, `final/route.ts`'s own
- * `asset_not_selected` gate). Never guesses: every ambiguous pairing is
- * reported in `ambiguous`, not silently resolved by order, date, or
- * proximity, and excluded from `matches`.
+ * `candidateAssets`. Never guesses: every ambiguous pairing is reported in
+ * `ambiguous`, not silently resolved by order, date, or proximity, and
+ * excluded from `matches`.
+ *
+ * TASK #223 WIDENED WHAT MAY BE PASSED IN. This used to take the gallery's
+ * SELECTED assets only, because `final/route.ts` refused anything else with
+ * `409 asset_not_selected`. That gate is gone: the photographer can now
+ * deliver a photo the client never picked, so the caller passes every asset
+ * in the gallery and each match carries its own `asset.isSelected`.
+ *
+ * The matching RULES did not change at all — pairing is by filename and
+ * nothing else, exactly as before. What changed is only the size of the
+ * candidate pool, and that has a consequence the caller owns rather than
+ * this module: a pool of hundreds can produce hundreds of matches, so the
+ * review screen must count extras separately and make the photographer see
+ * that number before confirming. See finals-bulk-uploader.tsx.
  */
 export function matchFinalFiles(
-  selectedAssets: SelectedAsset[],
+  candidateAssets: MatchableAsset[],
   fileNames: string[],
 ): FinalMatchPlan {
-  const assetById = new Map(selectedAssets.map((asset) => [asset.id, asset] as const));
+  const assetById = new Map(candidateAssets.map((asset) => [asset.id, asset] as const));
   const assetBasenames = new Map<string, string>();
   const basenameGroups = new Map<string, string[]>();
-  for (const asset of selectedAssets) {
+  for (const asset of candidateAssets) {
     const basename = normalizeBasename(asset.originalFilename);
     assetBasenames.set(asset.id, basename);
     const group = basenameGroups.get(basename);
@@ -150,7 +183,7 @@ export function matchFinalFiles(
   // considers an asset or a file that had NO exact candidate at all —
   // "sólo si no hubo exacto".
   const exactCandidates: Candidate[] = [];
-  for (const asset of selectedAssets) {
+  for (const asset of candidateAssets) {
     const assetBasename = assetBasenames.get(asset.id)!;
     fileBasenames.forEach((fileBasename, fileIndex) => {
       if (fileBasename === assetBasename) {
@@ -162,7 +195,7 @@ export function matchFinalFiles(
   const filesWithExact = new Set(exactCandidates.map((c) => c.fileIndex));
 
   const suffixCandidates: Candidate[] = [];
-  for (const asset of selectedAssets) {
+  for (const asset of candidateAssets) {
     if (assetsWithExact.has(asset.id)) continue;
     const assetBasename = assetBasenames.get(asset.id)!;
     fileBasenames.forEach((fileBasename, fileIndex) => {
@@ -250,7 +283,12 @@ export function matchFinalFiles(
     .map((fileName, fileIndex) => ({ fileIndex, fileName }))
     .filter(({ fileIndex }) => !matchedFileIndexes.has(fileIndex));
 
-  const assetsWithoutFile = selectedAssets.filter((asset) => !matchedAssetIds.has(asset.id));
+  // `asset.isSelected` is the task #223 half: an unselected asset with no
+  // file is the NORMAL state of most of a gallery, not something the
+  // photographer forgot to export. See `assetsWithoutFile`'s own doc comment.
+  const assetsWithoutFile = candidateAssets.filter(
+    (asset) => asset.isSelected && !matchedAssetIds.has(asset.id),
+  );
 
   return { matches, ambiguous, unmatchedFiles, assetsWithoutFile };
 }

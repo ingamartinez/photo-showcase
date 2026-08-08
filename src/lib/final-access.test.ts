@@ -18,6 +18,12 @@ type GateGallery = Parameters<typeof canReadFinalDeliverable>[1];
 function asset(overrides: Partial<GateAsset> = {}): GateAsset {
   return {
     isSelected: true,
+    // Task #223 — the DEFAULT is `false`, deliberately: every pre-existing
+    // case in this file is about a photo the client picked, and defaulting to
+    // `true` would let the widened first leg (`isSelected || isExtra`) pass
+    // those tests even if the `isSelected` half were deleted outright. The
+    // extras cases below set this explicitly.
+    isExtra: false,
     isEdited: true,
     finalKey: "galleries/g/finals/a.jpg",
     ...overrides,

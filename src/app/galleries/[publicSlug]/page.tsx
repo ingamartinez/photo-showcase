@@ -125,7 +125,18 @@ export default async function ClientGalleryPage({
     // re-checks all three conditions itself on every request regardless of
     // what this renders — this is a UI hint for which assets show a download
     // button, not a substitute for that route's own gate.
-    const hasFinal = asset.isSelected && asset.isEdited && asset.finalKey !== null;
+    //
+    // Task #223 widened the first leg from `isSelected` to "entitled" —
+    // selected OR gifted by the photographer. Kept as a hand-written copy of
+    // `canReadFinalDeliverable`'s first three legs rather than a call to it,
+    // exactly as before: that gate takes a `Session` and applies the
+    // delivered/admin carve-out, which this page deliberately does NOT want
+    // (see `showsDeliveredPhotos` above — an admin previewing this page must
+    // see the client's view, watermark included). final-access.ts's own
+    // comment already sanctions this one copy as "a UI hint, cosmetic drift
+    // risk only".
+    const hasFinal =
+      (asset.isSelected || asset.isExtra) && asset.isEdited && asset.finalKey !== null;
 
     return {
       id: asset.id,
@@ -133,6 +144,12 @@ export default async function ClientGalleryPage({
       proofWidth: asset.proofWidth,
       proofHeight: asset.proofHeight,
       isSelected: asset.isSelected,
+      // Task #223 — the client-facing grid needs this to place a gifted photo
+      // ABOVE the fold with the chosen ones instead of inside #222's closed
+      // accordion. A plain boolean, same allowlist discipline as every other
+      // field here; `deliveredFor` (the person attribution) is NOT sent, since
+      // the grid does not group by person — the tray does, off its own query.
+      isExtra: asset.isExtra,
       // `asset.proofKey` came off the `assets` table, which loses the
       // `R2Key` brand on the round trip through Postgres — see
       // `storedKey`'s own comment in src/lib/r2.ts. Task #31 added a GraphQL

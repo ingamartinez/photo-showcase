@@ -138,7 +138,16 @@ describe("GalleryWorkspace", () => {
       />,
     );
 
-    expect(screen.queryByText(/finales/)).toBeNull();
+    // Task #223 tightened this from `/finales/`. That regex was a loose proxy
+    // for "the pending-finals summary is absent", and it silently also
+    // asserted the ABSENCE of the bulk uploader, whose heading ("Subir
+    // finales en lote") it happens to match — a component this test never
+    // named and has no opinion about. Once #223 made that uploader render
+    // with zero selected photos, the loose regex failed for a reason
+    // unrelated to its own subject. Anchored on the real summary strings
+    // (gallery-workspace.tsx's own two variants) instead.
+    expect(screen.queryByText(/finales por subir/)).toBeNull();
+    expect(screen.queryByText(/finales de la selección/)).toBeNull();
   });
 
   it("summarizes pending finals for selected assets, and updates it live after an upload", async () => {
@@ -213,7 +222,14 @@ describe("GalleryWorkspace", () => {
   // two props was exercised at the mount site — only finals-bulk-uploader
   // .test.tsx's own unit tests, which never touch <GalleryWorkspace> at all.
   describe("task #217 — bulk final upload, mounted", () => {
-    it("only maps chosen files against SELECTED assets — an unselected asset must never be an upload candidate", async () => {
+    // TASK #223 INVERTED THIS CASE. It used to assert that an unselected
+    // asset "must never be an upload candidate" — true while
+    // `final/route.ts` refused such an upload with 409, and the exact rule
+    // the photographer asked to have removed. The mount site still has to be
+    // exercised (that was #217's own review gap), so the test asserts what
+    // it does NOW: the unselected asset IS a candidate, and the review
+    // screen separates it out instead of hiding it in the headline count.
+    it("maps chosen files against unselected assets too, and counts those matches as extras separately", async () => {
       const fetchMock = vi.fn(() => Promise.resolve(jsonResponse(200, {})));
       vi.stubGlobal("fetch", fetchMock);
       const user = userEvent.setup();
@@ -235,11 +251,18 @@ describe("GalleryWorkspace", () => {
         new File(["bytes"], "DSC_0002.jpg", { type: "image/jpeg" }),
       ]);
 
-      // If the unselected a2 leaked into the matcher's candidate pool, this
-      // would read "2 emparejadas" and DSC_0002.jpg would never show up as
-      // unmatched below.
-      expect(await screen.findByText(/1 emparejada/)).toBeDefined();
-      expect(screen.getByText(/Sin destino: DSC_0002\.jpg/)).toBeDefined();
+      // The headline count stays at 1: it means "chosen photos paired", and
+      // folding the extra into it is precisely the failure mode that would
+      // let a photographer confirm a gallery-wide giveaway without noticing.
+      expect(await screen.findByText(/1 emparejada,/)).toBeDefined();
+      // The extra is reported on its own, BY NAME. Scoped to the extras
+      // block rather than searched page-wide: the grid tile for that same
+      // asset renders the filename too, so a bare `getByText` would pass on
+      // the tile alone and prove nothing about the warning.
+      const extrasBlock = screen.getByText(/1 extra:/).parentElement;
+      expect(extrasBlock?.textContent).toContain("DSC_0002.JPG");
+      // …and it is no longer a file with nowhere to go.
+      expect(screen.queryByText(/Sin destino/)).toBeNull();
     });
 
     it("wires the bulk uploader's onFinalUploaded into the SAME live pending-finals counter the per-tile upload updates", async () => {

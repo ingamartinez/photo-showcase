@@ -673,6 +673,72 @@ export const assets = pgTable("assets", {
   // for an edited pick today — this column changes what it COSTS, never how
   // it is DELIVERED.
   selectionKind: selectionKind("selection_kind").notNull().default("edited"),
+  // Task #223 — the photographer DELIBERATELY delivered this photo even
+  // though the client never picked it: a gift, a shot they liked better than
+  // anything in the selection. Set by `POST /api/assets/[assetId]/final` when
+  // it accepts an upload for an asset with `isSelected: false`.
+  //
+  // WHY THIS IS A STORED FLAG rather than derived from `finalKey IS NOT NULL
+  // AND isSelected = false`, which is the shape it looks like it should have:
+  // that predicate is ALSO true for a photo the client picked, the
+  // photographer finished, and the client then DESELECTED. `finalKey` and
+  // `isEdited` are never cleared on deselect (only `selectedAt`/`selectedBy`
+  // are — see those columns above), so a derived rule would silently start
+  // delivering discarded photos for free the moment this slice shipped. That
+  // is a regression nobody asked for, and no amount of care at the read sites
+  // can recover intent that was never recorded. An extra is a DECISION, so it
+  // gets written down.
+  //
+  // Meaningless while `isSelected` is `true` — the same "meaningless until"
+  // relationship `selectionKind`/`selectedAt`/`selectedBy` above already have
+  // with that boolean. Consequence worth stating plainly, because it is
+  // reachable: if the photographer gifts a photo while the gallery is still
+  // `proofing` and the client then PICKS it, `isSelected` wins — the photo
+  // becomes an ordinary pick and counts against the package like any other.
+  // The client asked for it; charging for it is the honest outcome, and the
+  // alternative (a pick that is silently free because of an earlier gift)
+  // would make the quota unexplainable to the person paying it.
+  //
+  // There is deliberately NO "clear this on delete" rule, because there is no
+  // operation to hang one on: this app has no "delete just the final" path —
+  // `DELETE /api/assets/[assetId]` removes the whole row (and its R2 objects)
+  // — so a stranded `true` on a final-less asset is unreachable rather than
+  // merely unlikely. Verified against the route, not assumed.
+  isExtra: boolean("is_extra").notNull().default(false),
+  // Task #223 — WHICH PERSON a photographer-added extra (`isExtra` above)
+  // belongs to, so the `by-person` tray has a row to put it in.
+  //
+  // WHY THIS IS NOT `selectedBy`, which is the obvious place to put it: that
+  // column answers "who picked this photo right now" (see its own comment
+  // above), is kept in lockstep with `isSelected`, and is cleared to `null`
+  // the instant a pick is undone. It is also what the `by-person` tray groups
+  // on. Writing the photographer's choice into it would make a photo NOBODY
+  // picked render as somebody's active pick, and there would be no way for
+  // the tray to tell the two apart. Two different questions, two columns.
+  //
+  // WHY NOT `isSelected` FOR THE DELIVERY ITSELF, the other tempting shortcut:
+  // flipping `isSelected` on an extra would make every existing delivery path
+  // work unchanged — and would BILL THE CLIENT for it. `computeQuota`
+  // (src/lib/quota.ts) derives `selectedEdited` from this exact boolean and
+  // charges `extraPhotoPriceCopSnapshot` per photo over the package's
+  // included count. An extra is free by construction, so `isSelected` stays
+  // `false` and the client-facing grid asks "is it delivered?" instead.
+  //
+  // Meaningless while `isExtra` is `false` — the same "meaningless until"
+  // relationship `selectionKind`/`selectedAt` above already have with
+  // `isSelected`, and the reason no read site consults this column without
+  // checking that flag first.
+  //
+  // Only ever SET when the gallery's tray is `by-person`; in `flat` mode
+  // there are no person rows for an extra to land in, so the admin surface
+  // does not offer the choice. Staying `null` there is correct, not missing
+  // data: `pickerLabelFor` already renders a null attribution as the
+  // unattributed label.
+  //
+  // `onDelete: "set null"`, same reasoning as `selectedBy` above — a client
+  // removed from the gallery must not be held hostage by a stale attribution,
+  // and the delivery stays exactly as valid with this wiped to `null`.
+  deliveredFor: text("delivered_for").references(() => users.id, { onDelete: "set null" }),
   isEdited: boolean("is_edited").notNull().default(false),
   sortOrder: integer("sort_order").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -233,6 +233,8 @@ describe("ClientGalleryPage", () => {
             finalKey: null,
             isEdited: false,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
           },
           {
             id: "a2",
@@ -245,6 +247,8 @@ describe("ClientGalleryPage", () => {
             finalKey: null,
             isEdited: false,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
           },
         ],
       }),

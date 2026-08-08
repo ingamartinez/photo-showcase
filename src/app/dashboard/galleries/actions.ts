@@ -2125,3 +2125,115 @@ export async function updateSelectionTrayMode(
 
   return { status: "updated" };
 }
+
+// ---------------------------------------------------------------------------
+// TASK #223 — WHICH PERSON A GIFTED EXTRA BELONGS TO
+//
+// The photographer's own request (2026-08-07): "si esta la opción de
+// agrupacion por persona yo escogería a que persona va asignada esas nuevas
+// fotos." An extra is a photo NOBODY picked, so it has no `selectedBy` and
+// therefore no row to land in when the client's tray is grouped `by-person`.
+// This action is how that row gets chosen.
+//
+// Writes `assets.delivered_for`, NEVER `assets.selected_by`. Those answer two
+// different questions and the difference is load-bearing — see that column's
+// own schema comment: `selected_by` means "who picked this photo right now",
+// is cleared on deselect, and drives the tray's grouping of REAL picks.
+// Writing a photographer's choice into it would render a photo nobody picked
+// as somebody's active pick.
+//
+// It also never touches `is_selected`: `computeQuota` bills off that boolean,
+// and an extra is free by construction.
+// ---------------------------------------------------------------------------
+
+export type AssignExtraToPersonState = {
+  status: "idle" | "error" | "updated";
+  message?: string;
+};
+
+const assignExtraToPersonSchema = z.object({
+  assetId: z.uuid(),
+  // The empty string is the "sin asignar" option, transformed to `null` —
+  // clearing an attribution has to be as reachable as setting one, and a
+  // `<select>` cannot submit a real `null`.
+  deliveredFor: z
+    .union([z.uuid(), z.literal("")])
+    .transform((value) => (value === "" ? null : value)),
+});
+
+/**
+ * Assigns (or clears) the person a gifted extra belongs to.
+ *
+ * THREE REFUSALS, each guarding something different:
+ *
+ *  - The asset must exist. Ordinary lookup failure.
+ *  - The asset must actually BE an extra (`is_extra`). `delivered_for` is
+ *    meaningless on any other row (schema.ts), and letting it be set on a
+ *    normal pick would put a value in the database that no read site consults
+ *    and that a later reader could easily mistake for meaningful.
+ *  - The person must be an ACTIVE CLIENT OF THIS GALLERY — checked against
+ *    `gallery_clients` with the same `isNull(removedAt)` filter every other
+ *    reader of that table uses. This is the one that matters: without it, any
+ *    `users.id` the admin's browser cared to submit would be accepted,
+ *    including a client of somebody else's gallery, and the client-facing
+ *    tray would then render that stranger's name as a group header.
+ */
+export async function assignExtraToPerson(
+  _prevState: AssignExtraToPersonState,
+  formData: FormData,
+): Promise<AssignExtraToPersonState> {
+  await requireAdmin();
+
+  const parsed = assignExtraToPersonSchema.safeParse({
+    assetId: formData.get("assetId"),
+    deliveredFor: formData.get("deliveredFor"),
+  });
+  if (!parsed.success) {
+    return { status: "error", message: "Elegí una persona válida." };
+  }
+
+  const [asset] = await db
+    .select({ id: assets.id, galleryId: assets.galleryId, isExtra: assets.isExtra })
+    .from(assets)
+    .where(eq(assets.id, parsed.data.assetId))
+    .limit(1);
+  if (!asset) {
+    return { status: "error", message: "La foto no existe." };
+  }
+  if (!asset.isExtra) {
+    return { status: "error", message: "Esa foto no es un extra." };
+  }
+
+  if (parsed.data.deliveredFor !== null) {
+    const [membership] = await db
+      .select({ userId: galleryClients.userId })
+      .from(galleryClients)
+      .where(
+        and(
+          eq(galleryClients.galleryId, asset.galleryId),
+          eq(galleryClients.userId, parsed.data.deliveredFor),
+          isNull(galleryClients.removedAt),
+        ),
+      )
+      .limit(1);
+    if (!membership) {
+      return { status: "error", message: "Esa persona no es cliente de esta galería." };
+    }
+  }
+
+  await db
+    .update(assets)
+    .set({ deliveredFor: parsed.data.deliveredFor })
+    .where(eq(assets.id, asset.id));
+
+  const [gallery] = await db
+    .select({ publicSlug: galleries.publicSlug })
+    .from(galleries)
+    .where(eq(galleries.id, asset.galleryId))
+    .limit(1);
+
+  revalidatePath(`/dashboard/galleries/${asset.galleryId}`);
+  if (gallery) revalidatePath(`/galleries/${gallery.publicSlug}`);
+
+  return { status: "updated" };
+}

@@ -29,9 +29,21 @@ import type { Asset, Gallery } from "@/lib/db/schema";
  * — the "don't infer one condition from another" stance the final route has
  * documented since task #16:
  *
- * - `asset.isSelected` — the client actually picked this photo. Owning the
- *   gallery must not unlock a final for a photo they never selected, even if
- *   the photographer uploaded one by mistake.
+ * - `asset.isSelected || asset.isExtra` — this photo is one the client is
+ *   entitled to: either they picked it, or the photographer deliberately
+ *   gifted it (task #223). Owning the gallery still must not unlock a final
+ *   for a photo that is NEITHER, which is what keeps the original rule's
+ *   teeth: "the photographer uploaded one by mistake" is exactly the case
+ *   `isExtra: false` still refuses.
+ *
+ *   WHY THIS IS NOT SIMPLY DROPPED once extras exist — the tempting reading
+ *   is that a `finalKey` on an unpicked asset already IS the photographer's
+ *   intent, making this leg redundant. It is not. `finalKey`/`isEdited`
+ *   survive a DESELECT untouched (only `selectedAt`/`selectedBy` are cleared
+ *   — see schema.ts), so "picked, finished, then discarded by the client"
+ *   produces byte-identical row state to a gift. Dropping this leg would
+ *   hand every such discarded photo to the client for free. `isExtra` is the
+ *   recorded decision that tells the two apart; see its own schema comment.
  * - `asset.isEdited` — the photographer finished it. Checked EXPLICITLY, not
  *   inferred from `finalKey`: the POST handler writes both in one update
  *   today, but this gate does not lean on that invariant holding forever.
@@ -95,11 +107,11 @@ import type { Asset, Gallery } from "@/lib/db/schema";
  *     hand-written copies of it.
  */
 export function canReadFinalDeliverable<
-  A extends Pick<Asset, "isSelected" | "isEdited" | "finalKey">,
+  A extends Pick<Asset, "isSelected" | "isExtra" | "isEdited" | "finalKey">,
 >(asset: A, gallery: Pick<Gallery, "status">, session: Session): asset is A & { finalKey: string } {
   const deliveredGateAppliesToThisSession = session.user.role !== "admin";
   return (
-    asset.isSelected &&
+    (asset.isSelected || asset.isExtra) &&
     asset.isEdited &&
     !!asset.finalKey &&
     !(deliveredGateAppliesToThisSession && gallery.status !== "delivered")

@@ -358,6 +358,8 @@ describe("GalleryDetailPage chrome", () => {
             finalKey: null,
             isEdited: false,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
           },
           {
             id: "a2",
@@ -370,6 +372,8 @@ describe("GalleryDetailPage chrome", () => {
             finalKey: null,
             isEdited: false,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
           },
         ],
       }),
@@ -566,6 +570,8 @@ describe("GalleryDetailPage chrome", () => {
             finalKey: null,
             isEdited: false,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
           },
         ],
       }),
@@ -596,6 +602,8 @@ describe("GalleryDetailPage chrome", () => {
             finalKey: "galleries/g1/assets/a1/final.jpg",
             isEdited: true,
             selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
           },
         ],
       }),
@@ -725,6 +733,8 @@ describe("GalleryDetailPage — archive-size warning (task #92)", () => {
         finalKey: "galleries/g1/finals/a1.jpg",
         isEdited: true,
         selectionKind: "edited" as const,
+        isExtra: false,
+        deliveredFor: null,
       },
     ];
     getGalleryDetailMock.mockResolvedValue(galleryDetail({ assets }));
@@ -980,6 +990,8 @@ describe("GalleryDetailPage — terms-edit preview receives the real edited/orig
             finalKey: null,
             isEdited: false,
             selectionKind: index < 15 ? ("edited" as const) : ("original" as const),
+            isExtra: false,
+            deliveredFor: null,
           })),
           // Coordinator review finding: nothing in this fixture previously
           // distinguished `asset.isSelected && asset.selectionKind ===
@@ -1005,6 +1017,8 @@ describe("GalleryDetailPage — terms-edit preview receives the real edited/orig
             finalKey: null,
             isEdited: false,
             selectionKind: "original" as const,
+            isExtra: false,
+            deliveredFor: null,
           },
         ],
       }),

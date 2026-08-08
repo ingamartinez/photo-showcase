@@ -141,6 +141,7 @@ const CLIENT_GALLERY_DETAIL_DOCUMENT = graphql(`
         isSelected
         finalKey
         isEdited
+        isExtra
       }
     }
   }

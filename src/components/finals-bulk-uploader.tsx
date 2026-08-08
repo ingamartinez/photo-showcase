@@ -134,15 +134,22 @@ function ambiguousReasonText(entry: AmbiguousMatch): string {
 }
 
 export function FinalsBulkUploader({
-  selectedAssets,
+  assets,
   onFinalUploaded,
 }: {
-  // The gallery's currently SELECTED assets — matching against anything
-  // else is pointless, `final/route.ts`'s own `asset_not_selected` gate
-  // (409) refuses every one of them. <GalleryWorkspace> only renders this
-  // component once this list is non-empty (see that file's own comment on
-  // why: "con cero elegidas no hay a que mapear").
-  selectedAssets: WorkspaceAsset[];
+  // EVERY asset in the gallery, as of task #223 — not just the selected
+  // ones. Until then this took `selectedAssets` because matching against
+  // anything else was pointless: `final/route.ts`'s `asset_not_selected`
+  // gate (409) refused every such upload. That gate is gone, and the
+  // photographer's whole reason for asking was to deliver photos the client
+  // did NOT pick, so the candidate pool is now the gallery.
+  //
+  // The cost of that widening is real and is handled below, not here: a
+  // folder of exports can now pair against hundreds of unselected photos, so
+  // the review screen counts extras SEPARATELY and never folds them into the
+  // headline "emparejadas" number. The photographer confirms knowing exactly
+  // how many unchosen photos they are about to deliver.
+  assets: WorkspaceAsset[];
   onFinalUploaded: (assetId: string) => void;
 }) {
   const [plan, setPlan] = useState<FinalMatchPlan | null>(null);
@@ -150,7 +157,7 @@ export function FinalsBulkUploader({
   const [items, setItems] = useState<UploadItem[]>([]);
   const [busy, setBusy] = useState(false);
 
-  if (selectedAssets.length === 0) return null;
+  if (assets.length === 0) return null;
 
   function resetInput(input: HTMLInputElement | null) {
     if (input) input.value = "";
@@ -162,9 +169,13 @@ export function FinalsBulkUploader({
     if (files.length === 0) return;
 
     const fileNames = files.map((file) => file.name);
-    const assetInputs = selectedAssets.map((asset) => ({
+    const assetInputs = assets.map((asset) => ({
       id: asset.id,
       originalFilename: asset.originalFilename,
+      // Task #223 — carried through so the review screen below can tell an
+      // ordinary pairing from an extra. `matchFinalFiles` itself never reads
+      // this to DECIDE anything; matching is by filename only.
+      isSelected: asset.isSelected,
     }));
     const nextPlan = matchFinalFiles(assetInputs, fileNames);
     setPlan(nextPlan);
@@ -237,6 +248,15 @@ export function FinalsBulkUploader({
 
   const doneCount = items.filter((item) => item.status === "done").length;
 
+  // TASK #223 — THE COUNT THAT KEEPS THE WIDENED POOL SAFE. Splitting the
+  // headline number is not cosmetic: since the matcher now sees every asset
+  // in the gallery, a folder of exports can pair against photos the client
+  // never picked, and a single "N emparejadas" would let the photographer
+  // confirm a batch that quietly delivers half the gallery for free. These
+  // two numbers are what make that decision visible BEFORE anything uploads.
+  const extraMatches = plan?.matches.filter((match) => !match.asset.isSelected) ?? [];
+  const chosenMatchCount = (plan?.matches.length ?? 0) - extraMatches.length;
+
   return (
     <div className="border-line-2 flex flex-col gap-3 rounded-[6px] border border-dashed p-4">
       <span className="text-fg text-sm font-medium">Subir finales en lote</span>
@@ -269,7 +289,7 @@ export function FinalsBulkUploader({
           {/* The review screen — task #217's actual requirement, shown
               BEFORE a single request goes out. */}
           <p className="text-fg-dim text-xs">
-            {plan.matches.length} emparejada{plan.matches.length === 1 ? "" : "s"},{" "}
+            {chosenMatchCount} emparejada{chosenMatchCount === 1 ? "" : "s"},{" "}
             {plan.unmatchedFiles.length} archivo{plan.unmatchedFiles.length === 1 ? "" : "s"} sin
             destino, {plan.assetsWithoutFile.length} elegida
             {plan.assetsWithoutFile.length === 1 ? "" : "s"} sin archivo
@@ -277,6 +297,27 @@ export function FinalsBulkUploader({
               ? `, ${plan.ambiguous.length} ambigüedad${plan.ambiguous.length === 1 ? "" : "es"}.`
               : "."}
           </p>
+
+          {/* Task #223 — extras get their own line, in the warning colour the
+              ambiguity list already uses, listing the filenames rather than
+              only a count: "8 extras" is a number the photographer can wave
+              past, while seeing WHICH eight photos are about to be delivered
+              free is a decision they can actually make. */}
+          {extraMatches.length > 0 && (
+            <div className="flex flex-col gap-1 text-xs text-[#e0796b]">
+              <span>
+                {extraMatches.length} extra{extraMatches.length === 1 ? "" : "s"}:{" "}
+                {extraMatches.length === 1
+                  ? "esta foto no fue elegida"
+                  : "estas fotos no fueron elegidas"}{" "}
+                por el cliente y se {extraMatches.length === 1 ? "va" : "van"} a entregar igual, sin
+                costo.
+              </span>
+              <span className="text-fg-mute">
+                {extraMatches.map((match) => match.asset.originalFilename).join(", ")}
+              </span>
+            </div>
+          )}
 
           {plan.ambiguous.length > 0 && (
             <ul className="flex flex-col gap-1 text-xs text-[#e0796b]">

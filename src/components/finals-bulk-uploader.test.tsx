@@ -58,7 +58,7 @@ afterEach(() => {
 describe("FinalsBulkUploader", () => {
   it("renders nothing when there are no selected assets to map against", () => {
     const { container } = render(
-      <FinalsBulkUploader selectedAssets={[]} onFinalUploaded={onFinalUploaded} />,
+      <FinalsBulkUploader assets={[]} onFinalUploaded={onFinalUploaded} />,
     );
     expect(container.firstChild).toBeNull();
   });
@@ -74,7 +74,7 @@ describe("FinalsBulkUploader", () => {
   // `"image/jpeg"` (or `"image/*"`) turns this test red.
   it("narrows the file picker's accept to the server's own format allowlist (JPEG + PNG)", () => {
     const asset = makeAsset({ id: "a1", originalFilename: "DSC_0001.JPG" });
-    render(<FinalsBulkUploader selectedAssets={[asset]} onFinalUploaded={onFinalUploaded} />);
+    render(<FinalsBulkUploader assets={[asset]} onFinalUploaded={onFinalUploaded} />);
 
     const input = document.querySelector("input[type=file]");
     expect(input).not.toBeNull();
@@ -87,7 +87,7 @@ describe("FinalsBulkUploader", () => {
 
     const asset = makeAsset({ id: "a1", originalFilename: "DSC_0001.JPG" });
     const user = userEvent.setup();
-    render(<FinalsBulkUploader selectedAssets={[asset]} onFinalUploaded={onFinalUploaded} />);
+    render(<FinalsBulkUploader assets={[asset]} onFinalUploaded={onFinalUploaded} />);
 
     await user.upload(document.querySelector("input[type=file]")!, [makeFile("DSC_0001-Edit.jpg")]);
 
@@ -99,7 +99,7 @@ describe("FinalsBulkUploader", () => {
     const a1 = makeAsset({ id: "a1", originalFilename: "DSC_0001.JPG" });
     const a2 = makeAsset({ id: "a2", originalFilename: "DSC_0001.JPG" });
     const user = userEvent.setup();
-    render(<FinalsBulkUploader selectedAssets={[a1, a2]} onFinalUploaded={onFinalUploaded} />);
+    render(<FinalsBulkUploader assets={[a1, a2]} onFinalUploaded={onFinalUploaded} />);
 
     await user.upload(document.querySelector("input[type=file]")!, [makeFile("DSC_0001.jpg")]);
 
@@ -119,7 +119,7 @@ describe("FinalsBulkUploader", () => {
     const a1 = makeAsset({ id: "a1", originalFilename: "DSC_0001.JPG" });
     const a2 = makeAsset({ id: "a2", originalFilename: "DSC_0002.JPG" });
     const user = userEvent.setup();
-    render(<FinalsBulkUploader selectedAssets={[a1, a2]} onFinalUploaded={onFinalUploaded} />);
+    render(<FinalsBulkUploader assets={[a1, a2]} onFinalUploaded={onFinalUploaded} />);
 
     await user.upload(document.querySelector("input[type=file]")!, [
       makeFile("DSC_0001.jpg"),
@@ -155,7 +155,7 @@ describe("FinalsBulkUploader", () => {
     const a1 = makeAsset({ id: "a1", originalFilename: "DSC_0001.JPG" });
     const a2 = makeAsset({ id: "a2", originalFilename: "DSC_0002.JPG" });
     const user = userEvent.setup();
-    render(<FinalsBulkUploader selectedAssets={[a1, a2]} onFinalUploaded={onFinalUploaded} />);
+    render(<FinalsBulkUploader assets={[a1, a2]} onFinalUploaded={onFinalUploaded} />);
 
     await user.upload(document.querySelector("input[type=file]")!, [
       makeFile("DSC_0001.jpg"),
@@ -180,7 +180,7 @@ describe("FinalsBulkUploader", () => {
 
     const a1 = makeAsset({ id: "a1", originalFilename: "DSC_0001.JPG" });
     const user = userEvent.setup();
-    render(<FinalsBulkUploader selectedAssets={[a1]} onFinalUploaded={onFinalUploaded} />);
+    render(<FinalsBulkUploader assets={[a1]} onFinalUploaded={onFinalUploaded} />);
 
     await user.upload(document.querySelector("input[type=file]")!, [makeFile("DSC_0001.jpg")]);
     await screen.findByText(/1 emparejada/);
@@ -215,7 +215,7 @@ describe("FinalsBulkUploader", () => {
     const a1 = makeAsset({ id: "a1", originalFilename: "DSC_0002.JPG" });
     const a2 = makeAsset({ id: "a2", originalFilename: "DSC_0003.JPG" });
     const user = userEvent.setup();
-    render(<FinalsBulkUploader selectedAssets={[a1, a2]} onFinalUploaded={onFinalUploaded} />);
+    render(<FinalsBulkUploader assets={[a1, a2]} onFinalUploaded={onFinalUploaded} />);
 
     await user.upload(document.querySelector("input[type=file]")!, [
       makeFile("STRAY.jpg"),
@@ -244,7 +244,7 @@ describe("FinalsBulkUploader", () => {
     const a1 = makeAsset({ id: "a1", originalFilename: "DSC_0001.JPG" });
     const a2 = makeAsset({ id: "a2", originalFilename: "DSC_0001.JPG" });
     const user = userEvent.setup();
-    render(<FinalsBulkUploader selectedAssets={[a1, a2]} onFinalUploaded={onFinalUploaded} />);
+    render(<FinalsBulkUploader assets={[a1, a2]} onFinalUploaded={onFinalUploaded} />);
 
     await user.upload(document.querySelector("input[type=file]")!, [makeFile("DSC_0001.jpg")]);
 
@@ -268,7 +268,7 @@ describe("FinalsBulkUploader", () => {
 
     const a1 = makeAsset({ id: "a1", originalFilename: "DSC_0001.JPG" });
     const user = userEvent.setup();
-    render(<FinalsBulkUploader selectedAssets={[a1]} onFinalUploaded={onFinalUploaded} />);
+    render(<FinalsBulkUploader assets={[a1]} onFinalUploaded={onFinalUploaded} />);
 
     await user.upload(document.querySelector("input[type=file]")!, [makeFile("DSC_0001.jpg")]);
     await screen.findByText(/1 emparejada/);

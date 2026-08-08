@@ -1,8 +1,12 @@
 import { describe, expect, it } from "vitest";
-import { matchFinalFiles, type SelectedAsset } from "./final-filename-match";
+import { matchFinalFiles, type MatchableAsset } from "./final-filename-match";
 
-function asset(id: string, originalFilename: string): SelectedAsset {
-  return { id, originalFilename };
+// Task #223 — `isSelected` defaults to `true` here because every test in this
+// file that predates #223 is about the client's chosen photos, and that is
+// what those cases meant. The extras cases at the bottom pass `false`
+// explicitly.
+function asset(id: string, originalFilename: string, isSelected = true): MatchableAsset {
+  return { id, originalFilename, isSelected };
 }
 
 describe("matchFinalFiles", () => {
@@ -160,5 +164,64 @@ describe("matchFinalFiles", () => {
   it("returns an empty plan for no assets and no files", () => {
     const plan = matchFinalFiles([], []);
     expect(plan).toEqual({ matches: [], ambiguous: [], unmatchedFiles: [], assetsWithoutFile: [] });
+  });
+
+  // TASK #223 — the candidate pool is now every asset in the gallery, not
+  // only the selected ones. The matching RULES are unchanged; what these
+  // cases pin down is the consequence: an unselected asset can be matched,
+  // and `assetsWithoutFile` must not drown in unselected noise as a result.
+  describe("extras — unselected assets as candidates (task #223)", () => {
+    it("matches a file against an unselected asset and carries isSelected through on the match", () => {
+      const gift = asset("a1", "DSC_0123.JPG", false);
+      const plan = matchFinalFiles([gift], ["DSC_0123.jpg"]);
+
+      expect(plan.matches).toEqual([{ asset: gift, fileIndex: 0, fileName: "DSC_0123.jpg" }]);
+      // The flag is what the review screen splits its counts on — a match
+      // that lost it would be indistinguishable from an ordinary pairing.
+      expect(plan.matches[0]?.asset.isSelected).toBe(false);
+      expect(plan.unmatchedFiles).toEqual([]);
+    });
+
+    // THE NOISE GUARD. A real gallery has a handful of chosen photos and
+    // hundreds of unchosen ones. If `assetsWithoutFile` reported every
+    // unselected asset with no file, "qué falta exportar" would return
+    // hundreds of entries and stop being a number anyone acts on.
+    it("never reports an unselected asset as missing its file", () => {
+      const chosen = asset("a1", "CHOSEN.JPG", true);
+      const untouched = asset("a2", "UNTOUCHED.JPG", false);
+      const plan = matchFinalFiles([chosen, untouched], []);
+
+      expect(plan.assetsWithoutFile).toEqual([chosen]);
+    });
+
+    it("still reports a chosen asset as missing its file when only the extra was exported", () => {
+      const chosen = asset("a1", "CHOSEN.JPG", true);
+      const gift = asset("a2", "GIFT.JPG", false);
+      const plan = matchFinalFiles([chosen, gift], ["GIFT.jpg"]);
+
+      expect(plan.matches).toEqual([{ asset: gift, fileIndex: 0, fileName: "GIFT.jpg" }]);
+      expect(plan.assetsWithoutFile).toEqual([chosen]);
+    });
+
+    // Ambiguity does not care whether a colliding asset was chosen: two
+    // photos sharing a basename are indistinguishable regardless, and
+    // guessing would hand a client someone else's photo — the exact risk
+    // this module's header exists to guard.
+    it("treats a basename collision between a chosen and an unchosen asset as ambiguous, not resolved in favour of the chosen one", () => {
+      const chosen = asset("a1", "DSC_0001.JPG", true);
+      const gift = asset("a2", "DSC_0001.JPG", false);
+      const plan = matchFinalFiles([chosen, gift], ["DSC_0001.jpg"]);
+
+      // The only thing this case is about: nothing gets uploaded, and the
+      // collision is reported naming BOTH assets. The plan also carries a
+      // second, `file_matches_multiple_assets` entry for the same collision
+      // — pre-existing #217 behavior that #223 did not touch — so this
+      // asserts the entry it means rather than pinning the whole list.
+      expect(plan.matches).toEqual([]);
+      expect(plan.ambiguous).toContainEqual({
+        reason: "duplicate_asset_basename",
+        assets: [chosen, gift],
+      });
+    });
   });
 });

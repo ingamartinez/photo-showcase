@@ -477,16 +477,24 @@ export function GalleryWorkspace({
       <ProofUploader galleryId={galleryId} onUploaded={handleUploaded} />
 
       {/* Task #217: bulk final upload, proposed-then-confirmed by filename
-          match — only meaningful once at least one photo is selected (no
-          candidates to map against otherwise). Shares the exact same
-          `handleFinalUploaded` the per-tile "Subir final" control already
-          uses (asset-tile.tsx), which stays untouched and reachable right
-          on the grid below — see this file's own header on
-          `pendingFinalsCount` for why there is exactly one live counter to
-          keep in sync, and this component updates it the same way a
-          single-tile upload does. */}
-      {selectedAssets.length > 0 && (
-        <FinalsBulkUploader selectedAssets={selectedAssets} onFinalUploaded={handleFinalUploaded} />
+          match. Shares the exact same `handleFinalUploaded` the per-tile
+          "Subir final" control already uses (asset-tile.tsx), which stays
+          untouched and reachable right on the grid below — see this file's
+          own header on `pendingFinalsCount` for why there is exactly one
+          live counter to keep in sync, and this component updates it the
+          same way a single-tile upload does.
+
+          TASK #223 CHANGED BOTH THE INPUT AND THE GATE. It used to receive
+          `selectedAssets` and render only once at least one photo was
+          selected ("no candidates to map against otherwise"). Both followed
+          from a rule that no longer holds: an unselected asset could not
+          receive a final. The photographer can now deliver photos the client
+          never picked, so the candidate pool is every asset and the only
+          honest gate is "are there any photos at all" — a gallery whose
+          client chose nothing is exactly a case where the photographer may
+          still want to gift a few. */}
+      {sorted.length > 0 && (
+        <FinalsBulkUploader assets={sorted} onFinalUploaded={handleFinalUploaded} />
       )}
 
       {/* Task #199: the alphabetical-sort action — an ACTION, not a mode

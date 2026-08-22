@@ -322,22 +322,35 @@ describe("processProof", () => {
   // WATERMARK_TILE_WIDTH/HEIGHT = 640x320: 5258 inked pixels out of
   // 1,707,200 (ratio ~0.0031). The current 400x200 tile measures 25506 on
   // the same fixture (ratio ~0.0149) — a ~4.85x increase, comfortably above
-  // the "roughly double" the task asked for. The assertion below only
-  // requires 2x the old baseline, not the full measured 4.85x: a real
-  // safety margin against ordinary cross-machine font-rendering variance
-  // (antialiasing differs by fontconfig/freetype/pango version — this repo
-  // has already hit that class of difference, see the fontless-sharp trap
-  // in task #224), while still failing hard if the tile constants regress
-  // toward 640x320 — a genuine regression to the old size lands back near
-  // the 1x baseline, well under this floor. Verified by mutation: setting
-  // WATERMARK_TILE_WIDTH/HEIGHT back to 640/320 and rerunning only this test
-  // turns it red (see task #224's shipping report for the observed output).
+  // the "roughly double" the task asked for, and in agreement with the
+  // orientation-labelled mark-equivalent table in `buildWatermarkTile`'s own
+  // comment (portrait 1067x1600: 640x320 measures 5.00, 400x200 measures
+  // 24.00, the same ~4.8x — two independent measurements landing on the same
+  // ratio, one in raw pixels here, one in ink-area equivalents there). The
+  // assertion below only requires 2x the old baseline, not the full measured
+  // 4.85x: a real safety margin against ordinary cross-machine
+  // font-rendering variance (antialiasing differs by
+  // fontconfig/freetype/pango version), while still failing hard if the tile
+  // constants regress toward 640x320 — a genuine regression to the old size
+  // lands back near the 1x baseline, well under this floor. Verified by
+  // mutation: setting WATERMARK_TILE_WIDTH/HEIGHT back to 640/320 and
+  // rerunning only this test turns it red (see task #224's shipping report
+  // for the observed output).
   //
   // What this test does NOT catch: it does not pin the exact tile pixel
-  // size, and it would not fail if 400x200 changed to some other size that
-  // happens to also clear the 2x floor (e.g. 420x210) — it only guards
-  // against a regression toward the OLD, sparser density, not against every
-  // possible future value.
+  // size. Measured against the same portrait mark-equivalent table referenced
+  // above, EVERY size at or below 520x260 already clears this 2x floor —
+  // 520x260 (14.18, ~2.84x), 480x240 (19.06, ~3.81x), 440x220, and 360x180
+  // all pass alongside 400x200. That includes 480x240, a size the owner was
+  // shown in an earlier round and explicitly rejected as too sparse (round 3
+  // above) — this test would not catch a regression FROM 400x200 TO 480x240,
+  // only a regression back toward 640x320 or sparser. Only 560x280 (~1.67x)
+  // and 640x320 itself (1x) fail to clear the floor. The 2x threshold is a
+  // deliberate trade for robustness against font-rendering variance across
+  // CI/the droplet, not an oversight — a floor tight enough to exclude
+  // 480x240 would need to sit above its own ~3.81x ratio, leaving 400x200
+  // (~4.8x) only ~26% headroom above it and making this test fragile to
+  // rendering noise.
   it("composites measurably more watermark ink than the pre-task-#224 640x320 tile did", async () => {
     const width = 1067;
     const height = 1600; // true proof size; matches PROOF_MAX_LONG_EDGE exactly

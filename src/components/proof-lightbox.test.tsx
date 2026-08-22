@@ -51,6 +51,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   document.body.style.overflow = "";
+  vi.unstubAllGlobals();
 });
 
 function lightboxProps(
@@ -652,5 +653,68 @@ describe("ProofLightbox", () => {
 
       expect(screen.queryByRole("button", { name: /Marcar como/ })).toBeNull();
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// PINCH-TO-ZOOM IS NOT A SWIPE (owner bug report, 2026-08-21)
+// ---------------------------------------------------------------------------
+// "cuando se ve la foto en grande [...] la foto se pasa a la siguiente cuando
+// intentan hacer pinch to zoom desde el celular".
+//
+// These fixtures carry the two fields the old handlers ignored, and they are
+// the whole point of this block: `touches` is the fingers STILL DOWN, and it
+// is what tells a pinch apart from a swipe. Every test here fails against the
+// pre-fix handlers — verified by reverting them, not assumed.
+function touchAt(...clientXs: number[]) {
+  return clientXs.map((clientX) => ({ clientX }));
+}
+
+describe("ProofLightbox — a pinch must never navigate", () => {
+  // The exact reported gesture: a finger lands, a second joins, and the two
+  // spread apart. The first finger to lift has travelled 140px horizontally —
+  // three and a half times the 40px swipe threshold — which is why the old
+  // code did not misfire occasionally, it misfired on every single pinch.
+  it("does not navigate when a second finger joins and the two spread apart", () => {
+    renderLightbox({ index: 1 });
+
+    fireEvent.touchStart(dialog(), { touches: touchAt(200) });
+    fireEvent.touchStart(dialog(), { touches: touchAt(200, 210) });
+    // Finger one lifts, far to the left; finger two is still on the glass.
+    fireEvent.touchEnd(dialog(), { touches: touchAt(340), changedTouches: touchAt(60) });
+    // Finger two lifts, far to the right.
+    fireEvent.touchEnd(dialog(), { touches: [], changedTouches: touchAt(340) });
+
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  // `touchend` fires once PER FINGER, not once per gesture. A handler that
+  // decides on the first one is deciding while the hand is still moving.
+  it("decides nothing while another finger is still on the glass", () => {
+    renderLightbox({ index: 1 });
+
+    fireEvent.touchStart(dialog(), { touches: touchAt(200) });
+    fireEvent.touchEnd(dialog(), { touches: touchAt(150), changedTouches: touchAt(100) });
+
+    expect(onNavigate).not.toHaveBeenCalled();
+  });
+
+  // The other half of the fix, and the one a careless version breaks: refusing
+  // pinches must not cost the client their swipe. A "once pinched, always
+  // pinched" flag would pass every test above and quietly kill navigation for
+  // the rest of the session.
+  it("still swipes normally on the very next one-finger gesture after a pinch", () => {
+    renderLightbox({ index: 1 });
+
+    fireEvent.touchStart(dialog(), { touches: touchAt(200) });
+    fireEvent.touchStart(dialog(), { touches: touchAt(200, 210) });
+    fireEvent.touchEnd(dialog(), { touches: touchAt(340), changedTouches: touchAt(60) });
+    fireEvent.touchEnd(dialog(), { touches: [], changedTouches: touchAt(340) });
+    expect(onNavigate).not.toHaveBeenCalled();
+
+    fireEvent.touchStart(dialog(), { touches: touchAt(200) });
+    fireEvent.touchEnd(dialog(), { touches: [], changedTouches: touchAt(100) });
+
+    expect(onNavigate).toHaveBeenCalledWith(2);
   });
 });

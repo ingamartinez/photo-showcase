@@ -136,6 +136,9 @@ export function ProofLightbox({
 }) {
   const asset = assets[index];
   const touchStartX = useRef<number | null>(null);
+  // Armed the moment a second finger lands and disarmed only once the whole
+  // hand is off the glass — see `handleTouchStart`'s own comment.
+  const isPinchRef = useRef(false);
   // Whatever was focused at the moment this opened — the grid tile, or a tray
   // thumbnail. See `onOpenAutoFocus`/`onCloseAutoFocus` below for why this
   // component has to hold it itself rather than let the primitive do it.
@@ -204,14 +207,50 @@ export function ProofLightbox({
   // footer chrome, not over the middle of the photo. A drag that starts on
   // the pick button is not a problem — browsers suppress the `click` once the
   // finger travels past their own slop, and 40px is well past it.
+  // A SWIPE IS ONE FINGER. A PINCH IS NOT A SWIPE.
+  // ==============================================
+  // Reported by the owner (2026-08-21): pinching to zoom on a phone jumped to
+  // the next photo. The first version of these handlers read `touches[0]` and
+  // nothing else, which makes a two-finger gesture indistinguishable from a
+  // one-finger one — and a pinch-out moves each finger horizontally by FAR
+  // more than the 40px threshold below, so it did not misfire occasionally,
+  // it misfired every time.
+  //
+  // Two facts about the touch model do all the work here:
+  //   1. `touchstart` fires again when the SECOND finger lands, with
+  //      `touches.length === 2`. That is the moment a swipe stops being a
+  //      possibility, so the gesture is poisoned right there.
+  //   2. `touchend` fires once PER FINGER LIFTED, not once per gesture. While
+  //      `touches` is non-empty the hand is still on the glass and there is
+  //      nothing to decide yet.
+  //
+  // `touches` is read defensively (`?.length ?? 0`) because a synthesised
+  // `touchend` — JSDOM's, and therefore this component's own tests' — carries
+  // only `changedTouches`.
   function handleTouchStart(event: React.TouchEvent) {
+    if ((event.touches?.length ?? 0) > 1) {
+      isPinchRef.current = true;
+      touchStartX.current = null;
+      return;
+    }
+    // EVERY gesture starts here, which is what makes this the only reset this
+    // needs. A `touchcancel` handler was written first and then deleted: it
+    // could not be made to fail when removed, because a browser that takes a
+    // pinch away (a system edge-swipe, an incoming call) still delivers a
+    // fresh `touchstart` for whatever the hand does next, and that lands on
+    // this line. A handler whose removal breaks nothing is guarding nothing.
+    isPinchRef.current = false;
     touchStartX.current = event.touches[0]?.clientX ?? null;
   }
 
   function handleTouchEnd(event: React.TouchEvent) {
+    // Fact 2: another finger is still down, so this gesture is not over.
+    if ((event.touches?.length ?? 0) > 0) return;
+    const wasPinch = isPinchRef.current;
     const startX = touchStartX.current;
+    isPinchRef.current = false;
     touchStartX.current = null;
-    if (startX === null) return;
+    if (wasPinch || startX === null) return;
     const endX = event.changedTouches[0]?.clientX ?? startX;
     const deltaX = endX - startX;
     const SWIPE_THRESHOLD_PX = 40;

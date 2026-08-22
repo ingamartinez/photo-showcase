@@ -718,3 +718,204 @@ describe("ProofLightbox — a pinch must never navigate", () => {
     expect(onNavigate).toHaveBeenCalledWith(2);
   });
 });
+
+// ---------------------------------------------------------------------------
+// DESKTOP CLICK-TO-1:1 ZOOM (owner request, 2026-08-21)
+// ---------------------------------------------------------------------------
+// "en desktop no se le puede hacer zoom a la foto, incluye admin y cliente".
+//
+// THE GEOMETRY IS REAL, NOT ROUND NUMBERS PICKED TO MAKE THE MATHS EASY:
+// a 1067x1600 portrait proof (`PROOF_MAX_LONG_EDGE` is 1600, src/lib/images.ts)
+// in the stage a 1440x900 laptop actually leaves once the lightbox's own top
+// and bottom chrome are taken out. `object-contain` fits it by HEIGHT, so the
+// screen is painting a 1600px photo at 750px — under half its resolution — and
+// 1:1 is therefore 1600/750 = ~2.13x. Every expectation below is written as
+// that division rather than as `2.133`, so a wrong constant cannot pass.
+const STAGE = { width: 1440, height: 750 };
+const PORTRAIT = { width: 1067, height: 1600 };
+const STAGE_CENTRE = { x: STAGE.width / 2, y: STAGE.height / 2 };
+
+function stubPointerCapability(isFine: boolean) {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: query === "(pointer: fine)" && isFine,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  }));
+}
+
+// JSDOM lays nothing out — every box is 0x0 and every image is 0x0 natural —
+// so the two measurements the hook reads have to be supplied by hand. Firing
+// `load` afterwards is what the real browser does once the proof arrives.
+function primeStage(altText: string, stage = STAGE, natural = PORTRAIT) {
+  const img = screen.getByAltText(altText) as HTMLImageElement;
+  const stageEl = img.parentElement as HTMLElement;
+  Object.defineProperty(img, "naturalWidth", { value: natural.width, configurable: true });
+  Object.defineProperty(img, "naturalHeight", { value: natural.height, configurable: true });
+  Object.defineProperty(stageEl, "clientWidth", { value: stage.width, configurable: true });
+  Object.defineProperty(stageEl, "clientHeight", { value: stage.height, configurable: true });
+  stageEl.getBoundingClientRect = () =>
+    ({
+      left: 0,
+      top: 0,
+      right: stage.width,
+      bottom: stage.height,
+      width: stage.width,
+      height: stage.height,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  fireEvent.load(img);
+  return { img, stageEl };
+}
+
+function clickAt(stageEl: HTMLElement, x: number, y: number) {
+  fireEvent.pointerDown(stageEl, { pointerId: 1, button: 0, clientX: x, clientY: y });
+  fireEvent.pointerUp(stageEl, { pointerId: 1, button: 0, clientX: x, clientY: y });
+}
+
+function dragBy(stageEl: HTMLElement, from: { x: number; y: number }, dx: number, dy: number) {
+  fireEvent.pointerDown(stageEl, { pointerId: 1, button: 0, clientX: from.x, clientY: from.y });
+  fireEvent.pointerMove(stageEl, { pointerId: 1, clientX: from.x + dx, clientY: from.y + dy });
+  fireEvent.pointerUp(stageEl, {
+    pointerId: 1,
+    button: 0,
+    clientX: from.x + dx,
+    clientY: from.y + dy,
+  });
+}
+
+/** The transform actually painted, decomposed. `null` when the photo is
+ * sitting fitted, which is what "no zoom" looks like in the DOM. */
+function painted(img: HTMLImageElement) {
+  const match = /^translate\((-?[\d.]+)px, (-?[\d.]+)px\) scale\(([\d.]+)\)$/.exec(
+    img.style.transform,
+  );
+  return match ? { x: Number(match[1]), y: Number(match[2]), scale: Number(match[3]) } : null;
+}
+
+describe("ProofLightbox — desktop zoom to 1:1", () => {
+  it("takes the photo to exactly one image pixel per CSS pixel, not some round multiple", () => {
+    stubPointerCapability(true);
+    renderLightbox({ index: 0 });
+    const { img, stageEl } = primeStage("IMG_0001.JPG");
+
+    clickAt(stageEl, STAGE_CENTRE.x, STAGE_CENTRE.y);
+
+    const result = painted(img);
+    expect(result).not.toBeNull();
+    // The photo is height-bound in this stage, so undoing `object-contain`
+    // exactly means natural height over stage height and nothing else.
+    expect(result!.scale).toBeCloseTo(PORTRAIT.height / STAGE.height, 6);
+    expect(result!.x).toBe(0);
+    expect(result!.y).toBe(0);
+  });
+
+  // Without this the browser's own image-drag takes over the moment a pan
+  // starts and the photo tears away from the cursor.
+  it("turns off the browser's native image drag, which would otherwise hijack the pan", () => {
+    stubPointerCapability(true);
+    renderLightbox({ index: 0 });
+    const { img } = primeStage("IMG_0001.JPG");
+
+    expect(img.draggable).toBe(false);
+  });
+
+  // The assertion that actually pins the clamp down: at 1:1 this portrait is
+  // 1067px wide inside a 1440px stage, so it has NO horizontal slack at all
+  // and 300px of sideways drag must move it exactly nowhere — while the same
+  // gesture's vertical component runs to its limit of (1600-750)/2 = 425.
+  it("pans only where the photo actually overflows, and stops at its edge", () => {
+    stubPointerCapability(true);
+    renderLightbox({ index: 0 });
+    const { img, stageEl } = primeStage("IMG_0001.JPG");
+    clickAt(stageEl, STAGE_CENTRE.x, STAGE_CENTRE.y);
+
+    dragBy(stageEl, STAGE_CENTRE, 300, 900);
+
+    const result = painted(img);
+    expect(result!.x).toBe(0);
+    expect(result!.y).toBe((PORTRAIT.height - STAGE.height) / 2);
+    // And the drag did not double as a click that toggles the zoom back off.
+    expect(result!.scale).toBeCloseTo(PORTRAIT.height / STAGE.height, 6);
+  });
+
+  it("zooms towards the point clicked, so clicking a face gets that face", () => {
+    stubPointerCapability(true);
+    renderLightbox({ index: 0 });
+    const { img, stageEl } = primeStage("IMG_0001.JPG");
+
+    // 200px above centre: that point must stay put while everything scales
+    // around it, which takes a compensating translate of 200 * (scale - 1).
+    clickAt(stageEl, STAGE_CENTRE.x, STAGE_CENTRE.y - 200);
+
+    const scale = PORTRAIT.height / STAGE.height;
+    expect(painted(img)!.y).toBeCloseTo(200 * (scale - 1), 4);
+  });
+
+  it("clicking again puts the photo back to fitted", () => {
+    stubPointerCapability(true);
+    renderLightbox({ index: 0 });
+    const { img, stageEl } = primeStage("IMG_0001.JPG");
+
+    clickAt(stageEl, STAGE_CENTRE.x, STAGE_CENTRE.y);
+    expect(painted(img)).not.toBeNull();
+    clickAt(stageEl, STAGE_CENTRE.x, STAGE_CENTRE.y);
+
+    expect(painted(img)).toBeNull();
+  });
+
+  // A tall or large monitor already paints a 1600px proof BIGGER than its own
+  // resolution. "1:1" there would mean shrinking the photo, so there is
+  // nothing on offer and the cursor must not promise otherwise.
+  it("offers no zoom when the screen is already showing the photo at full resolution", () => {
+    stubPointerCapability(true);
+    renderLightbox({ index: 0 });
+    const { img, stageEl } = primeStage(
+      "IMG_0001.JPG",
+      { width: 2000, height: 1800 },
+      { width: 1600, height: 1067 },
+    );
+
+    expect(stageEl.className).not.toContain("cursor-zoom-in");
+    clickAt(stageEl, 1000, 900);
+
+    expect(painted(img)).toBeNull();
+  });
+
+  // The gate is the pointer QUERY, not merely the presence of `matchMedia` —
+  // a phone has the function and must still get no click-to-zoom, because a
+  // one-finger pan there would fight the swipe handler on the same surface.
+  it("stays out of the way on a coarse pointer, where swipe owns the gesture", () => {
+    stubPointerCapability(false);
+    renderLightbox({ index: 0 });
+    const { img, stageEl } = primeStage("IMG_0001.JPG");
+
+    expect(stageEl.className).not.toContain("cursor-zoom-in");
+    clickAt(stageEl, STAGE_CENTRE.x, STAGE_CENTRE.y);
+
+    expect(painted(img)).toBeNull();
+  });
+
+  it("lands the next photo fitted instead of inheriting the last one's zoom", () => {
+    stubPointerCapability(true);
+    const { rerender } = render(<ProofLightbox {...lightboxProps({ index: 0 })} />);
+    const first = primeStage("IMG_0001.JPG");
+    clickAt(first.stageEl, STAGE_CENTRE.x, STAGE_CENTRE.y);
+    expect(painted(first.img)).not.toBeNull();
+
+    rerender(<ProofLightbox {...lightboxProps({ index: 1 })} />);
+    // The NEW photo has to be measured too. Without this the assertion below
+    // passes for the wrong reason — an unmeasured image cannot paint a
+    // transform whether the zoom was reset or not, so the test would stay
+    // green with the reset deleted. Caught by mutating it away; it was.
+    const second = primeStage("IMG_0002.JPG");
+
+    expect(painted(second.img)).toBeNull();
+  });
+});

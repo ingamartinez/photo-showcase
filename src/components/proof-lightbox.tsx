@@ -65,6 +65,7 @@
 import { useEffect, useRef } from "react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { DownloadFinalButton } from "@/components/download-final-button";
+import { ZoomableStage } from "@/components/zoomable-stage";
 import type { ProofAsset } from "@/components/proof-grid";
 import type { QuotaResult } from "@/lib/quota";
 import type { SelectionKind } from "@/lib/selection-snapshot";
@@ -347,31 +348,16 @@ export function ProofLightbox({
             </button>
           </div>
 
-          {/* `.lb__stage` (:502). `min-h-0` because a `1fr` grid row still
-              takes `min-height: auto` from its content otherwise, which on a
-              short viewport would push the footer off the bottom of the
-              screen — the one place the pick button may never go. */}
-          <div className="relative min-h-0 overflow-hidden">
-            {/* Plain <img>, not next/image: same reasoning as asset-tile.tsx —
-                proof URLs are short-lived, private, presigned R2 URLs whose
-                query string is never stable between two loads. `key` on the
-                asset id so navigating swaps the element rather than mutating
-                one <img>'s src, which is what keeps a failed load's `onError`
-                attributable to the asset that failed.
-
-                `onError` is the 5-minute-expiry recovery path (task #23), and
-                looking at one photograph for longer than the presigned TTL is
-                precisely this screen's normal case. <ProofGrid> hands the
-                SAME `refreshUrl` to the tray, the tiles and here. */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              key={asset.id}
-              src={src}
-              alt={asset.originalFilename}
-              onError={() => onImageError(asset.id)}
-              className="absolute inset-0 h-full w-full object-contain"
-            />
-
+          {/* `.lb__stage` (:502). The stage itself, the photograph and the
+              desktop click-to-1:1 zoom all live in <ZoomableStage> — the same
+              component the admin viewer mounts, so "the screen is painting
+              this 1600px proof at half size" gets one answer, not two. */}
+          <ZoomableStage
+            assetId={asset.id}
+            src={src}
+            alt={asset.originalFilename}
+            onImageError={() => onImageError(asset.id)}
+          >
             {/* `.lb__hint` (:510-513), and `lg:hidden` is the mock's own :569
                 — there is no swiping at a desk, and the arrows below say the
                 same thing there. Only shown when there is somewhere to go. */}
@@ -380,7 +366,7 @@ export function ProofLightbox({
                 Deslizá para pasar
               </p>
             )}
-          </div>
+          </ZoomableStage>
 
           {/* `.lb__foot` (:514). The safe-area inset is the mock's own; `0px`
               rather than its bare `0` because a unitless zero is not a valid

@@ -175,8 +175,14 @@ export async function assertTileHasInk(tile: Buffer): Promise<void> {
  * on an actual full photo (not a crop) and asked for more spacing. The
  * "~14 actual visible marks" figure relayed at the time for 480x240 on
  * that full photo was an EYEBALLED ESTIMATE, not a verified measurement,
- * and it is above the hard ceiling: `composite({ tile: true })` starts at
- * (0,0) and paints one `<text>` per tile instance, so the most tile
+ * and it is above the hard ceiling. (The mechanism as written here in round 3
+ * — "`composite({ tile: true })` starts at (0,0)" — is WRONG; round 4 measured
+ * it and sharp CENTRES the tiling grid on the canvas. The ceiling arithmetic
+ * below is unaffected, because it only counts how many tile instances can
+ * touch the canvas, which is the same either way. Left in place with this
+ * flag rather than silently rewritten, so the trail stays honest about what
+ * each round actually believed.) `composite({ tile: true })` paints one
+ * `<text>` per tile instance, so the most tile
  * instances that can touch a 1400x933 canvas at 480x240 is exactly
  * `ceil(1400/480) * ceil(933/240) = 3 * 4 = 12`. Round 2's own ~11
  * crop-extrapolated estimate was the closer of the two. 640x320 was

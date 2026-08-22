@@ -106,8 +106,8 @@ const WEBP_QUALITY = 82;
 // option. Tiling (rather than one mark in a corner) is deliberate: it is
 // far harder to crop out without destroying the photo, and it survives
 // screenshots/crops of any region.
-const WATERMARK_TILE_WIDTH = 640;
-const WATERMARK_TILE_HEIGHT = 320;
+const WATERMARK_TILE_WIDTH = 400;
+const WATERMARK_TILE_HEIGHT = 200;
 const WATERMARK_ROTATION_DEG = -28;
 const WATERMARK_FONT_SIZE = 30;
 
@@ -175,8 +175,24 @@ export async function assertTileHasInk(tile: Buffer): Promise<void> {
  * on an actual full photo (not a crop) and asked for more spacing. The
  * "~14 actual visible marks" figure relayed at the time for 480x240 on
  * that full photo was an EYEBALLED ESTIMATE, not a verified measurement,
- * and it is above the hard ceiling: `composite({ tile: true })` starts at
- * (0,0) and paints one `<text>` per tile instance, so the most tile
+ * and it is above the hard ceiling. (BOTH halves of that rebuttal are WRONG,
+ * flagged here in round 4 rather than silently rewritten so the trail stays
+ * honest about what each round actually believed. First: the mechanism —
+ * "`composite({ tile: true })` starts at (0,0)" — is wrong; sharp CENTRES the
+ * tiling grid on the canvas. Second, and this is the load-bearing one: a
+ * centred grid can put an extra instance PAST each edge, so `ceil` is not
+ * even an upper bound on how many instances touch the canvas. Measured on
+ * this exact canvas — 1400x933 at 480x240 — the ink lands in 3 columns
+ * x 5 row bands = 15 instances, against a ceiling of 12; the bands at y=0-31
+ * and y=901-932 exist only because the grid is centred. So "~14 is above the
+ * hard ceiling" does not follow: 15 instances touch, two of them cropped, and
+ * the FLOOR paragraph below says a human counts a cropped word as a mark. The
+ * "~14" is still an unverified eyeball — that part of round 3 stands — but it
+ * was never refuted. The ink-area equivalent for that cell is 10.98. Why this
+ * hid for three rounds: 640x320 on the same canvas DOES come out at 3 x 3 = 9,
+ * matching its ceiling exactly, so one of the two cases agreed and the formula
+ * read as verified rather than merely untested.) `composite({ tile: true })`
+ * paints one `<text>` per tile instance, so the most tile
  * instances that can touch a 1400x933 canvas at 480x240 is exactly
  * `ceil(1400/480) * ceil(933/240) = 3 * 4 = 12`. Round 2's own ~11
  * crop-extrapolated estimate was the closer of the two. 640x320 was
@@ -187,13 +203,22 @@ export async function assertTileHasInk(tile: Buffer): Promise<void> {
  * IMPORTANT for whoever revisits this: only two of the visible-mark counts
  * above are CONFIRMED — 12 at 480x240 and 9 at 640x320, both directly
  * rendered and both matching `ceil(canvasWidth / tileWidth) *
- * ceil(canvasHeight / tileHeight)` on the 1400x933 reference exactly. The
+ * ceil(canvasHeight / tileHeight)` on the 1400x933 reference exactly.
+ * (Round 4 correction: the "12 at 480x240" half of that does NOT hold.
+ * Re-measured on the same 1400x933 canvas, the ink-area equivalent is 10.98
+ * and the instance count is 15 — the ceiling's agreement was a coincidence in
+ * the middle, not a confirmation. The "9 at 640x320" half does hold: 3 x 3
+ * ink bands, ceiling 9. One matching case is what made the formula look
+ * verified.) The
  * earlier figures (~8 at 560x280, ~11 for 480x240 extrapolated from a
  * crop) were relayed estimates that were never checked against a render or
  * this formula — treat them as historical color, not ground truth. Naive
  * FLOOR arithmetic (`floor(w/tile) * floor(h/tile)`) UNDERCOUNTS what a
  * person actually sees, because `composite({ tile: true })` also paints
- * partial, cropped tiles along the canvas's right and bottom edges — a
+ * partial, cropped tiles along the canvas's right and bottom edges (round 4
+ * correction: along ALL FOUR edges — the grid is centred, so left and top get
+ * cropped instances too; measured, 480x240 on portrait 1067x1600 has an ink
+ * column at x=0-128) — a
  * cropped word at an edge still reads as "a mark" to a human looking at the
  * image, even though it is not a complete tile. Before writing a mark count
  * down as a measurement, either render and count directly or use the
@@ -201,6 +226,98 @@ export async function assertTileHasInk(tile: Buffer): Promise<void> {
  * guess as a verified figure the way this comment once did with a wrong
  * "~14" — that is exactly the kind of over-claiming this task exists to
  * catch, and it is what caught it.
+ *
+ * Round 4 (tile size — CURRENT): the owner asked for more marks again on
+ * 2026-08-21, reporting a real delivered proof (a dark forest photo at true
+ * proof size, 1067x1600, PORTRAIT) with ~9 visible marks — a human headcount
+ * on a real photo, not a formula. It happens to match round 3's own ~9
+ * figure two paragraphs up, but that figure was the ceiling formula on a
+ * LANDSCAPE 1400x933 canvas at 640x320 — a different orientation and a
+ * different metric (formula vs. headcount). Treat the match as coincidence,
+ * not confirmation — see the orientation-labelled correction below for why
+ * the two do not actually measure the same thing. Four options — 640x320
+ * (round 3's shipped value), 480x240, 400x200, 360x180 — were rendered at
+ * TRUE proof size (1067x1600, not the round-2/3 reference crop or the
+ * round-3 1400x933 canvas) on that same dark photo and looked at directly.
+ * The owner chose 400x200.
+ *
+ * CORRECTION (2026-08-21, round 4) to the CEILING-formula claim above: the
+ * ceiling formula is not, in fact, a reliable "hard sanity check" on visible
+ * mark count — it OVERCOUNTS. Getting to that conclusion took TWO attempts,
+ * and the first one is itself the lesson worth keeping: it relayed a table
+ * from a Pillow mock under the words "measured directly, not estimated" —
+ * exactly the over-claiming the warning above exists to catch, tripped over
+ * again despite the label. The mock was not the real pipeline, and its
+ * tiling started at (0,0), which is not how `sharp` actually tiles — that
+ * one wrong assumption produced a whole table of wrong numbers dressed up
+ * as measurements. The lesson for round 5: a mock is not the pipeline, full
+ * stop, no matter how carefully the claim around its numbers is worded.
+ *
+ * The real mechanism, verified against this repo's actual pinned
+ * `sharp@0.34.5` (`composite({ input: tile, tile: true })`), not a mock:
+ * `sharp` CENTRES the tiling grid on the canvas — it does not start tiling
+ * at (0,0). `buildWatermarkTile` paints exactly ONE `<text>` at the tile's
+ * CENTER, not a shape filling the tile, so a tile instance whose bounding
+ * box merely touches the canvas along ANY edge — left/top as well as
+ * right/bottom, because the grid is centred, not anchored at the origin —
+ * can have its glyph land entirely off-canvas and contribute ZERO ink,
+ * while the ceiling formula still counts that instance as a full mark.
+ * Confirmed from ink column positions, not inferred: at 640x320 on a
+ * 1067x1600 canvas the only ink column sits at x=458-608, centred on
+ * 1067/2=533 — not starting at x=0 the way a (0,0)-origin grid would put
+ * it.
+ *
+ * Measured by compositing the real tile onto a transparent canvas at real
+ * output dimensions, summing composited alpha, and dividing by one tile's
+ * own ink area. CANVAS ORIENTATION is labelled on every number below,
+ * because conflating orientations is exactly what produced the wrong table
+ * this replaces — portrait 1067x1600 is what a real proof actually is
+ * (`PROOF_MAX_LONG_EDGE` caps the long edge, and most photos through this
+ * pipeline are portrait); landscape 1600x1067 is included because round 3's
+ * own "~9" figure two paragraphs up turns out to be the LANDSCAPE count on
+ * a 1400x933 canvas, not a portrait one — production has been sparser on
+ * portrait photos than three rounds of this trail believed:
+ *
+ * (The `ceil` columns are per-orientation too. Leaving one unlabelled ceiling
+ * column would repeat the exact mistake this table replaces — and it showed:
+ * the 360x180 row measured 29.17 in landscape against a portrait-only ceiling
+ * of 27, which reads as a "measurement" breaking its own upper bound. The
+ * landscape ceiling there is 30, and there is no contradiction.)
+ *
+ * | tile      | ceil PORTRAIT | measured PORTRAIT 1067x1600 | ceil LANDSCAPE | measured LANDSCAPE 1600x1067 |
+ * |-----------|---------------|------------------------------|----------------|-------------------------------|
+ * | 640x320   | 10            | 5.00                         | 12             | 9.00                          |
+ * | 560x280   | 12            | 8.34                         | 12             | 10.00                         |
+ * | 520x260   | 21            | 14.18                        | 20             | 13.02                         |
+ * | 480x240   | 21            | 19.06                        | 20             | 15.00                         |
+ * | 440x220   | 24            | 21.00                        | 20             | 15.00                         |
+ * | 400x200   | 24            | 24.00                        | 24             | 20.00                         |
+ * | 360x180   | 27            | 27.00                        | 30             | 29.17                         |
+ *
+ * The ceiling formula's overcount is real (portrait 640x320: formula says
+ * 10, real is 5.00). Be precise about what it does and does not bound: in
+ * every case measured above it holds as a LOOSE upper bound on INK-AREA
+ * EQUIVALENTS, but it is NOT an upper bound on what a person counts — the
+ * centred grid can put a cropped instance past an edge, and 480x240 on the
+ * round-3 1400x933 canvas puts 15 instances of ink on screen against a
+ * ceiling of 12 (see the round 3 annotation above). Either way it is never a
+ * measurement — do not use it as a stand-in for a real render again. Do NOT use "just shrink
+ * a bit" reasoning either: this comment previously claimed no "real third
+ * column of mark centres" appears until the tile is under ~427px — that
+ * claim was itself unverified, and it is FALSE: 480x240 already shows three
+ * separate ink columns at portrait size (x=0-128, x=458-608, x=938-1066).
+ * It is deleted here, not softened.
+ *
+ * Be honest about what these numbers are: ink-area equivalents (composited
+ * alpha divided by one tile's ink area), not a headcount. A human counting
+ * partial, cropped marks at an edge as whole marks — the same reason FLOOR
+ * undercounts, two paragraphs up — will count HIGHER than this table, not
+ * match it; that is very likely why the owner's real ~9-mark portrait
+ * headcount above reads higher than this table's 5.00 for that same
+ * 640x320/portrait cell. Do not restate this table as "what a person sees".
+ * The existing warning above about not relaying an eyeballed guess as a
+ * verified figure stands, unweakened by this correction — round 4 is proof
+ * it needs restating, not proof it already worked.
  *
  * `tileWidth`/`tileHeight` default to the design size but can be smaller —
  * `processProof` clamps them to the output canvas, since sharp's

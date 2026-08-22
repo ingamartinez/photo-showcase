@@ -106,8 +106,8 @@ const WEBP_QUALITY = 82;
 // option. Tiling (rather than one mark in a corner) is deliberate: it is
 // far harder to crop out without destroying the photo, and it survives
 // screenshots/crops of any region.
-const WATERMARK_TILE_WIDTH = 640;
-const WATERMARK_TILE_HEIGHT = 320;
+const WATERMARK_TILE_WIDTH = 400;
+const WATERMARK_TILE_HEIGHT = 200;
 const WATERMARK_ROTATION_DEG = -28;
 const WATERMARK_FONT_SIZE = 30;
 
@@ -201,6 +201,54 @@ export async function assertTileHasInk(tile: Buffer): Promise<void> {
  * guess as a verified figure the way this comment once did with a wrong
  * "~14" — that is exactly the kind of over-claiming this task exists to
  * catch, and it is what caught it.
+ *
+ * Round 4 (tile size — CURRENT): the owner asked for more marks again on
+ * 2026-08-21, reporting a real delivered proof (a dark forest photo at true
+ * proof size, 1067x1600) with ~9 visible marks — round 3's own count,
+ * confirmed above — saying "quiero que aparezcan más". Four options —
+ * 640x320 (round 3's shipped value), 480x240, 400x200, 360x180 — were
+ * rendered at TRUE proof size (1067x1600, not the round-2/3 reference crop
+ * or the round-3 1400x933 canvas) on that same dark photo and looked at
+ * directly. The owner chose 400x200.
+ *
+ * CORRECTION (2026-08-21, round 4) to the CEILING-formula claim above: the
+ * ceiling formula is not, in fact, a reliable "hard sanity check" on visible
+ * mark count — it OVERCOUNTS, and round 4 is what caught it. It happened to
+ * match the two directly-rendered counts round 3 checked it against
+ * (480x240 and 640x320 on the 1400x933 canvas), which is exactly why it read
+ * as verified rather than merely untested at smaller tile sizes.
+ * `buildWatermarkTile` paints exactly ONE `<text>` at the tile's CENTER, not
+ * a shape that fills the tile — so a tile instance whose bounding box merely
+ * touches the canvas along the right/bottom edge can have its glyph land
+ * entirely off-canvas and contribute ZERO ink, while the ceiling formula
+ * still counts that instance as a full mark. Measured directly on a
+ * 1067x1600 canvas (true proof size) by summing composited alpha across the
+ * whole output and dividing by one tile's own ink area — not estimated, not
+ * the ceiling formula:
+ *
+ * | tile      | ceil-formula | measured mark-equivalents |
+ * |-----------|--------------|----------------------------|
+ * | 640x320   | 10           | ~9.2                       |
+ * | 560x280   | 12           | ~11.0                      |
+ * | 520x260   | 21           | ~11.0  (!)                 |
+ * | 480x240   | 21           | ~12.8                      |
+ * | 400x200   | 24           | ~21.6                      |
+ * | 360x180   | 27           | ~24.8                      |
+ *
+ * Note 520x260: the ceiling formula claims 21, the real ink is the same as
+ * 560x280's 12. That is the overcount, and it is why "just shrink a bit"
+ * between 640 and ~427 buys almost nothing on a portrait proof — the width
+ * does not gain a real third column of mark CENTRES until the tile is under
+ * ~427px. Be honest about what these numbers are: they are ink-area
+ * equivalents (composited alpha divided by one tile's ink area), not a
+ * headcount. A human counting partial, cropped marks at an edge as whole
+ * marks — the same reason FLOOR undercounts, two paragraphs up — will count
+ * HIGHER than this table, not match it. Do not restate this table as "what a
+ * person sees". The existing warning above about not relaying an eyeballed
+ * guess as a verified figure stands, unweakened by this correction — it is
+ * the reason the ceiling formula's overcount got caught at all: someone
+ * measured instead of trusting that an already-matched formula would keep
+ * matching at every size.
  *
  * `tileWidth`/`tileHeight` default to the design size but can be smaller —
  * `processProof` clamps them to the output canvas, since sharp's

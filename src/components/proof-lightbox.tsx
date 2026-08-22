@@ -65,6 +65,7 @@
 import { useEffect, useRef } from "react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { DownloadFinalButton } from "@/components/download-final-button";
+import { ZoomableStage } from "@/components/zoomable-stage";
 import type { ProofAsset } from "@/components/proof-grid";
 import type { QuotaResult } from "@/lib/quota";
 import type { SelectionKind } from "@/lib/selection-snapshot";
@@ -136,6 +137,9 @@ export function ProofLightbox({
 }) {
   const asset = assets[index];
   const touchStartX = useRef<number | null>(null);
+  // Armed the moment a second finger lands and disarmed only once the whole
+  // hand is off the glass — see `handleTouchStart`'s own comment.
+  const isPinchRef = useRef(false);
   // Whatever was focused at the moment this opened — the grid tile, or a tray
   // thumbnail. See `onOpenAutoFocus`/`onCloseAutoFocus` below for why this
   // component has to hold it itself rather than let the primitive do it.
@@ -204,14 +208,50 @@ export function ProofLightbox({
   // footer chrome, not over the middle of the photo. A drag that starts on
   // the pick button is not a problem — browsers suppress the `click` once the
   // finger travels past their own slop, and 40px is well past it.
+  // A SWIPE IS ONE FINGER. A PINCH IS NOT A SWIPE.
+  // ==============================================
+  // Reported by the owner (2026-08-21): pinching to zoom on a phone jumped to
+  // the next photo. The first version of these handlers read `touches[0]` and
+  // nothing else, which makes a two-finger gesture indistinguishable from a
+  // one-finger one — and a pinch-out moves each finger horizontally by FAR
+  // more than the 40px threshold below, so it did not misfire occasionally,
+  // it misfired every time.
+  //
+  // Two facts about the touch model do all the work here:
+  //   1. `touchstart` fires again when the SECOND finger lands, with
+  //      `touches.length === 2`. That is the moment a swipe stops being a
+  //      possibility, so the gesture is poisoned right there.
+  //   2. `touchend` fires once PER FINGER LIFTED, not once per gesture. While
+  //      `touches` is non-empty the hand is still on the glass and there is
+  //      nothing to decide yet.
+  //
+  // `touches` is read defensively (`?.length ?? 0`) because a synthesised
+  // `touchend` — JSDOM's, and therefore this component's own tests' — carries
+  // only `changedTouches`.
   function handleTouchStart(event: React.TouchEvent) {
+    if ((event.touches?.length ?? 0) > 1) {
+      isPinchRef.current = true;
+      touchStartX.current = null;
+      return;
+    }
+    // EVERY gesture starts here, which is what makes this the only reset this
+    // needs. A `touchcancel` handler was written first and then deleted: it
+    // could not be made to fail when removed, because a browser that takes a
+    // pinch away (a system edge-swipe, an incoming call) still delivers a
+    // fresh `touchstart` for whatever the hand does next, and that lands on
+    // this line. A handler whose removal breaks nothing is guarding nothing.
+    isPinchRef.current = false;
     touchStartX.current = event.touches[0]?.clientX ?? null;
   }
 
   function handleTouchEnd(event: React.TouchEvent) {
+    // Fact 2: another finger is still down, so this gesture is not over.
+    if ((event.touches?.length ?? 0) > 0) return;
+    const wasPinch = isPinchRef.current;
     const startX = touchStartX.current;
+    isPinchRef.current = false;
     touchStartX.current = null;
-    if (startX === null) return;
+    if (wasPinch || startX === null) return;
     const endX = event.changedTouches[0]?.clientX ?? startX;
     const deltaX = endX - startX;
     const SWIPE_THRESHOLD_PX = 40;
@@ -308,31 +348,16 @@ export function ProofLightbox({
             </button>
           </div>
 
-          {/* `.lb__stage` (:502). `min-h-0` because a `1fr` grid row still
-              takes `min-height: auto` from its content otherwise, which on a
-              short viewport would push the footer off the bottom of the
-              screen — the one place the pick button may never go. */}
-          <div className="relative min-h-0 overflow-hidden">
-            {/* Plain <img>, not next/image: same reasoning as asset-tile.tsx —
-                proof URLs are short-lived, private, presigned R2 URLs whose
-                query string is never stable between two loads. `key` on the
-                asset id so navigating swaps the element rather than mutating
-                one <img>'s src, which is what keeps a failed load's `onError`
-                attributable to the asset that failed.
-
-                `onError` is the 5-minute-expiry recovery path (task #23), and
-                looking at one photograph for longer than the presigned TTL is
-                precisely this screen's normal case. <ProofGrid> hands the
-                SAME `refreshUrl` to the tray, the tiles and here. */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              key={asset.id}
-              src={src}
-              alt={asset.originalFilename}
-              onError={() => onImageError(asset.id)}
-              className="absolute inset-0 h-full w-full object-contain"
-            />
-
+          {/* `.lb__stage` (:502). The stage itself, the photograph and the
+              desktop click-to-1:1 zoom all live in <ZoomableStage> — the same
+              component the admin viewer mounts, so "the screen is painting
+              this 1600px proof at half size" gets one answer, not two. */}
+          <ZoomableStage
+            assetId={asset.id}
+            src={src}
+            alt={asset.originalFilename}
+            onImageError={() => onImageError(asset.id)}
+          >
             {/* `.lb__hint` (:510-513), and `lg:hidden` is the mock's own :569
                 — there is no swiping at a desk, and the arrows below say the
                 same thing there. Only shown when there is somewhere to go. */}
@@ -341,7 +366,7 @@ export function ProofLightbox({
                 Deslizá para pasar
               </p>
             )}
-          </div>
+          </ZoomableStage>
 
           {/* `.lb__foot` (:514). The safe-area inset is the mock's own; `0px`
               rather than its bare `0` because a unitless zero is not a valid

@@ -280,3 +280,101 @@ describe("AdminAssetViewer", () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// DESKTOP CLICK-TO-1:1 ZOOM (owner request, 2026-08-21)
+// ---------------------------------------------------------------------------
+// "en desktop no se le puede hacer zoom a la foto, incluye admin y cliente".
+// The maths, the clamp and the pointer gate all live in `use-image-zoom.ts`
+// and are pinned down against real geometry in proof-lightbox.test.tsx — what
+// is worth asserting HERE is the thing that file cannot see: that the
+// photographer's own viewer is actually wired to the hook, not just the
+// client's. A 1067x1600 proof in the 1440x750 stage a 1440x900 laptop leaves.
+const ADMIN_STAGE = { width: 1440, height: 750 };
+const ADMIN_PORTRAIT = { width: 1067, height: 1600 };
+
+function stubFinePointer(isFine: boolean) {
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: query === "(pointer: fine)" && isFine,
+    media: query,
+    onchange: null,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+    addListener: () => {},
+    removeListener: () => {},
+    dispatchEvent: () => false,
+  }));
+}
+
+function primeAdminStage(altText: string) {
+  const img = screen.getByAltText(altText) as HTMLImageElement;
+  const stageEl = img.parentElement as HTMLElement;
+  Object.defineProperty(img, "naturalWidth", { value: ADMIN_PORTRAIT.width, configurable: true });
+  Object.defineProperty(img, "naturalHeight", { value: ADMIN_PORTRAIT.height, configurable: true });
+  Object.defineProperty(stageEl, "clientWidth", { value: ADMIN_STAGE.width, configurable: true });
+  Object.defineProperty(stageEl, "clientHeight", { value: ADMIN_STAGE.height, configurable: true });
+  stageEl.getBoundingClientRect = () =>
+    ({
+      left: 0,
+      top: 0,
+      right: ADMIN_STAGE.width,
+      bottom: ADMIN_STAGE.height,
+      width: ADMIN_STAGE.width,
+      height: ADMIN_STAGE.height,
+      x: 0,
+      y: 0,
+      toJSON: () => ({}),
+    }) as DOMRect;
+  fireEvent.load(img);
+  return { img, stageEl };
+}
+
+function adminPainted(img: HTMLImageElement) {
+  const match = /^translate\((-?[\d.]+)px, (-?[\d.]+)px\) scale\(([\d.]+)\)$/.exec(
+    img.style.transform,
+  );
+  return match ? { x: Number(match[1]), y: Number(match[2]), scale: Number(match[3]) } : null;
+}
+
+describe("AdminAssetViewer — desktop zoom to 1:1", () => {
+  it("gives the photographer the same click-to-1:1 the client's lightbox has", () => {
+    stubFinePointer(true);
+    renderViewer({ assets: assetsFor(3), index: 1 });
+    const { img, stageEl } = primeAdminStage("IMG_0002.JPG");
+
+    fireEvent.pointerDown(stageEl, { pointerId: 1, button: 0, clientX: 720, clientY: 375 });
+    fireEvent.pointerUp(stageEl, { pointerId: 1, button: 0, clientX: 720, clientY: 375 });
+
+    const result = adminPainted(img);
+    expect(result).not.toBeNull();
+    expect(result!.scale).toBeCloseTo(ADMIN_PORTRAIT.height / ADMIN_STAGE.height, 6);
+  });
+
+  it("pans with a drag and stops where the photo ends", () => {
+    stubFinePointer(true);
+    renderViewer({ assets: assetsFor(3), index: 1 });
+    const { img, stageEl } = primeAdminStage("IMG_0002.JPG");
+    fireEvent.pointerDown(stageEl, { pointerId: 1, button: 0, clientX: 720, clientY: 375 });
+    fireEvent.pointerUp(stageEl, { pointerId: 1, button: 0, clientX: 720, clientY: 375 });
+
+    fireEvent.pointerDown(stageEl, { pointerId: 1, button: 0, clientX: 720, clientY: 375 });
+    fireEvent.pointerMove(stageEl, { pointerId: 1, clientX: 1020, clientY: 1275 });
+    fireEvent.pointerUp(stageEl, { pointerId: 1, button: 0, clientX: 1020, clientY: 1275 });
+
+    const result = adminPainted(img);
+    // 1067px of photo in a 1440px stage: no horizontal slack to give.
+    expect(result!.x).toBe(0);
+    expect(result!.y).toBe((ADMIN_PORTRAIT.height - ADMIN_STAGE.height) / 2);
+  });
+
+  it("does not arm click-to-zoom on a coarse pointer", () => {
+    stubFinePointer(false);
+    renderViewer({ assets: assetsFor(3), index: 1 });
+    const { img, stageEl } = primeAdminStage("IMG_0002.JPG");
+
+    fireEvent.pointerDown(stageEl, { pointerId: 1, button: 0, clientX: 720, clientY: 375 });
+    fireEvent.pointerUp(stageEl, { pointerId: 1, button: 0, clientX: 720, clientY: 375 });
+
+    expect(adminPainted(img)).toBeNull();
+  });
+});

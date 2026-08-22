@@ -46,6 +46,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import type { WorkspaceAsset } from "@/components/gallery-workspace";
+import { ZoomableStage } from "@/components/zoomable-stage";
 import { cn } from "@/lib/utils";
 
 export function AdminAssetViewer({
@@ -193,25 +194,16 @@ export function AdminAssetViewer({
             </button>
           </div>
 
-          <div className="relative min-h-0 overflow-hidden">
-            {/* Plain <img>, not next/image — same reasoning as
-                asset-tile.tsx and proof-lightbox.tsx: proof URLs are
-                short-lived, private, presigned R2 URLs whose query string is
-                never stable between two loads. `key` on the asset id so
-                navigating swaps the element, which is what keeps a failed
-                load's `onError` attributable to the asset that failed. NOT
-                `object-cover` (asset-tile.tsx's own choice, for grid
-                density) — `object-contain`, because showing the WHOLE photo
-                is this screen's entire reason to exist. */}
-            {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img
-              key={asset.id}
-              src={src}
-              alt={asset.originalFilename}
-              onError={() => void handleImgError(asset.id)}
-              className="absolute inset-0 h-full w-full object-contain"
-            />
-          </div>
+          {/* The stage, the photograph and the desktop click-to-1:1 zoom, in
+              the SAME component the client's <ProofLightbox> mounts — see
+              zoomable-stage.tsx. The photographer judging sharpness and the
+              client judging a photo are looking at the same 1600px ceiling. */}
+          <ZoomableStage
+            assetId={asset.id}
+            src={src}
+            alt={asset.originalFilename}
+            onImageError={() => void handleImgError(asset.id)}
+          />
 
           <div className="grid gap-[10px] px-4 pt-3 pb-[calc(14px+env(safe-area-inset-bottom,0px))] sm:px-7 lg:px-12">
             <div className="grid grid-cols-[auto_1fr_auto] items-center gap-[10px] sm:mx-auto sm:w-full sm:max-w-[460px]">

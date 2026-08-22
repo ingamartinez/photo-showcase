@@ -300,6 +300,81 @@ describe("processProof", () => {
     expect(cellsWithInk).toBeGreaterThanOrEqual(Math.ceil(gridSize * gridSize * 0.45));
   });
 
+  // Task #224 (round 4): the tile shrank from 640x320 to 400x200
+  // specifically to roughly DOUBLE the number of visible marks on a proof.
+  // A test that reads `WATERMARK_TILE_WIDTH`/`WATERMARK_TILE_HEIGHT` and
+  // asserts they equal 400/200 would pass no matter what those constants
+  // are set to on the day it is written — it never exercises the pipeline.
+  // This test instead measures the real consequence: how much watermark ink
+  // actually lands on a composited proof.
+  //
+  // Methodology: a FULL-PRECISION ink count (every pixel, not the 6x6
+  // sampled grid the coverage test above uses — that test only needs a
+  // boolean "does this cell have ink"; this one needs a number sensitive
+  // enough to show a density change). The fixture is a flat 1067x1600
+  // portrait — the exact true proof size (`PROOF_MAX_LONG_EDGE` = 1600) the
+  // owner evaluated the four density options against — fed in already at
+  // that size so `processProof` does not resize it, keeping the assay
+  // deterministic.
+  //
+  // `OLD_TILE_INK_BASELINE` was measured directly against this exact
+  // fixture/assay BEFORE task #224's edit, i.e. against the PREVIOUS
+  // WATERMARK_TILE_WIDTH/HEIGHT = 640x320: 5258 inked pixels out of
+  // 1,707,200 (ratio ~0.0031). The current 400x200 tile measures 25506 on
+  // the same fixture (ratio ~0.0149) — a ~4.85x increase, comfortably above
+  // the "roughly double" the task asked for. The assertion below only
+  // requires 2x the old baseline, not the full measured 4.85x: a real
+  // safety margin against ordinary cross-machine font-rendering variance
+  // (antialiasing differs by fontconfig/freetype/pango version — this repo
+  // has already hit that class of difference, see the fontless-sharp trap
+  // in task #224), while still failing hard if the tile constants regress
+  // toward 640x320 — a genuine regression to the old size lands back near
+  // the 1x baseline, well under this floor. Verified by mutation: setting
+  // WATERMARK_TILE_WIDTH/HEIGHT back to 640/320 and rerunning only this test
+  // turns it red (see task #224's shipping report for the observed output).
+  //
+  // What this test does NOT catch: it does not pin the exact tile pixel
+  // size, and it would not fail if 400x200 changed to some other size that
+  // happens to also clear the 2x floor (e.g. 420x210) — it only guards
+  // against a regression toward the OLD, sparser density, not against every
+  // possible future value.
+  it("composites measurably more watermark ink than the pre-task-#224 640x320 tile did", async () => {
+    const width = 1067;
+    const height = 1600; // true proof size; matches PROOF_MAX_LONG_EDGE exactly
+    const fixture = await sharp({
+      create: { width, height, channels: 3, background: BACKGROUND },
+    })
+      .jpeg()
+      .toBuffer();
+
+    const result = await processProof(fixture);
+    // Confirms the fixture's exact size survived the pipeline unresized —
+    // otherwise the ink count below would not be comparable to the recorded
+    // baseline at all.
+    expect(result.width).toBe(width);
+    expect(result.height).toBe(height);
+
+    const { data: raw, info } = await sharp(result.data)
+      .raw()
+      .toBuffer({ resolveWithObject: true });
+    const { width: outWidth, height: outHeight, channels } = info;
+    const threshold = 10;
+    let inkedPixels = 0;
+    for (let i = 0; i < outWidth * outHeight; i++) {
+      const offset = i * channels;
+      if (
+        Math.abs(raw[offset] - BACKGROUND.r) > threshold ||
+        Math.abs(raw[offset + 1] - BACKGROUND.g) > threshold ||
+        Math.abs(raw[offset + 2] - BACKGROUND.b) > threshold
+      ) {
+        inkedPixels++;
+      }
+    }
+
+    const OLD_TILE_INK_BASELINE = 5258;
+    expect(inkedPixels).toBeGreaterThan(OLD_TILE_INK_BASELINE * 2);
+  });
+
   it("does not upscale an image already smaller than the max long edge", async () => {
     const width = 400;
     const height = 300;

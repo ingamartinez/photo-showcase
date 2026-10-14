@@ -30,39 +30,19 @@ import { describe, expect, it } from "vitest";
 //      comment already documents removing this in favour of the mock's own
 //      stepped gutter (task #142); this guard is what keeps it from coming
 //      back.
-//   2. globals.css's `.label` class, and the BARE STRING "label" as a
-//      Tailwind class token. `.label` is `letter-spacing: 0.22em` — verified
-//      against `design/system/home.html`'s own `.kicker` (line 57), which is
-//      the exact same 0.22em value under a different name reused verbatim in
-//      globals.css. `design/system/client.html` has its OWN `.kicker`
-//      (:117-120) for this exact eyebrow/small-caps device, and it specifies
-//      0.18em — a real, easy-to-miss 0.04em gap from the marketing value,
-//      not a rounding difference. Task #149's own sweep found FOUR call
-//      sites using the shared `.label` class (`src/app/galleries/page.tsx`
-//      twice, `src/app/galleries/[publicSlug]/page.tsx` once,
-//      `src/components/client-preview-banner.tsx` once) and converted all
-//      four to the mock's own 0.18em value, inlined rather than a shared
-//      class, specifically so this exact drift cannot happen silently again
-//      via a shared name.
-//   3. The marketing CTA's own SHAPE — `uppercase` paired with a tight
-//      tracking value — found surviving in `submit-selection-panel.tsx`'s
-//      "Enviar selección" button as a raw, un-classed
-//      `uppercase tracking-[0.1em] text-[13px]` bordered button, the exact
-//      device `src/app/galleries/layout.tsx`'s own header comment already
-//      named as removed from "Cerrar sesión" (#142) — the SAME finding shape
-//      as #135's own "un-classed sibling" for `/dashboard`, independently
-//      reproduced here. `design/system/client.html`'s own "Enviar" action is
-//      `.btn.btn--primary` (:828, :867), which is NOT uppercase and tracks at
-//      0.02em. Because THIS surface's own legitimate eyebrow device (the
-//      kicker, above) DOES use `uppercase` at 0.18em — unlike `/dashboard`,
-//      where no legitimate uppercase treatment exists at all — the rule
-//      cannot be "ban uppercase+tight-tracking outright" the way #135's is.
-//      It is instead an ALLOWLIST, the same shape #135's own
-//      `WORDMARK_SIZE_TOKEN` exception uses: `uppercase` may appear ONLY
-//      paired with EXACTLY `tracking-[0.18em]` (the kicker's own value) in
-//      the same class list. Any other pairing — no tracking at all, the
-//      marketing CTA's `tracking-[0.1em]`, `.label`'s `tracking-[0.22em]`,
-//      home.html's `.eyebrow` at `tracking-[0.28em]` — fails.
+//   2. The retired kicker/eyebrow utility, and the BARE STRING "label" as a
+//      Tailwind class token. The tracked small-caps eyebrow device is gone
+//      from globals.css entirely — a heading carries its own weight — and
+//      this guard keeps it from coming back either by class name or by
+//      shape. Task #149's own sweep had converted four call sites to a
+//      surface-local 0.18em variant; that variant is retired too, which is
+//      why the pairing check below is a ban rather than an allowlist.
+//   3. The tracked small-caps SHAPE — `uppercase` paired with a tight
+//      tracking value — which is now banned outright on this surface,
+//      exactly as it is under /dashboard. There is no sanctioned kicker left
+//      to allowlist: the device is retired world-wide. Any `uppercase`
+//      pairing at 0.07em or tighter, or with a named wide-tracking utility,
+//      fails.
 //   4. `@media (max-width` — epic #140's hard mobile-first rule, restated
 //      from its own body: "el cliente elige sus fotos desde el teléfono...
 //      ninguna media query `max-width`." This is checked over RAW source,
@@ -184,15 +164,14 @@ function stripComments(source: string): string {
 /**
  * Every `const`/`let`/`var` string (or template-literal) declaration in the
  * file, keyed by identifier name, so a bare identifier referenced inside a
- * `className={…}` expression (this file's own `KICKER_CLASS` in
- * `src/app/galleries/page.tsx`, resolved by USAGE not by guessing its name
- * looks like a class constant) can be resolved back to the string it holds.
- * See `src/app/dashboard/marketing-styling.test.ts`'s own comment on the
+ * `className={…}` expression (a shared class constant resolved by USAGE, not
+ * by guessing its name looks like one) can be resolved back to the string it
+ * holds. See `src/app/dashboard/marketing-styling.test.ts`'s own comment on the
  * identical function for why resolving by usage, not by name shape, is what
  * makes this exhaustive rather than a guess. Known limitation, not live
  * today: a later re-declaration of the same name wins over an earlier one
- * (`Map.set`) — verified against the guarded set: one such constant exists
- * (`KICKER_CLASS`), declared once, never re-declared.
+ * (`Map.set`) — verified against the guarded set: the string constants that
+ * exist are each declared once and never re-declared.
  */
 function collectStringConstants(clean: string): Map<string, string> {
   const constants = new Map<string, string>();
@@ -407,19 +386,19 @@ function extractClassNameValues(source: string): string[] {
   return values;
 }
 
-/** This surface's ONE sanctioned uppercase/tracking pairing — the kicker,
- * `design/system/client.html`'s own `.kicker` (:117-120) at 0.18em. See this
- * file's header comment, point 3, for why the rule is an ALLOWLIST rather
- * than #135's outright ban: unlike `/dashboard`, this surface has a
- * legitimate uppercase device, so the guard has to name it rather than
- * forbid the whole shape. */
-const SANCTIONED_KICKER_TRACKING = "tracking-[0.18em]";
+/** No uppercase/tracking pairing is sanctioned on this surface any more: the
+ * tracked small-caps kicker device is retired world-wide (a heading carries
+ * its own weight), so `uppercase` paired with any tight tracking is a
+ * violation here exactly as it is under /dashboard. */
+const TIGHT_TRACKING = /^tracking-\[0?\.(0[7-9]|[1-9])/;
+const TIGHT_TRACKING_TOKENS = new Set(["tracking-widest", "tracking-[0.18em]"]);
 
 // Every bespoke class `globals.css` defines for the editorial/marketing world,
-// enumerated rather than hand-picked. `wrap` and `label` are the two this slice
-// actually removed; the other four are banned because of what they CARRY, not
-// how they look: `.collections` and `.work` declare `@media (max-width: 900px)`
-// and `(max-width: 560px)` (globals.css:604,658,663). Reintroducing either one
+// enumerated rather than hand-picked. The kicker utility was removed from
+// globals.css entirely and is listed here so it cannot come back by name; the
+// other four are banned because of what they CARRY, not how they look:
+// `.collections` and `.work` declare `@media (max-width: 900px)`
+// and `(max-width: 560px)` (globals.css). Reintroducing either one
 // here would smuggle a max-width onto a surface whose whole rule is that there
 // are none — and this scan reads .tsx, so it would never see the media query
 // itself. Banning the class is the only place that hole can be closed.
@@ -433,28 +412,16 @@ function findViolations(classValue: string): string[] {
     if (tokens.includes(banned)) {
       found.push(
         banned === "label"
-          ? `globals.css's "label" class (0.22em, the marketing site's own eyebrow value — ` +
-              `this surface's kicker is 0.18em): "${classValue}"`
+          ? `the retired kicker/eyebrow utility: "${classValue}"`
           : `globals.css's editorial "${banned}" class: "${classValue}"`,
       );
     }
   }
-  if (tokens.includes("uppercase")) {
-    const tracking = tokens.filter((t) => t.startsWith("tracking-"));
-    // Two ways to fail, and the second is why this is not a bare
-    // `!includes(SANCTIONED)` check: an element carrying BOTH the sanctioned
-    // value and a competing one renders whichever Tailwind emits last, so
-    // "has the right token somewhere" is not the same as "is the right
-    // token". Nothing in the guarded set does this today; the check exists so
-    // a later `cn(KICKER_CLASS, "tracking-[0.1em]")` cannot slip the marketing
-    // shape back in behind a sanctioned token.
-    const offending = tracking.filter((t) => t !== SANCTIONED_KICKER_TRACKING);
-    if (tracking.length === 0 || offending.length > 0) {
-      found.push(
-        `"uppercase" without EXACTLY this surface's sanctioned ${SANCTIONED_KICKER_TRACKING} ` +
-          `kicker pairing — the marketing CTA's own uppercase/tight-tracking shape: "${classValue}"`,
-      );
-    }
+  if (
+    tokens.includes("uppercase") &&
+    tokens.some((t) => TIGHT_TRACKING.test(t) || TIGHT_TRACKING_TOKENS.has(t))
+  ) {
+    found.push(`a tracked small-caps kicker pairing: "${classValue}"`);
   }
 
   return found;

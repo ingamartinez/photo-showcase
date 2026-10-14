@@ -397,7 +397,7 @@ describe("ProofLightbox", () => {
           />,
         );
 
-        expect(screen.getByRole("button", { name: "Elegida" }).textContent).toContain("✓");
+        expect(screen.getByRole("button", { name: "Elegida" }).querySelector("svg")).not.toBeNull();
 
         rerender(
           <ProofLightbox
@@ -405,9 +405,9 @@ describe("ProofLightbox", () => {
           />,
         );
 
-        expect(screen.getByRole("button", { name: "Elegir esta foto" }).textContent).not.toContain(
-          "✓",
-        );
+        expect(
+          screen.getByRole("button", { name: "Elegir esta foto" }).querySelector("svg"),
+        ).toBeNull();
       });
 
       it("channel 2 — the words change, so the state survives a greyscale screenshot", () => {
@@ -573,11 +573,11 @@ describe("ProofLightbox", () => {
     it("tells the client the gesture exists, and says nothing when there is nowhere to swipe to", () => {
       const { rerender } = render(<ProofLightbox {...lightboxProps()} />);
 
-      expect(screen.getByText("Deslizá para pasar")).toBeDefined();
+      expect(screen.getByText("Desliza para pasar")).toBeDefined();
 
       rerender(<ProofLightbox {...lightboxProps({ assets: assetsFor(1), index: 0 })} />);
 
-      expect(screen.queryByText("Deslizá para pasar")).toBeNull();
+      expect(screen.queryByText("Desliza para pasar")).toBeNull();
     });
   });
 

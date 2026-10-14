@@ -10,40 +10,26 @@ import {
 import { readClientGalleryList } from "@/lib/graphql/client-gallery-reads";
 import { getPresignedUrl, storedKey } from "@/lib/r2";
 
-// Per-`tone` colour for the state chip (`design/system/client.html:169-171`:
-// `.state--you`/`.state--wait`/`.state--done`) — a component-local map, not a
-// new `globals.css` token: `--color-*` under `@theme inline` is agent-9's
-// (#175) this cycle, and `#8FAE97` (the mock's "done" green) has no existing
-// brand token to reuse, so it is an arbitrary Tailwind value here rather than
-// a new custom property.
+// Per-`tone` colour for the state chip. Amber marks the state that asks the
+// client to act; the other two sit back in the neutral palette. `done` is the
+// light label tone rather than a second saturated hue — the accent is the
+// only saturated colour in this world, and a status chip is not worth a
+// second one.
 //
 // NOT contrast-corrected against the photo variant's scrim. Measured
 // composited over a blown-out white photo at 390px with the real compiled
 // stylesheet (task #180 review, round 2): `pending` 1.84:1, `waiting`
 // 1.16:1, `done` 1.35:1 — all three under WCAG 1.4.3, worst case 1.16:1.
-// These are `client.html`'s own colours at `client.html`'s own position, and
-// the scrim below is now byte-identical to the mock, so `pending` lands on
-// exactly the mock's own 1.84:1. Inherited design debt, not introduced or
-// fixed here; the owner is tracking it separately with design, and 1.16:1 is
-// the number to carry into that conversation. Only the title and meta lines
-// (both of which DO pass in the mock and did not in an earlier version of
-// this file) were in scope here — see `metaTextClass` and the gradient
-// stops below.
+// Inherited design debt, not introduced or fixed here; the owner is tracking
+// it separately with design, and 1.16:1 is the number to carry into that
+// conversation. Only the title and meta lines (both of which DO pass in the
+// mock and did not in an earlier version of this file) were in scope here —
+// see `metaTextClass` and the gradient stops below.
 const STATE_TONE_CLASS: Record<ReturnType<typeof formatClientGalleryCardState>["tone"], string> = {
   pending: "text-accent-2",
   waiting: "text-fg-dim",
-  done: "text-[#8FAE97]",
+  done: "text-canvas",
 };
-
-// Task #149's own sweep: globals.css's `.label` class (0.22em tracking) is
-// the PUBLIC SITE'S eyebrow — home.html's own `.kicker` (0.22em), reused
-// verbatim in globals.css under the `.label` name. It is not this surface's
-// value. `design/system/client.html`'s OWN `.kicker` (:117-120) is the
-// authority here and specifies 0.18em, not 0.22em — a real, if easy to miss,
-// 0.04em drift, not a rounding difference. Inlined rather than reusing the
-// shared class so the value actually shipped here can never silently drift
-// back to the marketing one just because the two share a class name.
-const KICKER_CLASS = "font-mono text-[11px] tracking-[0.18em] uppercase";
 
 export const metadata: Metadata = {
   title: "Tus galerías",
@@ -89,12 +75,11 @@ export default async function ClientGalleriesPage() {
 
   return (
     <>
-      <span className={`${KICKER_CLASS} text-accent mb-4 block`}>Tus galerías</span>
-      {/* `.display`, client.html:121-125 and the heading markup at 597-600.
-          `formatGalleryIndexHeading` (src/lib/galleries.ts) decides the exact
-          lines, including the null-name degrade this task's own late-added
-          acceptance criterion asks for — see that function's own comment. */}
-      <h1 className="max-w-[24ch] font-serif text-[clamp(30px,4.5vw,52px)] leading-[1.05] font-normal tracking-[-0.015em] text-balance">
+      {/* `.display` heading markup. `formatGalleryIndexHeading`
+          (src/lib/galleries.ts) decides the exact lines, including the
+          null-name degrade this task's own late-added acceptance criterion
+          asks for — see that function's own comment. */}
+      <h1 className="text-title max-w-[24ch] font-serif leading-[1.05] font-normal tracking-[-0.015em] text-balance">
         {heading.lines.map((line, index) => (
           <span key={line}>
             {index > 0 && <br />}
@@ -104,17 +89,14 @@ export default async function ClientGalleriesPage() {
       </h1>
 
       {!hasGalleries ? (
-        <p className="text-fg-dim mt-5 max-w-[58ch] text-[15px] leading-relaxed">
+        <p className="text-fg-dim measure mt-5 text-[15px] leading-relaxed">
           Cuando publiquemos las pruebas de tu sesión, tu galería va a aparecer acá.
         </p>
       ) : (
         <>
-          {/* `.lede`, client.html:126 and 600 — count + earliest year, both
-              derived from the galleries this render already fetched, never a
-              second query. */}
-          {lede && (
-            <p className="text-fg-dim mt-3 max-w-[46ch] text-[15px] leading-relaxed">{lede}</p>
-          )}
+          {/* `.lede` — count + earliest year, both derived from the galleries
+              this render already fetched, never a second query. */}
+          {lede && <p className="text-fg-dim measure mt-3 text-[15px] leading-relaxed">{lede}</p>}
 
           {/* `.gal-list`, client.html:150 — a single ordered list either way:
               the trap this task's own body names ("no agregar filtros, orden
@@ -158,7 +140,7 @@ export default async function ClientGalleriesPage() {
               const cardText = (
                 <>
                   <span
-                    className={`${KICKER_CLASS} mb-2 flex items-center gap-[7px] ${STATE_TONE_CLASS[state.tone]}`}
+                    className={`mb-2 flex items-center gap-[7px] text-sm ${STATE_TONE_CLASS[state.tone]}`}
                   >
                     <span aria-hidden className="h-[5px] w-[5px] rounded-full bg-current" />
                     {state.label}
@@ -205,20 +187,17 @@ export default async function ClientGalleriesPage() {
                           alt=""
                           className="absolute inset-0 h-full w-full object-cover"
                         />
-                        {/* The mock's own bottom-to-top gradient
-                            (client.html:153-156: `rgba(7,7,9,0.92) 8%,
-                            rgba(7,7,9,0.15) 62%, transparent`) — text sits
-                            directly on the photo, so this is what keeps it
-                            legible regardless of what the photo itself
-                            looks like.
+                        {/* Bottom-to-top scrim — text sits directly on the
+                            photo, so this is what keeps it legible regardless
+                            of what the photo itself looks like.
 
                             An ARBITRARY `linear-gradient(...)`, not
                             Tailwind's `from-*`/`via-*`/`to-*` gradient
                             utilities: those compile to fixed 0%/50%/100%
                             stops (verified against this project's own
                             Tailwind v4.3.3 output, not assumed), which is
-                            NOT the mock's 8%/62%/100% — review on this task
-                            measured the difference directly against a
+                            NOT the 8%/62%/100% this needs — review on this
+                            task measured the difference directly against a
                             blown-out white photo, real Chromium, real
                             composited pixels (WCAG 2.1 relative-luminance
                             formula, not eyeballed): with the WRONG
@@ -227,10 +206,7 @@ export default async function ClientGalleriesPage() {
                             WCAG 1.4.3 at the title and meta. Re-measured the
                             same way with THIS literal gradient string:
                             1.84:1 / 7.08:1 / 5.42:1 — title and meta now
-                            clear 3:1/4.5:1 with margin, and the chip lands
-                            on the SAME 1.84:1 the mock's own gradient
-                            produces (see the note below for why that one is
-                            not fixed here). Re-run by rebuilding
+                            clear 3:1/4.5:1 with margin. Re-run by rebuilding
                             (`bun run build`), pointing a headless Chromium
                             at a static harness reproducing this exact
                             markup over a solid-white image, and sampling
@@ -241,7 +217,7 @@ export default async function ClientGalleriesPage() {
                             version in the first place. */}
                         <div
                           aria-hidden
-                          className="absolute inset-0 bg-[linear-gradient(to_top,rgba(7,7,9,0.92)_8%,rgba(7,7,9,0.15)_62%,transparent)]"
+                          className="absolute inset-0 bg-[linear-gradient(to_top,rgb(26_21_18_/_0.92)_8%,rgb(26_21_18_/_0.15)_62%,transparent)]"
                         />
                       </div>
                       <div className="absolute inset-x-0 bottom-0 px-6 pb-[18px]">{cardText}</div>

@@ -35,6 +35,7 @@
 //     `brightness-[1.06] saturate-[1.04]` (client.html:215, both of them),
 //     nowhere near enough to wash the mark out; an unpicked tile gets none.
 import { DownloadFinalButton } from "@/components/download-final-button";
+import { Check } from "@/components/icons";
 import type { ProofAsset } from "@/components/proof-grid";
 import type { SelectionKind } from "@/lib/selection-snapshot";
 
@@ -157,9 +158,7 @@ export function ProofTile({
             alt=""
             onError={onError}
             loading="lazy"
-            className={`h-full w-full object-cover transition-[filter] duration-200 ${
-              isSelected ? "brightness-[1.06] saturate-[1.04]" : ""
-            }`}
+            className={`h-full w-full object-cover ${isSelected ? "selection-reveal" : ""}`}
           />
 
           {/* Channel two of "picked is not colour alone": an inset frame, so
@@ -182,13 +181,13 @@ export function ProofTile({
 
               The `text-shadow` is NOT in the mock, and it is there because the
               capture showed it had to be: the mock's own colour
-              (rgba(236,234,242,0.55)) is legible on the mid-dark CSS gradients
+              (rgb(240 235 227 /0.55)) is legible on the mid-dark CSS gradients
               that stand in for photographs there, and disappears completely on
               a genuinely bright proof — an overexposed sky, a white dress,
               which is a large share of what a wedding photographer actually
               delivers. A number nobody can read is worse than no number. The
               colour is the mock's, unchanged; only the backing was added. */}
-          <span className="pointer-events-none absolute top-2 left-2 font-mono text-[10px] text-[rgba(236,234,242,0.55)] tabular-nums [text-shadow:0_1px_2px_rgba(7,7,9,0.9)]">
+          <span className="text-[rgb(240 235 227 /0.55)] [text-shadow:0_1px_2px_rgb(26 21 18 /0.9)] pointer-events-none absolute top-2 left-2 font-mono text-[10px] tabular-nums">
             {String(position).padStart(2, "0")}
           </span>
         </div>
@@ -217,7 +216,7 @@ export function ProofTile({
           THE `shadow-[...]` IS A DECLARED DEVIATION FROM THE MOCK, the second
           one in this file and for the same reason as the first (see the
           `text-shadow` on `.tile__n` above). The mock's unpicked control is a
-          1px `rgba(236,234,242,0.5)` ring over a `rgba(7,7,9,0.42)` disc
+          1px `rgb(240 235 227 /0.5)` ring over a `rgb(26 21 18 /0.42)` disc
           (client.html:204-205) and nothing else. Composited over a flat photo
           and measured as WCAG relative luminance, the mock's two channels are
           below 1.4.11's 3:1 at every photo tone — disc 2.83:1 over RGB-230,
@@ -232,7 +231,7 @@ export function ProofTile({
           the affordance at EVERY photo tone instead of nudging one case towards
           the line, and it keeps the mock's own palette values untouched — the
           same trade `.tile__n` above already made, where only the backing was
-          added and the colour stayed the mock's. `rgba(7,7,9,0.6)`, the obvious
+          added and the colour stayed the mock's. `rgb(26 21 18 /0.6)`, the obvious
           alternative, reaches only 2.99:1 at mid-tone and so does not clear the
           floor either. On both states rather than only the unpicked one,
           because `transition-colors` does not animate box-shadow and a shadow
@@ -258,16 +257,16 @@ export function ProofTile({
             ? `Quitar de seleccionadas: ${asset.originalFilename}`
             : `Seleccionar: ${asset.originalFilename}`
         }
-        className={`absolute right-[7px] bottom-[7px] z-10 grid h-12 w-12 place-items-center rounded-full border text-[17px] leading-none shadow-[0_1px_6px_rgba(7,7,9,0.6)] backdrop-blur-[6px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
+        className={`shadow-[0_1px_6px_rgb(26 21 18 /0.6)] absolute right-[7px] bottom-[7px] z-10 grid h-12 w-12 place-items-center rounded-full border text-[17px] leading-none backdrop-blur-[6px] transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
           isSelected
-            ? "border-accent bg-accent text-[#14100a]"
-            : "text-fg hover:border-accent border-[rgba(236,234,242,0.5)] bg-[rgba(7,7,9,0.42)]"
+            ? "border-accent bg-accent text-ink"
+            : "text-fg hover:border-accent border-[rgb(240 235 227 /0.5)] bg-[rgb(26 21 18 /0.42)]"
         }`}
       >
         {/* Channel one: a shape, not a hue. `aria-hidden` because the button's
             own `aria-label` and `aria-pressed` already say this, and a screen
-            reader announcing a bare "✓" after them adds nothing. */}
-        <span aria-hidden="true">{isSelected ? "✓" : ""}</span>
+            reader announcing a bare checkmark after them adds nothing. */}
+        <span aria-hidden="true">{isSelected ? <Check /> : null}</span>
       </button>
 
       {/* TASK #206 — THE TYPE CONTROL, in the tile's bottom-LEFT corner (the
@@ -314,8 +313,8 @@ export function ProofTile({
           sees pressed, with no ambiguity about what a single "flip" button
           would currently mean.
 
-          Reuses the pick button's own palette (`rgba(7,7,9,0.42)` ground,
-          `rgba(236,234,242,0.5)` border, `--accent` when pressed) so this
+          Reuses the pick button's own palette (`rgb(26 21 18 /0.42)` ground,
+          `rgb(240 235 227 /0.5)` border, `--accent` when pressed) so this
           reads as the SAME family of control as the one right next to it,
           not a competing visual language.
 
@@ -338,7 +337,7 @@ export function ProofTile({
         <div
           role="group"
           aria-label={`Tipo de foto: ${asset.originalFilename}`}
-          className="absolute bottom-2 left-2 z-10 flex overflow-hidden rounded-full border border-[rgba(236,234,242,0.5)] bg-[rgba(7,7,9,0.42)] backdrop-blur-[6px]"
+          className="border-[rgb(240 235 227 /0.5)] bg-[rgb(26 21 18 /0.42)] absolute bottom-2 left-2 z-10 flex overflow-hidden rounded-full border backdrop-blur-[6px]"
         >
           <button
             type="button"
@@ -347,9 +346,7 @@ export function ProofTile({
             aria-label={`Marcar como editada: ${asset.originalFilename}`}
             disabled={isPending}
             className={`px-1.5 py-1 text-[9px] leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-              selectionKind === "edited"
-                ? "bg-accent text-[#14100a]"
-                : "text-fg hover:text-accent-2"
+              selectionKind === "edited" ? "bg-accent text-ink" : "text-fg hover:text-accent-2"
             }`}
           >
             Editada
@@ -361,9 +358,7 @@ export function ProofTile({
             aria-label={`Marcar como original: ${asset.originalFilename}`}
             disabled={isPending}
             className={`px-1.5 py-1 text-[9px] leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
-              selectionKind === "original"
-                ? "bg-accent text-[#14100a]"
-                : "text-fg hover:text-accent-2"
+              selectionKind === "original" ? "bg-accent text-ink" : "text-fg hover:text-accent-2"
             }`}
           >
             Original

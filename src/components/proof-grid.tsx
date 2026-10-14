@@ -556,7 +556,7 @@ export function ProofGrid({
           only this component knows whether the selection is still open. */}
       {!isLocked && (
         <p className="text-fg-dim mb-3 text-sm">
-          Tocá una foto para verla grande. El círculo la elige.
+          Toca una foto para verla grande. El círculo la elige.
         </p>
       )}
 
@@ -656,7 +656,7 @@ export function ProofGrid({
           <div className="mx-auto flex max-w-[1280px] flex-wrap items-center justify-between gap-3">
             <SelectionCounter quota={quota} allowsOriginalSelection={allowsOriginalSelection} />
             <div className="flex items-center gap-3">
-              {toggleError && <p className="text-xs text-[#e0796b]">{toggleError}</p>}
+              {toggleError && <p className="text-danger text-xs">{toggleError}</p>}
               <SubmitSelectionPanel
                 galleryId={galleryId}
                 quota={quota}

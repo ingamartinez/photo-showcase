@@ -445,16 +445,24 @@ export function SelectionTray({
   return (
     <section
       aria-label="Fotos elegidas"
-      className="border-bg-2 bg-bg/95 sticky top-0 z-30 mb-6 rounded-sm border p-4 backdrop-blur-md"
+      className="border-bg-2 bg-bg/95 sticky top-0 z-30 mb-3 rounded-sm border px-3 py-2 backdrop-blur-md lg:mb-6 lg:p-4"
       // Announced politely: a pick landing from ANOTHER session is a change
       // the client did not cause, which is precisely the case a screen reader
       // user would otherwise never learn about. `polite`, not `assertive` —
       // it must not interrupt someone mid-navigation of the grid.
       aria-live="polite"
     >
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-x-3 gap-y-2">
+      {/* Task #236 — below `lg` the header is ONE slim row (heading, count,
+          toggle); the "Se actualiza sola…" subtitle lives inside the
+          collapsible body instead, so a folded tray costs ~44px of phone
+          screen, not ~110px. */}
+      <div
+        className={`flex items-center justify-between gap-x-3 gap-y-2 lg:mb-3 ${
+          isCollapsed ? "" : "mb-2"
+        }`}
+      >
         <div className="flex items-baseline gap-2">
-          <h2 className="font-serif text-lg">Fotos elegidas</h2>
+          <h2 className="font-serif text-base lg:text-lg">Fotos elegidas</h2>
           {/* Survives collapse ON PURPOSE — the whole section above is
               `aria-live="polite"`, precisely so a pick from ANOTHER session
               gets announced to a screen reader user who would otherwise
@@ -464,17 +472,17 @@ export function SelectionTray({
           <span className="text-fg-mute text-sm">{picks.length}</span>
         </div>
         <div className="flex items-center gap-3">
-          {isLocked ? (
-            <p className="text-fg-mute text-xs">La selección ya fue enviada.</p>
-          ) : (
-            <p className="text-fg-mute text-xs">Se actualiza sola con lo que elijan los demás.</p>
-          )}
+          {/* Task #236 criterion 5 — with zero picks there is nothing to
+              show or hide below `lg` (the empty-state paragraph is hidden
+              there too), so the toggle is not offered either. */}
           <button
             type="button"
             onClick={() => setIsCollapsed((collapsed) => !collapsed)}
             aria-expanded={!isCollapsed}
             aria-controls={listRegionId}
-            className="text-accent focus-visible:ring-accent shrink-0 text-xs whitespace-nowrap underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:outline-none"
+            className={`text-accent focus-visible:ring-accent flex min-h-9 shrink-0 items-center text-xs whitespace-nowrap underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:outline-none ${
+              hasPicks ? "" : "max-lg:hidden"
+            }`}
           >
             {isCollapsed ? "Mostrar" : "Ocultar"}
           </button>
@@ -500,13 +508,20 @@ export function SelectionTray({
           header comment on why that specific technique is the one that is
           both inert to assistive tech AND unreachable by Tab. */}
       <div id={listRegionId} hidden={isCollapsed}>
+        {isLocked ? (
+          <p className="text-fg-mute mb-2 text-xs">La selección ya fue enviada.</p>
+        ) : (
+          <p className={`text-fg-mute mb-2 text-xs ${hasPicks ? "" : "max-lg:hidden"}`}>
+            Se actualiza sola con lo que elijan los demás.
+          </p>
+        )}
         {picks.length === 0 ? (
           // No scroll chrome for the empty state (task #203 acceptance
           // criterion #7) — an empty scrollable box reads as broken, not as
           // "nothing here yet". Shared by BOTH modes: zero picks means zero
           // groups either way, so there is nothing `by-person` would show
           // differently here.
-          <p className="text-fg-dim text-[15px] leading-relaxed">
+          <p className="text-fg-dim text-[15px] leading-relaxed max-lg:hidden">
             Todavía no eligieron ninguna foto. Las que elijan van a aparecer acá, con el nombre de
             quién las eligió.
           </p>

@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { SelectionCounter } from "./selection-counter";
 import { computeQuota } from "@/lib/quota";
 
@@ -50,6 +50,12 @@ const SNAPSHOT = {
 afterEach(() => {
   cleanup();
 });
+
+// Task #236 — below `lg` the price detail is collapsed by default; tests that
+// read it through role queries (which skip `hidden` subtrees) open it first.
+function openDetail() {
+  fireEvent.click(screen.getByRole("button", { name: "Ver detalle" }));
+}
 
 describe("SelectionCounter", () => {
   it("renders included, selected, extras and surcharge — task #24's exact shape", () => {
@@ -282,6 +288,7 @@ describe("SelectionCounter — volume tiers (task #231)", () => {
   it("lists every tier of the scale with its range label", () => {
     render(<SelectionCounter quota={computeQuota(13 + 3, 0, TIERED)} allowsOriginalSelection />);
 
+    openDetail();
     const items = screen.getAllByRole("listitem").map((li) => li.textContent?.replace(/\s+/g, " "));
     expect(items).toEqual([
       "1–2 fotos: $ 15.000 c/u",
@@ -305,6 +312,7 @@ describe("SelectionCounter — volume tiers (task #231)", () => {
       <SelectionCounter quota={computeQuota(13 + extras, 0, TIERED)} allowsOriginalSelection />,
     );
 
+    openDetail();
     const items = screen.getAllByRole("listitem");
     const current = items.filter((li) => li.getAttribute("aria-current") === "true");
     expect(current).toEqual([items[tierIndex]]);
@@ -313,6 +321,7 @@ describe("SelectionCounter — volume tiers (task #231)", () => {
   it("marks no tier while there are no extras yet, and quotes the first tier's price", () => {
     render(<SelectionCounter quota={computeQuota(5, 0, TIERED)} allowsOriginalSelection />);
 
+    openDetail();
     expect(
       screen.getAllByRole("listitem").filter((li) => li.getAttribute("aria-current") === "true"),
     ).toEqual([]);
@@ -322,8 +331,84 @@ describe("SelectionCounter — volume tiers (task #231)", () => {
   it("a flat-price gallery renders no scale at all — the UI stays as it was", () => {
     render(<SelectionCounter quota={computeQuota(15, 0, SNAPSHOT)} allowsOriginalSelection />);
 
-    expect(screen.queryAllByRole("listitem")).toEqual([]);
+    // `hidden: true` so a scale that rendered inside the collapsed detail
+    // would still be found (role queries skip `hidden` subtrees by default).
+    expect(screen.queryAllByRole("listitem", { hidden: true })).toEqual([]);
     expect(screen.queryByText(/Precio por foto extra/)).toBeNull();
     expect(counterText()).toContain("extras 2 × $ 5.000 = $ 10.000");
+  });
+});
+
+// Task #236 — the mobile disclosure. jsdom applies no Tailwind, so `lg:` is
+// invisible here: these tests pin the DEFAULT (below-lg) state and the
+// markup contract (native `hidden`, aria wiring, live region placement).
+describe("SelectionCounter — compact disclosure (task #236)", () => {
+  const TIERED = {
+    includedPhotosSnapshot: 13,
+    extraPhotoPriceCopSnapshot: 15_000,
+    extraPhotoPriceTiersSnapshot: [
+      { minExtras: 1, priceCop: 15_000 },
+      { minExtras: 3, priceCop: 13_000 },
+    ],
+    originalPhotoPriceCopSnapshot: 2_000,
+  };
+
+  it("starts collapsed: toggle says 'Ver detalle', aria-expanded=false, detail region hidden", () => {
+    render(<SelectionCounter quota={computeQuota(16, 0, TIERED)} allowsOriginalSelection />);
+
+    const toggle = screen.getByRole("button", { name: "Ver detalle" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    const region = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(region).not.toBeNull();
+    expect(region?.hasAttribute("hidden")).toBe(true);
+    // In the DOM (so `lg:block` can show it) but out of the accessibility
+    // tree while collapsed.
+    expect(region?.textContent).toContain("Precio por foto extra");
+    expect(screen.queryByRole("listitem")).toBeNull();
+  });
+
+  it("toggling expands the detail and flips the label and aria-expanded back and forth", () => {
+    render(<SelectionCounter quota={computeQuota(16, 0, TIERED)} allowsOriginalSelection />);
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver detalle" }));
+    const toggle = screen.getByRole("button", { name: "Ocultar detalle" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const region = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(region?.hasAttribute("hidden")).toBe(false);
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.getByText(/Todas las fotos extra se cobran/)).toBeDefined();
+
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: "Ver detalle" }).getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+    expect(region?.hasAttribute("hidden")).toBe(true);
+  });
+
+  it("keeps the headline in the live region, OUTSIDE the hidden detail, and the toggle outside the live region", () => {
+    render(<SelectionCounter quota={computeQuota(16, 0, TIERED)} allowsOriginalSelection />);
+
+    const headline = screen.getByText(/incluidas 13/);
+    const live = headline.closest('[aria-live="polite"]');
+    expect(live).not.toBeNull();
+    expect(headline.closest("[hidden]")).toBeNull();
+    // The hidden detail IS inside the same live region (desktop announces it).
+    expect(live?.contains(document.querySelector("[hidden]"))).toBe(true);
+    // The toggle is not: its label flipping must not be announced.
+    expect(live?.contains(screen.getByRole("button", { name: "Ver detalle" }))).toBe(false);
+  });
+
+  it("shows the extras amount in the headline only once there are extras", () => {
+    const { unmount } = render(
+      <SelectionCounter quota={computeQuota(10, 0, TIERED)} allowsOriginalSelection />,
+    );
+    expect(screen.getByText(/incluidas 13/).textContent).not.toMatch(/extras/);
+    unmount();
+
+    render(<SelectionCounter quota={computeQuota(16, 0, TIERED)} allowsOriginalSelection />);
+    // 3 extras at the 3+ tier: 3 × 13.000 = 39.000
+    expect(screen.getByText(/incluidas 13/).textContent?.replace(/\s+/g, " ")).toContain(
+      "extras $ 39.000",
+    );
   });
 });

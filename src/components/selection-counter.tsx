@@ -1,3 +1,5 @@
+"use client";
+
 // The live quota counter (task #24): "incluidas 13 · seleccionadas 15" on one
 // line, "extras 2 × $5.000 = $10.000 — se coordina por fuera de la app" on
 // the next. Purely presentational — every number it renders is handed to it
@@ -72,6 +74,7 @@
 // Importing it here bundled the whole DB module graph into the browser
 // bundle and broke the production build; see `@/lib/format`'s own header
 // comment for the full story.
+import { useId, useState } from "react";
 import { tierRangeLabel } from "@/lib/extra-price-tiers";
 import { formatCop } from "@/lib/format";
 import { tierIndexForExtras, type QuotaResult } from "@/lib/quota";
@@ -109,45 +112,80 @@ export function SelectionCounter({
   const tiers = quota.extraPhotoPriceTiersSnapshot;
   const activeTier = tiers ? tierIndexForExtras(quota.extras, tiers) : -1;
 
+  // Task #236 — below `lg` the price detail sits behind a disclosure so the
+  // bottom bar is one compact row by default. Native `hidden` on the detail
+  // (same mechanism and reasoning as selection-tray.tsx's collapse) with an
+  // `lg:block` override: at lg and up the detail is always visible and the
+  // toggle is not shown, exactly as before this task.
+  const [detailOpen, setDetailOpen] = useState(false);
+  const detailId = useId();
+
   return (
-    <div aria-live="polite">
-      <p className="text-fg font-serif text-lg leading-snug">
-        incluidas {quota.includedPhotosSnapshot} · seleccionadas {quota.selected}
-      </p>
-      <p className="text-fg-mute mt-1 text-sm">
-        extras {quota.extras} × {formatCop(quota.extraUnitPriceCop)} ={" "}
-        {formatCop(quota.extrasSurchargeCop)}
-        {!hasOriginals && " — se coordina por fuera de la app; acá no se cobra nada."}
-      </p>
-      {tiers && (
-        <div className="text-fg-mute mt-2 text-sm">
-          <p>Precio por foto extra, según cuántas extras elijas:</p>
-          <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-            {tiers.map((tier, i) => (
-              <li
-                key={tier.minExtras}
-                aria-current={i === activeTier ? "true" : undefined}
-                className={i === activeTier ? "text-fg font-semibold" : undefined}
-              >
-                {tierRangeLabel(tiers, i)} fotos: {formatCop(tier.priceCop)} c/u
-              </li>
-            ))}
-          </ul>
-          <p className="mt-1">Todas las fotos extra se cobran al precio de la escala alcanzada.</p>
+    <div>
+      {/* The live region wraps the headline AND the detail, but the toggle is
+          OUTSIDE it: a collapsed detail is `hidden` (not announced), while the
+          headline numbers — all a collapsed bar shows — keep announcing every
+          count change. */}
+      <div aria-live="polite">
+        <p className="text-fg font-serif text-sm leading-snug lg:text-lg">
+          incluidas {quota.includedPhotosSnapshot} · seleccionadas {quota.selected}
+          {quota.extras > 0 && (
+            <span className="lg:hidden"> · extras {formatCop(quota.surchargeCop)}</span>
+          )}
+        </p>
+        <div
+          id={detailId}
+          hidden={!detailOpen}
+          className="max-h-[40vh] overflow-y-auto overscroll-contain lg:block lg:max-h-none lg:overflow-visible"
+        >
+          <p className="text-fg-mute mt-1 text-sm">
+            extras {quota.extras} × {formatCop(quota.extraUnitPriceCop)} ={" "}
+            {formatCop(quota.extrasSurchargeCop)}
+            {!hasOriginals && " — se coordina por fuera de la app; acá no se cobra nada."}
+          </p>
+          {tiers && (
+            <div className="text-fg-mute mt-2 text-sm">
+              <p>Precio por foto extra, según cuántas extras elijas:</p>
+              <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+                {tiers.map((tier, i) => (
+                  <li
+                    key={tier.minExtras}
+                    aria-current={i === activeTier ? "true" : undefined}
+                    className={i === activeTier ? "text-fg font-semibold" : undefined}
+                  >
+                    {tierRangeLabel(tiers, i)} fotos: {formatCop(tier.priceCop)} c/u
+                  </li>
+                ))}
+              </ul>
+              <p className="mt-1">
+                Todas las fotos extra se cobran al precio de la escala alcanzada.
+              </p>
+            </div>
+          )}
+          {hasOriginals && (
+            <>
+              <p className="text-fg-mute mt-1 text-sm">
+                originales {quota.originals} × {formatCop(quota.originalPhotoPriceCopSnapshot)} ={" "}
+                {formatCop(quota.originalsSurchargeCop)} — un original nunca ahorra cuota, siempre
+                suma.
+              </p>
+              <p className="text-fg-mute mt-1 text-sm">
+                total {formatCop(quota.surchargeCop)} — se coordina por fuera de la app; acá no se
+                cobra nada.
+              </p>
+            </>
+          )}
         </div>
-      )}
-      {hasOriginals && (
-        <>
-          <p className="text-fg-mute mt-1 text-sm">
-            originales {quota.originals} × {formatCop(quota.originalPhotoPriceCopSnapshot)} ={" "}
-            {formatCop(quota.originalsSurchargeCop)} — un original nunca ahorra cuota, siempre suma.
-          </p>
-          <p className="text-fg-mute mt-1 text-sm">
-            total {formatCop(quota.surchargeCop)} — se coordina por fuera de la app; acá no se cobra
-            nada.
-          </p>
-        </>
-      )}
+      </div>
+      <button
+        type="button"
+        onClick={() => setDetailOpen((open) => !open)}
+        aria-expanded={detailOpen}
+        aria-controls={detailId}
+        className="text-accent focus-visible:ring-accent min-h-7 text-xs underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:outline-none lg:hidden"
+      >
+        {detailOpen ? "Ocultar detalle" : "Ver detalle"}
+      </button>
     </div>
   );
 }

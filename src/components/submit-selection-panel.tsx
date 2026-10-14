@@ -195,7 +195,7 @@ export function SubmitSelectionPanel({
         type="button"
         onClick={() => void handleSubmit()}
         disabled={pending || quota.selected === 0}
-        className="border-accent bg-accent hover:border-accent-2 hover:bg-accent-2 text-ink inline-flex min-h-12 items-center justify-center rounded-[3px] border px-5 text-sm font-semibold tracking-[0.02em] transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+        className="border-accent bg-accent hover:border-accent-2 hover:bg-accent-2 text-ink inline-flex min-h-11 items-center justify-center rounded-[3px] border px-3 text-sm font-semibold tracking-[0.02em] whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-12 lg:px-5"
       >
         {pending ? "Enviando…" : "Enviar selección"}
       </button>

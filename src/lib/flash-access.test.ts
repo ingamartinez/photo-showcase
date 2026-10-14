@@ -15,6 +15,7 @@ vi.mock("@/lib/db", () => ({
 import {
   canViewFlashGallery,
   getFirstFlashAsset,
+  getFlashGalleriesForClient,
   listFlashAssets,
   resolveFlashGallery,
   resolvePublicFlashGallery,
@@ -105,6 +106,18 @@ describe("resolvePublicFlashGallery", () => {
   it("returns a public gallery", async () => {
     current = createRecordingDb({ select: [[publicGallery]] });
     expect(await resolvePublicFlashGallery("s")).toEqual(publicGallery);
+  });
+});
+
+describe("getFlashGalleriesForClient", () => {
+  it("scopes to the given user and ACTIVE assignments only (removed_at IS NULL)", async () => {
+    const row = { id: GALLERY_ID, title: "t", publicSlug: "s", sessionDate: null };
+    current = createRecordingDb({ select: [[row]] });
+    expect(await getFlashGalleriesForClient("c-1")).toEqual([row]);
+    const query = current.ofOp("select")[0]!;
+    expect(query.where!.sql).toContain('"flash_gallery_clients"."removed_at" is null');
+    expect(query.where!.sql).toContain('"flash_gallery_clients"."user_id" = $1');
+    expect(query.where!.params).toEqual(["c-1"]);
   });
 });
 

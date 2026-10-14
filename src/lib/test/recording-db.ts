@@ -41,6 +41,7 @@ export function createRecordingDb(scripted: Partial<Record<Op, unknown[][]>> = {
         call.table = table;
         return chain;
       },
+      innerJoin: () => chain,
       values: (values: unknown) => {
         call.values = values;
         return chain;

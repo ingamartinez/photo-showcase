@@ -214,6 +214,41 @@ describe("readClientGalleryBySlug", () => {
     ]);
   });
 
+  // graphql-js builds every result object with `Object.create(null)`, and
+  // React refuses to serialize a null-prototype object across the
+  // Server -> Client Component boundary. The page hands parts of this result
+  // straight to client components (the tier scale did, and 500'd every
+  // gallery that had one in production), so the reader must return plain
+  // objects all the way down.
+  it("returns only plain objects, so the page can hand any part of it to a client component", async () => {
+    getGalleryDetailBySlugMock.mockResolvedValue(
+      galleryDetail({
+        extraPhotoPriceTiersSnapshot: [
+          { minExtras: 1, priceCop: 15_000 },
+          { minExtras: 3, priceCop: 13_000 },
+        ],
+      }),
+    );
+    const { readClientGalleryBySlug } = await import("./client-gallery-reads");
+
+    const gallery = await readClientGalleryBySlug(SLUG, session());
+
+    expect(gallery?.extraPhotoPriceTiersSnapshot).toEqual([
+      { minExtras: 1, priceCop: 15_000 },
+      { minExtras: 3, priceCop: 13_000 },
+    ]);
+    const nullPrototypePaths: string[] = [];
+    const walk = (value: unknown, path: string) => {
+      if (value === null || typeof value !== "object") return;
+      if (!Array.isArray(value) && Object.getPrototypeOf(value) !== Object.prototype) {
+        nullPrototypePaths.push(path);
+      }
+      for (const [key, child] of Object.entries(value)) walk(child, `${path}.${key}`);
+    };
+    walk(gallery, "gallery");
+    expect(nullPrototypePaths).toEqual([]);
+  });
+
   it("hands the caller's own session to the ownership check, and returns null when it refuses", async () => {
     getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
     isGalleryOwnerMock.mockResolvedValue(false);

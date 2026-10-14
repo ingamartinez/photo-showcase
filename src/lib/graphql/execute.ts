@@ -147,5 +147,12 @@ export async function executeServerDocument<TData, TVariables extends Record<str
     throw new Error("GraphQL execution returned no data and no errors");
   }
 
-  return result.data as TData;
+  // graphql-js builds every result object with `Object.create(null)`, and
+  // React refuses to pass a null-prototype object from a Server Component to
+  // a Client Component ("Classes or null prototypes are not supported"). A
+  // page handing `gallery.extraPhotoPriceTiersSnapshot` straight to a client
+  // component took every gallery with a tier scale down in production.
+  // `structuredClone` rebuilds the tree as plain objects; the data is already
+  // JSON-shaped (no Date scalar, see ./types/gallery.ts), so nothing is lost.
+  return structuredClone(result.data) as TData;
 }

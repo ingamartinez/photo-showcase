@@ -212,6 +212,21 @@ export function displayKey(galleryId: string, assetId: string): R2Key {
   return namespacedKey(`galleries/${galleryId}/display/${assetId}.webp`);
 }
 
+/** Flash gallery (epic #232) final: the gifted photo's bytes, stored
+ * BYTE-FOR-BYTE like `finalKey`. Lives under its own `flash/{flashGalleryId}/`
+ * prefix — a flash gallery is a separate aggregate from `galleries`, and a
+ * distinct prefix keeps the two from ever sharing (or colliding on) a path.
+ * `extension` is required for the same reason `finalKey`'s is. */
+export function flashFinalKey(flashGalleryId: string, assetId: string, extension: string): R2Key {
+  return namespacedKey(`flash/${flashGalleryId}/finals/${assetId}.${extension}`);
+}
+
+/** Flash gallery browsing-sized WebP derivative (the `processDisplay` output),
+ * a pure function of `(flashGalleryId, assetId)` like `displayKey`. */
+export function flashDisplayKey(flashGalleryId: string, assetId: string): R2Key {
+  return namespacedKey(`flash/${flashGalleryId}/display/${assetId}.webp`);
+}
+
 /** Escape hatch #1 (task #78): mints an `R2Key` for a legitimate key that
  * isn't shaped like `galleries/{galleryId}/…` at all — today, that's just
  * scripts/check-r2.ts's throwaway healthcheck probe. Still funnels through

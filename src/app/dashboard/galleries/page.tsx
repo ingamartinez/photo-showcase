@@ -122,8 +122,13 @@ export default async function GalleriesPage() {
             </p>
           )}
         </div>
-        <div className="mt-3 min-[600px]:mt-0 min-[600px]:flex-none">
+        <div className="mt-3 flex flex-col gap-2 min-[600px]:mt-0 min-[600px]:flex-none min-[600px]:items-end">
           <DashboardGalleryCreateDialog clients={clients} packages={packages} />
+          {/* Epic #232: flash galleries are a separate area (photos to give
+              away), reached from here rather than a fourth nav destination. */}
+          <Link href="/dashboard/flash" className="text-fg-dim text-app-body underline">
+            Galerías flash
+          </Link>
         </div>
       </div>
 

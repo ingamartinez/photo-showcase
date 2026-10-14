@@ -1077,3 +1077,89 @@ describe("GalleryDetailPage — the allows-original-selection control reflects t
     expect(screen.queryByRole("button", { name: "Habilitar selección de originales" })).toBeNull();
   });
 });
+
+// Task #231 — the wiring seam for the volume scale. Both client components
+// below default to nothing: a page that hands them `null` instead of the
+// gallery's own scale type-checks, and (before this block) broke no test —
+// the dialog then opens in flat mode and its Save writes `null`, silently
+// erasing the saved scale. Rendering the real page, opening the real
+// dialogs and reading real text is the only thing that can see it.
+describe("GalleryDetailPage — the frozen volume scale reaches its consumers (task #231)", () => {
+  const TIERS = [
+    { minExtras: 1, priceCop: 15_000 },
+    { minExtras: 3, priceCop: 13_000 },
+  ];
+  const asset = (index: number, selectionKind: "edited" | "original") => ({
+    id: `a${index + 1}`,
+    originalFilename: `IMG_${String(index + 1).padStart(4, "0")}.JPG`,
+    proofKey: `galleries/g1/proofs/a${index + 1}.webp`,
+    proofWidth: 1600,
+    proofHeight: 1067,
+    isSelected: true,
+    sortOrder: index,
+    finalKey: null,
+    isEdited: false,
+    selectionKind,
+    isExtra: false,
+    deliveredFor: null,
+  });
+  const tieredGallery = (editedCount: number, originalCount: number) =>
+    galleryDetail({
+      status: "selected",
+      includedPhotosSnapshot: 13,
+      extraPhotoPriceCopSnapshot: 15_000,
+      extraPhotoPriceTiersSnapshot: TIERS,
+      originalPhotoPriceCopSnapshot: 2_000,
+      allowsOriginalSelection: true,
+      assets: [
+        ...Array.from({ length: editedCount }, (_u, i) => asset(i, "edited")),
+        ...Array.from({ length: originalCount }, (_u, i) => asset(editedCount + i, "original")),
+      ],
+    });
+
+  it("lists the scale in the terms panel instead of a single flat price", async () => {
+    getGalleryDetailMock.mockResolvedValue(tieredGallery(13, 0));
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+
+    expect(screen.getByText("1–2: $ 15.000")).toBeDefined();
+    expect(screen.getByText("3 o más: $ 13.000")).toBeDefined();
+  });
+
+  it("opens the edit-terms dialog with the saved scale loaded, not in flat mode", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    getGalleryDetailMock.mockResolvedValue(tieredGallery(16, 0));
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Editar términos" }));
+    const dialog = await screen.findByRole("dialog");
+
+    expect(within(dialog).getByLabelText<HTMLInputElement>("Precio por escala").checked).toBe(true);
+    expect(
+      within(dialog)
+        .getAllByLabelText<HTMLInputElement>("Precio c/u, COP")
+        .map((input) => input.value),
+    ).toEqual(["15000", "13000"]);
+    // 3 extras today, priced by the 3+ tier.
+    expect(
+      within(dialog).getByText("El cliente ve hoy: 13 incluidas · 3 extras · $ 39.000"),
+    ).toBeDefined();
+  });
+
+  it("prices the disable-originals before/after preview by the scale", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    getGalleryDetailMock.mockResolvedValue(tieredGallery(16, 2));
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Deshabilitar selección de originales" }));
+    const dialog = await screen.findByRole("dialog");
+
+    // Today: 16 edited -> 3 extras x 13.000 = 39.000, + 2 originals x 2.000.
+    // A flat 15.000 would read 49.000.
+    expect(within(dialog).getByText(/recargo \$ 43\.000/)).toBeDefined();
+    // After: 18 edited -> 5 extras x 13.000 = 65.000.
+    expect(within(dialog).getByText(/recargo \$ 65\.000/)).toBeDefined();
+  });
+});

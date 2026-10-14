@@ -121,6 +121,14 @@ describe("key builders", () => {
     expect(displayKey("gallery-1", "asset-1")).toBe("galleries/gallery-1/display/asset-1.webp");
   });
 
+  it("builds flash keys under flash/{flashGalleryId}/, never under galleries/", async () => {
+    const { flashFinalKey, flashDisplayKey, finalKey, displayKey } = await import("./r2");
+    expect(flashFinalKey("f1", "a1", "png")).toBe("flash/f1/finals/a1.png");
+    expect(flashDisplayKey("f1", "a1")).toBe("flash/f1/display/a1.webp");
+    expect(flashFinalKey("g", "a", "jpg")).not.toBe(finalKey("g", "a", "jpg"));
+    expect(flashDisplayKey("g", "a")).not.toBe(displayKey("g", "a"));
+  });
+
   it("keeps the display key distinct from BOTH the proof and the final for the same pair", async () => {
     const { proofKey, finalKey, displayKey } = await import("./r2");
     expect(displayKey("g", "a")).not.toBe(proofKey("g", "a"));

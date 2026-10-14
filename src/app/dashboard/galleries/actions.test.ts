@@ -558,6 +558,121 @@ describe("createGallery package resolution", () => {
   });
 });
 
+const DEFAULT_TIERS_JSON = JSON.stringify([
+  { minExtras: 1, priceCop: 15_000 },
+  { minExtras: 3, priceCop: 13_000 },
+  { minExtras: 5, priceCop: 11_000 },
+  { minExtras: 10, priceCop: 10_000 },
+]);
+
+describe("createGallery with a volume scale (task #231)", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+  });
+
+  const base = {
+    clientIds: ["client-1"],
+    packageId: "1",
+    sessionDate: "2026-08-01",
+  };
+
+  it("stores the scale, mirrors the first tier into the flat column and flags the gallery overridden", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    const result = await createGallery(
+      { status: "idle" },
+      formDataWith({ ...base, title: "Con escala", extraPhotoPriceTiers: DEFAULT_TIERS_JSON }),
+    );
+
+    expect(result).toEqual({ status: "created" });
+    const stored = db.__rows.galleries.find((g) => g.title === "Con escala");
+    expect(stored).toMatchObject({
+      extraPhotoPriceCopSnapshot: 15_000,
+      extraPhotoPriceTiersSnapshot: [
+        { minExtras: 1, priceCop: 15_000 },
+        { minExtras: 3, priceCop: 13_000 },
+        { minExtras: 5, priceCop: 11_000 },
+        { minExtras: 10, priceCop: 10_000 },
+      ],
+      termsOverridden: true,
+    });
+  });
+
+  it("REJECTS the 15/13/11/9 scale with the monotonic-total message and inserts nothing", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+    const before = db.__rows.galleries.length;
+
+    const result = await createGallery(
+      { status: "idle" },
+      formDataWith({
+        ...base,
+        title: "Escala inválida",
+        extraPhotoPriceTiers: JSON.stringify([
+          { minExtras: 1, priceCop: 15_000 },
+          { minExtras: 3, priceCop: 13_000 },
+          { minExtras: 5, priceCop: 11_000 },
+          { minExtras: 10, priceCop: 9_000 },
+        ]),
+      }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.message).toMatch(/no puede bajar el total/);
+    expect(db.__rows.galleries).toHaveLength(before);
+  });
+
+  it("rejects malformed JSON instead of silently falling back to flat pricing", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+    const before = db.__rows.galleries.length;
+
+    const result = await createGallery(
+      { status: "idle" },
+      formDataWith({ ...base, title: "JSON roto", extraPhotoPriceTiers: "{not json" }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(db.__rows.galleries).toHaveLength(before);
+  });
+
+  it("ignores a flat price typed alongside a scale: the scale wins", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    await createGallery(
+      { status: "idle" },
+      formDataWith({
+        ...base,
+        title: "Escala y plano",
+        extraPhotoPriceCop: "99999",
+        extraPhotoPriceTiers: DEFAULT_TIERS_JSON,
+      }),
+    );
+
+    const stored = db.__rows.galleries.find((g) => g.title === "Escala y plano");
+    expect(stored).toMatchObject({ extraPhotoPriceCopSnapshot: 15_000 });
+    expect(stored!.extraPhotoPriceTiersSnapshot).toHaveLength(4);
+  });
+
+  it("an empty scale field is the untouched default: flat, not overridden", async () => {
+    const { createGallery } = await import("./actions");
+    const db = await seededDb();
+
+    await createGallery(
+      { status: "idle" },
+      formDataWith({ ...base, title: "Sin escala", extraPhotoPriceTiers: "" }),
+    );
+
+    expect(db.__rows.galleries.find((g) => g.title === "Sin escala")).toMatchObject({
+      extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
+      termsOverridden: false,
+    });
+  });
+});
+
 describe("createGallery success + frozen terms", () => {
   beforeEach(() => {
     authMock.mockResolvedValue(adminSession());
@@ -617,6 +732,9 @@ describe("createGallery success + frozen terms", () => {
     // snapshots against the live package row (this task's own documented
     // trap: that comparison rots the moment the package is edited).
     expect(stored).toMatchObject({ termsOverridden: false });
+    // Task #231 — no scale posted: the jsonb column is written NULL, i.e. flat
+    // pricing, exactly today's behavior.
+    expect(stored).toMatchObject({ extraPhotoPriceTiersSnapshot: null });
   });
 
   // Task #193 — REVIEW FINDING: the test above never actually posts the two

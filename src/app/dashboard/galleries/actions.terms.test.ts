@@ -389,6 +389,133 @@ describe("updateGalleryTerms validation", () => {
   });
 });
 
+describe("updateGalleryTerms with a volume scale (task #231)", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession("photographer@example.com"));
+  });
+
+  const TIERS = [
+    { minExtras: 1, priceCop: 15_000 },
+    { minExtras: 3, priceCop: 13_000 },
+    { minExtras: 5, priceCop: 11_000 },
+    { minExtras: 10, priceCop: 10_000 },
+  ];
+
+  it("saves the scale WITHOUT any flat price field, mirrors tier 1 and stamps the audit trail", async () => {
+    const { updateGalleryTerms } = await import("./actions");
+    const db = await seededDb();
+    db.__rows.galleries[0]!.termsOverridden = false;
+
+    const result = await updateGalleryTerms(
+      { status: "idle" },
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "13",
+        originalPhotoPriceCop: "2000",
+        extraPhotoPriceTiers: JSON.stringify(TIERS),
+      }),
+    );
+
+    expect(result).toEqual({ status: "updated" });
+    expect(db.__rows.galleries[0]).toMatchObject({
+      extraPhotoPriceCopSnapshot: 15_000,
+      extraPhotoPriceTiersSnapshot: TIERS,
+      termsOverridden: true,
+      termsUpdatedByEmail: "photographer@example.com",
+    });
+    expect(db.__rows.galleries[0]!.termsUpdatedAt).toBeInstanceOf(Date);
+  });
+
+  it("REJECTS 15/13/11/9 and leaves the gallery untouched", async () => {
+    const { updateGalleryTerms } = await import("./actions");
+    const db = await seededDb();
+
+    const result = await updateGalleryTerms(
+      { status: "idle" },
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "13",
+        originalPhotoPriceCop: "2000",
+        extraPhotoPriceTiers: JSON.stringify([
+          ...TIERS.slice(0, 3),
+          { minExtras: 10, priceCop: 9_000 },
+        ]),
+      }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.message).toMatch(/no puede bajar el total/);
+    expect(db.__rows.galleries[0]).toMatchObject({
+      extraPhotoPriceCopSnapshot: 5_000,
+      termsOverridden: false,
+    });
+    expect(db.__rows.galleries[0]!.extraPhotoPriceTiersSnapshot ?? null).toBeNull();
+  });
+
+  it("switching back to a flat price clears the stored scale", async () => {
+    const { updateGalleryTerms } = await import("./actions");
+    const db = await seededDb();
+    db.__rows.galleries[0]!.extraPhotoPriceTiersSnapshot = TIERS;
+
+    const result = await updateGalleryTerms(
+      { status: "idle" },
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "13",
+        extraPhotoPriceCop: "7000",
+        originalPhotoPriceCop: "2000",
+      }),
+    );
+
+    expect(result).toEqual({ status: "updated" });
+    expect(db.__rows.galleries[0]).toMatchObject({
+      extraPhotoPriceCopSnapshot: 7_000,
+      extraPhotoPriceTiersSnapshot: null,
+    });
+  });
+
+  it("still requires the flat price when no scale is posted", async () => {
+    const { updateGalleryTerms } = await import("./actions");
+    await seededDb();
+
+    const result = await updateGalleryTerms(
+      { status: "idle" },
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "13",
+        originalPhotoPriceCop: "2000",
+      }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.message).toMatch(/foto extra/i);
+  });
+
+  it("the written row prices extras by volume through computeQuota", async () => {
+    const { updateGalleryTerms } = await import("./actions");
+    const db = await seededDb();
+
+    await updateGalleryTerms(
+      { status: "idle" },
+      formDataWith({
+        galleryId: GALLERY_ID,
+        includedPhotos: "13",
+        originalPhotoPriceCop: "2000",
+        extraPhotoPriceTiers: JSON.stringify(TIERS),
+      }),
+    );
+
+    const row = db.__rows.galleries[0]!;
+    const quota = computeQuota(13 + 3, 0, {
+      includedPhotosSnapshot: row.includedPhotosSnapshot as number,
+      extraPhotoPriceCopSnapshot: row.extraPhotoPriceCopSnapshot as number,
+      extraPhotoPriceTiersSnapshot: row.extraPhotoPriceTiersSnapshot as typeof TIERS,
+      originalPhotoPriceCopSnapshot: row.originalPhotoPriceCopSnapshot as number,
+    });
+    expect(quota.extrasSurchargeCop).toBe(39_000);
+  });
+});
+
 describe("updateGalleryTerms success", () => {
   beforeEach(() => {
     authMock.mockResolvedValue(adminSession("photographer@example.com"));

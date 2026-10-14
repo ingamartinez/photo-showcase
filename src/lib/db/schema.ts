@@ -755,6 +755,94 @@ export const assets = pgTable("assets", {
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
 });
 
+// ---------------------------------------------------------------------------
+// Flash galleries (epic #232, slice #233): photos GIVEN AWAY as finals, with no
+// proofs, no selection, no package and no price.
+//
+// A SEPARATE AGGREGATE, deliberately NOT a `kind` on `galleries`. Every gate
+// that guards `galleries`/`assets` protects PAID deliverables
+// (`canReadFinalDeliverable` demands `isSelected || isExtra` and a delivered
+// status; `packageId` and the commercial snapshots are notNull;
+// `computeQuota` bills off `isSelected`). Carving flash exceptions into those
+// would weaken the gate on paid work. A flash gallery shares nothing
+// commercial, so it shares no table: infrastructure is reused (R2 helpers,
+// the display pipeline, the client picker), the model is not.
+// ---------------------------------------------------------------------------
+export const flashGalleries = pgTable(
+  "flash_galleries",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    title: text("title").notNull(),
+    // Optional, unlike `galleries.sessionDate`: a gift has no session.
+    sessionDate: date("session_date"),
+    // Unguessable, same generator as `galleries.publicSlug`. The link
+    // /flash/<slug> is the ONLY thing that makes a public flash gallery
+    // reachable — it is unlisted by design (epic #232).
+    publicSlug: text("public_slug").notNull(),
+    // Anyone with the link may view it, no login. NOT exclusive with client
+    // assignment: a gallery can be public AND assigned.
+    isPublic: boolean("is_public").notNull().default(false),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (t) => [uniqueIndex("flash_galleries_public_slug_idx").on(t.publicSlug)],
+);
+
+// Same model as `galleryClients` (task #94/#97): composite PK, soft removal
+// through `removedAt`, re-attach UPDATEs the same row back to NULL. EVERY
+// reader answering "can this person see this flash gallery" MUST filter
+// `removedAt IS NULL`. `userId` restricts on delete, `flashGalleryId` cascades.
+export const flashGalleryClients = pgTable(
+  "flash_gallery_clients",
+  {
+    flashGalleryId: uuid("flash_gallery_id")
+      .notNull()
+      .references(() => flashGalleries.id, { onDelete: "cascade" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => users.id, { onDelete: "restrict" }),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+    removedAt: timestamp("removed_at", { withTimezone: true }),
+  },
+  (t) => [primaryKey({ columns: [t.flashGalleryId, t.userId] })],
+);
+
+// One row per gifted photo. `finalKey` holds the bytes EXACTLY as uploaded
+// (task #218's byte-for-byte rule); the browsing-sized, GPS-stripped WebP
+// derivative (task #89's `processDisplay`) lives at a key computed from
+// (flashGalleryId, id) by `flashDisplayKey`, so only its dimensions are stored.
+export const flashAssets = pgTable("flash_assets", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  flashGalleryId: uuid("flash_gallery_id")
+    .notNull()
+    .references(() => flashGalleries.id, { onDelete: "cascade" }),
+  originalFilename: text("original_filename").notNull(),
+  finalKey: text("final_key").notNull(),
+  displayWidth: integer("display_width").notNull(),
+  displayHeight: integer("display_height").notNull(),
+  sortOrder: integer("sort_order").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+});
+
+export const flashGalleriesRelations = relations(flashGalleries, ({ many }) => ({
+  clients: many(flashGalleryClients),
+  assets: many(flashAssets),
+}));
+
+export const flashGalleryClientsRelations = relations(flashGalleryClients, ({ one }) => ({
+  flashGallery: one(flashGalleries, {
+    fields: [flashGalleryClients.flashGalleryId],
+    references: [flashGalleries.id],
+  }),
+  user: one(users, { fields: [flashGalleryClients.userId], references: [users.id] }),
+}));
+
+export const flashAssetsRelations = relations(flashAssets, ({ one }) => ({
+  flashGallery: one(flashGalleries, {
+    fields: [flashAssets.flashGalleryId],
+    references: [flashGalleries.id],
+  }),
+}));
+
 export const usersRelations = relations(users, ({ many }) => ({
   galleryClients: many(galleryClients),
 }));
@@ -784,3 +872,6 @@ export type Package = typeof packages.$inferSelect;
 export type Gallery = typeof galleries.$inferSelect;
 export type GalleryClient = typeof galleryClients.$inferSelect;
 export type Asset = typeof assets.$inferSelect;
+export type FlashGallery = typeof flashGalleries.$inferSelect;
+export type FlashGalleryClient = typeof flashGalleryClients.$inferSelect;
+export type FlashAsset = typeof flashAssets.$inferSelect;

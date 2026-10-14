@@ -197,10 +197,10 @@ export function ProofUploader({
               width: a touch-screen laptop at a narrow width is not a phone,
               and a `min-width` breakpoint cannot tell the two apart. */}
           <span className="text-fg-dim hidden text-xs pointer-coarse:block">
-            Tocá para elegir del carrete. Se marcan con agua y se reducen solas.
+            Toca para elegir del carrete. Se marcan con agua y se reducen solas.
           </span>
           <span className="text-fg-dim text-xs pointer-coarse:hidden">
-            Arrastralas acá o hacé clic para elegirlas. Se marcan con agua y se reducen solas.
+            Arrástralas acá o haz clic para elegirlas. Se marcan con agua y se reducen solas.
           </span>
           <input
             ref={inputRef}
@@ -233,7 +233,7 @@ export function ProofUploader({
                 <span
                   className={
                     item.status === "error"
-                      ? "text-[#e0796b]"
+                      ? "text-danger"
                       : item.status === "done"
                         ? "text-accent-2"
                         : "text-fg-mute"

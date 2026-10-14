@@ -430,7 +430,7 @@ describe("publishGallery validation and guards", () => {
 
     expect(result).toEqual({
       status: "error",
-      message: "Subí al menos una foto antes de publicar la galería.",
+      message: "Sube al menos una foto antes de publicar la galería.",
     });
     expect(signInMock).not.toHaveBeenCalled();
     expect(db.__rows.galleries[0]).toMatchObject({ status: "draft" });

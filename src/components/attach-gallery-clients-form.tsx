@@ -89,12 +89,12 @@ export function AttachGalleryClientsForm({
       </button>
 
       {state.status === "error" && (
-        <p id="attach-clients-error" role="alert" className="text-xs text-[#e0796b]">
+        <p id="attach-clients-error" role="alert" className="text-danger text-xs">
           {state.message}
         </p>
       )}
       {state.status === "attached_email_failed" && (
-        <p role="alert" className="text-xs text-[#e0796b]">
+        <p role="alert" className="text-danger text-xs">
           {state.message}
         </p>
       )}

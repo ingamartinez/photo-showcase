@@ -123,7 +123,7 @@ export function ClientForm({
       </div>
 
       {state.status === "error" && (
-        <p id="client-form-error" role="alert" className="text-sm text-[#e0796b]">
+        <p id="client-form-error" role="alert" className="text-danger text-sm">
           {state.message}
         </p>
       )}

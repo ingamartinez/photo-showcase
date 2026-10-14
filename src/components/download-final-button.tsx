@@ -87,7 +87,7 @@ export function DownloadFinalButton({
       >
         {isPending ? "Descargando…" : "Descargar"}
       </button>
-      {error && <p className="text-[11px] text-[#e0796b]">{error}</p>}
+      {error && <p className="text-danger text-[11px]">{error}</p>}
     </div>
   );
 }

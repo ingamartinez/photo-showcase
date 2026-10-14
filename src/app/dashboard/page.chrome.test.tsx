@@ -125,7 +125,7 @@ describe("DashboardPage chrome", () => {
     render(element);
 
     expect(screen.getByText(/Así está tu estudio\./)).toBeDefined();
-    expect(screen.getByText(/Tenés 2 clientes y 2 galerías en marcha\./)).toBeDefined();
+    expect(screen.getByText(/Tienes 2 clientes y 2 galerías en marcha\./)).toBeDefined();
     // The tiles' OWN number line is a bare, locale-grouped digit
     // (`formatTileCount`, task #130 review round 1) — the sentence forms
     // above stay in the prose line only. Scoped by accessible name (the

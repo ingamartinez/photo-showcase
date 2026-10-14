@@ -55,7 +55,9 @@ export function SiteFooter({ areaHref, areaLabel }: SiteFooterProps) {
           <div className="flex flex-wrap gap-[clamp(40px,8vw,96px)]">
             {COLUMNS.map((col) => (
               <div key={col.heading}>
-                <h4 className="label text-fg-mute mb-4">{col.heading}</h4>
+                <h4 className="text-fg-mute mb-4 text-xs font-medium tracking-[0.04em] uppercase">
+                  {col.heading}
+                </h4>
                 {col.links.map((link) =>
                   link.external ? (
                     <a
@@ -81,9 +83,9 @@ export function SiteFooter({ areaHref, areaLabel }: SiteFooterProps) {
             ))}
           </div>
         </div>
-        <div className="border-line text-fg-mute mt-14 flex flex-wrap justify-between gap-4 border-t pt-[22px] font-mono text-[11px] tracking-[0.06em]">
+        <div className="border-line text-fg-mute mt-14 flex flex-wrap justify-between gap-4 border-t pt-[22px] text-[12px] tracking-[0.04em]">
           <span>© 2025 Alejo Frames — Medellín</span>
-          <span>Cosplay · Event · Photography</span>
+          <span>Cosplay · Eventos · Retrato</span>
           <Link href={areaHref} className="hover:text-accent-2 transition-colors">
             {areaLabel}
           </Link>

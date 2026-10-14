@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { z } from "zod";
 import { requireAdmin } from "@/lib/auth-guards";
+import { ArrowLeft } from "@/components/icons";
 import {
   activeClientRuleViolation,
   formatGalleryStatus,
@@ -234,7 +235,8 @@ export default async function GalleryDetailPage({
         href="/dashboard/galleries"
         className="text-fg-dim hover:text-accent-2 mb-4 inline-flex min-h-11 items-center gap-1 text-sm transition-colors lg:min-h-6"
       >
-        ← Galerías
+        <ArrowLeft className="shrink-0" />
+        Galerías
       </Link>
 
       {/* Header zone (task #133): title, the state stepper, clients, and the
@@ -362,7 +364,7 @@ export default async function GalleryDetailPage({
           {(gallery.status === "draft" || gallery.status === "selected") && (
             <div className="border-line-2 mt-6 flex flex-col items-start gap-3 rounded-[6px] border p-4">
               <span className="text-fg-mute text-xs tracking-wide uppercase">
-                Qué podés hacer ahora
+                Qué puedes hacer ahora
               </span>
               {/* Guarded server-side by publishGallery() itself (draft-only,
                   non-empty gallery, at least one active client) — hiding the
@@ -490,9 +492,9 @@ export default async function GalleryDetailPage({
                 mean "the photographer, not the client, needs to act on
                 this". */}
             {archiveSize && archiveSize.status !== "ok" && (
-              <p className="mt-3 text-xs text-[#e0796b]">
+              <p className="text-danger mt-3 text-xs">
                 {archiveSize.status === "over"
-                  ? `Los finales de esta galería pesan ${formatBytes(archiveSize.totalBytes)} — la descarga completa ya no va a funcionar (el límite ronda los 4 GB). Subí exports más livianos o coordiná una entrega dividida.`
+                  ? `Los finales de esta galería pesan ${formatBytes(archiveSize.totalBytes)} — la descarga completa ya no va a funcionar (el límite ronda los 4 GB). Sube exports más livianos o coordina una entrega dividida.`
                   : `Los finales de esta galería pesan ${formatBytes(archiveSize.totalBytes)} — la descarga completa no va a funcionar por encima de unos 4 GB. Considerá exports más livianos antes de que sea un problema.`}
               </p>
             )}

@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono, Fraunces } from "next/font/google";
+import { Archivo, Bodoni_Moda, Sometype_Mono } from "next/font/google";
 import "./globals.css";
-import { RevealInit } from "@/components/reveal-init";
 
 // True root layout: fonts, the `<html>`/`<body>` shell, and nothing that
 // belongs to one product surface but not the other. `SiteHeader`/`SiteFooter`
@@ -21,23 +20,27 @@ import { RevealInit } from "@/components/reveal-init";
 // the URL prefix every guarded page lives under, so a plain segment layout
 // gives the same shared-layout scoping with no parentheses needed.
 
-// Body / UI face.
-const geistSans = Geist({
-  variable: "--font-geist-sans",
-  subsets: ["latin"],
-});
-
-// Small-caps captions, eyebrows, technical labels.
-const geistMono = Geist_Mono({
-  variable: "--font-geist-mono",
-  subsets: ["latin"],
-});
-
-// Editorial display face — high-contrast serif with optical sizing.
-const fraunces = Fraunces({
-  variable: "--font-fraunces",
+// Display face — high-contrast serif with optical sizing. The `font-serif`
+// role in globals.css points here.
+const display = Bodoni_Moda({
+  variable: "--font-display",
   subsets: ["latin"],
   style: ["normal", "italic"],
+  display: "swap",
+});
+
+// UI workhorse. The `font-sans` role in globals.css points here.
+const archivo = Archivo({
+  variable: "--font-archivo",
+  subsets: ["latin"],
+  display: "swap",
+});
+
+// Data / measurement / code ONLY — numbers, quota, dimensions. Never a
+// decorative "technical" costume (see the mono rule in globals.css).
+const sometypeMono = Sometype_Mono({
+  variable: "--font-sometype-mono",
+  subsets: ["latin"],
   display: "swap",
 });
 
@@ -66,7 +69,7 @@ export default function RootLayout({
     <html
       lang="es"
       suppressHydrationWarning
-      className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable} h-full antialiased`}
+      className={`${display.variable} ${archivo.variable} ${sometypeMono.variable} h-full antialiased`}
     >
       <body className="flex min-h-full flex-col font-sans">
         {/* Mark JS available before paint so reveal styles apply without a flash. */}
@@ -76,7 +79,6 @@ export default function RootLayout({
           }}
         />
         {children}
-        <RevealInit />
       </body>
     </html>
   );

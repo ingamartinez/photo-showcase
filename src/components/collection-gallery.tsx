@@ -127,7 +127,7 @@ export function CollectionGallery({ items }: { items: GalleryItem[] }) {
                 priority
               />
             </div>
-            <figcaption className="label text-fg-dim">{current.title ?? current.alt}</figcaption>
+            <figcaption className="text-fg-dim text-sm">{current.title ?? current.alt}</figcaption>
           </figure>
         </div>
       )}

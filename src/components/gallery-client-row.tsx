@@ -181,12 +181,12 @@ export function GalleryClientRow({
         <form action={removeFormAction} className="flex flex-col items-start gap-2 pb-1">
           <input type="hidden" name="galleryId" value={galleryId} />
           <input type="hidden" name="clientId" value={client.id} />
-          <p className="text-xs text-[#e0796b]">{REMOVE_WARNING_BY_STATUS[status]}</p>
+          <p className="text-danger text-xs">{REMOVE_WARNING_BY_STATUS[status]}</p>
           <div className="flex gap-4">
             <button
               type="submit"
               disabled={removePending}
-              className="min-h-11 text-sm font-medium text-[#e0796b] disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-6"
+              className="text-danger min-h-11 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-6"
             >
               {removePending ? "Quitando…" : "Confirmar"}
             </button>
@@ -202,13 +202,13 @@ export function GalleryClientRow({
       )}
 
       {removeState.status === "error" && (
-        <p role="alert" className="pb-1 text-xs text-[#e0796b]">
+        <p role="alert" className="text-danger pb-1 text-xs">
           {removeState.message}
         </p>
       )}
 
       {(resendState.status === "resend_email_failed" || resendState.status === "throttled") && (
-        <p role="alert" className="pb-1 text-xs text-[#e0796b]">
+        <p role="alert" className="text-danger pb-1 text-xs">
           {resendState.message}
         </p>
       )}

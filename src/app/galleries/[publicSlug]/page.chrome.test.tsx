@@ -720,7 +720,7 @@ describe("ClientGalleryPage chrome", () => {
       render(await ClientGalleryPage(paramsFor(SLUG)));
 
       expect(
-        screen.getByText(/Tocá una foto para verla grande\. El círculo la elige\./),
+        screen.getByText(/Toca una foto para verla grande\. El círculo la elige\./),
       ).toBeDefined();
     });
 

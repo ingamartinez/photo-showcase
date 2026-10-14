@@ -65,6 +65,7 @@
 import { useEffect, useRef } from "react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import { DownloadFinalButton } from "@/components/download-final-button";
+import { Check } from "@/components/icons";
 import { ZoomableStage } from "@/components/zoomable-stage";
 import type { ProofAsset } from "@/components/proof-grid";
 import type { QuotaResult } from "@/lib/quota";
@@ -202,7 +203,7 @@ export function ProofLightbox({
   // isn't picked has no type" stance.
   const selectionKind = selectionKindById[asset.id] ?? "edited";
 
-  // The gesture the mock names out loud (`.lb__hint`, :885 "Deslizá para
+  // The gesture the mock names out loud (`.lb__hint`, :885 "Desliza para
   // pasar"). Bound to the dialog surface as a whole rather than to the stage:
   // the thumb that does this is resting at the BOTTOM of the phone, over the
   // footer chrome, not over the middle of the photo. A drag that starts on
@@ -362,8 +363,8 @@ export function ProofLightbox({
                 — there is no swiping at a desk, and the arrows below say the
                 same thing there. Only shown when there is somewhere to go. */}
             {assets.length > 1 && (
-              <p className="pointer-events-none absolute inset-x-0 bottom-3 text-center text-[11px] tracking-[0.08em] text-[rgba(236,234,242,0.4)] lg:hidden">
-                Deslizá para pasar
+              <p className="text-[rgb(240 235 227 /0.4)] pointer-events-none absolute inset-x-0 bottom-3 text-center text-[11px] tracking-[0.08em] lg:hidden">
+                Desliza para pasar
               </p>
             )}
           </ZoomableStage>
@@ -435,7 +436,7 @@ export function ProofLightbox({
                 aria-pressed={isSelected}
                 className={`inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-[3px] border px-5 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none ${
                   isSelected
-                    ? "border-accent bg-accent font-semibold tracking-[0.02em] text-[#14100a]"
+                    ? "border-accent bg-accent text-ink font-semibold tracking-[0.02em]"
                     : "border-line-2 text-fg hover:border-accent hover:text-accent-2 tracking-[0.04em]"
                 }`}
               >
@@ -446,7 +447,11 @@ export function ProofLightbox({
                     rather than as an empty span, because `.btn`'s `gap: 8px`
                     (:130) would otherwise indent the label by 8px in the
                     unpicked state for no visible reason. */}
-                {isSelected && <span aria-hidden="true">✓</span>}
+                {isSelected && (
+                  <span aria-hidden="true">
+                    <Check />
+                  </span>
+                )}
                 {isSelected ? "Elegida" : "Elegir esta foto"}
               </button>
 
@@ -485,7 +490,7 @@ export function ProofLightbox({
                   disabled={isPickDisabled}
                   className={`flex-1 py-2 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none ${
                     selectionKind === "edited"
-                      ? "bg-accent font-semibold text-[#14100a]"
+                      ? "bg-accent text-ink font-semibold"
                       : "text-fg hover:text-accent-2"
                   }`}
                 >
@@ -499,7 +504,7 @@ export function ProofLightbox({
                   disabled={isPickDisabled}
                   className={`flex-1 py-2 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none ${
                     selectionKind === "original"
-                      ? "bg-accent font-semibold text-[#14100a]"
+                      ? "bg-accent text-ink font-semibold"
                       : "text-fg hover:text-accent-2"
                   }`}
                 >

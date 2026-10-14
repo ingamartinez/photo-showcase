@@ -96,7 +96,7 @@ describe("ProofTile", () => {
     (isSelected) => {
       renderTile({ isSelected });
 
-      expect(pickButton().className).toContain("shadow-[0_1px_6px_rgba(7,7,9,0.6)]");
+      expect(pickButton().className).toContain("shadow-[0_1px_6px_rgb(26 21 18 /0.6)]");
     },
   );
 
@@ -110,14 +110,14 @@ describe("ProofTile", () => {
     it("renders a check glyph in the pick control and an inset frame over a picked photo", () => {
       const { container } = renderTile({ isSelected: true });
 
-      expect(pickButton().textContent).toContain("✓");
+      expect(pickButton().querySelector("svg")).not.toBeNull();
       expect(container.querySelectorAll("span[aria-hidden='true'].border-accent")).toHaveLength(1);
     });
 
     it("renders neither the glyph nor the frame on an unpicked photo", () => {
       const { container } = renderTile({ isSelected: false });
 
-      expect(pickButton().textContent).not.toContain("✓");
+      expect(pickButton().querySelector("svg")).toBeNull();
       expect(container.querySelectorAll("span[aria-hidden='true'].border-accent")).toHaveLength(0);
     });
 

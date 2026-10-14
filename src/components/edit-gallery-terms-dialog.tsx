@@ -331,7 +331,7 @@ export function EditGalleryTermsDialog({
           )}
 
           {state.status === "error" && (
-            <p id="edit-terms-error" role="alert" className="text-sm text-[#e0796b]">
+            <p id="edit-terms-error" role="alert" className="text-danger text-sm">
               {state.message}
             </p>
           )}

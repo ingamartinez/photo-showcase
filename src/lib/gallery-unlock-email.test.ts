@@ -82,7 +82,7 @@ describe("sendGalleryUnlockEmail", () => {
     // level: this must differ from gallery-access-email.ts's
     // "Tus fotos ya están listas" and from gallery-delivery-email.ts's
     // "Tus fotos editadas ya están listas para descargar".
-    expect(body.subject).toBe("Podés volver a editar tu selección");
+    expect(body.subject).toBe("Puedes volver a editar tu selección");
     expect(body.html).toContain(URL_UNDER_TEST);
     expect(body.text).toContain(URL_UNDER_TEST);
   });

@@ -9,7 +9,7 @@ function coverMeta(count: number): string {
 
 export function CollectionGrid({ collections }: { collections: CollectionSummary[] }) {
   return (
-    <div className="collections" data-reveal>
+    <div className="collections">
       {collections.map((c) => (
         <Link key={c.slug} href={`/work/${c.slug}`} className="col-tile">
           {c.coverImageKey && (
@@ -21,8 +21,8 @@ export function CollectionGrid({ collections }: { collections: CollectionSummary
             />
           )}
           <div className="absolute bottom-[18px] left-5 z-[2]">
-            <span className="label text-accent">{coverMeta(c.itemCount)}</span>
-            <h3 className="font-serif text-[clamp(20px,2.2vw,30px)] font-normal">{c.title}</h3>
+            <span className="text-accent text-sm">{coverMeta(c.itemCount)}</span>
+            <h3 className="text-sub font-serif font-normal">{c.title}</h3>
           </div>
         </Link>
       ))}

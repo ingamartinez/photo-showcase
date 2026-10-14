@@ -18,26 +18,12 @@ export default async function Home() {
       <Hero />
 
       <section id="colecciones" className="wrap py-[clamp(72px,12vh,140px)]">
-        <div data-reveal>
-          <SectionHead
-            kicker="Por temática"
-            title="Colecciones"
-            linkHref="/work"
-            linkLabel="Ver todas"
-          />
-        </div>
+        <SectionHead title="Colecciones" linkHref="/work" linkLabel="Ver todas" />
         <CollectionGrid collections={collections} />
       </section>
 
       <section id="work" className="wrap py-[clamp(72px,12vh,140px)]">
-        <div data-reveal>
-          <SectionHead
-            kicker="Selección"
-            title="Trabajo reciente"
-            linkHref="/work"
-            linkLabel="Portafolio completo"
-          />
-        </div>
+        <SectionHead title="Trabajo reciente" linkHref="/work" linkLabel="Portafolio completo" />
         <WorkGrid items={featured} />
       </section>
 

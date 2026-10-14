@@ -42,6 +42,16 @@ export const APP_FONT_SIZES = [
 ] as const;
 
 /**
+ * The editorial type scale (`--text-display` … `--text-lead` in
+ * `src/app/globals.css`). Same tailwind-merge problem as the app scale above:
+ * `text-display` reads as a text COLOUR to twMerge unless it is taught the
+ * name, so `cn("text-display", "text-fg")` would silently drop the size.
+ * Kept as a separate export because `globals.tokens.test.ts` pins the app
+ * scale against its own declarations and nothing else.
+ */
+export const EDITORIAL_FONT_SIZES = ["display", "title", "head", "sub", "lead"] as const;
+
+/**
  * WHY THIS IS ITS OWN GROUP AND NOT AN EXTENSION OF `font-size`.
  *
  * The obvious fix — appending the scale to tailwind-merge's built-in
@@ -79,14 +89,16 @@ export const APP_FONT_SIZES = [
  * of these paragraphs shipped two dead utilities into the production
  * stylesheet purely by quoting them.)
  */
-const twMerge = extendTailwindMerge<"app-font-size">({
+const CUSTOM_FONT_SIZES = [...APP_FONT_SIZES, ...EDITORIAL_FONT_SIZES];
+
+const twMerge = extendTailwindMerge<"custom-font-size">({
   extend: {
     classGroups: {
-      "app-font-size": [{ text: [...APP_FONT_SIZES] }],
+      "custom-font-size": [{ text: [...CUSTOM_FONT_SIZES] }],
     },
     conflictingClassGroups: {
-      "app-font-size": ["font-size"],
-      "font-size": ["app-font-size"],
+      "custom-font-size": ["font-size"],
+      "font-size": ["custom-font-size"],
     },
   },
 });

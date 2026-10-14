@@ -194,7 +194,7 @@ const ACTIVE_CLIENT_RULE_MESSAGES: Record<ActiveClientRuleAction, string> = {
   // into this function by task #100 — the operation's copy did not change,
   // only where the condition lives.
   "remove-client":
-    "No podés quitar al último cliente activo de una galería que ya no está en borrador — " +
+    "No puedes quitar al último cliente activo de una galería que ya no está en borrador — " +
     "agregá otro cliente antes de quitar este, o la galería queda sin nadie que pueda entrar.",
 };
 
@@ -325,8 +325,8 @@ export function formatGalleryIndexHeading(
   if (!hasGalleries) {
     return {
       lines: displayName
-        ? [`${displayName}, todavía no tenés ninguna galería.`]
-        : ["Todavía no tenés ninguna galería."],
+        ? [`${displayName}, todavía no tienes ninguna galería.`]
+        : ["Todavía no tienes ninguna galería."],
     };
   }
   return {
@@ -339,7 +339,7 @@ export function formatGalleryIndexHeading(
 }
 
 /** The sentence right under the heading (`design/system/client.html:600`:
- * `Tres sesiones desde 2024. Las galerías no vencen: podés volver cuando
+ * `Tres sesiones desde 2024. Las galerías no vencen: puedes volver cuando
  * quieras.`) — its second half is always the same reassurance; only the
  * count and the earliest year vary with what this client actually has.
  *
@@ -356,7 +356,7 @@ export function formatGalleryIndexLede(sessionDates: readonly string[]): string 
   const sessionsClause =
     sessionDates.length === 1 ? "Una sesión" : `${sessionDates.length} sesiones`;
 
-  return `${sessionsClause} desde ${earliestYear}. Las galerías no vencen: podés volver cuando quieras.`;
+  return `${sessionsClause} desde ${earliestYear}. Las galerías no vencen: puedes volver cuando quieras.`;
 }
 
 /** The client-facing word for a gallery card's state on `/galleries`'s own

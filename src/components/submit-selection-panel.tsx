@@ -93,7 +93,7 @@ function confirmationMessage(quota: QuotaResult, allowsOriginalSelection: boolea
     // Neither term applies — the ORIGINAL pre-#206 sentence, unchanged, for
     // the gallery this task must not visibly change (the owner's own
     // governing constraint).
-    lines.push("No tenés extras con esta selección.");
+    lines.push("No tienes extras con esta selección.");
   } else {
     lines.push(...chargeLines);
     // A TOTAL line only when there are TWO tariffs to add — with just one,
@@ -156,11 +156,11 @@ export function SubmitSelectionPanel({
       if (!response.ok) {
         const body = (await response.json().catch(() => null)) as { error?: string } | null;
         if (body?.error === "empty_selection") {
-          setError("Elegí al menos una foto antes de enviar.");
+          setError("Elige al menos una foto antes de enviar.");
         } else if (body?.error === "gallery_not_submittable") {
           setError("Esta galería no está lista para recibir una selección todavía.");
         } else {
-          setError("No se pudo enviar la selección. Probá de nuevo en un momento.");
+          setError("No se pudo enviar la selección. Prueba de nuevo en un momento.");
         }
         return;
       }
@@ -195,12 +195,12 @@ export function SubmitSelectionPanel({
         type="button"
         onClick={() => void handleSubmit()}
         disabled={pending || quota.selected === 0}
-        className="border-accent bg-accent hover:border-accent-2 hover:bg-accent-2 inline-flex min-h-12 items-center justify-center rounded-[3px] border px-5 text-sm font-semibold tracking-[0.02em] text-[#14100a] transition-colors disabled:cursor-not-allowed disabled:opacity-50"
+        className="border-accent bg-accent hover:border-accent-2 hover:bg-accent-2 text-ink inline-flex min-h-12 items-center justify-center rounded-[3px] border px-5 text-sm font-semibold tracking-[0.02em] transition-colors disabled:cursor-not-allowed disabled:opacity-50"
       >
         {pending ? "Enviando…" : "Enviar selección"}
       </button>
       {error && (
-        <p role="alert" className="text-sm text-[#e0796b]">
+        <p role="alert" className="text-danger text-sm">
           {error}
         </p>
       )}

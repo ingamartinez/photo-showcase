@@ -351,7 +351,7 @@ describe("createGallery validation", () => {
   });
 
   // Task #100 REVERSED this. Until #100 the schema carried
-  // `.min(1, "Elegí al menos un cliente.")` and this same test asserted the
+  // `.min(1, "Elige al menos un cliente.")` and this same test asserted the
   // refusal; the owner asked for the opposite workflow — the shoot happens,
   // the files come off the card, and the client record may not exist yet.
   // Posting no `clientIds` at all is now a valid create.
@@ -532,7 +532,7 @@ describe("createGallery package resolution", () => {
     );
 
     expect(result.status).toBe("error");
-    expect(result.message).toBe("Elegí un paquete válido.");
+    expect(result.message).toBe("Elige un paquete válido.");
   });
 
   // Acceptance criterion: only active packages appear in the picker — and a
@@ -1003,7 +1003,7 @@ describe("createGallery success + frozen terms", () => {
     );
 
     expect(result.status).toBe("error");
-    expect(result.message).toBe("Elegí clientes válidos.");
+    expect(result.message).toBe("Elige clientes válidos.");
   });
 
   // Review finding on task #94: this suite's own comment used to claim

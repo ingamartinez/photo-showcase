@@ -263,7 +263,7 @@ export function DashboardNav() {
                     // Link this sits inside is already `relative` on phone
                     // and a `flex-row` on `lg:`, so no extra positioning
                     // context is needed here.
-                    className="bg-accent absolute top-[8px] left-1/2 ml-[7px] grid h-4 min-w-[16px] place-items-center rounded-full px-1 text-[10px] font-bold text-[#14100A] tabular-nums lg:static lg:top-auto lg:left-auto lg:mt-0 lg:ml-auto"
+                    className="bg-accent text-ink absolute top-[8px] left-1/2 ml-[7px] grid h-4 min-w-[16px] place-items-center rounded-full px-1 text-[10px] font-bold tabular-nums lg:static lg:top-auto lg:left-auto lg:mt-0 lg:ml-auto"
                   >
                     {pendingSelectionCount}
                   </span>

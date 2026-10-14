@@ -109,7 +109,7 @@ export function GalleryForm({
               Clientes (opcional)
             </span>
             <p className="text-fg-dim text-sm leading-relaxed">
-              Todavía no cargaste ningún cliente. Podés crear la galería igual y agregarle el
+              Todavía no cargaste ningún cliente. Puedes crear la galería igual y agregarle el
               cliente cuando exista — hasta entonces queda en borrador.{" "}
               <Link href="/dashboard/clients" className="text-accent-2 underline">
                 Ir a clientes
@@ -138,8 +138,8 @@ export function GalleryForm({
               ))}
             </select>
             <p className="text-fg-dim text-sm leading-relaxed">
-              Podés dejarlo vacío y agregar el cliente después — sin cliente no vas a poder publicar
-              la galería.
+              Puedes dejarlo vacío y agregar el cliente después — sin cliente no vas a poder
+              publicar la galería.
             </p>
           </>
         )}
@@ -160,7 +160,7 @@ export function GalleryForm({
           className={inputClass}
         >
           <option value="" disabled>
-            Elegí un paquete
+            Elige un paquete
           </option>
           {packages.map((pkg) => (
             <option key={pkg.id} value={pkg.id}>
@@ -277,7 +277,7 @@ export function GalleryForm({
       </div>
 
       {state.status === "error" && (
-        <p id="gallery-form-error" role="alert" className="text-sm text-[#e0796b]">
+        <p id="gallery-form-error" role="alert" className="text-danger text-sm">
           {state.message}
         </p>
       )}

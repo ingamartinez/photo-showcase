@@ -192,7 +192,7 @@ describe("ClientsPage chrome", () => {
     const { container } = render(element);
 
     expect(screen.getByText("Todavía no cargaste ningún cliente.")).toBeDefined();
-    expect(screen.getByText(/Cargá el primero desde «Nuevo cliente»/)).toBeDefined();
+    expect(screen.getByText(/Carga el primero desde «Nuevo cliente»/)).toBeDefined();
     expect(rowsIn(container)).toHaveLength(0);
     // A genuine empty state (task #88): no rows, and no count line claiming
     // "0 clientes en total" either.

@@ -46,7 +46,7 @@ export function missingFinalNotificationEmailHtml(params: MissingFinalNotificati
       "pero el archivo original ya no está en el almacenamiento. El cliente vio un error, no la foto.</p>",
     "<p>Archivos afectados:</p>",
     `<ul>${items}</ul>`,
-    "<p>Volvé a subir el final de esas fotos para restablecer la descarga.</p>",
+    "<p>Vuelve a subir el final de esas fotos para restablecer la descarga.</p>",
     `<p><a href="${params.galleryUrl}">Ver la galería en el panel</a></p>`,
   ].join("\n");
 }
@@ -59,7 +59,7 @@ export function missingFinalNotificationEmailText(params: MissingFinalNotificati
     "Archivos afectados:",
     ...params.missingFilenames.map((name) => `- ${name}`),
     "",
-    "Volvé a subir el final de esas fotos para restablecer la descarga.",
+    "Vuelve a subir el final de esas fotos para restablecer la descarga.",
     "",
     `Ver la galería en el panel: ${params.galleryUrl}`,
   ].join("\n");

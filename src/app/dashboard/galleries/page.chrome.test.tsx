@@ -293,7 +293,7 @@ describe("GalleriesPage chrome", () => {
     const { container } = render(element);
 
     expect(screen.getByText("Todavía no armaste ninguna galería.")).toBeDefined();
-    expect(screen.getByText(/Armá la primera desde «Nueva galería»/)).toBeDefined();
+    expect(screen.getByText(/Arma la primera desde «Nueva galería»/)).toBeDefined();
     // A genuine empty state (task #88): no rows, and no count line claiming
     // "0 galerías en total" either.
     expect(rowsIn(container)).toHaveLength(0);
@@ -347,7 +347,7 @@ describe("GalleriesPage chrome", () => {
   });
 
   // Task #100 REVERSED this. The page used to replace the whole form with
-  // "Cargá un cliente antes de armar una galería" — the exact ordering the
+  // "Carga un cliente antes de armar una galería" — the exact ordering the
   // owner asked to undo. It now always renders the form; <GalleryForm> puts
   // the guidance (and the link) inside the client field itself, where it
   // explains the field rather than blocking the page. Moving the form into a
@@ -368,7 +368,7 @@ describe("GalleriesPage chrome", () => {
     expect(within(dialog).getByRole("button", { name: "Crear galería" })).toBeDefined();
     expect(within(dialog).getByText(/Todavía no cargaste ningún cliente/)).toBeDefined();
     expect(within(dialog).getByRole("link", { name: "Ir a clientes" })).toBeDefined();
-    expect(screen.queryByText(/Cargá un cliente antes de armar una galería/)).toBeNull();
+    expect(screen.queryByText(/Carga un cliente antes de armar una galería/)).toBeNull();
   });
 
   // Task #100: a gallery with nobody attached is legitimate while it is a

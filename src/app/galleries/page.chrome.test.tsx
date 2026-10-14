@@ -110,7 +110,7 @@ describe("ClientGalleriesPage chrome", () => {
       expect.stringContaining("/galleries/abc123"),
     );
 
-    expect(screen.queryByText("Todavía no tenés ninguna galería.")).toBeNull();
+    expect(screen.queryByText("Todavía no tienes ninguna galería.")).toBeNull();
   });
 
   it("distinguishes a gallery waiting on the studio from one ready to download", async () => {
@@ -179,7 +179,7 @@ describe("ClientGalleriesPage chrome", () => {
     const element = await ClientGalleriesPage();
     render(element);
 
-    expect(screen.getByText("Todavía no tenés ninguna galería.")).toBeDefined();
+    expect(screen.getByText("Todavía no tienes ninguna galería.")).toBeDefined();
     expect(screen.queryByText(/undefined|null/i)).toBeNull();
   });
 
@@ -220,7 +220,7 @@ describe("ClientGalleriesPage chrome", () => {
     const element = await ClientGalleriesPage();
     render(element);
 
-    expect(screen.getByText("Todavía no tenés ninguna galería.")).toBeDefined();
+    expect(screen.getByText("Todavía no tienes ninguna galería.")).toBeDefined();
     expect(screen.queryByRole("link")).toBeNull();
   });
 
@@ -249,17 +249,19 @@ describe("ClientGalleriesPage chrome", () => {
 
     // Review finding on task #180: Tailwind's `from-*`/`via-*`/`to-*`
     // gradient utilities compile to FIXED 0%/50%/100% stops, which is NOT
-    // the mock's own 8%/62%/100% (client.html:153-156) and composites to
+    // this scrim's own 8%/62%/100% and composites to
     // ~1.04:1 contrast behind the meta line against a bright photo — well
     // under WCAG 1.4.3. Pinned as the literal gradient string (not just
-    // "contains rgba(7,7,9...)") because the WRONG utility-class shape would
-    // also contain that substring and this test must fail if it regresses
-    // back to it. The real composited-pixel proof (real Chromium, a
+    // "contains a dark scrim colour") because the WRONG utility-class shape
+    // would also contain that substring and this test must fail if it
+    // regresses back to it. The colours follow the current ground token
+    // (#1a1512); the STOPS are the load-bearing part. The real
+    // composited-pixel proof (real Chromium, a
     // blown-out white photo, WCAG relative luminance) lives in this task's
     // own commit message / PR description — jsdom cannot composite a
     // gradient over an image, so this is the closest this suite can pin
     // without a real browser.
-    it("uses the mock's own gradient stops, not Tailwind's default 0/50/100", async () => {
+    it("uses the scrim's own gradient stops, not Tailwind's default 0/50/100", async () => {
       getGalleriesForClientMock.mockResolvedValue([
         galleryListItem({ coverProofKey: "galleries/g1/proofs/a1.webp" }),
       ]);
@@ -268,7 +270,7 @@ describe("ClientGalleriesPage chrome", () => {
 
       const scrim = container.querySelector('[aria-hidden="true"]');
       expect(scrim?.className).toContain(
-        "bg-[linear-gradient(to_top,rgba(7,7,9,0.92)_8%,rgba(7,7,9,0.15)_62%,transparent)]",
+        "bg-[linear-gradient(to_top,rgb(26_21_18_/_0.92)_8%,rgb(26_21_18_/_0.15)_62%,transparent)]",
       );
     });
 

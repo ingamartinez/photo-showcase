@@ -89,30 +89,28 @@ export function DashboardGalleryCreateDialog({
     <>
       <Dialog open={open} onOpenChange={handleOpenChange}>
         {/*
-        A plain trigger button styled to the mock's `.btn--primary`
-        (design/system/dashboard.html:220-229): brass fill with #14100A ink —
-        one of the five places brass is a FILL rather than a hover wash
-        (globals.css's --color-accent-foreground comment lists them). Full
-        width on a phone, auto from 600px up (dashboard.html:216-217, :473-475).
+        A plain trigger button styled as a primary action: accent fill with
+        dark ink — one of the few places the accent is a FILL rather than a
+        hover wash (globals.css's --color-accent-foreground comment states the
+        rule). Full width on a phone, auto from 600px up.
 
         Not <Button> from @/components/ui: this is the one control on the
         screen and it needs four overrides (height, radius, hover colour, full
-        width) to reach the mock, at which point the primitive is carrying
-        nothing. Epic #125's rule is that shadcn is adopted for the primitives
-        that bring accessibility for free — Dialog, below, is exactly that; a
-        button element already is one.
+        width) to reach the intended look, at which point the primitive is
+        carrying nothing. Epic #125's rule is that shadcn is adopted for the
+        primitives that bring accessibility for free — Dialog, below, is
+        exactly that; a button element already is one.
 
-        `min-h-[var(--app-tap)]` is the 44px touch floor (dashboard.html:72,
-        :222). Measured in a browser at 320/390/768/1024/1280px: 44px at all
-        five, full-bleed below 600px and 146.8px above it.
+        `min-h-[var(--app-tap)]` is the 44px touch floor. Measured in a
+        browser at 320/390/768/1024/1280px: 44px at all five, full-bleed
+        below 600px and 146.8px above it.
 
-        No focus styling here on purpose — globals.css:472-474 already gives
-        every focusable element the mock's own 2px brass outline
-        (dashboard.html:113). An outline is not the "brass as a hover/focus
-        wash" the epic forbids, and re-declaring it per control is how two
-        focus rings end up disagreeing.
+        No focus styling here on purpose — globals.css already gives every
+        focusable element the 2px accent outline. An outline is not the
+        "accent as a hover/focus wash" the epic forbids, and re-declaring it
+        per control is how two focus rings end up disagreeing.
       */}
-        <DialogTrigger className="bg-accent text-app-base hover:bg-accent-2 inline-flex min-h-[var(--app-tap)] w-full items-center justify-center gap-[7px] rounded-[var(--app-radius-sm)] px-4 font-semibold text-[#14100A] transition-colors min-[600px]:w-auto">
+        <DialogTrigger className="bg-accent text-app-base hover:bg-accent-2 text-ink inline-flex min-h-[var(--app-tap)] w-full items-center justify-center gap-[7px] rounded-[var(--app-radius-sm)] px-4 font-semibold transition-colors min-[600px]:w-auto">
           <Plus aria-hidden="true" className="size-4 shrink-0" />
           Nueva galería
         </DialogTrigger>
@@ -123,7 +121,7 @@ export function DashboardGalleryCreateDialog({
             {/* Task #100's ordering, said in the dialog that replaced the panel
               which used to say it. Copy from design/system/dashboard.html:766-769. */}
             <DialogDescription className="text-fg-dim">
-              Podés armarla antes de tener el cliente cargado — la sesión pasa, los archivos salen
+              Puedes armarla antes de tener el cliente cargado — la sesión pasa, los archivos salen
               de la tarjeta, y el cliente se agrega después.
             </DialogDescription>
           </DialogHeader>

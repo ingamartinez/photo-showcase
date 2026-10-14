@@ -36,7 +36,7 @@ export function galleryDeliveryEmailHtml(url: string): string {
   return renderEditorialEmailHtml({
     messageHtml: [
       '<p style="margin:0 0 12px 0;">Hola,</p>',
-      '<p style="margin:0;">Ya terminamos de editar tus fotos y están listas para descargar. Hacé clic en el ' +
+      '<p style="margin:0;">Ya terminamos de editar tus fotos y están listas para descargar. Haz clic en el ' +
         "siguiente enlace para entrar a tu galería:</p>",
     ].join("\n"),
     ctaUrl: url,

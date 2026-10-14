@@ -8,7 +8,7 @@ import { PageHeader } from "@/components/page-header";
 const initialState: LoginActionState = { status: "idle" };
 
 // Owns the <PageHeader /> too, not just the form: the "sent" state used to
-// swap only the form below while the header kept reading "Escribí el correo
+// swap only the form below while the header kept reading "Escribe el correo
 // con el que reservaste la sesión…", contradicting the notice underneath it
 // that said the link was already on its way. Flagged in #9's review — see
 // src/components/check-email-notice.tsx's CHECK_EMAIL_HEADER for the fix,
@@ -44,19 +44,18 @@ export function LoginForm({
   return (
     <>
       <PageHeader
-        eyebrow="Acceso privado"
-        title="Ingresá a tu galería."
-        lead="Escribí el correo con el que reservaste la sesión. Te enviamos un enlace de acceso — sin contraseñas."
+        title="Ingresa a tu galería."
+        lead="Escribe el correo con el que reservaste la sesión. Te enviamos un enlace de acceso — sin contraseñas."
       />
       <section className="wrap max-w-[440px] pb-[clamp(64px,10vh,120px)]">
-        <form action={formAction} className="flex flex-col gap-5" data-reveal>
+        <form action={formAction} className="flex flex-col gap-5">
           {authErrorMessage && (
-            <p role="alert" className="text-sm text-[#e0796b]">
+            <p role="alert" className="text-danger text-sm">
               {authErrorMessage}
             </p>
           )}
           <div className="flex flex-col gap-2">
-            <label htmlFor="email" className="label text-fg-mute">
+            <label htmlFor="email" className="text-fg-mute text-sm">
               Correo electrónico
             </label>
             <input
@@ -71,7 +70,7 @@ export function LoginForm({
               className="border-line-2 focus-visible:border-accent text-fg placeholder:text-fg-mute rounded-sm border bg-transparent px-4 py-3 text-[15px] transition-colors outline-none"
             />
             {state.status === "error" && (
-              <p id="email-error" role="alert" className="text-sm text-[#e0796b]">
+              <p id="email-error" role="alert" className="text-danger text-sm">
                 {state.message}
               </p>
             )}

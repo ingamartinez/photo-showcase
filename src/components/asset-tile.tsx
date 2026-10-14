@@ -66,6 +66,7 @@ import { useRef, useState } from "react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import { GripVertical } from "lucide-react";
+import { Check } from "@/components/icons";
 import type { WorkspaceAsset } from "@/components/gallery-workspace";
 import { FINAL_UPLOAD_ACCEPT } from "@/lib/final-formats";
 import { cn } from "@/lib/utils";
@@ -278,7 +279,7 @@ export function AssetTile({
             badge carries a "✓" glyph plus a title, matching the mock's own
             `.asset__flag` / `.asset__final` (dashboard.html:443-455). */}
         {asset.isSelected && (
-          <span className="bg-accent pointer-events-none absolute top-1 left-1 rounded-full px-1.5 py-0.5 text-[9px] font-bold tracking-[0.04em] text-[#14100a] uppercase">
+          <span className="bg-accent text-ink pointer-events-none absolute top-1 left-1 rounded-full px-1.5 py-0.5 text-[9px] font-bold tracking-[0.04em] uppercase">
             Elegida
           </span>
         )}
@@ -286,9 +287,9 @@ export function AssetTile({
           <span
             title="Final subido"
             aria-hidden="true"
-            className="pointer-events-none absolute top-1 right-1 flex size-4 items-center justify-center rounded-full bg-[#7a9b82] text-[10px] font-bold text-[#08150c]"
+            className="pointer-events-none absolute top-1 right-1 flex size-4 items-center justify-center rounded-full bg-[#7a9b82] text-[#08150c]"
           >
-            ✓
+            <Check />
           </span>
         )}
 
@@ -348,12 +349,12 @@ export function AssetTile({
           className={cn(
             "absolute bottom-1 left-1 flex size-6 items-center justify-center rounded-[3px] border transition-colors",
             isMarked
-              ? "border-[#e0796b] bg-[#e0796b] text-[#1a0d0a]"
-              : "border-fg-dim bg-black/60 text-transparent hover:border-[#e0796b]",
+              ? "border-danger bg-danger text-ink"
+              : "border-fg-dim hover:border-danger bg-black/60 text-transparent",
           )}
         >
           <span aria-hidden="true" className="text-xs leading-none font-bold">
-            ✓
+            <Check />
           </span>
         </button>
         <p
@@ -363,7 +364,7 @@ export function AssetTile({
           {asset.originalFilename}
         </p>
       </div>
-      {error && <p className="text-xs text-[#e0796b]">{error}</p>}
+      {error && <p className="text-danger text-xs">{error}</p>}
       <div className="flex items-center justify-between gap-2">
         {/* Task #199: the ONE drag handle — see the file header for why this
             lives here (its own row, off the photo) rather than as a
@@ -388,7 +389,7 @@ export function AssetTile({
           type="button"
           disabled={busy}
           onClick={() => void handleDelete()}
-          className="min-h-6 text-xs text-[#e0796b] transition-colors hover:underline disabled:cursor-not-allowed disabled:opacity-40"
+          className="text-danger min-h-6 text-xs transition-colors hover:underline disabled:cursor-not-allowed disabled:opacity-40"
         >
           Eliminar
         </button>
@@ -404,7 +405,7 @@ export function AssetTile({
       {asset.isSelected && (
         <div className="border-line-2 flex flex-col gap-1 border-t pt-1.5">
           <div className="flex items-center justify-between gap-2">
-            <span className={asset.hasFinal ? "text-accent-2 text-xs" : "text-xs text-[#e0796b]"}>
+            <span className={asset.hasFinal ? "text-accent-2 text-xs" : "text-danger text-xs"}>
               {asset.hasFinal ? "Final subido" : "Falta el final"}
             </span>
             <label className="hover:text-accent-2 min-h-6 cursor-pointer text-xs tracking-[0.04em] uppercase transition-colors">
@@ -434,7 +435,7 @@ export function AssetTile({
               />
             </label>
           </div>
-          {finalError && <p className="text-xs text-[#e0796b]">{finalError}</p>}
+          {finalError && <p className="text-danger text-xs">{finalError}</p>}
         </div>
       )}
     </li>

@@ -67,7 +67,7 @@ describe("sendLoginEmail", () => {
     };
     expect(body.from).toBe("no-reply@alejoframes.com");
     expect(body.to).toBe("ana@example.com");
-    expect(body.subject).toBe("Ingresá a tu galería");
+    expect(body.subject).toBe("Ingresa a tu galería");
     expect(body.html).toContain(URL_UNDER_TEST);
     expect(body.text).toContain(URL_UNDER_TEST);
   });

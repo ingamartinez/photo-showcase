@@ -217,7 +217,7 @@ describe("SubmitSelectionPanel", () => {
     await user.click(screen.getByRole("button", { name: "Enviar selección" }));
 
     await vi.waitFor(() =>
-      expect(screen.getByText("Elegí al menos una foto antes de enviar.")).toBeDefined(),
+      expect(screen.getByText("Elige al menos una foto antes de enviar.")).toBeDefined(),
     );
   });
 
@@ -245,7 +245,7 @@ describe("SubmitSelectionPanel", () => {
 
     await vi.waitFor(() =>
       expect(
-        screen.getByText("No se pudo enviar la selección. Probá de nuevo en un momento."),
+        screen.getByText("No se pudo enviar la selección. Prueba de nuevo en un momento."),
       ).toBeDefined(),
     );
     expect(onSubmitted).not.toHaveBeenCalled();
@@ -357,12 +357,12 @@ describe("SubmitSelectionPanel — the two-tariff confirmation (task #206)", () 
 
   // Originals present, but the client stayed within the included edited
   // count — the extras line must not appear (it would falsely claim extras
-  // exist), but the originals line must, and no "No tenés extras..." either.
+  // exist), but the originals line must, and no "No tienes extras..." either.
   it("shows only the originals line when there are originals but no edited extras", async () => {
     const message = await openConfirmation(computeQuota(5, 2, SNAPSHOT));
 
     expect(message).not.toMatch(/Extras:/);
-    expect(message).not.toMatch(/No tenés extras/);
+    expect(message).not.toMatch(/No tienes extras/);
     expect(message).toMatch(/Originales: 2 × \$ 2\.000 = \$ 4\.000\./);
     // Exactly one tariff line -> no separate "Total:" line (it would repeat
     // the same number).

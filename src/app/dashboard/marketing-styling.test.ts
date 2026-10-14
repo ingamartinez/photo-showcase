@@ -21,10 +21,12 @@ import { describe, expect, it } from "vitest";
 // prop.
 //
 // WHAT COUNTS AS "SURVIVING MARKETING STYLING" HERE, taken verbatim from the
-// task's own list:
-//   - `.wrap`      — the marketing 1280px centred column (globals.css:473).
-//   - `.label`     — the mono, uppercase, 0.22em-tracked eyebrow
-//                    (globals.css:498). The task's own sweep found this
+// task's own list, then updated for the retired kicker device:
+//   - `.wrap`      — the marketing 1280px centred column (globals.css).
+//   - `.label`     — the retired tracked small-caps eyebrow utility. The
+//                    class is gone from globals.css entirely (a heading
+//                    carries its own weight), and this guard keeps it from
+//                    coming back by name. The task's own sweep found this
 //                    class AND its un-classed sibling — a raw
 //                    `uppercase tracking-[0.1em] text-[13px]` bordered
 //                    button, copy-pasted from the public site's own CTA
@@ -46,8 +48,8 @@ import { describe, expect, it } from "vitest";
 //                    `tracking-[0.06em]`, `tracking-[0.04em]`,
 //                    `tracking-wide` (0.025em) or `tracking-wider` (0.05em),
 //                    so 0.07em is a real gap between "the app's own quiet
-//                    uppercase micro-labels" and "the marketing CTA's 0.1em",
-//                    not an arbitrary cutoff.
+//                    uppercase micro-labels" and the marketing CTA's wider
+//                    tracking, not an arbitrary cutoff.
 //   - `clamp(...)` — the editorial display type scale (dashboard.html:82-91's
 //                    opposite number; the mock's own panel type scale,
 //                    globals.css's `--app-text-*`, is a fixed step list, not
@@ -414,7 +416,7 @@ function findViolations(classValue: string): string[] {
     found.push(`the marketing "wrap" column: "${classValue}"`);
   }
   if (tokens.includes("label")) {
-    found.push(`the marketing "label" eyebrow: "${classValue}"`);
+    found.push(`the retired kicker/eyebrow utility: "${classValue}"`);
   }
   if (classValue.includes("clamp(")) {
     found.push(`a clamp() display type scale: "${classValue}"`);

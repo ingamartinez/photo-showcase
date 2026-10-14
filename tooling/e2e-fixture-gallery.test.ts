@@ -125,15 +125,13 @@ describe("ensureFixtureGallery", () => {
   });
 
   describe("a gallery that does not exist yet", () => {
-    it("creates it with the requested status, slug and title", async () => {
+    it("creates it in draft and moves it up only after the client is attached", async () => {
       const store = makeStore({});
 
       await run(store, "proofing");
 
-      expect(store.inserts).toEqual([
-        { publicSlug: PUBLIC_SLUG, title: TITLE, status: "proofing" },
-      ]);
-      expect(store.statusUpdates).toEqual([]);
+      expect(store.inserts).toEqual([{ publicSlug: PUBLIC_SLUG, title: TITLE, status: "draft" }]);
+      expect(store.statusUpdates).toEqual([{ galleryId: GALLERY_ID, status: "proofing" }]);
     });
 
     it("attaches the fixture client to it", async () => {
@@ -142,6 +140,14 @@ describe("ensureFixtureGallery", () => {
       await run(store);
 
       expect(store.membershipInserts).toEqual([{ galleryId: GALLERY_ID, userId: CLIENT_ID }]);
+    });
+
+    it("stays in draft when the caller asks for draft", async () => {
+      const store = makeStore({});
+
+      await run(store, "draft");
+
+      expect(store.statusUpdates).toEqual([]);
     });
   });
 

@@ -89,7 +89,7 @@ const createGallerySchema = z.object({
   // at the insert itself. Task #94: a gallery can now belong to SEVERAL
   // clients, so this is an ARRAY, not a single id.
   //
-  // Task #100 REMOVED the `.min(1, "Elegí al menos un cliente.")` this array
+  // Task #100 REMOVED the `.min(1, "Elige al menos un cliente.")` this array
   // used to carry, on purpose and at the owner's request: the photographer
   // must be able to set a session up and upload proofs BEFORE the client
   // record exists. An EMPTY array is now a valid create, and the gallery it
@@ -102,19 +102,19 @@ const createGallerySchema = z.object({
   packageId: z
     .string()
     .trim()
-    .min(1, "Elegí un paquete.")
+    .min(1, "Elige un paquete.")
     .refine((value) => Number.isInteger(Number(value)) && Number(value) > 0, {
-      message: "Elegí un paquete válido.",
+      message: "Elige un paquete válido.",
     })
     .transform(Number),
-  title: z.string().trim().min(1, "Ingresá un título."),
+  title: z.string().trim().min(1, "Ingresa un título."),
   // `<input type="date">` posts "YYYY-MM-DD", the exact shape
   // `galleries.sessionDate` (a `date()` column in string mode) stores.
   sessionDate: z
     .string()
     .trim()
-    .min(1, "Elegí la fecha de la sesión.")
-    .pipe(z.iso.date("Ingresá una fecha de sesión válida.")),
+    .min(1, "Elige la fecha de la sesión.")
+    .pipe(z.iso.date("Ingresa una fecha de sesión válida.")),
   // Task #193 — both OPTIONAL, both independent of one another. An admin can
   // override only the quota, only the extra-photo price, both, or neither
   // (the untouched default, which reproduces today's behavior bit for bit).
@@ -183,7 +183,7 @@ export async function createGallery(
   if (!parsed.success) {
     return {
       status: "error",
-      message: parsed.error.issues[0]?.message ?? "Revisá los datos del formulario.",
+      message: parsed.error.issues[0]?.message ?? "Revisa los datos del formulario.",
     };
   }
 
@@ -197,7 +197,7 @@ export async function createGallery(
     .limit(1);
 
   if (!pkg) {
-    return { status: "error", message: "Elegí un paquete válido." };
+    return { status: "error", message: "Elige un paquete válido." };
   }
   // Defense in depth: getActivePackages() only lists active packages, but
   // nothing stops a crafted request from posting a retired one's id directly.
@@ -285,7 +285,7 @@ export async function createGallery(
     });
   } catch (error) {
     if (hasPostgresErrorCode(error, FOREIGN_KEY_VIOLATION)) {
-      return { status: "error", message: "Elegí clientes válidos." };
+      return { status: "error", message: "Elige clientes válidos." };
     }
     throw error;
   }
@@ -413,7 +413,7 @@ export async function updateGalleryTerms(
   if (!parsed.success) {
     return {
       status: "error",
-      message: parsed.error.issues[0]?.message ?? "Revisá los datos del formulario.",
+      message: parsed.error.issues[0]?.message ?? "Revisa los datos del formulario.",
     };
   }
 
@@ -552,7 +552,7 @@ export async function updateAllowsOriginalSelection(
   if (!parsed.success) {
     return {
       status: "error",
-      message: parsed.error.issues[0]?.message ?? "Revisá los datos del formulario.",
+      message: parsed.error.issues[0]?.message ?? "Revisa los datos del formulario.",
     };
   }
 
@@ -741,7 +741,7 @@ export async function publishGallery(
     .from(assets)
     .where(eq(assets.galleryId, gallery.id));
   if (Number(assetCount) === 0) {
-    return { status: "error", message: "Subí al menos una foto antes de publicar la galería." };
+    return { status: "error", message: "Sube al menos una foto antes de publicar la galería." };
   }
 
   // Task #94: a gallery can have SEVERAL clients now — `gallery.clientId`
@@ -807,7 +807,7 @@ export async function publishGallery(
   if (failedEmails.length > 0) {
     return {
       status: "error",
-      message: `No pudimos enviarle el correo a: ${failedEmails.join(", ")}. Probá de nuevo — quien ya lo recibió puede recibir un segundo correo sin problema.`,
+      message: `No pudimos enviarle el correo a: ${failedEmails.join(", ")}. Prueba de nuevo — quien ya lo recibió puede recibir un segundo correo sin problema.`,
     };
   }
 
@@ -844,7 +844,7 @@ export async function publishGallery(
       status: "error",
       message:
         "Le enviamos el correo al cliente, pero no pudimos actualizar el estado de la galería. " +
-        "Volvé a intentar — el cliente puede recibir un segundo correo.",
+        "Vuelve a intentar — el cliente puede recibir un segundo correo.",
     };
   }
 
@@ -1539,7 +1539,7 @@ const attachGalleryClientsSchema = z.object({
   // gallery" is not a thing at all — it is an empty request, and answering it
   // with a cheerful "clientes agregados" would be a silent no-op. Do not
   // "restore consistency" by deleting this.
-  clientIds: z.array(z.string().trim().min(1)).min(1, "Elegí al menos un cliente."),
+  clientIds: z.array(z.string().trim().min(1)).min(1, "Elige al menos un cliente."),
 });
 
 export async function attachGalleryClients(
@@ -1558,7 +1558,7 @@ export async function attachGalleryClients(
   if (!parsed.success) {
     return {
       status: "error",
-      message: parsed.error.issues[0]?.message ?? "Revisá los datos del formulario.",
+      message: parsed.error.issues[0]?.message ?? "Revisa los datos del formulario.",
     };
   }
 
@@ -1589,7 +1589,7 @@ export async function attachGalleryClients(
     .from(users)
     .where(inArray(users.id, clientIds));
   if (requestedUsers.length !== clientIds.length) {
-    return { status: "error", message: "Elegí clientes válidos." };
+    return { status: "error", message: "Elige clientes válidos." };
   }
 
   // Three cases, all handled WITHOUT ever risking a `gallery_clients`
@@ -2101,7 +2101,7 @@ export async function updateSelectionTrayMode(
   if (!parsed.success) {
     return {
       status: "error",
-      message: parsed.error.issues[0]?.message ?? "Elegí un modo válido.",
+      message: parsed.error.issues[0]?.message ?? "Elige un modo válido.",
     };
   }
 
@@ -2189,7 +2189,7 @@ export async function assignExtraToPerson(
     deliveredFor: formData.get("deliveredFor"),
   });
   if (!parsed.success) {
-    return { status: "error", message: "Elegí una persona válida." };
+    return { status: "error", message: "Elige una persona válida." };
   }
 
   const [asset] = await db

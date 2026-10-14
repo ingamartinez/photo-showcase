@@ -173,7 +173,7 @@ describe("GalleryClientRow", () => {
     removeGalleryClientMock.mockResolvedValue({
       status: "error",
       message:
-        "No podés quitar al último cliente activo de una galería que ya no está en borrador.",
+        "No puedes quitar al último cliente activo de una galería que ya no está en borrador.",
     });
     const user = userEvent.setup();
     render(
@@ -191,7 +191,7 @@ describe("GalleryClientRow", () => {
     await user.click(screen.getByRole("button", { name: "Confirmar" }));
 
     await screen.findByRole("alert");
-    expect(screen.getByText(/No podés quitar al último cliente activo/)).toBeDefined();
+    expect(screen.getByText(/No puedes quitar al último cliente activo/)).toBeDefined();
     // Still there — the removal was refused, not applied.
     expect(screen.getByText(/Ana Pérez/)).toBeDefined();
   });

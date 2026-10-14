@@ -15,7 +15,7 @@ import { getClientIp } from "@/lib/rate-limit";
 import { emailLimiter, ipLimiter } from "@/lib/login-rate-limiters";
 
 const requestSchema = z.object({
-  email: z.email("Ingresá un correo electrónico válido."),
+  email: z.email("Ingresa un correo electrónico válido."),
 });
 
 export type LoginActionState = {
@@ -48,7 +48,7 @@ export async function requestMagicLink(
     // address exists, so there's no signal to hide.
     return {
       status: "error",
-      message: parsed.error.issues[0]?.message ?? "Ingresá un correo electrónico válido.",
+      message: parsed.error.issues[0]?.message ?? "Ingresa un correo electrónico válido.",
     };
   }
 

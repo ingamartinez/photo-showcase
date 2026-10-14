@@ -65,7 +65,7 @@ export function SelectionTrayModeControl({
         </button>
       </div>
       {state.status === "error" && (
-        <p role="alert" className="text-sm text-[#e0796b]">
+        <p role="alert" className="text-danger text-sm">
           {state.message}
         </p>
       )}

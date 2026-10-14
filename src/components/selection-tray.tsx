@@ -490,7 +490,7 @@ export function SelectionTray({
         // or clears the list itself either — the picks are the last thing
         // the server actually said, and saying "these may be out of date" is
         // strictly more useful than an empty box or a confident lie.
-        <p className="mb-3 text-xs text-[#e0796b]">
+        <p className="text-danger mb-3 text-xs">
           Se perdió la conexión: esta lista puede estar desactualizada.
         </p>
       )}
@@ -528,11 +528,9 @@ export function SelectionTray({
                     is plain text, not a separate `aria-hidden`/`sr-only`
                     pair: a screen reader reads this exactly as sighted users
                     see it, same as the header's own pick counter above.
-                    Deliberately NOT `uppercase`: this surface's own styling
-                    guard (marketing-styling.test.ts, task #149) reserves
-                    `uppercase` for ONE sanctioned kicker treatment
-                    (`tracking-[0.18em]`) and forbids it everywhere else under
-                    /galleries — a picker's own name is not that. */}
+                    Deliberately NOT `uppercase`: the tracked small-caps
+                    device is retired everywhere, and a picker's own name is
+                    not a label. */}
                 <p
                   className={`text-fg-dim mb-2 text-sm font-medium ${
                     group.key === UNATTRIBUTED_GROUP_KEY ? "italic" : ""
@@ -642,7 +640,7 @@ function TrayItem({
         <div className="bg-bg-2 relative aspect-square overflow-hidden rounded-sm">
           {src === undefined ? (
             <span className="text-fg-mute absolute inset-0 flex items-center justify-center px-1 text-center text-[10px] leading-tight">
-              Recargá para verla
+              Recarga para verla
             </span>
           ) : (
             // Plain <img>, not next/image — same reasoning as the grid's own

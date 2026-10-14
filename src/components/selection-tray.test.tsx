@@ -139,7 +139,7 @@ describe("SelectionTray", () => {
     const { container } = renderTray({ picks: [pick({ assetId: "unknown-asset" })] });
 
     expect(container.querySelectorAll("img")).toHaveLength(0);
-    expect(screen.getByText(/recargá para verla/i)).toBeDefined();
+    expect(screen.getByText(/recarga para verla/i)).toBeDefined();
   });
 
   it("says the selection is already submitted once the gallery is locked", () => {

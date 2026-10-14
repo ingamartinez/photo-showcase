@@ -43,6 +43,24 @@ vi.mock("@/lib/galleries", async () => {
   };
 });
 
+// Flash galleries gifted to the client (epic #232, slice #234). The query and
+// its active-assignment filter are proven in src/lib/flash-access.test.ts;
+// this file only proves the PAGE renders what it is given.
+const getFlashGalleriesForClientMock =
+  vi.fn<(userId: string) => Promise<ReturnType<typeof flashItem>[]>>();
+vi.mock("@/lib/flash-access", () => ({
+  getFlashGalleriesForClient: (userId: string) => getFlashGalleriesForClientMock(userId),
+}));
+function flashItem(overrides: Partial<{ title: string; publicSlug: string }> = {}) {
+  return {
+    id: "f1",
+    title: "Cumple de Sofi",
+    publicSlug: "flash-slug",
+    sessionDate: null as string | null,
+    ...overrides,
+  };
+}
+
 // Task #180: `@/lib/r2` is server-only (it constructs an `S3Client` lazily
 // off `r2Env()`, see r2.ts's own header) — mocked wholesale here, same
 // reasoning and same deterministic-fake shape as
@@ -84,10 +102,31 @@ beforeEach(() => {
   requireSessionMock.mockReset();
   requireSessionMock.mockResolvedValue(sessionWithName("Ana"));
   getGalleriesForClientMock.mockReset();
+  getFlashGalleriesForClientMock.mockReset();
+  getFlashGalleriesForClientMock.mockResolvedValue([]);
 });
 
 afterEach(() => {
   cleanup();
+});
+
+describe("ClientGalleriesPage flash galleries", () => {
+  it("lists an assigned flash gallery as a gift linking to /flash/<slug>, queried by the session's own id", async () => {
+    getGalleriesForClientMock.mockResolvedValue([]);
+    getFlashGalleriesForClientMock.mockResolvedValue([flashItem()]);
+
+    render(await ClientGalleriesPage());
+
+    const item = screen.getByText("Cumple de Sofi").closest("li")!;
+    expect(within(item).getByText("Regalo")).toBeDefined();
+    expect(within(item).getByRole("link")).toHaveProperty(
+      "href",
+      expect.stringContaining("/flash/flash-slug"),
+    );
+    expect(getFlashGalleriesForClientMock).toHaveBeenCalledWith("client-a");
+    // Having only a gift is not the "nothing yet" state.
+    expect(screen.queryByText(/Cuando publiquemos las pruebas/)).toBeNull();
+  });
 });
 
 describe("ClientGalleriesPage chrome", () => {

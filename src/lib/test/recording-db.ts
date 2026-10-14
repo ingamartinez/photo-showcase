@@ -17,6 +17,8 @@ export type RecordedCall = {
   values?: unknown;
   set?: unknown;
   where?: { sql: string; params: unknown[] };
+  /** Each ORDER BY term rendered to SQL, e.g. `"flash_assets"."sort_order" asc`. */
+  orderBy?: string[];
 };
 
 type Op = RecordedCall["op"];
@@ -53,7 +55,10 @@ export function createRecordingDb(scripted: Partial<Record<Op, unknown[][]>> = {
         return chain;
       },
       limit: () => chain,
-      orderBy: () => chain,
+      orderBy: (...columns: unknown[]) => {
+        call.orderBy = columns.map((c) => dialect.sqlToQuery(c as never).sql);
+        return chain;
+      },
       returning: () => chain,
       then: (resolve: (value: unknown) => unknown, reject?: (reason: unknown) => unknown) =>
         result().then(resolve, reject),

@@ -368,14 +368,14 @@ describe("formatGalleryIndexHeading", () => {
   it("names the client in the empty-state sentence too", async () => {
     const { formatGalleryIndexHeading } = await import("./galleries");
     expect(formatGalleryIndexHeading("Ana", false)).toEqual({
-      lines: ["Ana, todavía no tenés ninguna galería."],
+      lines: ["Ana, todavía no tienes ninguna galería."],
     });
   });
 
   it("degrades the empty-state sentence for a nameless client", async () => {
     const { formatGalleryIndexHeading } = await import("./galleries");
     expect(formatGalleryIndexHeading(null, false)).toEqual({
-      lines: ["Todavía no tenés ninguna galería."],
+      lines: ["Todavía no tienes ninguna galería."],
     });
   });
 });
@@ -389,14 +389,14 @@ describe("formatGalleryIndexLede", () => {
   it("pluralizes a single session and names the earliest year", async () => {
     const { formatGalleryIndexLede } = await import("./galleries");
     expect(formatGalleryIndexLede(["2024-07-02"])).toBe(
-      "Una sesión desde 2024. Las galerías no vencen: podés volver cuando quieras.",
+      "Una sesión desde 2024. Las galerías no vencen: puedes volver cuando quieras.",
     );
   });
 
   it("counts several sessions and picks the EARLIEST year across all of them", async () => {
     const { formatGalleryIndexLede } = await import("./galleries");
     expect(formatGalleryIndexLede(["2026-08-01", "2026-03-14", "2024-07-02"])).toBe(
-      "3 sesiones desde 2024. Las galerías no vencen: podés volver cuando quieras.",
+      "3 sesiones desde 2024. Las galerías no vencen: puedes volver cuando quieras.",
     );
   });
 });

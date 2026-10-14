@@ -82,7 +82,7 @@ describe("sendGalleryDeliveryEmail", () => {
     // The core acceptance criterion, pinned down at the subject string
     // level: distinct from gallery-access-email.ts's own
     // "Tus fotos ya están listas" and from gallery-unlock-email.ts's
-    // "Podés volver a editar tu selección".
+    // "Puedes volver a editar tu selección".
     expect(body.subject).toBe("Tus fotos editadas ya están listas para descargar");
     expect(body.html).toContain(URL_UNDER_TEST);
     expect(body.text).toContain(URL_UNDER_TEST);

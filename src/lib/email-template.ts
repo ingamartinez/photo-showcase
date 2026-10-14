@@ -109,7 +109,7 @@ export function renderEditorialEmailHtml(body: EditorialEmailBody): string {
 export interface EditorialEmailTextBody {
   messageText: string;
   ctaUrl: string;
-  /** Defaults to "Entrá a tu galería", matching the pre-#153 text templates. */
+  /** Defaults to "Entra a tu galería", matching the pre-#153 text templates. */
   ctaLine?: string;
   footnoteText: string;
 }
@@ -124,6 +124,6 @@ export interface EditorialEmailTextBody {
  * negative signal in its own right.
  */
 export function renderEditorialEmailText(body: EditorialEmailTextBody): string {
-  const { messageText, ctaUrl, ctaLine = "Entrá a tu galería", footnoteText } = body;
+  const { messageText, ctaUrl, ctaLine = "Entra a tu galería", footnoteText } = body;
   return [messageText, "", `${ctaLine}: ${ctaUrl}`, "", footnoteText].join("\n");
 }

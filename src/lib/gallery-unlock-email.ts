@@ -45,7 +45,7 @@ export function galleryUnlockEmailHtml(url: string): string {
   return renderEditorialEmailHtml({
     messageHtml: [
       '<p style="margin:0 0 12px 0;">Hola,</p>',
-      '<p style="margin:0;">Tu selección de fotos volvió a estar disponible para editar. Hacé clic en el siguiente ' +
+      '<p style="margin:0;">Tu selección de fotos volvió a estar disponible para editar. Haz clic en el siguiente ' +
         "enlace para entrar a tu galería:</p>",
     ].join("\n"),
     ctaUrl: url,
@@ -88,7 +88,7 @@ export async function sendGalleryUnlockEmail(params: {
       apiKey,
       from,
       to,
-      subject: "Podés volver a editar tu selección",
+      subject: "Puedes volver a editar tu selección",
       html: galleryUnlockEmailHtml(url),
       text: galleryUnlockEmailText(url),
     },

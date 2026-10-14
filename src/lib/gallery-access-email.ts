@@ -26,7 +26,7 @@ export function galleryAccessEmailHtml(url: string): string {
   return renderEditorialEmailHtml({
     messageHtml: [
       '<p style="margin:0 0 12px 0;">Hola,</p>',
-      '<p style="margin:0;">Tus fotos ya están listas para ver. Hacé clic en el siguiente enlace para entrar a tu galería:</p>',
+      '<p style="margin:0;">Tus fotos ya están listas para ver. Haz clic en el siguiente enlace para entrar a tu galería:</p>',
     ].join("\n"),
     ctaUrl: url,
     ctaLabel: "Ver mis fotos",

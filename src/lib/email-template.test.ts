@@ -79,7 +79,7 @@ describe("renderEditorialEmailText", () => {
     });
 
     expect(text).toBe(
-      ["Cuerpo del mensaje.", "", `Entrá a tu galería: ${CTA_URL}`, "", "Nota al pie."].join("\n"),
+      ["Cuerpo del mensaje.", "", `Entra a tu galería: ${CTA_URL}`, "", "Nota al pie."].join("\n"),
     );
   });
 
@@ -87,12 +87,12 @@ describe("renderEditorialEmailText", () => {
     const text = renderEditorialEmailText({
       messageText: "Cuerpo.",
       ctaUrl: CTA_URL,
-      ctaLine: "Entrá a la galería",
+      ctaLine: "Entra a la galería",
       footnoteText: "Nota.",
     });
 
-    expect(text).toContain(`Entrá a la galería: ${CTA_URL}`);
-    expect(text).not.toContain("Entrá a tu galería:");
+    expect(text).toContain(`Entra a la galería: ${CTA_URL}`);
+    expect(text).not.toContain("Entra a tu galería:");
   });
 
   it("contains no HTML tags", () => {

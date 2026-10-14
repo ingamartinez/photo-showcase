@@ -25,22 +25,22 @@ const RESEND_API_URL = "https://api.resend.com/emails";
 export function loginEmailHtml(url: string): string {
   return [
     "<p>Hola,</p>",
-    "<p>Hacé clic en el siguiente enlace para ingresar a tu galería:</p>",
+    "<p>Haz clic en el siguiente enlace para ingresar a tu galería:</p>",
     `<p><a href="${url}">Ingresar</a></p>`,
     "<p>Este enlace es personal — no lo compartas — y deja de funcionar en 15 minutos.</p>",
-    "<p>Si no pediste este enlace, podés ignorar este correo.</p>",
+    "<p>Si no pediste este enlace, puedes ignorar este correo.</p>",
   ].join("\n");
 }
 
 export function loginEmailText(url: string): string {
   return [
-    "Hacé clic en el siguiente enlace para ingresar a tu galería:",
+    "Haz clic en el siguiente enlace para ingresar a tu galería:",
     "",
     url,
     "",
     "Este enlace es personal — no lo compartas — y deja de funcionar en 15 minutos.",
     "",
-    "Si no pediste este enlace, podés ignorar este correo.",
+    "Si no pediste este enlace, puedes ignorar este correo.",
   ].join("\n");
 }
 
@@ -84,7 +84,7 @@ export async function sendLoginEmail(params: {
       body: JSON.stringify({
         from,
         to,
-        subject: "Ingresá a tu galería",
+        subject: "Ingresa a tu galería",
         html: loginEmailHtml(url),
         text: loginEmailText(url),
       }),

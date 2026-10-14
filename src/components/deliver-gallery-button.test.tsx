@@ -142,7 +142,7 @@ describe("DeliverGalleryButton", () => {
       true,
     );
     expect(
-      screen.getByText("Subí los finales que faltan antes de poder entregar la galería."),
+      screen.getByText("Sube los finales que faltan antes de poder entregar la galería."),
     ).toBeDefined();
   });
 });

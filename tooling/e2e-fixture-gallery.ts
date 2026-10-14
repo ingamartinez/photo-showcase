@@ -77,17 +77,15 @@ export async function ensureFixtureGallery(
   const existing = await store.findGalleryByPublicSlug(publicSlug);
   let galleryId: string;
 
+  // A gallery is always born in `draft` and moved up AFTER the fixture client
+  // is attached: the database refuses a gallery past draft with zero active
+  // clients (`activeClientRuleViolation` in src/lib/galleries.ts), so seeding
+  // straight into `proofing` fails before this function can insert the
+  // membership row that would satisfy the guard.
   if (!existing) {
-    galleryId = await store.insertGallery({ publicSlug, title, status });
+    galleryId = await store.insertGallery({ publicSlug, title, status: "draft" });
   } else {
     galleryId = existing.id;
-    // THE #179 FIX. The `!==` is not an optimization dressed as a guard: a
-    // no-op UPDATE would be harmless, but skipping it keeps the seeding
-    // honest about having changed something, and the test below asserts both
-    // branches so nobody can "simplify" this into the original bug.
-    if (existing.status !== status) {
-      await store.updateGalleryStatus(galleryId, status);
-    }
   }
 
   const membership = await store.findMembership(galleryId, clientUserId);
@@ -98,6 +96,14 @@ export async function ensureFixtureGallery(
     // -- see schema.ts's own comment on `removedAt`: re-attaching UPDATEs the
     // same composite-PK row back to NULL rather than inserting a second one.
     await store.reactivateMembership(galleryId, clientUserId);
+  }
+
+  // THE #179 FIX. The `!==` is not an optimization dressed as a guard: a
+  // no-op UPDATE would be harmless, but skipping it keeps the seeding
+  // honest about having changed something, and the test below asserts both
+  // branches so nobody can "simplify" this into the original bug.
+  if (status !== "draft" && (!existing || existing.status !== status)) {
+    await store.updateGalleryStatus(galleryId, status);
   }
 
   return galleryId;

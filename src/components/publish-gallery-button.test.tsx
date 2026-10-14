@@ -67,7 +67,7 @@ describe("PublishGalleryButton", () => {
   it("shows the error message returned by the action and keeps the button available to retry", async () => {
     publishGalleryMock.mockResolvedValue({
       status: "error",
-      message: "Subí al menos una foto antes de publicar la galería.",
+      message: "Sube al menos una foto antes de publicar la galería.",
     });
     const user = userEvent.setup();
     render(<PublishGalleryButton galleryId={GALLERY_ID} clientEmails={["ana@example.com"]} />);
@@ -75,7 +75,7 @@ describe("PublishGalleryButton", () => {
     await user.click(screen.getByRole("button", { name: "Publicar galería" }));
 
     await screen.findByRole("alert");
-    expect(screen.getByText("Subí al menos una foto antes de publicar la galería.")).toBeDefined();
+    expect(screen.getByText("Sube al menos una foto antes de publicar la galería.")).toBeDefined();
     expect(screen.getByRole("button", { name: "Publicar galería" })).toBeDefined();
   });
 });

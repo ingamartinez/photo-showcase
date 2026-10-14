@@ -46,6 +46,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Dialog as DialogPrimitive } from "radix-ui";
 import type { WorkspaceAsset } from "@/components/gallery-workspace";
+import { Check } from "@/components/icons";
 import { ZoomableStage } from "@/components/zoomable-stage";
 import { cn } from "@/lib/utils";
 
@@ -238,11 +239,15 @@ export function AdminAssetViewer({
                 className={cn(
                   "inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-[3px] border px-5 text-sm transition-colors",
                   isMarked
-                    ? "border-[#e0796b] bg-[#e0796b] font-semibold tracking-[0.02em] text-[#1a0d0a]"
-                    : "border-line-2 text-fg tracking-[0.04em] hover:border-[#e0796b] hover:text-[#e0796b]",
+                    ? "border-danger bg-danger text-ink font-semibold tracking-[0.02em]"
+                    : "border-line-2 text-fg hover:border-danger hover:text-danger tracking-[0.04em]",
                 )}
               >
-                {isMarked && <span aria-hidden="true">✓</span>}
+                {isMarked && (
+                  <span aria-hidden="true">
+                    <Check />
+                  </span>
+                )}
                 {isMarked ? "Marcada para borrar" : "Marcar para borrar"}
               </button>
 

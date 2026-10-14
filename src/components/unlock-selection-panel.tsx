@@ -29,7 +29,7 @@ export function UnlockSelectionPanel({ galleryId }: { galleryId: string }) {
   // `alert`, not folded into the quiet `status` case above.
   if (state.status === "unlocked_email_failed") {
     return (
-      <p role="alert" className="text-sm text-[#e0796b]">
+      <p role="alert" className="text-danger text-sm">
         {state.message}
       </p>
     );
@@ -73,7 +73,7 @@ export function UnlockSelectionPanel({ galleryId }: { galleryId: string }) {
         {pending ? "Desbloqueando…" : "Desbloquear selección"}
       </button>
       {state.status === "error" && (
-        <p role="alert" className="text-sm text-[#e0796b]">
+        <p role="alert" className="text-danger text-sm">
           {state.message}
         </p>
       )}

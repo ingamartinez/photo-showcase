@@ -261,7 +261,7 @@ export function FinalsBulkUploader({
     <div className="border-line-2 flex flex-col gap-3 rounded-[6px] border border-dashed p-4">
       <span className="text-fg text-sm font-medium">Subir finales en lote</span>
       <span className="text-fg-dim text-xs">
-        Elegí varios archivos exportados de una vez — se proponen las coincidencias por nombre antes
+        Elige varios archivos exportados de una vez — se proponen las coincidencias por nombre antes
         de subir nada.
       </span>
 
@@ -304,7 +304,7 @@ export function FinalsBulkUploader({
               past, while seeing WHICH eight photos are about to be delivered
               free is a decision they can actually make. */}
           {extraMatches.length > 0 && (
-            <div className="flex flex-col gap-1 text-xs text-[#e0796b]">
+            <div className="text-danger flex flex-col gap-1 text-xs">
               <span>
                 {extraMatches.length} extra{extraMatches.length === 1 ? "" : "s"}:{" "}
                 {extraMatches.length === 1
@@ -320,7 +320,7 @@ export function FinalsBulkUploader({
           )}
 
           {plan.ambiguous.length > 0 && (
-            <ul className="flex flex-col gap-1 text-xs text-[#e0796b]">
+            <ul className="text-danger flex flex-col gap-1 text-xs">
               {plan.ambiguous.map((entry, index) => (
                 <li key={index}>{ambiguousReasonText(entry)}</li>
               ))}
@@ -375,7 +375,7 @@ export function FinalsBulkUploader({
                     <span
                       className={
                         item.status === "error"
-                          ? "text-[#e0796b]"
+                          ? "text-danger"
                           : item.status === "done"
                             ? "text-accent-2"
                             : "text-fg-mute"

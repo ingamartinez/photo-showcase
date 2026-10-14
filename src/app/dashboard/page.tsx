@@ -81,8 +81,8 @@ export default async function DashboardPage() {
         </h1>
         <p className="text-fg-dim mt-[5px] max-w-[46ch] text-[length:var(--app-text-body)]">
           {isEmpty
-            ? "Este va a ser tu punto de partida: cargás un cliente, armás una galería con el paquete que contrató y subís las pruebas."
-            : `Tenés ${formatClientCount(clientCount)} y ${formatStudioGalleryCount(galleryCount)} en marcha.`}
+            ? "Este va a ser tu punto de partida: cargas un cliente, armas una galería con el paquete que contrató y subes las pruebas."
+            : `Tienes ${formatClientCount(clientCount)} y ${formatStudioGalleryCount(galleryCount)} en marcha.`}
         </p>
       </div>
 
@@ -108,7 +108,7 @@ export default async function DashboardPage() {
               {pendingSelectionCopy}
             </p>
           </span>
-          <span className="bg-accent inline-flex min-h-[var(--app-tap)] items-center justify-center rounded-[var(--app-radius-sm)] px-4 font-semibold text-[#14100A] sm:min-h-0 sm:py-2">
+          <span className="bg-accent text-ink inline-flex min-h-[var(--app-tap)] items-center justify-center rounded-[var(--app-radius-sm)] px-4 font-semibold sm:min-h-0 sm:py-2">
             Ver
           </span>
         </Link>

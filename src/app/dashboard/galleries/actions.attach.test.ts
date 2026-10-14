@@ -373,7 +373,7 @@ describe("attachGalleryClients validation and guards", () => {
       formDataWith({ galleryId: GALLERY_ID, clientIds: ["does-not-exist"] }),
     );
 
-    expect(result).toEqual({ status: "error", message: "Elegí clientes válidos." });
+    expect(result).toEqual({ status: "error", message: "Elige clientes válidos." });
     const db = await seededDb();
     expect(db.__rows.galleryClients).toHaveLength(0);
   });

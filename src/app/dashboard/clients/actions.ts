@@ -14,7 +14,7 @@ import { users } from "@/lib/db/schema";
 import { requireAdmin } from "@/lib/auth-guards";
 
 const createClientSchema = z.object({
-  name: z.string().trim().min(1, "Ingresá un nombre."),
+  name: z.string().trim().min(1, "Ingresa un nombre."),
   // Identity IS the email (PLAN.md §4): normalized to lowercase and trimmed
   // BEFORE the format check, not after — `z.email()` on its own rejects
   // " Ana@Example.com " outright (leading/trailing space fails the format
@@ -34,7 +34,7 @@ const createClientSchema = z.object({
     .trim()
     .normalize("NFKC")
     .toLowerCase()
-    .pipe(z.email("Ingresá un correo electrónico válido.")),
+    .pipe(z.email("Ingresa un correo electrónico válido.")),
   // WhatsApp number — free text, no format enforced (photographer copy/pastes
   // whatever the client gave them). Empty string from the form means "not
   // provided", not a value to store.
@@ -126,7 +126,7 @@ export async function createClient(
   if (!parsed.success) {
     return {
       status: "error",
-      message: parsed.error.issues[0]?.message ?? "Revisá los datos del formulario.",
+      message: parsed.error.issues[0]?.message ?? "Revisa los datos del formulario.",
       values: submittedValues(formData),
     };
   }

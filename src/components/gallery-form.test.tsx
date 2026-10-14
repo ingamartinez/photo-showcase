@@ -57,7 +57,7 @@ describe("GalleryForm", () => {
     expect(screen.getByLabelText("Clientes (opcional)")).toHaveProperty("required", false);
     // An optional field with no explanation reads as a bug — the copy has to
     // name the consequence (no publishing), in Spanish.
-    expect(screen.getByText(/Podés dejarlo vacío y agregar el cliente después/)).toBeDefined();
+    expect(screen.getByText(/Puedes dejarlo vacío y agregar el cliente después/)).toBeDefined();
     expect(screen.getByText(/sin cliente no vas a poder publicar la galería/i)).toBeDefined();
   });
 

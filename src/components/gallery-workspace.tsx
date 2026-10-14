@@ -516,7 +516,7 @@ export function GalleryWorkspace({
             Ordenar por nombre de archivo
           </button>
           {reorderError && (
-            <p className="text-xs text-[#e0796b]" role="alert">
+            <p className="text-danger text-xs" role="alert">
               {reorderError}
             </p>
           )}
@@ -536,7 +536,7 @@ export function GalleryWorkspace({
           own notion of "current order" never drifts from `sorted`. */}
       {sorted.length === 0 ? (
         <p className="text-fg-dim text-[15px] leading-relaxed">
-          Todavía no subiste fotos de esta sesión — usá el selector de arriba.
+          Todavía no subiste fotos de esta sesión — usa el selector de arriba.
         </p>
       ) : (
         <DndContext
@@ -573,14 +573,14 @@ export function GalleryWorkspace({
           there), and conflating them would make either one harder to reason
           about in isolation. */}
       {markedIds.size > 0 && (
-        <div className="bg-bg/90 sticky bottom-[calc(var(--app-tabbar-h)+8px)] z-20 flex flex-wrap items-center justify-between gap-4 rounded-[6px] border border-[#e0796b]/60 p-3 backdrop-blur-sm lg:static lg:bg-transparent lg:backdrop-blur-none">
+        <div className="bg-bg/90 border-danger/60 sticky bottom-[calc(var(--app-tabbar-h)+8px)] z-20 flex flex-wrap items-center justify-between gap-4 rounded-[6px] border p-3 backdrop-blur-sm lg:static lg:bg-transparent lg:backdrop-blur-none">
           <p className="text-fg-dim text-sm">
             {markedIds.size} foto{markedIds.size === 1 ? "" : "s"} marcada
             {markedIds.size === 1 ? "" : "s"} para borrar.
           </p>
           <div className="flex items-center gap-3">
             {bulkDeleteError && (
-              <p className="text-xs text-[#e0796b]" role="alert">
+              <p className="text-danger text-xs" role="alert">
                 {bulkDeleteError}
               </p>
             )}
@@ -594,7 +594,7 @@ export function GalleryWorkspace({
               type="button"
               disabled={bulkDeleteBusy}
               onClick={() => void handleBulkDelete()}
-              className="min-h-9 rounded-[4px] border border-[#e0796b] px-3 text-xs font-semibold tracking-[0.04em] text-[#e0796b] uppercase transition-colors hover:bg-[#e0796b] hover:text-[#1a0d0a] disabled:cursor-not-allowed disabled:opacity-50"
+              className="border-danger text-danger hover:bg-danger hover:text-ink min-h-9 rounded-[4px] border px-3 text-xs font-semibold tracking-[0.04em] uppercase transition-colors disabled:cursor-not-allowed disabled:opacity-50"
             >
               {bulkDeleteBusy
                 ? "Eliminando…"

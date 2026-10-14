@@ -30,33 +30,28 @@ const COLUMN_HEADINGS = ["Galería", "Clientes", "Estado", "Paquete", "Sesión",
 const DESK_COLUMNS =
   "lg:grid-cols-[minmax(0,1.4fr)_minmax(0,1.1fr)_152px_100px_108px_56px] lg:gap-3.5";
 
-/* THE STATUS RAMP — design/system/dashboard.html:82-96.
+/* THE STATUS RAMP.
  *
  * Deliberately NOT the brand accent, with one deliberate exception: the ramp
  * answers "who is this waiting on?", and `selected` (the one state that means
- * the PHOTOGRAPHER is the blocker) is the studio's brass. That is task #75's
- * semantics carried into the table, and it is brass as a FEATURE fill — never
- * as a hover or focus wash (epic #125's rule; globals.css's
- * --color-accent-foreground comment enumerates the five legitimate brass
- * fills in the mock).
+ * the PHOTOGRAPHER is the blocker) is the accent. That is task #75's
+ * semantics carried into the table, and it is the accent as a FEATURE fill —
+ * never as a hover or focus wash (the rule globals.css's
+ * --color-accent-foreground comment states).
  *
- * WHY THE HEX VALUES ARE HERE AND NOT IN globals.css. They belong there, as
- * `--app-st-*` — globals.css:420-425 already reserves that exact naming for
- * "the slices that ship badges and rows", which is this one. They are not
- * there yet only because globals.css is owned by another lane this wave. When
- * those tokens land, every string below becomes `var(--app-st-<name>)` and
- * nothing else on this page changes: the row publishes ONE custom property,
- * `--row-status`, and every status-coloured thing under it (the 3px stripe,
- * the badge's ink, border and wash) reads that one property. `--row-status` is
- * NOT a design token and is deliberately not named like one — it is a local
- * per-row channel, the same role `--st` plays in the mock (:305, :337-339).
+ * Every value is a reference to an existing brand token rather than a hex of
+ * its own, so a palette change cannot leave the ramp behind. The row
+ * publishes ONE custom property, `--row-status`, and every status-coloured
+ * thing under it (the 3px stripe, the badge's ink, border and wash) reads
+ * that one property. `--row-status` is NOT a design token and is deliberately
+ * not named like one — it is a local per-row channel.
  */
 const STATUS_RAMP: Record<GalleryWithDetails["status"], string> = {
-  draft: "[--row-status:#63616e]",
-  proofing: "[--row-status:#7e93ad]",
-  selected: "[--row-status:#c8a15a]",
-  delivered: "[--row-status:#7a9b82]",
-  archived: "[--row-status:#4a4954]",
+  draft: "[--row-status:var(--fg-mute)]",
+  proofing: "[--row-status:var(--steel)]",
+  selected: "[--row-status:var(--accent)]",
+  delivered: "[--row-status:var(--canvas)]",
+  archived: "[--row-status:var(--line)]",
 };
 
 // Calls requireAdmin() itself, same as every other page under /dashboard —
@@ -145,8 +140,8 @@ export default async function GalleriesPage() {
           <div className="text-fg-dim text-app-body px-[var(--app-pad-card)] py-8 text-center">
             <p className="text-fg text-app-lead mb-1.5">Todavía no armaste ninguna galería.</p>
             <p className="mx-auto max-w-[46ch]">
-              Armá la primera desde «Nueva galería» — elegí paquete, título y fecha de la sesión. El
-              cliente es opcional: podés agregarlo después.
+              Arma la primera desde «Nueva galería» — elige paquete, título y fecha de la sesión. El
+              cliente es opcional: puedes agregarlo después.
             </p>
           </div>
         ) : (
@@ -195,7 +190,7 @@ export default async function GalleriesPage() {
                   // tests assert on — see the note on the badge below.
                   data-status={gallery.status}
                   className={cn(
-                    "hover:bg-fg/[2.8%] grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-[3px] border-l-[3px] border-l-[color:var(--row-status)] px-[var(--app-cell-x)] py-3 transition-colors",
+                    "hover:bg-fg/[2.8%] grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-[3px] px-[var(--app-cell-x)] py-3 transition-colors",
                     "[grid-template-areas:'title_state''who_who''meta_n']",
                     "min-[600px]:grid-cols-[minmax(0,1fr)_auto_auto] min-[600px]:gap-x-3.5 min-[600px]:gap-y-1 min-[600px]:[grid-template-areas:'title_state_n''who_meta_meta']",
                     "lg:min-h-[var(--app-row-h)] lg:py-0 lg:[grid-template-areas:none]",

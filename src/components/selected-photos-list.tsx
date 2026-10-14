@@ -149,7 +149,7 @@ function PhotoGroup({ label, items }: { label?: string; items: SelectedPhotoList
         </p>
       )}
       {copyState === "error" && (
-        <p role="alert" className="mt-2 text-xs text-[#e0796b]">
+        <p role="alert" className="text-danger mt-2 text-xs">
           No se pudo copiar — seleccioná la lista y copiala a mano.
         </p>
       )}

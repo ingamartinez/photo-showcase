@@ -85,7 +85,7 @@ export default async function ClientsPage() {
           <div className="text-fg-dim text-app-body px-[var(--app-pad-card)] py-8 text-center">
             <p className="text-fg text-app-lead mb-1.5">Todavía no cargaste ningún cliente.</p>
             <p className="mx-auto max-w-[46ch]">
-              Cargá el primero desde «Nuevo cliente» — nombre, correo y, si querés, el WhatsApp.
+              Carga el primero desde «Nuevo cliente» — nombre, correo y, si quieres, el WhatsApp.
             </p>
           </div>
         ) : (
@@ -129,7 +129,7 @@ export default async function ClientsPage() {
                 // signal, so no `cursor-pointer` and no interactive role ride
                 // along with it.
                 className={cn(
-                  "hover:bg-fg/[2.8%] grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-[3px] border-l-[3px] border-l-transparent px-[var(--app-cell-x)] py-3 transition-colors",
+                  "hover:bg-fg/[2.8%] grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-[3px] px-[var(--app-cell-x)] py-3 transition-colors",
                   "[grid-template-areas:'title_n''who_who''meta_meta']",
                   "min-[600px]:grid-cols-[minmax(0,1fr)_auto_auto] min-[600px]:gap-x-3.5 min-[600px]:gap-y-1 min-[600px]:[grid-template-areas:'title_n_n''who_meta_meta']",
                   "lg:min-h-[var(--app-row-h)] lg:py-0 lg:[grid-template-areas:none]",

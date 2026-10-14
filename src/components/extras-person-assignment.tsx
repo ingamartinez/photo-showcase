@@ -91,7 +91,7 @@ function ExtraRow({ extra, people }: { extra: ExtraItem; people: ExtraPerson[] }
         </button>
       </form>
       {state.status === "error" && (
-        <p role="alert" className="text-sm text-[#e0796b]">
+        <p role="alert" className="text-danger text-sm">
           {state.message}
         </p>
       )}
@@ -132,7 +132,7 @@ export function ExtrasPersonAssignment({
         </span>
       </h2>
       <p className="text-fg-dim mt-1 text-xs">
-        Estas fotos no fueron elegidas por el cliente y se entregan igual, sin costo. Elegí a qué
+        Estas fotos no fueron elegidas por el cliente y se entregan igual, sin costo. Elige a qué
         persona corresponde cada una.
       </p>
       <ul className="mt-3 flex flex-col gap-3">

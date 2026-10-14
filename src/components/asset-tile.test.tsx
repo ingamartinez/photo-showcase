@@ -477,7 +477,7 @@ describe("AssetTile", () => {
         </DndContext>,
       );
       const finalBadge = screen.getByTitle("Final subido");
-      expect(finalBadge.textContent).toBe("✓");
+      expect(finalBadge.querySelector("svg")).not.toBeNull();
     });
   });
 

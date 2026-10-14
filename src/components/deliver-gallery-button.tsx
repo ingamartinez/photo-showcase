@@ -38,7 +38,7 @@ export function DeliverGalleryButton({
 
   if (state.status === "delivered") {
     return (
-      <p role="status" className="text-accent-2 text-sm">
+      <p role="status" className="delivery-announce text-accent-2 text-sm">
         Entregada — le enviamos un correo a {clientEmails.join(", ")}.
       </p>
     );
@@ -50,7 +50,7 @@ export function DeliverGalleryButton({
   // swallowed" stance as unlockSelection's own `unlocked_email_failed` case.
   if (state.status === "delivered_email_failed") {
     return (
-      <p role="alert" className="text-sm text-[#e0796b]">
+      <p role="alert" className="text-danger text-sm">
         {state.message}
       </p>
     );
@@ -83,11 +83,11 @@ export function DeliverGalleryButton({
       </button>
       {blockedByMissingFinals && (
         <p className="text-fg-mute max-w-xs text-right text-xs">
-          Subí los finales que faltan antes de poder entregar la galería.
+          Sube los finales que faltan antes de poder entregar la galería.
         </p>
       )}
       {state.status === "error" && (
-        <p role="alert" className="text-sm text-[#e0796b]">
+        <p role="alert" className="text-danger text-sm">
           {state.message}
         </p>
       )}

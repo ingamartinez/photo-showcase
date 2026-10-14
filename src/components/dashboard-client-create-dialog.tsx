@@ -69,20 +69,19 @@ export function DashboardClientCreateDialog() {
     <>
       <Dialog open={open} onOpenChange={handleOpenChange}>
         {/*
-        A plain trigger button styled to the mock's `.btn--primary`
-        (design/system/dashboard.html:220-229 / :865): brass fill with #14100A
-        ink — one of the five places brass is a FILL rather than a hover wash
-        (globals.css's --color-accent-foreground comment lists them). Full
-        width on a phone, auto from 600px up.
+        A plain trigger button styled as a primary action: accent fill with
+        dark ink — one of the few places the accent is a FILL rather than a
+        hover wash (globals.css's --color-accent-foreground comment states the
+        rule). Full width on a phone, auto from 600px up.
 
         Not <Button> from @/components/ui: this is the one control on the
         screen and it needs the same four overrides
         <DashboardGalleryCreateDialog> already pays for. `min-h-[var(--app-tap)]`
         is the 44px touch floor. No focus styling here on purpose —
-        globals.css:472-474 already gives every focusable element the mock's
-        own 2px brass outline.
+        globals.css already gives every focusable element the 2px accent
+        outline.
       */}
-        <DialogTrigger className="bg-accent text-app-base hover:bg-accent-2 inline-flex min-h-[var(--app-tap)] w-full items-center justify-center gap-[7px] rounded-[var(--app-radius-sm)] px-4 font-semibold text-[#14100A] transition-colors min-[600px]:w-auto">
+        <DialogTrigger className="bg-accent text-app-base hover:bg-accent-2 text-ink inline-flex min-h-[var(--app-tap)] w-full items-center justify-center gap-[7px] rounded-[var(--app-radius-sm)] px-4 font-semibold transition-colors min-[600px]:w-auto">
           <Plus aria-hidden="true" className="size-4 shrink-0" />
           Nuevo cliente
         </DialogTrigger>

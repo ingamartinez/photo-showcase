@@ -71,7 +71,7 @@ describe("AttachGalleryClientsForm", () => {
   it("shows the error message returned by the action", async () => {
     attachGalleryClientsMock.mockResolvedValue({
       status: "error",
-      message: "Elegí clientes válidos.",
+      message: "Elige clientes válidos.",
     });
     const user = userEvent.setup();
     render(<AttachGalleryClientsForm galleryId={GALLERY_ID} eligibleClients={ELIGIBLE_CLIENTS} />);
@@ -80,7 +80,7 @@ describe("AttachGalleryClientsForm", () => {
     await user.click(screen.getByRole("button", { name: "Agregar" }));
 
     await screen.findByRole("alert");
-    expect(screen.getByText("Elegí clientes válidos.")).toBeDefined();
+    expect(screen.getByText("Elige clientes válidos.")).toBeDefined();
   });
 
   it("surfaces a partial email-send failure distinctly, naming the failed address", async () => {

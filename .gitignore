@@ -82,3 +82,6 @@ next-env.d.ts
 /design/system/*
 !/design/system/*.html
 kanban/
+
+# Impeccable design-tool working files (briefs, direction, review screenshots).
+/.impeccable/

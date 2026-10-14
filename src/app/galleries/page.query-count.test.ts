@@ -32,6 +32,8 @@ vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 // constructs a real `S3Client` off `r2Env()` (see r2.ts's own header), which
 // this query-count file has no reason to exercise. Mocked with the same
 // deterministic fake every other test in this app uses for it.
+vi.mock("@/lib/flash-access", () => ({ getFlashGalleriesForClient: async () => [] }));
+
 vi.mock("@/lib/r2", () => ({
   getPresignedUrl: (key: string) => `https://r2.example.com/${key}?presigned=1`,
   storedKey: (key: string) => key,

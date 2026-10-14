@@ -25,6 +25,8 @@ vi.mock("@/lib/galleries", async () => {
   };
 });
 
+vi.mock("@/lib/flash-access", () => ({ getFlashGalleriesForClient: async () => [] }));
+
 beforeEach(() => {
   authMock.mockReset();
   getGalleriesForClientMock.mockReset();

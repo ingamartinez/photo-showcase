@@ -8,6 +8,7 @@ import {
   formatSessionDate,
 } from "@/lib/galleries";
 import { readClientGalleryList } from "@/lib/graphql/client-gallery-reads";
+import { getFlashGalleriesForClient } from "@/lib/flash-access";
 import { getPresignedUrl, storedKey } from "@/lib/r2";
 
 // Per-`tone` colour for the state chip. Amber marks the state that asks the
@@ -69,8 +70,12 @@ export default async function ClientGalleriesPage() {
   // client through. There is nothing else in scope on this route to read an
   // id from either: no dynamic segment, no query string, no form.
   const galleries = await readClientGalleryList(session);
+  // Flash galleries (epic #232): photos gifted to this client. Scoped to the
+  // session's own id and to ACTIVE assignments, like the list above.
+  const flashGalleries = await getFlashGalleriesForClient(session.user.id);
   const hasGalleries = galleries.length > 0;
-  const heading = formatGalleryIndexHeading(session.user.name, hasGalleries);
+  const hasAnything = hasGalleries || flashGalleries.length > 0;
+  const heading = formatGalleryIndexHeading(session.user.name, hasAnything);
   const lede = formatGalleryIndexLede(galleries.map((gallery) => gallery.sessionDate));
 
   return (
@@ -88,7 +93,7 @@ export default async function ClientGalleriesPage() {
         ))}
       </h1>
 
-      {!hasGalleries ? (
+      {!hasAnything ? (
         <p className="text-fg-dim measure mt-5 text-[15px] leading-relaxed">
           Cuando publiquemos las pruebas de tu sesión, tu galería va a aparecer acá.
         </p>
@@ -97,6 +102,32 @@ export default async function ClientGalleriesPage() {
           {/* `.lede` — count + earliest year, both derived from the galleries
               this render already fetched, never a second query. */}
           {lede && <p className="text-fg-dim measure mt-3 text-[15px] leading-relaxed">{lede}</p>}
+
+          {flashGalleries.length > 0 && (
+            <ul aria-label="Fotos de regalo" className="mt-10 flex flex-col gap-2">
+              {flashGalleries.map((flash) => (
+                <li key={flash.id}>
+                  <Link
+                    href={`/flash/${flash.publicSlug}`}
+                    className="border-line-2 hover:border-accent/50 flex flex-wrap items-center justify-between gap-3 rounded-sm border p-6 transition-colors"
+                  >
+                    <div>
+                      <span className="text-accent-2 mb-2 flex items-center gap-[7px] text-sm">
+                        <span aria-hidden className="h-[5px] w-[5px] rounded-full bg-current" />
+                        Regalo
+                      </span>
+                      <p className="font-serif text-2xl">{flash.title}</p>
+                      {flash.sessionDate && (
+                        <p className="text-fg-mute mt-1 text-sm">
+                          {formatSessionDate(flash.sessionDate)}
+                        </p>
+                      )}
+                    </div>
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          )}
 
           {/* `.gal-list`, client.html:150 — a single ordered list either way:
               the trap this task's own body names ("no agregar filtros, orden

@@ -341,7 +341,7 @@ describe("SelectionCounter — volume tiers (task #231)", () => {
 
 // Task #236 — the mobile disclosure. jsdom applies no Tailwind, so `lg:` is
 // invisible here: these tests pin the DEFAULT (below-lg) state and the
-// markup contract (native `hidden`, aria wiring, live region placement).
+// markup contract (collapse class, aria wiring, live region placement).
 describe("SelectionCounter — compact disclosure (task #236)", () => {
   const TIERED = {
     includedPhotosSnapshot: 13,
@@ -360,11 +360,14 @@ describe("SelectionCounter — compact disclosure (task #236)", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     const region = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
     expect(region).not.toBeNull();
-    expect(region?.hasAttribute("hidden")).toBe(true);
+    expect(region?.className.includes("max-lg:hidden")).toBe(true);
+    // NOT the native `hidden` attribute: Tailwind's preflight makes
+    // `[hidden]` display:none !important, which no `lg:` utility can beat, so
+    // the detail would vanish on desktop (found in the 1280px visual check).
+    expect(region?.hasAttribute("hidden")).toBe(false);
     // In the DOM (so `lg:block` can show it) but out of the accessibility
     // tree while collapsed.
     expect(region?.textContent).toContain("Precio por foto extra");
-    expect(screen.queryByRole("listitem")).toBeNull();
   });
 
   it("toggling expands the detail and flips the label and aria-expanded back and forth", () => {
@@ -374,7 +377,7 @@ describe("SelectionCounter — compact disclosure (task #236)", () => {
     const toggle = screen.getByRole("button", { name: "Ocultar detalle" });
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     const region = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
-    expect(region?.hasAttribute("hidden")).toBe(false);
+    expect(region?.className.includes("max-lg:hidden")).toBe(false);
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
     expect(screen.getByText(/Todas las fotos extra se cobran/)).toBeDefined();
 
@@ -382,7 +385,7 @@ describe("SelectionCounter — compact disclosure (task #236)", () => {
     expect(screen.getByRole("button", { name: "Ver detalle" }).getAttribute("aria-expanded")).toBe(
       "false",
     );
-    expect(region?.hasAttribute("hidden")).toBe(true);
+    expect(region?.className.includes("max-lg:hidden")).toBe(true);
   });
 
   it("keeps the headline in the live region, OUTSIDE the hidden detail, and the toggle outside the live region", () => {
@@ -391,9 +394,9 @@ describe("SelectionCounter — compact disclosure (task #236)", () => {
     const headline = screen.getByText(/incluidas 13/);
     const live = headline.closest('[aria-live="polite"]');
     expect(live).not.toBeNull();
-    expect(headline.closest("[hidden]")).toBeNull();
+    expect(headline.closest(".max-lg\\:hidden")).toBeNull();
     // The hidden detail IS inside the same live region (desktop announces it).
-    expect(live?.contains(document.querySelector("[hidden]"))).toBe(true);
+    expect(live?.contains(document.querySelector(".max-lg\\:hidden"))).toBe(true);
     // The toggle is not: its label flipping must not be announced.
     expect(live?.contains(screen.getByRole("button", { name: "Ver detalle" }))).toBe(false);
   });

@@ -113,10 +113,12 @@ export function SelectionCounter({
   const activeTier = tiers ? tierIndexForExtras(quota.extras, tiers) : -1;
 
   // Task #236 — below `lg` the price detail sits behind a disclosure so the
-  // bottom bar is one compact row by default. Native `hidden` on the detail
-  // (same mechanism and reasoning as selection-tray.tsx's collapse) with an
-  // `lg:block` override: at lg and up the detail is always visible and the
-  // toggle is not shown, exactly as before this task.
+  // bottom bar is one compact row by default. The collapse is the
+  // `max-lg:hidden` class (display:none: out of the a11y tree and tab order,
+  // like the tray's native `hidden`) and NOT the `hidden` attribute: Tailwind's
+  // preflight makes `[hidden]` display:none !important, which would also hide
+  // the detail at lg and up, where it must always be visible (the toggle is
+  // not shown there either), exactly as before this task.
   const [detailOpen, setDetailOpen] = useState(false);
   const detailId = useId();
 
@@ -132,8 +134,7 @@ export function SelectionCounter({
         </p>
         <div
           id={detailId}
-          hidden={!detailOpen}
-          className="max-h-[40vh] overflow-y-auto overscroll-contain lg:block lg:max-h-none lg:overflow-visible"
+          className={`max-h-[40vh] overflow-y-auto overscroll-contain lg:max-h-none lg:overflow-visible ${detailOpen ? "" : "max-lg:hidden"}`}
         >
           <p className="text-fg-mute mt-1 text-sm">
             extras {quota.extras} × {formatCop(quota.extraUnitPriceCop)} ={" "}

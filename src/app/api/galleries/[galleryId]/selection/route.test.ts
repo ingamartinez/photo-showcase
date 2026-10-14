@@ -372,6 +372,8 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
       selectedOriginal: 0,
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
+      extraUnitPriceCop: 5_000,
       originalPhotoPriceCopSnapshot: 2_000,
       extras: 2,
       originals: 0,

@@ -156,6 +156,7 @@ describe("readClientGalleryBySlug", () => {
       selectionSubmittedAt: "2026-07-28T12:00:00.000Z",
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
       // Task #206 — closes the wiring gap #205 left open.
       originalPhotoPriceCopSnapshot: 2_000,
       // The WIRE value, not the Postgres one — graphql-js serializes an enum
@@ -200,6 +201,7 @@ describe("readClientGalleryBySlug", () => {
       "allowsOriginalSelection",
       "assets",
       "extraPhotoPriceCopSnapshot",
+      "extraPhotoPriceTiersSnapshot",
       "id",
       "includedPhotosSnapshot",
       "originalPhotoPriceCopSnapshot",

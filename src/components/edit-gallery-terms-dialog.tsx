@@ -33,6 +33,14 @@ import {
   updateGalleryTerms,
   type UpdateGalleryTermsState,
 } from "@/app/dashboard/galleries/actions";
+import {
+  DEFAULT_TIER_ROWS,
+  ExtraPriceTiersEditor,
+  parseTierRows,
+  tiersToRows,
+  type TierRow,
+} from "@/components/extra-price-tiers-editor";
+import type { ExtraPriceTier } from "@/lib/extra-price-tiers";
 import { formatCop } from "@/lib/format";
 import { computeQuota } from "@/lib/quota";
 import type { Gallery } from "@/lib/db/schema";
@@ -50,6 +58,7 @@ export function EditGalleryTermsDialog({
   status,
   includedPhotosSnapshot,
   extraPhotoPriceCopSnapshot,
+  extraPhotoPriceTiersSnapshot = null,
   originalPhotoPriceCopSnapshot,
   // `count(assets where is_selected AND selection_kind = 'edited'/'original')`
   // — the SAME split the page already derived from `gallery.assets`
@@ -76,6 +85,8 @@ export function EditGalleryTermsDialog({
   status: Gallery["status"];
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
+  /** Task #231 — the gallery's frozen volume scale, `null` = flat price. */
+  extraPhotoPriceTiersSnapshot?: ExtraPriceTier[] | null;
   originalPhotoPriceCopSnapshot: number;
   selectedEditedCount: number;
   selectedOriginalCount: number;
@@ -96,9 +107,23 @@ export function EditGalleryTermsDialog({
     String(originalPhotoPriceCopSnapshot),
   );
 
+  // Task #231 — the scale editor's state, initialised from the gallery's own
+  // frozen scale (or the owner's default scale when the admin turns it on for
+  // a flat gallery) and reset on every open like the fields above.
+  const [tiersEnabled, setTiersEnabled] = useState(extraPhotoPriceTiersSnapshot !== null);
+  const [tierRows, setTierRows] = useState<TierRow[]>(
+    extraPhotoPriceTiersSnapshot ? tiersToRows(extraPhotoPriceTiersSnapshot) : DEFAULT_TIER_ROWS,
+  );
+
   function handleOpenChange(next: boolean) {
     setOpen(next);
     if (next) {
+      setTiersEnabled(extraPhotoPriceTiersSnapshot !== null);
+      setTierRows(
+        extraPhotoPriceTiersSnapshot
+          ? tiersToRows(extraPhotoPriceTiersSnapshot)
+          : DEFAULT_TIER_ROWS,
+      );
       setIncludedPhotosInput(String(includedPhotosSnapshot));
       setExtraPhotoPriceInput(String(extraPhotoPriceCopSnapshot));
       setOriginalPhotoPriceInput(String(originalPhotoPriceCopSnapshot));
@@ -120,14 +145,19 @@ export function EditGalleryTermsDialog({
   const parsedIncludedPhotos = Number(includedPhotosInput);
   const parsedExtraPhotoPrice = Number(extraPhotoPriceInput);
   const parsedOriginalPhotoPrice = Number(originalPhotoPriceInput);
+  // Task #231 — with the scale on, the preview needs a VALID scale instead of
+  // a valid flat price; `parseTierRows` is the same validator the server runs.
+  const parsedTiers = tiersEnabled ? parseTierRows(tierRows) : null;
   const hasValidPreviewInputs =
     includedPhotosInput.trim() !== "" &&
-    extraPhotoPriceInput.trim() !== "" &&
+    (tiersEnabled
+      ? parsedTiers !== null
+      : extraPhotoPriceInput.trim() !== "" &&
+        Number.isInteger(parsedExtraPhotoPrice) &&
+        parsedExtraPhotoPrice >= 0) &&
     originalPhotoPriceInput.trim() !== "" &&
     Number.isInteger(parsedIncludedPhotos) &&
     parsedIncludedPhotos >= 0 &&
-    Number.isInteger(parsedExtraPhotoPrice) &&
-    parsedExtraPhotoPrice >= 0 &&
     Number.isInteger(parsedOriginalPhotoPrice) &&
     parsedOriginalPhotoPrice >= 0;
 
@@ -147,12 +177,14 @@ export function EditGalleryTermsDialog({
   const before = computeQuota(selectedEditedCount, selectedOriginalCount, {
     includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot,
+    extraPhotoPriceTiersSnapshot,
     originalPhotoPriceCopSnapshot,
   });
   const after = hasValidPreviewInputs
     ? computeQuota(selectedEditedCount, selectedOriginalCount, {
         includedPhotosSnapshot: parsedIncludedPhotos,
-        extraPhotoPriceCopSnapshot: parsedExtraPhotoPrice,
+        extraPhotoPriceCopSnapshot: parsedTiers ? parsedTiers[0]!.priceCop : parsedExtraPhotoPrice,
+        extraPhotoPriceTiersSnapshot: parsedTiers,
         originalPhotoPriceCopSnapshot: parsedOriginalPhotoPrice,
       })
     : null;
@@ -198,28 +230,38 @@ export function EditGalleryTermsDialog({
             />
           </div>
 
-          <div className="flex flex-col gap-2">
-            <label
-              htmlFor="edit-terms-extra-photo-price"
-              className="text-fg-mute text-xs tracking-wide uppercase"
-            >
-              Precio foto extra, COP
-            </label>
-            <input
-              id="edit-terms-extra-photo-price"
-              name="extraPhotoPriceCop"
-              type="number"
-              min={0}
-              step={1}
-              inputMode="numeric"
-              required
-              value={extraPhotoPriceInput}
-              onChange={(event) => setExtraPhotoPriceInput(event.target.value)}
-              aria-invalid={state.status === "error"}
-              aria-describedby={state.status === "error" ? "edit-terms-error" : undefined}
-              className={inputClass}
-            />
-          </div>
+          {!tiersEnabled && (
+            <div className="flex flex-col gap-2">
+              <label
+                htmlFor="edit-terms-extra-photo-price"
+                className="text-fg-mute text-xs tracking-wide uppercase"
+              >
+                Precio foto extra, COP
+              </label>
+              <input
+                id="edit-terms-extra-photo-price"
+                name="extraPhotoPriceCop"
+                type="number"
+                min={0}
+                step={1}
+                inputMode="numeric"
+                required
+                value={extraPhotoPriceInput}
+                onChange={(event) => setExtraPhotoPriceInput(event.target.value)}
+                aria-invalid={state.status === "error"}
+                aria-describedby={state.status === "error" ? "edit-terms-error" : undefined}
+                className={inputClass}
+              />
+            </div>
+          )}
+
+          <ExtraPriceTiersEditor
+            idPrefix="edit-terms"
+            enabled={tiersEnabled}
+            onEnabledChange={setTiersEnabled}
+            rows={tierRows}
+            onRowsChange={setTierRows}
+          />
 
           <div className="flex flex-col gap-2">
             <label

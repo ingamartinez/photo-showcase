@@ -9,7 +9,9 @@
 // The shape is stored frozen per gallery (`galleries.extra_photo_price_tiers_
 // snapshot`, jsonb). `null` there means "flat price", today's behavior.
 
-export type ExtraPriceTier = { minExtras: number; priceCop: number };
+import type { ExtraPriceTier } from "@/lib/quota";
+
+export type { ExtraPriceTier };
 
 /** The scale the owner asked for; pre-loaded when the admin enables tiers. */
 export const DEFAULT_EXTRA_PRICE_TIERS: readonly ExtraPriceTier[] = [
@@ -73,19 +75,6 @@ export function validateExtraPriceTiers(input: unknown): ValidateTiersResult {
   return { ok: true, tiers };
 }
 
-/**
- * Unit price of the tier reached by `extras` (greatest `minExtras <= extras`).
- * With zero extras, the first tier's price (what the next photo would cost).
- * Tiers are expected sorted; this still does not rely on it.
- */
-export function unitPriceForExtras(extras: number, tiers: readonly ExtraPriceTier[]): number {
-  let best = tiers[0]!;
-  for (const tier of tiers) {
-    if (tier.minExtras <= extras && tier.minExtras >= best.minExtras) best = tier;
-  }
-  return best.priceCop;
-}
-
 /** Display range label for tier `i`: "1–2", "5–9", "10 o más". */
 export function tierRangeLabel(tiers: readonly ExtraPriceTier[], index: number): string {
   const tier = tiers[index]!;
@@ -93,13 +82,4 @@ export function tierRangeLabel(tiers: readonly ExtraPriceTier[], index: number):
   if (!next) return `${tier.minExtras} o más`;
   const upper = next.minExtras - 1;
   return upper === tier.minExtras ? `${tier.minExtras}` : `${tier.minExtras}–${upper}`;
-}
-
-/** Index of the tier reached by `extras`, or -1 when there are no extras. */
-export function activeTierIndex(extras: number, tiers: readonly ExtraPriceTier[]): number {
-  let found = -1;
-  tiers.forEach((tier, i) => {
-    if (tier.minExtras <= extras) found = i;
-  });
-  return found;
 }

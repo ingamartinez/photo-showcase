@@ -42,6 +42,7 @@ import {
   galleryAccessResendKey,
   galleryAccessResendLimiter,
 } from "@/lib/gallery-access-rate-limiters";
+import { validateExtraPriceTiers, type ExtraPriceTier } from "@/lib/extra-price-tiers";
 import { generateGallerySlug } from "@/lib/slug";
 import { notifySelectionChanged } from "@/lib/selection-events";
 
@@ -80,6 +81,25 @@ function optionalNonNegativeInt(message: string) {
       { message },
     )
     .transform((value) => (value === undefined ? undefined : Number(value)));
+}
+
+// Task #231 — the optional volume scale posted by the "Precio por escala"
+// control as a JSON string in `extraPhotoPriceTiers`. Absent/empty = flat
+// price (today's behavior). Present = parsed and run through the SAME pure
+// validator the client-side editor hints with; a malformed or invalid scale
+// is an error message, never a silent fallback to flat pricing.
+type TiersParse = { ok: true; tiers: ExtraPriceTier[] | null } | { ok: false; message: string };
+
+function parseTiersField(raw: FormDataEntryValue | null): TiersParse {
+  if (typeof raw !== "string" || raw.trim() === "") return { ok: true, tiers: null };
+  let json: unknown;
+  try {
+    json = JSON.parse(raw);
+  } catch {
+    return { ok: false, message: "La escala de precios no es válida." };
+  }
+  const result = validateExtraPriceTiers(json);
+  return result.ok ? { ok: true, tiers: result.tiers } : { ok: false, message: result.message };
 }
 
 const createGallerySchema = z.object({
@@ -186,6 +206,11 @@ export async function createGallery(
       message: parsed.error.issues[0]?.message ?? "Revisa los datos del formulario.",
     };
   }
+  const tiersParsed = parseTiersField(formData.get("extraPhotoPriceTiers"));
+  if (!tiersParsed.ok) {
+    return { status: "error", message: tiersParsed.message };
+  }
+  const tiers = tiersParsed.tiers;
 
   // Read the package's CURRENT terms exactly once, here — never again for
   // this gallery afterward. This is the read the snapshot columns exist to
@@ -229,8 +254,12 @@ export async function createGallery(
   // silently fall through to `pkg.includedPhotos`/`pkg.extraPhotoPriceCop`
   // instead.
   const includedPhotosSnapshot = parsed.data.includedPhotosOverride ?? pkg.includedPhotos;
-  const extraPhotoPriceCopSnapshot =
-    parsed.data.extraPhotoPriceCopOverride ?? pkg.extraPhotoPriceCop;
+  // Task #231 — with a scale, the notNull flat column mirrors the FIRST tier
+  // (the scale in the jsonb column is the truth); any flat override typed
+  // alongside is ignored rather than allowed to contradict it.
+  const extraPhotoPriceCopSnapshot = tiers
+    ? tiers[0]!.priceCop
+    : (parsed.data.extraPhotoPriceCopOverride ?? pkg.extraPhotoPriceCop);
   // Task #205 — same `??` reasoning as the two lines above: an override of
   // `0` (a free original, a legitimate promotion) must win over the
   // package's own value exactly as a positive override would.
@@ -239,7 +268,8 @@ export async function createGallery(
   const termsOverridden =
     parsed.data.includedPhotosOverride !== undefined ||
     parsed.data.extraPhotoPriceCopOverride !== undefined ||
-    parsed.data.originalPhotoPriceCopOverride !== undefined;
+    parsed.data.originalPhotoPriceCopOverride !== undefined ||
+    tiers !== null;
 
   try {
     // The gallery row and its client memberships are inserted together, in
@@ -268,6 +298,7 @@ export async function createGallery(
           publicSlug: generateGallerySlug(),
           includedPhotosSnapshot,
           extraPhotoPriceCopSnapshot,
+          extraPhotoPriceTiersSnapshot: tiers,
           originalPhotoPriceCopSnapshot,
           termsOverridden,
         })
@@ -353,9 +384,10 @@ const updateGalleryTermsSchema = z.object({
   includedPhotos: requiredNonNegativeInt(
     "El tope de fotos incluidas tiene que ser un entero mayor o igual a 0.",
   ),
-  extraPhotoPriceCop: requiredNonNegativeInt(
-    "El precio de la foto extra tiene que ser un entero mayor o igual a 0.",
-  ),
+  // Task #231 — with a scale posted, the flat price is not sent at all (the
+  // form hides it), so it cannot stay required here; `updateGalleryTerms`
+  // enforces "flat price required when there is no scale" itself below.
+  extraPhotoPriceCop: z.string().optional(),
   // Task #205 — REQUIRED, same reasoning as the two fields above
   // (`requiredNonNegativeInt`'s own comment): this gallery already has an
   // effective original-photo price, so there is no ambiguous empty state to
@@ -407,7 +439,7 @@ export async function updateGalleryTerms(
     // own `||` above) but the trap that bit #193 is worth not reintroducing
     // out of habit.
     includedPhotos: formData.get("includedPhotos") ?? "",
-    extraPhotoPriceCop: formData.get("extraPhotoPriceCop") ?? "",
+    extraPhotoPriceCop: formData.get("extraPhotoPriceCop") ?? undefined,
     originalPhotoPriceCop: formData.get("originalPhotoPriceCop") ?? "",
   });
   if (!parsed.success) {
@@ -415,6 +447,25 @@ export async function updateGalleryTerms(
       status: "error",
       message: parsed.error.issues[0]?.message ?? "Revisa los datos del formulario.",
     };
+  }
+  const tiersParsed = parseTiersField(formData.get("extraPhotoPriceTiers"));
+  if (!tiersParsed.ok) {
+    return { status: "error", message: tiersParsed.message };
+  }
+  const tiers = tiersParsed.tiers;
+  // No scale: the flat price is required, exactly as before this task.
+  let flatPrice: number | undefined;
+  if (!tiers) {
+    const flat = requiredNonNegativeInt(
+      "El precio de la foto extra tiene que ser un entero mayor o igual a 0.",
+    ).safeParse(parsed.data.extraPhotoPriceCop ?? "");
+    if (!flat.success) {
+      return {
+        status: "error",
+        message: flat.error.issues[0]?.message ?? "Revisa los datos del formulario.",
+      };
+    }
+    flatPrice = flat.data;
   }
 
   const [gallery] = await db
@@ -439,7 +490,12 @@ export async function updateGalleryTerms(
     .update(galleries)
     .set({
       includedPhotosSnapshot: parsed.data.includedPhotos,
-      extraPhotoPriceCopSnapshot: parsed.data.extraPhotoPriceCop,
+      // Task #231 — with a scale, the flat column mirrors the first tier and
+      // the jsonb column is the truth; without one, the jsonb column is
+      // explicitly reset to NULL so switching a gallery back to flat pricing
+      // really does remove the old scale.
+      extraPhotoPriceCopSnapshot: tiers ? tiers[0]!.priceCop : flatPrice!,
+      extraPhotoPriceTiersSnapshot: tiers,
       originalPhotoPriceCopSnapshot: parsed.data.originalPhotoPriceCop,
       termsOverridden: true,
       termsUpdatedAt: now,

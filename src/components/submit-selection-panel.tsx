@@ -77,7 +77,7 @@ function confirmationMessage(quota: QuotaResult, allowsOriginalSelection: boolea
   const chargeLines: string[] = [];
   if (quota.extras > 0) {
     chargeLines.push(
-      `Extras: ${quota.extras} × ${formatCop(quota.extraPhotoPriceCopSnapshot)} = ${formatCop(quota.extrasSurchargeCop)}.`,
+      `Extras: ${quota.extras} × ${formatCop(quota.extraUnitPriceCop)} = ${formatCop(quota.extrasSurchargeCop)}.`,
     );
   }
   // Task #214 — ANDed with the gallery's own switch, same "absent, not

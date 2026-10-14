@@ -16,7 +16,33 @@
 // numbers out, so it is unit-testable without a database and safe to call
 // from both a Server Component (initial paint) and a Route Handler (after a
 // toggle), which is exactly how it's used.
-import { unitPriceForExtras, type ExtraPriceTier } from "@/lib/extra-price-tiers";
+// (No imports on purpose: quota.test.ts guards that this module stays free of
+// them. The tier TYPE and its lookup therefore live here; the validator and
+// the display helpers live in extra-price-tiers.ts, which imports from here.)
+
+/** One step of a gallery's volume scale (task #231): from `minExtras` extras
+ * upward, EVERY extra costs `priceCop` (volume pricing, not marginal). */
+export type ExtraPriceTier = { minExtras: number; priceCop: number };
+
+/** Index of the tier reached by `extras` — the greatest `minExtras <=
+ * extras` — or -1 when no tier is reached yet (zero extras). Does not rely on
+ * the tiers being sorted. The ONLY place the scale is looked up: the display
+ * surfaces highlight "the current tier" through this, never their own scan. */
+export function tierIndexForExtras(extras: number, tiers: readonly ExtraPriceTier[]): number {
+  let found = -1;
+  tiers.forEach((tier, i) => {
+    if (tier.minExtras <= extras && (found === -1 || tier.minExtras >= tiers[found]!.minExtras)) {
+      found = i;
+    }
+  });
+  return found;
+}
+
+/** Unit price of the tier reached by `extras`; with zero extras, the first
+ * tier's price (what the next photo would cost). */
+export function unitPriceForExtras(extras: number, tiers: readonly ExtraPriceTier[]): number {
+  return tiers[Math.max(0, tierIndexForExtras(extras, tiers))]!.priceCop;
+}
 
 export type GalleryQuotaSnapshot = {
   includedPhotosSnapshot: number;

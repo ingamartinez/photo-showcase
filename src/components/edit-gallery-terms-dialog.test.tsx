@@ -521,3 +521,106 @@ describe("EditGalleryTermsDialog — before/after notice", () => {
     expect(within(dialog).getByText(/Precio foto original vigente/)).toBeDefined();
   });
 });
+
+// Task #231 — "Precio por escala" in the edit dialog.
+describe("EditGalleryTermsDialog — price by tier (task #231)", () => {
+  const TIERS = [
+    { minExtras: 1, priceCop: 15_000 },
+    { minExtras: 3, priceCop: 13_000 },
+  ];
+
+  function renderDialog(
+    overrides: { tiers?: typeof TIERS | null; status?: "draft" | "proofing" } = {},
+  ) {
+    return render(
+      <EditGalleryTermsDialog
+        galleryId={GALLERY_ID}
+        status={overrides.status ?? "draft"}
+        includedPhotosSnapshot={13}
+        extraPhotoPriceCopSnapshot={5_000}
+        extraPhotoPriceTiersSnapshot={overrides.tiers ?? null}
+        originalPhotoPriceCopSnapshot={2_000}
+        selectedEditedCount={13 + 3}
+        selectedOriginalCount={0}
+      />,
+    );
+  }
+
+  it("a flat gallery opens with the toggle off and the flat price field showing", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    const dialog = await openDialog(user);
+
+    expect(within(dialog).getByLabelText<HTMLInputElement>("Precio por escala").checked).toBe(
+      false,
+    );
+    expect(within(dialog).getByLabelText("Precio foto extra, COP")).toBeDefined();
+  });
+
+  it("a gallery that already has a scale opens with it loaded and the flat field hidden", async () => {
+    const user = userEvent.setup();
+    renderDialog({ tiers: TIERS });
+    const dialog = await openDialog(user);
+
+    expect(within(dialog).getByLabelText<HTMLInputElement>("Precio por escala").checked).toBe(true);
+    expect(within(dialog).queryByLabelText("Precio foto extra, COP")).toBeNull();
+    const prices = within(dialog).getAllByLabelText<HTMLInputElement>("Precio c/u, COP");
+    expect(prices.map((input) => input.value)).toEqual(["15000", "13000"]);
+  });
+
+  it("turning it on for a flat gallery preloads the default scale", async () => {
+    const user = userEvent.setup();
+    renderDialog();
+    const dialog = await openDialog(user);
+
+    await user.click(within(dialog).getByLabelText("Precio por escala"));
+
+    const prices = within(dialog).getAllByLabelText<HTMLInputElement>("Precio c/u, COP");
+    expect(prices.map((input) => input.value)).toEqual(["15000", "13000", "11000", "10000"]);
+  });
+
+  it("posts the scale as JSON in extraPhotoPriceTiers, and no flat price", async () => {
+    updateGalleryTermsMock.mockResolvedValue({ status: "updated" });
+    const user = userEvent.setup();
+    renderDialog({ tiers: TIERS });
+    const dialog = await openDialog(user);
+
+    await user.click(within(dialog).getByRole("button", { name: "Guardar términos" }));
+
+    const formData = updateGalleryTermsMock.mock.calls[0]![1];
+    expect(JSON.parse(formData.get("extraPhotoPriceTiers") as string)).toEqual(TIERS);
+    expect(formData.has("extraPhotoPriceCop")).toBe(false);
+  });
+
+  it("a flat gallery posts no scale field at all", async () => {
+    updateGalleryTermsMock.mockResolvedValue({ status: "updated" });
+    const user = userEvent.setup();
+    renderDialog();
+    const dialog = await openDialog(user);
+
+    await user.click(within(dialog).getByRole("button", { name: "Guardar términos" }));
+
+    const formData = updateGalleryTermsMock.mock.calls[0]![1];
+    expect(formData.has("extraPhotoPriceTiers")).toBe(false);
+    expect(formData.get("extraPhotoPriceCop")).toBe("5000");
+  });
+
+  it("the before/after preview prices extras by the reached tier", async () => {
+    const user = userEvent.setup();
+    renderDialog({ tiers: TIERS, status: "proofing" });
+    const dialog = await openDialog(user);
+
+    // 3 extras today: 3 x 13.000 = 39.000.
+    expect(dialog.textContent?.replace(/\s+/g, " ")).toContain(
+      "El cliente ve hoy: 13 incluidas · 3 extras · $ 39.000",
+    );
+
+    // Dropping the 3+ tier's price to 12.000 changes what "Va a ver" shows.
+    const prices = within(dialog).getAllByLabelText<HTMLInputElement>("Precio c/u, COP");
+    await user.clear(prices[1]!);
+    await user.type(prices[1]!, "12000");
+    expect(dialog.textContent?.replace(/\s+/g, " ")).toContain(
+      "Va a ver: 13 incluidas · 3 extras · $ 36.000",
+    );
+  });
+});

@@ -259,3 +259,73 @@ describe("GalleryForm", () => {
     expect(onCreated).not.toHaveBeenCalled();
   });
 });
+
+// Task #231 — "Precio por escala".
+describe("GalleryForm — price by tier (task #231)", () => {
+  function tiersField(container: HTMLElement): HTMLInputElement | null {
+    return container.querySelector<HTMLInputElement>('input[name="extraPhotoPriceTiers"]');
+  }
+
+  it("is off by default: the flat extra-price field posts and no scale field exists", () => {
+    const { container } = render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
+
+    expect(screen.getByLabelText("Precio foto extra, COP (opcional)")).toBeDefined();
+    expect(tiersField(container)).toBeNull();
+    expect(screen.getByLabelText<HTMLInputElement>("Precio por escala").checked).toBe(false);
+  });
+
+  it("enabling it preloads the owner's default scale and swaps out the flat field", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
+
+    await user.click(screen.getByLabelText("Precio por escala"));
+
+    expect(JSON.parse(tiersField(container)!.value)).toEqual([
+      { minExtras: 1, priceCop: 15_000 },
+      { minExtras: 3, priceCop: 13_000 },
+      { minExtras: 5, priceCop: 11_000 },
+      { minExtras: 10, priceCop: 10_000 },
+    ]);
+    expect(screen.queryByLabelText("Precio foto extra, COP (opcional)")).toBeNull();
+  });
+
+  it("editing the last tier to 9.000 shows the monotonic-total hint", async () => {
+    const user = userEvent.setup();
+    render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
+    await user.click(screen.getByLabelText("Precio por escala"));
+
+    expect(screen.queryByText(/no puede bajar el total/)).toBeNull();
+    const prices = screen.getAllByLabelText("Precio c/u, COP");
+    await user.clear(prices[3]!);
+    await user.type(prices[3]!, "9000");
+
+    expect(screen.getByText(/no puede bajar el total/)).toBeDefined();
+  });
+
+  it("rows can be added and removed, and the last remaining row cannot be removed", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
+    await user.click(screen.getByLabelText("Precio por escala"));
+
+    await user.click(screen.getByRole("button", { name: "Agregar escala" }));
+    expect(JSON.parse(tiersField(container)!.value)).toHaveLength(5);
+
+    for (let i = 5; i > 1; i--) {
+      await user.click(screen.getByRole("button", { name: `Quitar la escala ${i}` }));
+    }
+    expect(JSON.parse(tiersField(container)!.value)).toHaveLength(1);
+    expect(
+      screen.getByRole<HTMLButtonElement>("button", { name: "Quitar la escala 1" }).disabled,
+    ).toBe(true);
+  });
+
+  it("an emptied cell serializes as null so the server rejects it, never as a silent 0", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
+    await user.click(screen.getByLabelText("Precio por escala"));
+
+    await user.clear(screen.getAllByLabelText("Precio c/u, COP")[0]!);
+
+    expect(JSON.parse(tiersField(container)!.value)[0]).toEqual({ minExtras: 1, priceCop: null });
+  });
+});

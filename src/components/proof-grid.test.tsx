@@ -342,6 +342,9 @@ describe("ProofGrid", () => {
       const text = counterText();
       expect(text).toContain("seleccionadas 2");
       expect(text).toContain("extras 1");
+      // Task #236 — the sticky proofing bar is the one caller that folds the
+      // detail behind a toggle (`collapsible`).
+      expect(screen.getByRole("button", { name: "Ver detalle" })).toBeDefined();
     });
 
     // Task #206, round-2 review's own finding — `initialAssets` and
@@ -889,6 +892,8 @@ describe("ProofGrid", () => {
       });
 
       expect(counterText()).toContain("seleccionadas 2");
+      // Task #236 — this view is not sticky: no "Ver detalle" fold.
+      expect(screen.queryByRole("button", { name: /detalle/ })).toBeNull();
     });
 
     it("breaks the recap down per picker once more than one person actually picked something", () => {

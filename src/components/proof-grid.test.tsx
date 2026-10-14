@@ -2604,3 +2604,44 @@ describe("ProofGrid", () => {
     });
   });
 });
+
+// Task #231 — the FIRST PAINT of the counter, before any toggle has replaced
+// `quota` with the server's recomputation, must already use the frozen scale:
+// `<ProofGrid>` -> `useSharedSelection` -> `computeQuota`.
+describe("ProofGrid — volume scale on first paint (task #231)", () => {
+  const picks = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      assetId: `a${i + 1}`,
+      selectedAt: null,
+      pickedBy: null,
+      selectionKind: "edited" as const,
+    }));
+
+  it("the counter prices the extras by the reached tier, and shows the scale", () => {
+    renderGrid({
+      initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }, { isSelected: true }]),
+      initialPicks: picks(3),
+      includedPhotosSnapshot: 0,
+      extraPhotoPriceCopSnapshot: 15_000,
+      extraPhotoPriceTiersSnapshot: [
+        { minExtras: 1, priceCop: 15_000 },
+        { minExtras: 3, priceCop: 13_000 },
+      ],
+    });
+
+    expect(counterText()).toContain("extras 3 × $ 13.000 = $ 39.000");
+    expect(screen.getByText(/Precio por foto extra/)).toBeDefined();
+  });
+
+  it("without a scale the counter is the flat one and shows no scale", () => {
+    renderGrid({
+      initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }, { isSelected: true }]),
+      initialPicks: picks(3),
+      includedPhotosSnapshot: 0,
+      extraPhotoPriceCopSnapshot: 5_000,
+    });
+
+    expect(counterText()).toContain("extras 3 × $ 5.000 = $ 15.000");
+    expect(screen.queryByText(/Precio por foto extra/)).toBeNull();
+  });
+});

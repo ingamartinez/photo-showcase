@@ -36,6 +36,7 @@
 //     nowhere near enough to wash the mark out; an unpicked tile gets none.
 import { DownloadFinalButton } from "@/components/download-final-button";
 import { Check } from "@/components/icons";
+import { PhotoTile } from "@/components/photo-tile";
 import type { ProofAsset } from "@/components/proof-grid";
 import type { SelectionKind } from "@/lib/selection-snapshot";
 
@@ -94,105 +95,14 @@ export function ProofTile({
   allowsOriginalSelection: boolean;
 }) {
   return (
-    <li className="relative">
-      <button
-        type="button"
-        onClick={onOpen}
-        aria-label={`Ver ${asset.originalFilename}`}
-        className="focus-visible:ring-accent block w-full text-left focus-visible:ring-2 focus-visible:outline-none"
-      >
-        {/* THE BOX IS RESERVED BEFORE THE IMAGE ARRIVES — task #23's zero-CLS
-            contract, unchanged. WHAT CHANGED in task #145 is that the reserved
-            shape is now UNIFORM (`aspect-[2/3]`, client.html:181) instead of
-            each asset's own `proofWidth / proofHeight`.
-
-            This was not a preference, it was measured. The first build of this
-            slice kept the per-asset ratio and was captured at 390px and 1440px
-            (Playwright, the harness in e2e/). With landscape and portrait
-            proofs mixed — the ordinary case — a two-column grid gives every
-            row the height of its TALLEST tile, so each landscape tile sat in a
-            box roughly twice its own height. Two things followed, and the
-            second is a defect, not a taste:
-
-              1. Around 40% of the phone's screen was empty black between
-                 photos, which on 84 proofs is a great deal of extra scrolling
-                 for someone doing this one-handed.
-              2. The 48px pick control, absolutely positioned against the
-                 <li>, ended up floating in that empty space BELOW its own
-                 photo, visibly detached from the thing it selects.
-
-            A uniform box fixes both and costs a crop: `object-cover` shows the
-            middle ~44% of a 3:2 landscape. That cost is the one the mock
-            already priced in — client.html:488-489 says the grid "is only the
-            index; the decision happens [in the lightbox]", and #146 is the
-            slice that makes the lightbox the place a photo is judged whole.
-
-            CLS is unaffected: a static class reserves the box exactly as early
-            as an inline style did.
-
-            `proofWidth`/`proofHeight` STAY on `ProofAsset`, but be clear about
-            what that means after this slice: they are read by NOTHING on the
-            client path. This tile was their last reader there, and
-            `proof-lightbox.tsx` never referenced either field at all. The one
-            reader left anywhere in the repo is `asset-tile.tsx:136`, and it
-            reads `WorkspaceAsset` (`gallery-workspace.tsx:23-24`) — a DIFFERENT
-            type, on the dashboard path, which this component does not share.
-
-            So they are still fetched and threaded the whole way down
-            (`schema.ts:380` -> `client-gallery-reads.ts:135-136` ->
-            `[publicSlug]/page.tsx:126-127` -> <ProofGrid> -> here) with no
-            consumer at the end. They are kept only because removing them is a
-            GraphQL document + regenerated types + `ProofAsset` change, which is
-            outside this slice's scope — not because anything here needs them.
-            Deleting them is a separate slice's job. */}
-        <div className="bg-bg-2 relative aspect-[2/3] overflow-hidden">
-          {/* Plain <img>, not next/image: same reasoning as asset-tile.tsx —
-              proof URLs are short-lived, private, presigned R2 URLs whose
-              query string is never stable between two loads of the same
-              asset. `alt=""` because the filename is already announced by
-              the enclosing button's aria-label; a second announcement here
-              would be redundant. */}
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img
-            src={src}
-            alt=""
-            onError={onError}
-            loading="lazy"
-            className={`h-full w-full object-cover ${isSelected ? "selection-reveal" : ""}`}
-          />
-
-          {/* Channel two of "picked is not colour alone": an inset frame, so
-              the state is legible as a change of STRUCTURE across the whole
-              grid at a glance, not one tile at a time. A border on an overlay
-              rather than `outline-offset: -3px` (client.html:214) purely
-              because a Tailwind outline-offset utility is one more thing to
-              get subtly wrong across versions; the painted result is the
-              same 3px brass frame inset into the photo. */}
-          {isSelected && (
-            <span
-              aria-hidden="true"
-              className="border-accent pointer-events-none absolute inset-0 border-[3px]"
-            />
-          )}
-
-          {/* client.html:192-195. Sits over the photo's own top-left corner,
-              which is the quietest part of a proof and the one the 48px pick
-              target below never covers.
-
-              The `text-shadow` is NOT in the mock, and it is there because the
-              capture showed it had to be: the mock's own colour
-              (rgb(240 235 227 /0.55)) is legible on the mid-dark CSS gradients
-              that stand in for photographs there, and disappears completely on
-              a genuinely bright proof — an overexposed sky, a white dress,
-              which is a large share of what a wedding photographer actually
-              delivers. A number nobody can read is worse than no number. The
-              colour is the mock's, unchanged; only the backing was added. */}
-          <span className="text-[rgb(240 235 227 /0.55)] [text-shadow:0_1px_2px_rgb(26 21 18 /0.9)] pointer-events-none absolute top-2 left-2 font-mono text-[10px] tabular-nums">
-            {String(position).padStart(2, "0")}
-          </span>
-        </div>
-      </button>
-
+    <PhotoTile
+      name={asset.originalFilename}
+      position={position}
+      src={src}
+      isSelected={isSelected}
+      onError={onError}
+      onOpen={onOpen}
+    >
       {/* A sibling of the "open lightbox" button above, not nested inside
           it — a nested button would be invalid HTML (buttons can't nest) and
           would also make this click bubble into `onOpen`. Positioned on top
@@ -386,6 +296,6 @@ export function ProofTile({
           <DownloadFinalButton assetId={asset.id} originalFilename={asset.originalFilename} />
         </div>
       )}
-    </li>
+    </PhotoTile>
   );
 }

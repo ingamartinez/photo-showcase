@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { buildFlashMetadata } from "./flash-meta";
+import { buildFlashMetadata, flashOgDimensions } from "./flash-meta";
 
 const photo = { displayWidth: 1600, displayHeight: 1067 };
 const publicGallery = { title: "Cumple de Sofi", isPublic: true, publicSlug: "abc" };
+
+describe("flashOgDimensions", () => {
+  it("fits inside 1200px and never enlarges", () => {
+    expect(flashOgDimensions(1600, 1067)).toEqual({ width: 1200, height: 800 });
+    expect(flashOgDimensions(1067, 1600)).toEqual({ width: 800, height: 1200 });
+    expect(flashOgDimensions(640, 480)).toEqual({ width: 640, height: 480 });
+  });
+});
 
 describe("buildFlashMetadata", () => {
   it("shares title and a STABLE own-route image for a public gallery with photos", () => {
@@ -10,7 +18,7 @@ describe("buildFlashMetadata", () => {
     expect(meta.title).toBe("Cumple de Sofi");
     expect(meta.openGraph).toMatchObject({
       title: "Cumple de Sofi",
-      images: [{ url: "/flash/abc/og-image", width: 1600, height: 1067 }],
+      images: [{ url: "/flash/abc/og-image", width: 1200, height: 800 }],
     });
     expect(meta.twitter).toMatchObject({ card: "summary_large_image" });
     expect(meta.robots).toEqual({ index: false, follow: false });

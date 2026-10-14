@@ -21,8 +21,7 @@ export function buildFlashMetadata(
   if (!gallery || !gallery.isPublic || !firstAsset) return { robots: NOINDEX };
   const image = {
     url: flashOgImagePath(gallery.publicSlug),
-    width: firstAsset.displayWidth,
-    height: firstAsset.displayHeight,
+    ...flashOgDimensions(firstAsset.displayWidth, firstAsset.displayHeight),
   };
   return {
     title: gallery.title,
@@ -30,4 +29,20 @@ export function buildFlashMetadata(
     openGraph: { title: gallery.title, type: "website", locale: "es_CO", images: [image] },
     twitter: { card: "summary_large_image", title: gallery.title, images: [image.url] },
   };
+}
+
+/** Longest edge of the served preview. WhatsApp drops heavy preview images, so
+ * the og-image route serves a ~1200px JPEG instead of the 1600px display WebP. */
+export const FLASH_OG_MAX_EDGE = 1200;
+
+/** Dimensions of the og-image the route ACTUALLY serves for a display
+ * derivative of `width` x `height` (fit inside the max edge, never enlarged).
+ * The route resizes with the same rule, and `og:image:width/height` declare
+ * these numbers. */
+export function flashOgDimensions(
+  width: number,
+  height: number,
+): { width: number; height: number } {
+  const scale = Math.min(1, FLASH_OG_MAX_EDGE / width, FLASH_OG_MAX_EDGE / height);
+  return { width: Math.round(width * scale), height: Math.round(height * scale) };
 }

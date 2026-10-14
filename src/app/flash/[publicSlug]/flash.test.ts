@@ -1,7 +1,8 @@
 // Gate + behavior tests for the flash link page and its four binary routes.
 // The same access function backs all of them, so the gate matrix runs once per
 // route (display, final, zip) and og-image/page have their own public-only cases.
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import sharp from "sharp";
 import { NextRequest } from "next/server";
 import type { Session } from "next-auth";
 import { createRecordingDb } from "@/lib/test/recording-db";
@@ -207,11 +208,46 @@ describe("og-image route", () => {
   const ogCtx = { params: Promise.resolve({ publicSlug: "slug" }) };
   const load = async () => (await import("./og-image/route")).GET;
 
-  it("serves the FIRST photo's display derivative from the stable route", async () => {
+  // A real 1600x1067 WebP carrying EXIF, like the display derivative the route
+  // reads.
+  let displayWebp: Buffer;
+  beforeAll(async () => {
+    displayWebp = await sharp({
+      create: { width: 1600, height: 1067, channels: 3, background: "#884422" },
+    })
+      .withExif({ IFD0: { Copyright: "secret-owner" } })
+      .webp()
+      .toBuffer();
+  });
+  beforeEach(() => {
+    getObjectStreamMock.mockImplementation(() => new Response(new Uint8Array(displayWebp)).body);
+  });
+
+  it("serves a JPEG whose real dimensions equal the declared og:image:width/height, with no metadata", async () => {
+    current = createRecordingDb({ select: [[gallery(true)], [asset()]] });
+    const res = await (await load())(request(), ogCtx);
+    expect(res.headers.get("content-type")).toBe("image/jpeg");
+    const served = await sharp(Buffer.from(await res.arrayBuffer())).metadata();
+    expect(served.format).toBe("jpeg");
+    expect(served.exif).toBeUndefined();
+
+    const { buildFlashMetadata } = await import("@/lib/flash-meta");
+    const images = buildFlashMetadata(gallery(true), asset()).openGraph!.images as {
+      width: number;
+      height: number;
+    }[];
+    expect({ width: served.width, height: served.height }).toEqual({
+      width: images[0]!.width,
+      height: images[0]!.height,
+    });
+    expect(served.width).toBe(1200);
+  });
+
+  it("serves the FIRST photo's derivative from the stable route", async () => {
     current = createRecordingDb({ select: [[gallery(true)], [asset()]] });
     const res = await (await load())(request(), ogCtx);
     expect(res.status).toBe(200);
-    expect(res.headers.get("content-type")).toBe("image/webp");
+    expect(res.headers.get("content-type")).toBe("image/jpeg");
     expect(getObjectStreamMock).toHaveBeenCalledWith(
       `flash/${GALLERY_ID}/display/${ASSET_ID}.webp`,
     );
@@ -255,7 +291,7 @@ describe("page", () => {
     const meta = await generateMetadata(pageParams);
     expect(meta.openGraph).toMatchObject({
       title: "Cumple de Sofi",
-      images: [{ url: "/flash/slug/og-image", width: 1600, height: 1067 }],
+      images: [{ url: "/flash/slug/og-image", width: 1200, height: 800 }],
     });
   });
 

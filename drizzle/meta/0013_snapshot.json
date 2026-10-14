@@ -81,12 +81,8 @@
           "name": "accounts_user_id_users_id_fk",
           "tableFrom": "accounts",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -94,10 +90,7 @@
       "compositePrimaryKeys": {
         "accounts_provider_provider_account_id_pk": {
           "name": "accounts_provider_provider_account_id_pk",
-          "columns": [
-            "provider",
-            "provider_account_id"
-          ]
+          "columns": ["provider", "provider_account_id"]
         }
       },
       "uniqueConstraints": {},
@@ -220,12 +213,8 @@
           "name": "assets_gallery_id_galleries_id_fk",
           "tableFrom": "assets",
           "tableTo": "galleries",
-          "columnsFrom": [
-            "gallery_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["gallery_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -233,12 +222,8 @@
           "name": "assets_selected_by_users_id_fk",
           "tableFrom": "assets",
           "tableTo": "users",
-          "columnsFrom": [
-            "selected_by"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["selected_by"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         },
@@ -246,12 +231,8 @@
           "name": "assets_delivered_for_users_id_fk",
           "tableFrom": "assets",
           "tableTo": "users",
-          "columnsFrom": [
-            "delivered_for"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["delivered_for"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -430,12 +411,8 @@
           "name": "galleries_package_id_packages_id_fk",
           "tableFrom": "galleries",
           "tableTo": "packages",
-          "columnsFrom": [
-            "package_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["package_id"],
+          "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         },
@@ -443,12 +420,8 @@
           "name": "galleries_cover_asset_id_assets_id_fk",
           "tableFrom": "galleries",
           "tableTo": "assets",
-          "columnsFrom": [
-            "cover_asset_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["cover_asset_id"],
+          "columnsTo": ["id"],
           "onDelete": "set null",
           "onUpdate": "no action"
         }
@@ -495,12 +468,8 @@
           "name": "gallery_clients_gallery_id_galleries_id_fk",
           "tableFrom": "gallery_clients",
           "tableTo": "galleries",
-          "columnsFrom": [
-            "gallery_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["gallery_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         },
@@ -508,12 +477,8 @@
           "name": "gallery_clients_user_id_users_id_fk",
           "tableFrom": "gallery_clients",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "restrict",
           "onUpdate": "no action"
         }
@@ -521,10 +486,7 @@
       "compositePrimaryKeys": {
         "gallery_clients_gallery_id_user_id_pk": {
           "name": "gallery_clients_gallery_id_user_id_pk",
-          "columns": [
-            "gallery_id",
-            "user_id"
-          ]
+          "columns": ["gallery_id", "user_id"]
         }
       },
       "uniqueConstraints": {},
@@ -749,12 +711,8 @@
           "name": "portfolio_items_collection_id_portfolio_collections_id_fk",
           "tableFrom": "portfolio_items",
           "tableTo": "portfolio_collections",
-          "columnsFrom": [
-            "collection_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["collection_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -794,12 +752,8 @@
           "name": "sessions_user_id_users_id_fk",
           "tableFrom": "sessions",
           "tableTo": "users",
-          "columnsFrom": [
-            "user_id"
-          ],
-          "columnsTo": [
-            "id"
-          ],
+          "columnsFrom": ["user_id"],
+          "columnsTo": ["id"],
           "onDelete": "cascade",
           "onUpdate": "no action"
         }
@@ -918,10 +872,7 @@
       "compositePrimaryKeys": {
         "verification_tokens_identifier_token_pk": {
           "name": "verification_tokens_identifier_token_pk",
-          "columns": [
-            "identifier",
-            "token"
-          ]
+          "columns": ["identifier", "token"]
         }
       },
       "uniqueConstraints": {},
@@ -934,37 +885,22 @@
     "public.gallery_status": {
       "name": "gallery_status",
       "schema": "public",
-      "values": [
-        "draft",
-        "proofing",
-        "selected",
-        "delivered",
-        "archived"
-      ]
+      "values": ["draft", "proofing", "selected", "delivered", "archived"]
     },
     "public.selection_kind": {
       "name": "selection_kind",
       "schema": "public",
-      "values": [
-        "edited",
-        "original"
-      ]
+      "values": ["edited", "original"]
     },
     "public.selection_tray_mode": {
       "name": "selection_tray_mode",
       "schema": "public",
-      "values": [
-        "flat",
-        "by-person"
-      ]
+      "values": ["flat", "by-person"]
     },
     "public.user_role": {
       "name": "user_role",
       "schema": "public",
-      "values": [
-        "admin",
-        "client"
-      ]
+      "values": ["admin", "client"]
     }
   },
   "schemas": {},

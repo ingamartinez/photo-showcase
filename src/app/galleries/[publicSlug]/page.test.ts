@@ -98,6 +98,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     package: { id: 1, name: "Estándar" },
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
+    extraPhotoPriceTiersSnapshot: null,
     originalPhotoPriceCopSnapshot: 2_000,
     termsOverridden: false,
     selectionTrayMode: "flat",

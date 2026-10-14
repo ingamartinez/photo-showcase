@@ -78,6 +78,7 @@ async function currentQuota(gallery: Gallery): Promise<QuotaResult> {
   return computeQuota(selectedEdited, selectedOriginal, {
     includedPhotosSnapshot: gallery.includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
+    extraPhotoPriceTiersSnapshot: gallery.extraPhotoPriceTiersSnapshot,
     originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,
   });
 }

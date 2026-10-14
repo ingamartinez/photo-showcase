@@ -446,6 +446,8 @@ export type GalleryDetail = {
   package: { id: number; name: string };
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
+  // Task #231 — frozen volume scale for extras; `null` = flat price.
+  extraPhotoPriceTiersSnapshot: { minExtras: number; priceCop: number }[] | null;
   originalPhotoPriceCopSnapshot: number;
   // Task #193 (widened by #205) — was any snapshot above typed by hand at
   // creation, instead of inherited from the chosen package? Read straight off
@@ -596,6 +598,7 @@ function toGalleryDetail(row: RawGalleryDetailRow): GalleryDetail {
     package: { id: row.package.id, name: row.package.name },
     includedPhotosSnapshot: row.includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot: row.extraPhotoPriceCopSnapshot,
+    extraPhotoPriceTiersSnapshot: row.extraPhotoPriceTiersSnapshot ?? null,
     originalPhotoPriceCopSnapshot: row.originalPhotoPriceCopSnapshot,
     termsOverridden: row.termsOverridden,
     selectionTrayMode: row.selectionTrayMode,

@@ -146,3 +146,36 @@ describe("submission email — volume tiers (task #231)", () => {
     }
   });
 });
+
+describe("submission email — originals alongside tiered extras", () => {
+  // 13 included, 16 edited -> 3 extras at the 3+ tier (13.000 = 39.000),
+  // plus 2 originals at 2.000 = 4.000. Total 43.000.
+  const MIXED = computeQuota(16, 2, {
+    includedPhotosSnapshot: 13,
+    extraPhotoPriceCopSnapshot: 15_000,
+    extraPhotoPriceTiersSnapshot: [
+      { minExtras: 1, priceCop: 15_000 },
+      { minExtras: 3, priceCop: 13_000 },
+    ],
+    originalPhotoPriceCopSnapshot: 2_000,
+  });
+
+  it("keeps the extras line to extras only and adds the originals line and the total", () => {
+    for (const render of [submissionNotificationEmailHtml, submissionNotificationEmailText]) {
+      const body = render({ ...PARAMS, quota: MIXED }).replace(/\s+/g, " ");
+      expect(body).toContain("Extras: 3 × $ 13.000 = $ 39.000");
+      expect(body).not.toContain("= $ 43.000</li>");
+      expect(body).not.toMatch(/Extras: 3 × \$ 13\.000 = \$ 43\.000/);
+      expect(body).toContain("Originales: 2 × $ 2.000 = $ 4.000");
+      expect(body).toContain("Total: $ 43.000");
+    }
+  });
+
+  it("a gallery without originals gets no originals or total line", () => {
+    for (const render of [submissionNotificationEmailHtml, submissionNotificationEmailText]) {
+      const body = render(PARAMS);
+      expect(body).not.toContain("Originales");
+      expect(body).not.toContain("Total:");
+    }
+  });
+});

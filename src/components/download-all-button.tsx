@@ -60,10 +60,17 @@ import { cn } from "@/lib/utils";
 
 export function DownloadAllButton({
   galleryId,
+  href,
   assetCount,
   className,
 }: {
-  galleryId: string;
+  /** Required unless `href` is given. */
+  galleryId?: string;
+  /** Task #237: overrides the download target. The flash gallery page has its
+   * own same-origin zip route (`/flash/<slug>/zip`) and no `galleryId` of the
+   * normal-gallery kind; every other caller leaves this unset and keeps the
+   * default route. */
+  href?: string;
   /** Task #148: how many finals the zip will actually contain — <ProofGrid>'s
    * own count off the same `hasFinal` flags `showDownload` already uses per
    * tile. Optional and purely cosmetic (the "Preparando…" note's own "N
@@ -97,7 +104,7 @@ export function DownloadAllButton({
   return (
     <div className="flex flex-col items-start gap-2">
       <a
-        href={`/api/galleries/${galleryId}/download-all`}
+        href={href ?? `/api/galleries/${galleryId}/download-all`}
         rel="noopener"
         aria-disabled={isPending}
         onClick={handleClick}

@@ -7,6 +7,7 @@ import {
   resolveFlashGallery,
   resolvePublicFlashGallery,
 } from "@/lib/flash-access";
+import { FlashGalleryViewer } from "@/components/flash-gallery-viewer";
 import { buildFlashMetadata } from "@/lib/flash-meta";
 
 // Link-preview metadata. Reads through `resolvePublicFlashGallery`, so a
@@ -36,7 +37,6 @@ export default async function FlashGalleryPage({
   if (!gallery) notFound();
 
   const assets = await listFlashAssets(gallery.id);
-  const base = `/flash/${gallery.publicSlug}`;
 
   return (
     <main className="mx-auto w-full max-w-6xl px-4 py-10 min-[620px]:px-7 lg:px-12">
@@ -52,37 +52,18 @@ export default async function FlashGalleryPage({
       {assets.length === 0 ? (
         <p className="text-fg-dim mt-8 text-[15px]">Todavía no hay fotos en esta galería.</p>
       ) : (
-        <>
-          <a
-            href={`${base}/zip`}
-            className="bg-accent text-ink mt-6 inline-flex min-h-12 items-center rounded-sm px-6 text-sm font-semibold"
-          >
-            Descargar todo
-          </a>
-          <ul className="mt-8 grid grid-cols-1 gap-6 min-[620px]:grid-cols-2 lg:grid-cols-3">
-            {assets.map((asset, index) => (
-              <li key={asset.id}>
-                {/* Plain <img>: the src is a redirecting own route, not a path
-                    next/image's optimizer can cache. */}
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                <img
-                  src={`${base}/display/${asset.id}`}
-                  alt={`Foto ${index + 1} de ${gallery.title}`}
-                  width={asset.displayWidth}
-                  height={asset.displayHeight}
-                  loading={index < 3 ? "eager" : "lazy"}
-                  className="bg-bg-2 h-auto w-full rounded-sm"
-                />
-                <a
-                  href={`${base}/final/${asset.id}`}
-                  className="text-accent-2 mt-2 inline-flex min-h-12 items-center text-sm"
-                >
-                  Descargar
-                </a>
-              </li>
-            ))}
-          </ul>
-        </>
+        // Same grid, tiles and viewer as a delivered normal gallery (task
+        // #237). Only ids and filenames cross to the client component; every
+        // URL it builds is a `/flash/<slug>/…` route.
+        <div className="mt-8">
+          <FlashGalleryViewer
+            publicSlug={gallery.publicSlug}
+            assets={assets.map((asset) => ({
+              id: asset.id,
+              originalFilename: asset.originalFilename,
+            }))}
+          />
+        </div>
       )}
     </main>
   );

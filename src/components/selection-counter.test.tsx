@@ -43,6 +43,7 @@ function counterText(): string {
 const SNAPSHOT = {
   includedPhotosSnapshot: 13,
   extraPhotoPriceCopSnapshot: 5_000,
+  extraPhotoPriceTiersSnapshot: null,
   originalPhotoPriceCopSnapshot: 2_000,
 };
 
@@ -178,6 +179,7 @@ describe("SelectionCounter — the two-tariff breakdown (task #206)", () => {
     const snapshot = {
       includedPhotosSnapshot: 7,
       extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: 2_000,
     };
     // 9 edited -> 2 over 7 -> 10_000. 3 originals -> 6_000. Total 16_000.
@@ -238,6 +240,7 @@ describe("SelectionCounter — allowsOriginalSelection is OFF (task #214)", () =
     const quota = computeQuota(9, 3, {
       includedPhotosSnapshot: 7,
       extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: 2_000,
     });
 

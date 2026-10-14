@@ -11,6 +11,7 @@ import { computeQuota } from "@/lib/quota";
 const QUOTA = computeQuota(15, 0, {
   includedPhotosSnapshot: 13,
   extraPhotoPriceCopSnapshot: 5_000,
+  extraPhotoPriceTiersSnapshot: null,
   originalPhotoPriceCopSnapshot: 2_000,
 });
 

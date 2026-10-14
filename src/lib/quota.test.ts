@@ -9,6 +9,7 @@ import { computeQuota } from "./quota";
 const SNAPSHOT = {
   includedPhotosSnapshot: 13,
   extraPhotoPriceCopSnapshot: 5_000,
+  extraPhotoPriceTiersSnapshot: null,
   originalPhotoPriceCopSnapshot: 2_000,
 };
 
@@ -150,6 +151,7 @@ describe("computeQuota", () => {
     const snapshot = {
       includedPhotosSnapshot: 7,
       extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: 2_000,
     };
     // 9 edited -> 2 over the 7 included -> 2 * 5_000 = 10_000 edited surcharge.
@@ -245,6 +247,7 @@ describe("computeQuota", () => {
       const FLAT = {
         includedPhotosSnapshot: 13,
         extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
         originalPhotoPriceCopSnapshot: 2_000,
       };
 

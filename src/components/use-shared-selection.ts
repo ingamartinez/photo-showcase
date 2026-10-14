@@ -153,7 +153,7 @@ export function useSharedSelection({
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
   // Task #231 — frozen volume scale, `null`/absent = flat price.
-  extraPhotoPriceTiersSnapshot?: { minExtras: number; priceCop: number }[] | null;
+  extraPhotoPriceTiersSnapshot: { minExtras: number; priceCop: number }[] | null;
   // Task #206 — REQUIRED, not optional. This used to not exist as a prop at
   // all: the GraphQL `Gallery` type didn't expose
   // `originalPhotoPriceCopSnapshot`, `page.tsx` had nothing to pass, and this

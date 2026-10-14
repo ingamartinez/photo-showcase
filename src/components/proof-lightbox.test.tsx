@@ -31,6 +31,7 @@ function assetsFor(count: number, overrides: Partial<ProofAsset>[] = []): ProofA
 const QUOTA = computeQuota(0, 0, {
   includedPhotosSnapshot: 13,
   extraPhotoPriceCopSnapshot: 5000,
+  extraPhotoPriceTiersSnapshot: null,
   originalPhotoPriceCopSnapshot: 2000,
 });
 
@@ -121,6 +122,7 @@ describe("ProofLightbox", () => {
       quota: computeQuota(9, 0, {
         includedPhotosSnapshot: 13,
         extraPhotoPriceCopSnapshot: 5000,
+        extraPhotoPriceTiersSnapshot: null,
         originalPhotoPriceCopSnapshot: 2000,
       }),
     });
@@ -133,6 +135,7 @@ describe("ProofLightbox", () => {
       quota: computeQuota(9, 0, {
         includedPhotosSnapshot: 13,
         extraPhotoPriceCopSnapshot: 5000,
+        extraPhotoPriceTiersSnapshot: null,
         originalPhotoPriceCopSnapshot: 2000,
       }),
     });

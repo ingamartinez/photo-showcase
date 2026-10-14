@@ -50,10 +50,10 @@ export type GalleryQuotaSnapshot = {
   /** Task #231 — frozen volume scale for extras. `null` = flat price (every
    * gallery created before the scale existed): the maths is then byte-for-byte
    * what it was. With a scale, THIS is the source of truth and
-   * `extraPhotoPriceCopSnapshot` only mirrors the first tier. Optional ONLY
-   * so a flat-price caller (and the many flat-price fixtures) can omit it;
-   * every production caller that reads a gallery row passes it explicitly. */
-  extraPhotoPriceTiersSnapshot?: ExtraPriceTier[] | null;
+   * `extraPhotoPriceCopSnapshot` only mirrors the first tier. REQUIRED
+   * (`| null`, never omitted) so a caller that forgets to thread the scale
+   * fails to compile instead of silently pricing a tiered gallery flat. */
+  extraPhotoPriceTiersSnapshot: ExtraPriceTier[] | null;
   originalPhotoPriceCopSnapshot: number;
 };
 

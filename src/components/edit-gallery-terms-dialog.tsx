@@ -58,7 +58,7 @@ export function EditGalleryTermsDialog({
   status,
   includedPhotosSnapshot,
   extraPhotoPriceCopSnapshot,
-  extraPhotoPriceTiersSnapshot = null,
+  extraPhotoPriceTiersSnapshot,
   originalPhotoPriceCopSnapshot,
   // `count(assets where is_selected AND selection_kind = 'edited'/'original')`
   // — the SAME split the page already derived from `gallery.assets`
@@ -86,7 +86,7 @@ export function EditGalleryTermsDialog({
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
   /** Task #231 — the gallery's frozen volume scale, `null` = flat price. */
-  extraPhotoPriceTiersSnapshot?: ExtraPriceTier[] | null;
+  extraPhotoPriceTiersSnapshot: ExtraPriceTier[] | null;
   originalPhotoPriceCopSnapshot: number;
   selectedEditedCount: number;
   selectedOriginalCount: number;

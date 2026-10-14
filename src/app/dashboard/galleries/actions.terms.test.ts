@@ -170,6 +170,7 @@ function galleryRow(overrides: Row = {}): Row {
     publicSlug: "abc123",
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
+    extraPhotoPriceTiersSnapshot: null,
     originalPhotoPriceCopSnapshot: 2_000,
     termsOverridden: false,
     createdAt: new Date("2026-07-01"),
@@ -302,6 +303,7 @@ describe("updateGalleryTerms validation", () => {
     expect(db.__rows.galleries[0]).toMatchObject({
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: 2_000,
       termsOverridden: false,
     });
@@ -326,6 +328,7 @@ describe("updateGalleryTerms validation", () => {
     expect(db.__rows.galleries[0]).toMatchObject({
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: 2_000,
       termsOverridden: false,
     });
@@ -351,6 +354,7 @@ describe("updateGalleryTerms validation", () => {
     expect(db.__rows.galleries[0]).toMatchObject({
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: 2_000,
       termsOverridden: false,
     });
@@ -447,6 +451,7 @@ describe("updateGalleryTerms with a volume scale (task #231)", () => {
     expect(result.message).toMatch(/no puede bajar el total/);
     expect(db.__rows.galleries[0]).toMatchObject({
       extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
       termsOverridden: false,
     });
     expect(db.__rows.galleries[0]!.extraPhotoPriceTiersSnapshot ?? null).toBeNull();
@@ -540,6 +545,7 @@ describe("updateGalleryTerms success", () => {
     expect(db.__rows.galleries[0]).toMatchObject({
       includedPhotosSnapshot: 20,
       extraPhotoPriceCopSnapshot: 0,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: 2_000,
     });
   });
@@ -568,6 +574,7 @@ describe("updateGalleryTerms success", () => {
       expect(db.__rows.galleries[0]).toMatchObject({
         includedPhotosSnapshot: 20,
         extraPhotoPriceCopSnapshot: 0,
+        extraPhotoPriceTiersSnapshot: null,
         originalPhotoPriceCopSnapshot: 2_000,
         status,
       });
@@ -595,6 +602,7 @@ describe("updateGalleryTerms success", () => {
     expect(db.__rows.galleries[0]).toMatchObject({
       includedPhotosSnapshot: 0,
       extraPhotoPriceCopSnapshot: 0,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: 0,
     });
   });
@@ -622,6 +630,7 @@ describe("updateGalleryTerms success", () => {
     expect(db.__rows.galleries[0]).toMatchObject({
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: 2_000,
       termsOverridden: true,
     });
@@ -715,6 +724,7 @@ describe("updateGalleryTerms success", () => {
     const before = computeQuota(selectedEdited, selectedOriginal, {
       includedPhotosSnapshot: db.__rows.galleries[0]!.includedPhotosSnapshot as number,
       extraPhotoPriceCopSnapshot: db.__rows.galleries[0]!.extraPhotoPriceCopSnapshot as number,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: db.__rows.galleries[0]!
         .originalPhotoPriceCopSnapshot as number,
     });
@@ -735,6 +745,7 @@ describe("updateGalleryTerms success", () => {
     const after = computeQuota(selectedEdited, selectedOriginal, {
       includedPhotosSnapshot: db.__rows.galleries[0]!.includedPhotosSnapshot as number,
       extraPhotoPriceCopSnapshot: db.__rows.galleries[0]!.extraPhotoPriceCopSnapshot as number,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: db.__rows.galleries[0]!
         .originalPhotoPriceCopSnapshot as number,
     });
@@ -768,6 +779,7 @@ describe("updateGalleryTerms success", () => {
     expect(db.__rows.galleries[0]).toMatchObject({
       includedPhotosSnapshot: 20,
       extraPhotoPriceCopSnapshot: 0,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: 2_000,
     });
     expect(signInMock).not.toHaveBeenCalled();

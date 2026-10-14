@@ -55,7 +55,7 @@ export function AllowsOriginalSelectionControl({
   allowsOriginalSelection,
   includedPhotosSnapshot,
   extraPhotoPriceCopSnapshot,
-  extraPhotoPriceTiersSnapshot = null,
+  extraPhotoPriceTiersSnapshot,
   originalPhotoPriceCopSnapshot,
   // The SAME split the page already derived from `gallery.assets`
   // (page.tsx's own `selectedEditedCount`/`selectedOriginalCount`, task
@@ -68,7 +68,7 @@ export function AllowsOriginalSelectionControl({
   allowsOriginalSelection: boolean;
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
-  extraPhotoPriceTiersSnapshot?: { minExtras: number; priceCop: number }[] | null;
+  extraPhotoPriceTiersSnapshot: { minExtras: number; priceCop: number }[] | null;
   originalPhotoPriceCopSnapshot: number;
   selectedEditedCount: number;
   selectedOriginalCount: number;

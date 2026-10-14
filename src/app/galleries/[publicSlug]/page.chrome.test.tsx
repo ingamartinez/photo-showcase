@@ -443,6 +443,54 @@ describe("ClientGalleryPage chrome", () => {
       expect(within(tray).getAllByText("Editada")).toHaveLength(3);
     });
 
+    // Task #231 — the same end-to-end seam for the volume scale: the frozen
+    // jsonb scale must travel row -> `Gallery.extraPhotoPriceTiersSnapshot`
+    // -> `readClientGalleryBySlug` -> this page -> <ProofGrid> -> first-paint
+    // counter. A page that passed `null` here type-checked and left every
+    // other test green, while the client saw the flat price and no scale.
+    it("renders the volume scale and prices extras by the reached tier end to end", async () => {
+      getGalleryDetailBySlugMock.mockResolvedValue(
+        galleryDetail({
+          includedPhotosSnapshot: 0,
+          extraPhotoPriceCopSnapshot: 15_000,
+          extraPhotoPriceTiersSnapshot: [
+            { minExtras: 1, priceCop: 15_000 },
+            { minExtras: 3, priceCop: 13_000 },
+          ],
+          assets: Array.from({ length: 3 }, (_unused, index) => ({
+            id: `a${index + 1}`,
+            originalFilename: `IMG_000${index + 1}.JPG`,
+            proofKey: `galleries/g1/proofs/a${index + 1}.webp`,
+            proofWidth: 1600,
+            proofHeight: 1067,
+            isSelected: true,
+            sortOrder: index,
+            finalKey: null,
+            isEdited: false,
+            selectionKind: "edited",
+            isExtra: false,
+            deliveredFor: null,
+          })),
+        }),
+      );
+      getGallerySelectionMock.mockResolvedValue(
+        ["a1", "a2", "a3"].map((assetId, index) => ({
+          assetId,
+          selectedAt: `2026-07-30T12:0${index}:00.000Z`,
+          pickedBy: { id: "client-a", label: "Ana Pérez" },
+          selectionKind: "edited",
+        })),
+      );
+
+      const element = await ClientGalleryPage(paramsFor(SLUG));
+      render(element);
+
+      // 3 extras, ALL at the 3+ tier's 13.000 (39.000) — flat would read 45.000.
+      expect(screen.getByText(/extras 3 × \$\s*13\.000 =\s*\$\s*39\.000/)).toBeDefined();
+      expect(screen.getByText(/1–2 fotos: \$\s*15\.000 c\/u/)).toBeDefined();
+      expect(screen.getByText(/3 o más fotos: \$\s*13\.000 c\/u/)).toBeDefined();
+    });
+
     // Task #214's own complementary case, end to end through the REAL
     // GraphQL pipeline, same as the test above: the identical fixture
     // (originals genuinely present in `getGallerySelection`'s own response)

@@ -44,7 +44,7 @@ export async function getFlashGalleryDetail(id: string): Promise<FlashGalleryDet
     where: eq(flashGalleries.id, id),
     with: {
       clients: { where: (c) => isNull(c.removedAt), with: { user: true } },
-      assets: { orderBy: (a) => [asc(a.sortOrder), asc(a.createdAt)] },
+      assets: { orderBy: (a) => [asc(a.sortOrder), asc(a.createdAt), asc(a.id)] },
     },
   });
   if (!row) return null;

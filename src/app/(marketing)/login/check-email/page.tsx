@@ -3,7 +3,7 @@ import { PageHeader } from "@/components/page-header";
 import { CHECK_EMAIL_HEADER, CheckEmailNotice } from "@/components/check-email-notice";
 
 export const metadata: Metadata = {
-  title: "Revisá tu correo",
+  title: "Revisa tu correo",
   description: "Te enviamos un enlace de acceso.",
   // Same private entrance as /login — never indexed, never followed.
   robots: { index: false, follow: false },

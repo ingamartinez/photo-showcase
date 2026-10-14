@@ -3,6 +3,7 @@ import Link from "next/link";
 import { notFound } from "next/navigation";
 import { PageHeader } from "@/components/page-header";
 import { CollectionGallery } from "@/components/collection-gallery";
+import { ArrowLeft } from "@/components/icons";
 import { getCollectionBySlug } from "@/lib/portfolio";
 
 // Rendered per-request on the droplet against its local Postgres. The build
@@ -32,17 +33,14 @@ export default async function CollectionPage({ params }: { params: Promise<{ slu
 
   return (
     <>
-      <PageHeader
-        eyebrow="Colección"
-        title={collection.title}
-        lead={collection.description ?? undefined}
-      />
+      <PageHeader title={collection.title} lead={collection.description ?? undefined} />
       <section className="wrap pb-[clamp(72px,12vh,140px)]">
         <Link
           href="/work"
-          className="label text-fg-dim hover:text-accent-2 mb-10 inline-block transition-colors"
+          className="text-fg-dim hover:text-accent-2 mb-10 inline-flex items-center gap-1.5 text-sm transition-colors"
         >
-          ← Todas las colecciones
+          <ArrowLeft className="shrink-0" />
+          Todas las colecciones
         </Link>
         <CollectionGallery items={collection.items} />
       </section>

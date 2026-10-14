@@ -36,18 +36,18 @@ describe("LoginForm", () => {
     await waitFor(() => {
       expect(screen.getByRole("status")).toBeDefined();
     });
-    expect(screen.getByText(/Revisá tu correo/)).toBeDefined();
+    expect(screen.getByText(/Revisa tu correo/)).toBeDefined();
   });
 
   it("swaps the surrounding header along with the form after a successful submit", async () => {
     // Regression guard for #9's review comment: the header used to keep
-    // reading "Escribí el correo..." even once the notice below already said
+    // reading "Escribe el correo..." even once the notice below already said
     // the link was sent.
     requestMagicLinkMock.mockResolvedValue({ status: "sent" });
     const user = userEvent.setup();
     render(<LoginForm />);
 
-    expect(screen.getByRole("heading", { name: "Ingresá a tu galería." })).toBeDefined();
+    expect(screen.getByRole("heading", { name: "Ingresa a tu galería." })).toBeDefined();
 
     await user.type(screen.getByLabelText("Correo electrónico"), "client@example.com");
     await user.click(screen.getByRole("button", { name: "Enviar enlace de acceso" }));
@@ -55,7 +55,7 @@ describe("LoginForm", () => {
     await waitFor(() => {
       expect(screen.getByRole("heading", { name: "Enlace en camino." })).toBeDefined();
     });
-    expect(screen.queryByRole("heading", { name: "Ingresá a tu galería." })).toBeNull();
+    expect(screen.queryByRole("heading", { name: "Ingresa a tu galería." })).toBeNull();
   });
 
   it("shows the SAME confirmation screen regardless of which address was submitted", async () => {
@@ -70,7 +70,7 @@ describe("LoginForm", () => {
     await user.click(screen.getByRole("button", { name: "Enviar enlace de acceso" }));
 
     await waitFor(() => {
-      expect(screen.getByText(/Revisá tu correo/)).toBeDefined();
+      expect(screen.getByText(/Revisa tu correo/)).toBeDefined();
     });
   });
 
@@ -81,7 +81,7 @@ describe("LoginForm", () => {
     // which is what this test verifies.
     requestMagicLinkMock.mockResolvedValue({
       status: "error",
-      message: "Ingresá un correo electrónico válido.",
+      message: "Ingresa un correo electrónico válido.",
     });
     const user = userEvent.setup();
     render(<LoginForm />);
@@ -92,18 +92,18 @@ describe("LoginForm", () => {
     await waitFor(() => {
       expect(screen.getByRole("alert")).toBeDefined();
     });
-    expect(screen.getByText("Ingresá un correo electrónico válido.")).toBeDefined();
+    expect(screen.getByText("Ingresa un correo electrónico válido.")).toBeDefined();
   });
 
   it("renders the auth error message next to the form when one is passed in", () => {
     // Comes from Auth.js's `pages.error` redirect via
     // src/app/(marketing)/login/page.tsx — see auth-error.ts.
     render(
-      <LoginForm authErrorMessage="Este enlace ya venció o ya se usó. Pedí uno nuevo abajo." />,
+      <LoginForm authErrorMessage="Este enlace ya venció o ya se usó. Pide uno nuevo abajo." />,
     );
 
     expect(
-      screen.getByText("Este enlace ya venció o ya se usó. Pedí uno nuevo abajo."),
+      screen.getByText("Este enlace ya venció o ya se usó. Pide uno nuevo abajo."),
     ).toBeDefined();
     // The form itself must still be usable — an error must never replace the
     // ability to request a fresh link.

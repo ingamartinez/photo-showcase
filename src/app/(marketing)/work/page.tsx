@@ -19,9 +19,8 @@ export default async function WorkIndex() {
   return (
     <>
       <PageHeader
-        eyebrow="Portafolio"
         title="El trabajo, por temática"
-        lead="Cada colección es un mundo distinto — del bosque de Arrayanes a la convención. Elegí una para entrar."
+        lead="Cada colección es un mundo distinto — del bosque de Arrayanes a la convención. Elige una para entrar."
       />
       <section className="wrap pb-[clamp(72px,12vh,140px)]">
         <CollectionGrid collections={collections} />

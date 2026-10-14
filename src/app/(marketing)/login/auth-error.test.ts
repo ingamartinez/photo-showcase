@@ -12,12 +12,12 @@ describe("getLoginErrorMessage", () => {
 
   it("special-cases Verification with an expired/used-link message", () => {
     expect(getLoginErrorMessage("Verification")).toBe(
-      "Este enlace ya venció o ya se usó. Pedí uno nuevo abajo.",
+      "Este enlace ya venció o ya se usó. Pide uno nuevo abajo.",
     );
   });
 
   it("collapses every other known Auth.js code into one generic message", () => {
-    const generic = "No pudimos verificar el enlace. Pedí uno nuevo abajo.";
+    const generic = "No pudimos verificar el enlace. Pide uno nuevo abajo.";
 
     expect(getLoginErrorMessage("AccessDenied")).toBe(generic);
     expect(getLoginErrorMessage("Configuration")).toBe(generic);
@@ -29,7 +29,7 @@ describe("getLoginErrorMessage", () => {
     // still fall through to the generic message rather than throwing or
     // rendering `undefined`.
     expect(getLoginErrorMessage("SomeFutureCode")).toBe(
-      "No pudimos verificar el enlace. Pedí uno nuevo abajo.",
+      "No pudimos verificar el enlace. Pide uno nuevo abajo.",
     );
   });
 });

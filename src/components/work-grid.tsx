@@ -4,7 +4,7 @@ import type { ItemWithCollection } from "@/lib/portfolio";
 
 export function WorkGrid({ items }: { items: ItemWithCollection[] }) {
   return (
-    <div className="work" data-reveal>
+    <div className="work">
       {items.map((item) => (
         <figure key={item.id}>
           <Link href={`/work/${item.collection.slug}`}>

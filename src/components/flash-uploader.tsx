@@ -7,6 +7,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { FINAL_UPLOAD_ACCEPT } from "@/lib/final-formats";
+import { cn } from "@/lib/utils";
 
 type ItemStatus = "uploading" | "done" | "error";
 type Item = { name: string; status: ItemStatus; error?: string };
@@ -22,6 +23,7 @@ export function FlashUploader({ flashGalleryId }: { flashGalleryId: string }) {
   const router = useRouter();
   const [items, setItems] = useState<Item[]>([]);
   const [busy, setBusy] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
 
   function update(index: number, patch: Partial<Item>) {
     setItems((prev) => prev.map((item, i) => (i === index ? { ...item, ...patch } : item)));
@@ -61,11 +63,28 @@ export function FlashUploader({ flashGalleryId }: { flashGalleryId: string }) {
   const done = items.filter((item) => item.status === "done").length;
 
   return (
-    <div className="border-line-2 flex flex-col gap-3 rounded-[6px] border border-dashed p-4">
+    // Same dropzone as the proof uploader: drop files anywhere on the box, or
+    // use the button to open the picker. Both paths reach `handleFiles`.
+    <div
+      onDragOver={(event) => {
+        event.preventDefault();
+        if (!busy) setDragActive(true);
+      }}
+      onDragLeave={() => setDragActive(false)}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragActive(false);
+        void handleFiles(Array.from(event.dataTransfer.files));
+      }}
+      className={cn(
+        "border-line-2 flex flex-col gap-3 rounded-[6px] border border-dashed p-4 transition-colors",
+        dragActive && "border-accent bg-accent/5",
+      )}
+    >
       <span className="text-fg text-sm font-medium">Subir fotos</span>
       <span className="text-fg-dim text-xs">
-        JPEG o PNG, tal como los exportaste. Se guardan sin cambios y se generan versiones ligeras
-        para ver la galería.
+        Arrastra los archivos aquí o elígelos. JPEG o PNG, tal como los exportaste. Se guardan sin
+        cambios y se generan versiones ligeras para ver la galería.
       </span>
       <label className="border-line-2 hover:border-accent flex min-h-11 w-fit cursor-pointer items-center rounded-[5px] border px-4 text-sm font-semibold transition-colors has-[:disabled]:cursor-not-allowed has-[:disabled]:opacity-50">
         {busy ? "Subiendo…" : "Elegir archivos"}

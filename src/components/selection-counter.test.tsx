@@ -43,6 +43,7 @@ function counterText(): string {
 const SNAPSHOT = {
   includedPhotosSnapshot: 13,
   extraPhotoPriceCopSnapshot: 5_000,
+  extraPhotoPriceTiersSnapshot: null,
   originalPhotoPriceCopSnapshot: 2_000,
 };
 
@@ -178,6 +179,7 @@ describe("SelectionCounter — the two-tariff breakdown (task #206)", () => {
     const snapshot = {
       includedPhotosSnapshot: 7,
       extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: 2_000,
     };
     // 9 edited -> 2 over 7 -> 10_000. 3 originals -> 6_000. Total 16_000.
@@ -238,6 +240,7 @@ describe("SelectionCounter — allowsOriginalSelection is OFF (task #214)", () =
     const quota = computeQuota(9, 3, {
       includedPhotosSnapshot: 7,
       extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: 2_000,
     });
 
@@ -249,5 +252,78 @@ describe("SelectionCounter — allowsOriginalSelection is OFF (task #214)", () =
     // this proves the component genuinely mounted, not that it rendered
     // nothing at all.
     expect(screen.getByText(/extras 2 × \$ 5\.000 = \$ 10\.000/)).toBeDefined();
+  });
+});
+
+// Task #231 — volume tiers. The counter reads `quota.extraUnitPriceCop` (never
+// the flat snapshot) and lists the frozen scale with the reached tier marked.
+describe("SelectionCounter — volume tiers (task #231)", () => {
+  const TIERS = [
+    { minExtras: 1, priceCop: 15_000 },
+    { minExtras: 3, priceCop: 13_000 },
+    { minExtras: 5, priceCop: 11_000 },
+    { minExtras: 10, priceCop: 10_000 },
+  ];
+  const TIERED = {
+    includedPhotosSnapshot: 13,
+    extraPhotoPriceCopSnapshot: 15_000,
+    extraPhotoPriceTiersSnapshot: TIERS,
+    originalPhotoPriceCopSnapshot: 2_000,
+  };
+
+  it("multiplies by the reached tier's unit price, not the flat snapshot", () => {
+    render(<SelectionCounter quota={computeQuota(13 + 3, 0, TIERED)} allowsOriginalSelection />);
+
+    const text = counterText();
+    expect(text).toContain("extras 3 × $ 13.000 = $ 39.000");
+    expect(text).not.toContain("$ 15.000 =");
+  });
+
+  it("lists every tier of the scale with its range label", () => {
+    render(<SelectionCounter quota={computeQuota(13 + 3, 0, TIERED)} allowsOriginalSelection />);
+
+    const items = screen.getAllByRole("listitem").map((li) => li.textContent?.replace(/\s+/g, " "));
+    expect(items).toEqual([
+      "1–2 fotos: $ 15.000 c/u",
+      "3–4 fotos: $ 13.000 c/u",
+      "5–9 fotos: $ 11.000 c/u",
+      "10 o más fotos: $ 10.000 c/u",
+    ]);
+  });
+
+  it.each([
+    [1, 0],
+    [2, 0],
+    [3, 1],
+    [4, 1],
+    [5, 2],
+    [9, 2],
+    [10, 3],
+    [14, 3],
+  ])("with %i extras exactly tier #%i is the current one", (extras, tierIndex) => {
+    render(
+      <SelectionCounter quota={computeQuota(13 + extras, 0, TIERED)} allowsOriginalSelection />,
+    );
+
+    const items = screen.getAllByRole("listitem");
+    const current = items.filter((li) => li.getAttribute("aria-current") === "true");
+    expect(current).toEqual([items[tierIndex]]);
+  });
+
+  it("marks no tier while there are no extras yet, and quotes the first tier's price", () => {
+    render(<SelectionCounter quota={computeQuota(5, 0, TIERED)} allowsOriginalSelection />);
+
+    expect(
+      screen.getAllByRole("listitem").filter((li) => li.getAttribute("aria-current") === "true"),
+    ).toEqual([]);
+    expect(counterText()).toContain("extras 0 × $ 15.000 = $ 0");
+  });
+
+  it("a flat-price gallery renders no scale at all — the UI stays as it was", () => {
+    render(<SelectionCounter quota={computeQuota(15, 0, SNAPSHOT)} allowsOriginalSelection />);
+
+    expect(screen.queryAllByRole("listitem")).toEqual([]);
+    expect(screen.queryByText(/Precio por foto extra/)).toBeNull();
+    expect(counterText()).toContain("extras 2 × $ 5.000 = $ 10.000");
   });
 });

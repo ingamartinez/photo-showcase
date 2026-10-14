@@ -107,6 +107,9 @@ describe("the schema, imported and executed directly (no HTTP layer)", () => {
     // the whole point of freezing them.
     expect(sdl).toMatch(/^ {2}includedPhotosSnapshot: Int!$/m);
     expect(sdl).toMatch(/^ {2}extraPhotoPriceCopSnapshot: Int!$/m);
+    // Task #231 — the volume scale is optional: null = flat price.
+    expect(sdl).toMatch(/^ {2}extraPhotoPriceTiersSnapshot: \[ExtraPriceTier!\]$/m);
+    expect(sdl).toMatch(/^type ExtraPriceTier \{\n {2}minExtras: Int!\n {2}priceCop: Int!\n\}$/m);
 
     // Genuinely nullable, each carrying its own explicit `nullable: true`:
     // an unsubmitted selection, an unedited asset, a client who never gave a

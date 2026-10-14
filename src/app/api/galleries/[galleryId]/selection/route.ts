@@ -206,6 +206,7 @@ export const GET = withApiSession(async function GET(
   const quota = computeQuota(selectedEdited, selectedOriginal, {
     includedPhotosSnapshot: gallery.includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
+    extraPhotoPriceTiersSnapshot: gallery.extraPhotoPriceTiersSnapshot,
     originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,
   });
 

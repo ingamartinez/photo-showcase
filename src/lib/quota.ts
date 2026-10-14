@@ -16,9 +16,44 @@
 // numbers out, so it is unit-testable without a database and safe to call
 // from both a Server Component (initial paint) and a Route Handler (after a
 // toggle), which is exactly how it's used.
+// (No imports on purpose: quota.test.ts guards that this module stays free of
+// them. The tier TYPE and its lookup therefore live here; the validator and
+// the display helpers live in extra-price-tiers.ts, which imports from here.)
+
+/** One step of a gallery's volume scale (task #231): from `minExtras` extras
+ * upward, EVERY extra costs `priceCop` (volume pricing, not marginal). */
+export type ExtraPriceTier = { minExtras: number; priceCop: number };
+
+/** Index of the tier reached by `extras` — the greatest `minExtras <=
+ * extras` — or -1 when no tier is reached yet (zero extras). Does not rely on
+ * the tiers being sorted. The ONLY place the scale is looked up: the display
+ * surfaces highlight "the current tier" through this, never their own scan. */
+export function tierIndexForExtras(extras: number, tiers: readonly ExtraPriceTier[]): number {
+  let found = -1;
+  tiers.forEach((tier, i) => {
+    if (tier.minExtras <= extras && (found === -1 || tier.minExtras >= tiers[found]!.minExtras)) {
+      found = i;
+    }
+  });
+  return found;
+}
+
+/** Unit price of the tier reached by `extras`; with zero extras, the first
+ * tier's price (what the next photo would cost). */
+export function unitPriceForExtras(extras: number, tiers: readonly ExtraPriceTier[]): number {
+  return tiers[Math.max(0, tierIndexForExtras(extras, tiers))]!.priceCop;
+}
+
 export type GalleryQuotaSnapshot = {
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
+  /** Task #231 — frozen volume scale for extras. `null` = flat price (every
+   * gallery created before the scale existed): the maths is then byte-for-byte
+   * what it was. With a scale, THIS is the source of truth and
+   * `extraPhotoPriceCopSnapshot` only mirrors the first tier. REQUIRED
+   * (`| null`, never omitted) so a caller that forgets to thread the scale
+   * fails to compile instead of silently pricing a tiered gallery flat. */
+  extraPhotoPriceTiersSnapshot: ExtraPriceTier[] | null;
   originalPhotoPriceCopSnapshot: number;
 };
 
@@ -35,6 +70,14 @@ export type QuotaResult = {
   selectedOriginal: number;
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
+  /** Echo of the frozen scale (task #231), `null` for a flat-price gallery. */
+  extraPhotoPriceTiersSnapshot: ExtraPriceTier[] | null;
+  /** Unit price EVERY extra pays right now (task #231): the tier reached by
+   * `extras` (volume pricing, not marginal); with zero extras the first
+   * tier's price, i.e. what the next photo would cost. Flat galleries: equal
+   * to `extraPhotoPriceCopSnapshot`. Display surfaces read THIS, never the
+   * snapshot, and never compute a tier themselves. */
+  extraUnitPriceCop: number;
   originalPhotoPriceCopSnapshot: number;
   /** `max(0, selectedEdited - includedPhotosSnapshot)` — going over the
    * quota is upsell, never an error, so this is clamped at 0 rather than
@@ -51,7 +94,7 @@ export type QuotaResult = {
    * and each rule gives a different total for the same selection. "Originals
    * always pay, edits get the quota" has no such ambiguity. */
   originals: number;
-  /** `extras * extraPhotoPriceCopSnapshot` — the edited-only slice of
+  /** `extras * extraUnitPriceCop` — the edited-only slice of
    * `surchargeCop` below. Task #206's own addition, for the two-tariff
    * breakdown `selection-counter.tsx`/`submit-selection-panel.tsx` show once
    * a gallery has any originals: those components are not allowed to
@@ -88,7 +131,12 @@ export function computeQuota(
 ): QuotaResult {
   const extras = Math.max(0, selectedEdited - snapshot.includedPhotosSnapshot);
   const originals = Math.max(0, selectedOriginal);
-  const extrasSurchargeCop = extras * snapshot.extraPhotoPriceCopSnapshot;
+  const tiers = snapshot.extraPhotoPriceTiersSnapshot;
+  const extraUnitPriceCop =
+    tiers && tiers.length > 0
+      ? unitPriceForExtras(extras, tiers)
+      : snapshot.extraPhotoPriceCopSnapshot;
+  const extrasSurchargeCop = extras * extraUnitPriceCop;
   const originalsSurchargeCop = originals * snapshot.originalPhotoPriceCopSnapshot;
   const surchargeCop = extrasSurchargeCop + originalsSurchargeCop;
 
@@ -98,6 +146,8 @@ export function computeQuota(
     selectedOriginal,
     includedPhotosSnapshot: snapshot.includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot: snapshot.extraPhotoPriceCopSnapshot,
+    extraPhotoPriceTiersSnapshot: tiers ?? null,
+    extraUnitPriceCop,
     originalPhotoPriceCopSnapshot: snapshot.originalPhotoPriceCopSnapshot,
     extras,
     originals,

@@ -43,7 +43,13 @@ export function submissionNotificationEmailHtml(params: SubmissionNotificationPa
     "<ul>",
     `<li>Incluidas: ${quota.includedPhotosSnapshot}</li>`,
     `<li>Seleccionadas: ${quota.selected}</li>`,
-    `<li>Extras: ${quota.extras} × ${formatCop(quota.extraPhotoPriceCopSnapshot)} = ${formatCop(quota.surchargeCop)}</li>`,
+    `<li>Extras: ${quota.extras} × ${formatCop(quota.extraUnitPriceCop)} = ${formatCop(quota.extrasSurchargeCop)}</li>`,
+    ...(quota.originals > 0
+      ? [
+          `<li>Originales: ${quota.originals} × ${formatCop(quota.originalPhotoPriceCopSnapshot)} = ${formatCop(quota.originalsSurchargeCop)}</li>`,
+          `<li>Total: ${formatCop(quota.surchargeCop)}</li>`,
+        ]
+      : []),
     "</ul>",
     // The app never charges money (PLAN.md §3) — this line exists so the
     // photographer never mistakes "the client submitted" for "the client
@@ -60,7 +66,13 @@ export function submissionNotificationEmailText(params: SubmissionNotificationPa
     "",
     `Incluidas: ${quota.includedPhotosSnapshot}`,
     `Seleccionadas: ${quota.selected}`,
-    `Extras: ${quota.extras} × ${formatCop(quota.extraPhotoPriceCopSnapshot)} = ${formatCop(quota.surchargeCop)}`,
+    `Extras: ${quota.extras} × ${formatCop(quota.extraUnitPriceCop)} = ${formatCop(quota.extrasSurchargeCop)}`,
+    ...(quota.originals > 0
+      ? [
+          `Originales: ${quota.originals} × ${formatCop(quota.originalPhotoPriceCopSnapshot)} = ${formatCop(quota.originalsSurchargeCop)}`,
+          `Total: ${formatCop(quota.surchargeCop)}`,
+        ]
+      : []),
     "",
     "El cobro de los extras se coordina por fuera de la app (WhatsApp / transferencia).",
     "",

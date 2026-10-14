@@ -15,6 +15,7 @@ import "server-only";
 import type { GalleryDetail } from "@/lib/galleries";
 import { builder } from "../builder";
 import { AssetType } from "./asset";
+import { ExtraPriceTierType } from "./extra-price-tier";
 import { GalleryClientType } from "./gallery-client";
 import { GalleryStatusType } from "./gallery-status";
 import { PackageType } from "./package";
@@ -36,6 +37,14 @@ export const GalleryType = builder.objectRef<GalleryDetail>("Gallery").implement
     package: t.field({ type: PackageType, resolve: (gallery) => gallery.package }),
     includedPhotosSnapshot: t.exposeInt("includedPhotosSnapshot"),
     extraPhotoPriceCopSnapshot: t.exposeInt("extraPhotoPriceCopSnapshot"),
+    // Task #231 — the frozen volume scale for extras, `null` for a flat-price
+    // gallery. The client page hands it to `computeQuota` for the first paint
+    // and to the scale table; nothing here computes a price.
+    extraPhotoPriceTiersSnapshot: t.field({
+      type: [ExtraPriceTierType],
+      nullable: { list: true, items: false },
+      resolve: (gallery) => gallery.extraPhotoPriceTiersSnapshot ?? null,
+    }),
     // Task #206 — closes the wiring gap #205 deliberately left open (see that
     // task's own kanban body, "Hueco de cableado que deja #205"): the price
     // was frozen in the database but stopped at this exact boundary, with

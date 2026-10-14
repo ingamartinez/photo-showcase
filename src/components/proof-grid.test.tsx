@@ -58,6 +58,7 @@ function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
       viewerId="client-a"
       includedPhotosSnapshot={13}
       extraPhotoPriceCopSnapshot={5_000}
+      extraPhotoPriceTiersSnapshot={null}
       // Task #206 — the third frozen snapshot term, matching the value
       // `scripts/seed-packages.ts` and the migration default use. Most tests
       // here only exercise `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot`;
@@ -335,6 +336,7 @@ describe("ProofGrid", () => {
         ],
         includedPhotosSnapshot: 1,
         extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
       });
 
       const text = counterText();
@@ -360,6 +362,7 @@ describe("ProofGrid", () => {
         ],
         includedPhotosSnapshot: 13,
         extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
       });
 
       // The correct total is 2 (one edited pick, one original pick) —
@@ -380,6 +383,7 @@ describe("ProofGrid", () => {
               selected: 99,
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              extraPhotoPriceTiersSnapshot: null,
               extras: 86,
               surchargeCop: 430_000,
             },
@@ -419,6 +423,7 @@ describe("ProofGrid", () => {
               selected: 0,
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              extraPhotoPriceTiersSnapshot: null,
               extras: 0,
               surchargeCop: 0,
             },
@@ -488,6 +493,7 @@ describe("ProofGrid", () => {
             selected: 15,
             includedPhotosSnapshot: 13,
             extraPhotoPriceCopSnapshot: 5_000,
+            extraPhotoPriceTiersSnapshot: null,
             extras: 2,
             surchargeCop: 10_000,
           },
@@ -506,6 +512,7 @@ describe("ProofGrid", () => {
             selected: 14,
             includedPhotosSnapshot: 13,
             extraPhotoPriceCopSnapshot: 5_000,
+            extraPhotoPriceTiersSnapshot: null,
             extras: 1,
             surchargeCop: 5_000,
           },
@@ -575,6 +582,7 @@ describe("ProofGrid", () => {
             quota: computeQuota(0, 1, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              extraPhotoPriceTiersSnapshot: null,
               originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
@@ -707,6 +715,7 @@ describe("ProofGrid", () => {
         selected: 1,
         includedPhotosSnapshot: 13,
         extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
         extras: 0,
         surchargeCop: 0,
       };
@@ -777,6 +786,7 @@ describe("ProofGrid", () => {
         ],
         includedPhotosSnapshot: 1,
         extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
       });
 
       // quota.extras = max(0, 2 - 1) = 1, already over quota, with a third,
@@ -796,6 +806,7 @@ describe("ProofGrid", () => {
         ],
         includedPhotosSnapshot: 1,
         extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
       });
 
       expect(screen.queryByText(/l[ií]mite/i)).toBeNull();
@@ -813,6 +824,7 @@ describe("ProofGrid", () => {
               selected: 3,
               includedPhotosSnapshot: 1,
               extraPhotoPriceCopSnapshot: 5_000,
+              extraPhotoPriceTiersSnapshot: null,
               extras: 2,
               surchargeCop: 10_000,
             },
@@ -834,6 +846,7 @@ describe("ProofGrid", () => {
         ],
         includedPhotosSnapshot: 1,
         extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
       });
 
       await user.click(screen.getByRole("button", { name: "Seleccionar: IMG_0003.JPG" }));
@@ -1662,6 +1675,7 @@ describe("ProofGrid", () => {
         quota: computeQuota(overrides.selectedCount ?? picks.length, 0, {
           includedPhotosSnapshot: 13,
           extraPhotoPriceCopSnapshot: 5_000,
+          extraPhotoPriceTiersSnapshot: null,
           originalPhotoPriceCopSnapshot: 2_000,
         }),
       };
@@ -1730,6 +1744,7 @@ describe("ProofGrid", () => {
               quota: computeQuota(selected ? 1 : 0, 0, {
                 includedPhotosSnapshot: 13,
                 extraPhotoPriceCopSnapshot: 5_000,
+                extraPhotoPriceTiersSnapshot: null,
                 originalPhotoPriceCopSnapshot: 2_000,
               }),
             },
@@ -1865,6 +1880,7 @@ describe("ProofGrid", () => {
             quota: computeQuota(0, 1, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              extraPhotoPriceTiersSnapshot: null,
               originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
@@ -1906,6 +1922,7 @@ describe("ProofGrid", () => {
             quota: computeQuota(0, 1, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              extraPhotoPriceTiersSnapshot: null,
               originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
@@ -2073,6 +2090,7 @@ describe("ProofGrid", () => {
             quota: computeQuota(1, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              extraPhotoPriceTiersSnapshot: null,
               originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
@@ -2133,6 +2151,7 @@ describe("ProofGrid", () => {
             quota: computeQuota(0, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              extraPhotoPriceTiersSnapshot: null,
               originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
@@ -2242,6 +2261,7 @@ describe("ProofGrid", () => {
             quota: computeQuota(0, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              extraPhotoPriceTiersSnapshot: null,
               originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
@@ -2287,6 +2307,7 @@ describe("ProofGrid", () => {
             quota: computeQuota(0, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              extraPhotoPriceTiersSnapshot: null,
               originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
@@ -2436,6 +2457,7 @@ describe("ProofGrid", () => {
             quota: computeQuota(0, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              extraPhotoPriceTiersSnapshot: null,
               originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
@@ -2473,6 +2495,7 @@ describe("ProofGrid", () => {
             quota: computeQuota(1, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              extraPhotoPriceTiersSnapshot: null,
               originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
@@ -2514,6 +2537,7 @@ describe("ProofGrid", () => {
             quota: computeQuota(0, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              extraPhotoPriceTiersSnapshot: null,
               originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
@@ -2546,6 +2570,7 @@ describe("ProofGrid", () => {
             quota: computeQuota(0, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              extraPhotoPriceTiersSnapshot: null,
               originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
@@ -2583,6 +2608,7 @@ describe("ProofGrid", () => {
             quota: computeQuota(0, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
+              extraPhotoPriceTiersSnapshot: null,
               originalPhotoPriceCopSnapshot: 2_000,
             }),
           }),
@@ -2602,5 +2628,47 @@ describe("ProofGrid", () => {
       // No SECOND instance opened for the now-terminal status.
       expect(FakeEventSource.instances).toHaveLength(1);
     });
+  });
+});
+
+// Task #231 — the FIRST PAINT of the counter, before any toggle has replaced
+// `quota` with the server's recomputation, must already use the frozen scale:
+// `<ProofGrid>` -> `useSharedSelection` -> `computeQuota`.
+describe("ProofGrid — volume scale on first paint (task #231)", () => {
+  const picks = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      assetId: `a${i + 1}`,
+      selectedAt: null,
+      pickedBy: null,
+      selectionKind: "edited" as const,
+    }));
+
+  it("the counter prices the extras by the reached tier, and shows the scale", () => {
+    renderGrid({
+      initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }, { isSelected: true }]),
+      initialPicks: picks(3),
+      includedPhotosSnapshot: 0,
+      extraPhotoPriceCopSnapshot: 15_000,
+      extraPhotoPriceTiersSnapshot: [
+        { minExtras: 1, priceCop: 15_000 },
+        { minExtras: 3, priceCop: 13_000 },
+      ],
+    });
+
+    expect(counterText()).toContain("extras 3 × $ 13.000 = $ 39.000");
+    expect(screen.getByText(/Precio por foto extra/)).toBeDefined();
+  });
+
+  it("without a scale the counter is the flat one and shows no scale", () => {
+    renderGrid({
+      initialAssets: assetsFor([{ isSelected: true }, { isSelected: true }, { isSelected: true }]),
+      initialPicks: picks(3),
+      includedPhotosSnapshot: 0,
+      extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
+    });
+
+    expect(counterText()).toContain("extras 3 × $ 5.000 = $ 15.000");
+    expect(screen.queryByText(/Precio por foto extra/)).toBeNull();
   });
 });

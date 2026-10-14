@@ -27,6 +27,7 @@ import { computeQuota } from "@/lib/quota";
 const SNAPSHOT = {
   includedPhotosSnapshot: 13,
   extraPhotoPriceCopSnapshot: 5_000,
+  extraPhotoPriceTiersSnapshot: null,
   originalPhotoPriceCopSnapshot: 2_000,
 };
 
@@ -338,6 +339,7 @@ describe("SubmitSelectionPanel — the two-tariff confirmation (task #206)", () 
     const snapshot = {
       includedPhotosSnapshot: 7,
       extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: 2_000,
     };
     // 9 edited -> 2 over 7 -> 10_000. 3 originals -> 6_000. Total 16_000.
@@ -382,5 +384,50 @@ describe("SubmitSelectionPanel — the two-tariff confirmation (task #206)", () 
     const message = await openConfirmation(computeQuota(5, 2, SNAPSHOT), false);
 
     expect(message).not.toMatch(/original/i);
+  });
+});
+
+describe("SubmitSelectionPanel — volume tiers (task #231)", () => {
+  const TIERS = [
+    { minExtras: 1, priceCop: 15_000 },
+    { minExtras: 3, priceCop: 13_000 },
+    { minExtras: 5, priceCop: 11_000 },
+    { minExtras: 10, priceCop: 10_000 },
+  ];
+  const TIERED = {
+    includedPhotosSnapshot: 13,
+    extraPhotoPriceCopSnapshot: 15_000,
+    extraPhotoPriceTiersSnapshot: TIERS,
+    originalPhotoPriceCopSnapshot: 2_000,
+  };
+
+  async function confirmationFor(quota: ReturnType<typeof computeQuota>): Promise<string> {
+    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
+    vi.stubGlobal("fetch", vi.fn());
+    const user = userEvent.setup();
+    render(
+      <SubmitSelectionPanel
+        galleryId="g1"
+        quota={quota}
+        isLocked={false}
+        submittedAt={null}
+        onSubmitted={vi.fn()}
+        allowsOriginalSelection={true}
+      />,
+    );
+    await user.click(screen.getByRole("button", { name: "Enviar selección" }));
+    return (confirmSpy.mock.calls[0]?.[0] as string).replace(/\s+/g, " ");
+  }
+
+  it("the confirmation states the reached tier's unit price and the volume total", async () => {
+    const message = await confirmationFor(computeQuota(13 + 10, 0, TIERED));
+
+    expect(message).toMatch(/Extras: 10 × \$ 10\.000 = \$ 100\.000\./);
+  });
+
+  it("a flat-price gallery's confirmation line is unchanged", async () => {
+    const message = await confirmationFor(computeQuota(15, 0, SNAPSHOT));
+
+    expect(message).toMatch(/Extras: 2 × \$ 5\.000 = \$ 10\.000\./);
   });
 });

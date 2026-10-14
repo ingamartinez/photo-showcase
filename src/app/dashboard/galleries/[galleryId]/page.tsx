@@ -13,6 +13,7 @@ import {
   isGalleryVisibleToClient,
 } from "@/lib/galleries";
 import { getClientsForPicker } from "@/lib/clients";
+import { tierRangeLabel } from "@/lib/extra-price-tiers";
 import { formatBytes, formatCop } from "@/lib/format";
 import { getGalleryArchiveSize } from "@/lib/gallery-archive-size";
 import { getPresignedUrl, storedKey } from "@/lib/r2";
@@ -406,7 +407,19 @@ export default async function GalleryDetailPage({
               <dt className="text-fg-mute">Fotos incluidas</dt>
               <dd className="text-right">{gallery.includedPhotosSnapshot}</dd>
               <dt className="text-fg-mute">Foto extra</dt>
-              <dd className="text-right">{formatCop(gallery.extraPhotoPriceCopSnapshot)}</dd>
+              <dd className="text-right">
+                {gallery.extraPhotoPriceTiersSnapshot ? (
+                  <ul>
+                    {gallery.extraPhotoPriceTiersSnapshot.map((tier, i, tiers) => (
+                      <li key={tier.minExtras}>
+                        {tierRangeLabel(tiers, i)}: {formatCop(tier.priceCop)}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  formatCop(gallery.extraPhotoPriceCopSnapshot)
+                )}
+              </dd>
               {/* Task #193 — the fotos-incluidas/foto-extra rows above are
                   always the gallery's EFFECTIVE terms (its own frozen
                   snapshots, never the live package), overridden or not; this
@@ -459,6 +472,7 @@ export default async function GalleryDetailPage({
                 status={gallery.status}
                 includedPhotosSnapshot={gallery.includedPhotosSnapshot}
                 extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}
+                extraPhotoPriceTiersSnapshot={gallery.extraPhotoPriceTiersSnapshot}
                 originalPhotoPriceCopSnapshot={gallery.originalPhotoPriceCopSnapshot}
                 selectedEditedCount={selectedEditedCount}
                 selectedOriginalCount={selectedOriginalCount}
@@ -478,6 +492,7 @@ export default async function GalleryDetailPage({
                 allowsOriginalSelection={gallery.allowsOriginalSelection}
                 includedPhotosSnapshot={gallery.includedPhotosSnapshot}
                 extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}
+                extraPhotoPriceTiersSnapshot={gallery.extraPhotoPriceTiersSnapshot}
                 originalPhotoPriceCopSnapshot={gallery.originalPhotoPriceCopSnapshot}
                 selectedEditedCount={selectedEditedCount}
                 selectedOriginalCount={selectedOriginalCount}

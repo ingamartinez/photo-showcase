@@ -24,6 +24,7 @@ import {
   timestamp,
   uniqueIndex,
   uuid,
+  jsonb,
 } from "drizzle-orm/pg-core";
 import type { AdapterAccountType } from "next-auth/adapters";
 
@@ -233,6 +234,16 @@ export const galleries = pgTable(
     // retroactively change what a past client owed.
     includedPhotosSnapshot: integer("included_photos_snapshot").notNull(),
     extraPhotoPriceCopSnapshot: integer("extra_photo_price_cop_snapshot").notNull(),
+    // Task #231 — OPTIONAL frozen volume scale for extras, shape
+    // `[{ minExtras, priceCop }]` sorted by `minExtras` (see
+    // src/lib/extra-price-tiers.ts). NULL = flat price: every gallery that
+    // existed before this column keeps `extraPhotoPriceCopSnapshot` exactly as
+    // before. WITH a scale, THIS column is the truth and
+    // `extraPhotoPriceCopSnapshot` (still notNull) just mirrors the first
+    // tier's price so legacy readers never see a nonsense value.
+    extraPhotoPriceTiersSnapshot: jsonb("extra_photo_price_tiers_snapshot").$type<
+      { minExtras: number; priceCop: number }[]
+    >(),
     // Task #205 — the frozen price of an "original" pick, same shape and same
     // reasoning as `extraPhotoPriceCopSnapshot` above: copied from
     // `packages.originalPhotoPriceCop` exactly once, by `createGallery`, and

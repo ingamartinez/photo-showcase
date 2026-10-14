@@ -1,0 +1,1 @@
+ALTER TABLE "galleries" ADD COLUMN "extra_photo_price_tiers_snapshot" jsonb;

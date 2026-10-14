@@ -126,6 +126,10 @@ const CLIENT_GALLERY_DETAIL_DOCUMENT = graphql(`
       selectionSubmittedAt
       includedPhotosSnapshot
       extraPhotoPriceCopSnapshot
+      extraPhotoPriceTiersSnapshot {
+        minExtras
+        priceCop
+      }
       originalPhotoPriceCopSnapshot
       selectionTrayMode
       allowsOriginalSelection

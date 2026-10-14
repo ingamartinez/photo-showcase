@@ -33,6 +33,7 @@ describe("AllowsOriginalSelectionControl — switch is OFF", () => {
         allowsOriginalSelection={false}
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        extraPhotoPriceTiersSnapshot={null}
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={0}
         selectedOriginalCount={0}
@@ -52,6 +53,7 @@ describe("AllowsOriginalSelectionControl — switch is OFF", () => {
         allowsOriginalSelection={false}
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        extraPhotoPriceTiersSnapshot={null}
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={0}
         selectedOriginalCount={0}
@@ -77,6 +79,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, nothing to reset", ()
         allowsOriginalSelection={true}
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        extraPhotoPriceTiersSnapshot={null}
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={5}
         selectedOriginalCount={0}
@@ -98,6 +101,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, nothing to reset", ()
         allowsOriginalSelection={true}
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        extraPhotoPriceTiersSnapshot={null}
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={5}
         selectedOriginalCount={0}
@@ -125,6 +129,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
         allowsOriginalSelection={true}
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        extraPhotoPriceTiersSnapshot={null}
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={12}
         selectedOriginalCount={3}
@@ -152,6 +157,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
         allowsOriginalSelection={true}
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        extraPhotoPriceTiersSnapshot={null}
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={12}
         selectedOriginalCount={3}
@@ -177,6 +183,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
         allowsOriginalSelection={true}
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        extraPhotoPriceTiersSnapshot={null}
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={12}
         selectedOriginalCount={1}
@@ -198,6 +205,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
         allowsOriginalSelection={true}
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        extraPhotoPriceTiersSnapshot={null}
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={12}
         selectedOriginalCount={3}
@@ -230,6 +238,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
         allowsOriginalSelection={true}
         includedPhotosSnapshot={13}
         extraPhotoPriceCopSnapshot={5_000}
+        extraPhotoPriceTiersSnapshot={null}
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={12}
         selectedOriginalCount={3}

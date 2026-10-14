@@ -55,6 +55,7 @@ export function AllowsOriginalSelectionControl({
   allowsOriginalSelection,
   includedPhotosSnapshot,
   extraPhotoPriceCopSnapshot,
+  extraPhotoPriceTiersSnapshot,
   originalPhotoPriceCopSnapshot,
   // The SAME split the page already derived from `gallery.assets`
   // (page.tsx's own `selectedEditedCount`/`selectedOriginalCount`, task
@@ -67,6 +68,7 @@ export function AllowsOriginalSelectionControl({
   allowsOriginalSelection: boolean;
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
+  extraPhotoPriceTiersSnapshot: { minExtras: number; priceCop: number }[] | null;
   originalPhotoPriceCopSnapshot: number;
   selectedEditedCount: number;
   selectedOriginalCount: number;
@@ -89,11 +91,13 @@ export function AllowsOriginalSelectionControl({
   const before = computeQuota(selectedEditedCount, selectedOriginalCount, {
     includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot,
+    extraPhotoPriceTiersSnapshot,
     originalPhotoPriceCopSnapshot,
   });
   const after = computeQuota(selectedEditedCount + selectedOriginalCount, 0, {
     includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot,
+    extraPhotoPriceTiersSnapshot,
     originalPhotoPriceCopSnapshot,
   });
 

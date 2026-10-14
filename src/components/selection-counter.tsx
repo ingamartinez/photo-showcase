@@ -72,8 +72,9 @@
 // Importing it here bundled the whole DB module graph into the browser
 // bundle and broke the production build; see `@/lib/format`'s own header
 // comment for the full story.
+import { tierRangeLabel } from "@/lib/extra-price-tiers";
 import { formatCop } from "@/lib/format";
-import type { QuotaResult } from "@/lib/quota";
+import { tierIndexForExtras, type QuotaResult } from "@/lib/quota";
 
 // Task #193 — the package's NAME is deliberately never a prop here, and
 // never was going to become one again: the owner's decision (this
@@ -100,6 +101,13 @@ export function SelectionCounter({
   allowsOriginalSelection: boolean;
 }) {
   const hasOriginals = allowsOriginalSelection && quota.originals > 0;
+  // Task #231 — the gallery's volume scale, when it has one. `quota` already
+  // carries the unit price in force (`extraUnitPriceCop`); this only lists the
+  // frozen steps and marks the one `quota.extras` has reached, via the shared
+  // helpers in extra-price-tiers.ts — no price is computed in this file. A
+  // flat-price gallery (`null`) renders nothing extra.
+  const tiers = quota.extraPhotoPriceTiersSnapshot;
+  const activeTier = tiers ? tierIndexForExtras(quota.extras, tiers) : -1;
 
   return (
     <div aria-live="polite">
@@ -107,10 +115,27 @@ export function SelectionCounter({
         incluidas {quota.includedPhotosSnapshot} · seleccionadas {quota.selected}
       </p>
       <p className="text-fg-mute mt-1 text-sm">
-        extras {quota.extras} × {formatCop(quota.extraPhotoPriceCopSnapshot)} ={" "}
+        extras {quota.extras} × {formatCop(quota.extraUnitPriceCop)} ={" "}
         {formatCop(quota.extrasSurchargeCop)}
         {!hasOriginals && " — se coordina por fuera de la app; acá no se cobra nada."}
       </p>
+      {tiers && (
+        <div className="text-fg-mute mt-2 text-sm">
+          <p>Precio por foto extra, según cuántas extras elijas:</p>
+          <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+            {tiers.map((tier, i) => (
+              <li
+                key={tier.minExtras}
+                aria-current={i === activeTier ? "true" : undefined}
+                className={i === activeTier ? "text-fg font-semibold" : undefined}
+              >
+                {tierRangeLabel(tiers, i)} fotos: {formatCop(tier.priceCop)} c/u
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1">Todas las fotos extra se cobran al precio de la escala alcanzada.</p>
+        </div>
+      )}
       {hasOriginals && (
         <>
           <p className="text-fg-mute mt-1 text-sm">

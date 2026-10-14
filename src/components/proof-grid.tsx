@@ -211,6 +211,7 @@ export function ProofGrid({
   viewerId,
   includedPhotosSnapshot,
   extraPhotoPriceCopSnapshot,
+  extraPhotoPriceTiersSnapshot,
   originalPhotoPriceCopSnapshot,
   selectionTrayMode,
   allowsOriginalSelection,
@@ -256,6 +257,8 @@ export function ProofGrid({
   // this is about the package's label, not its terms.
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
+  // Task #231 — frozen volume scale, `null`/absent = flat price.
+  extraPhotoPriceTiersSnapshot: { minExtras: number; priceCop: number }[] | null;
   // Task #206 — the gallery's frozen original-photo price, threaded the same
   // way its two siblings above are. REQUIRED, not optional: before this
   // slice, `useSharedSelection` hardcoded `0` here (see that file's own
@@ -315,6 +318,7 @@ export function ProofGrid({
     initialPicks,
     includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot,
+    extraPhotoPriceTiersSnapshot,
     originalPhotoPriceCopSnapshot,
   });
 

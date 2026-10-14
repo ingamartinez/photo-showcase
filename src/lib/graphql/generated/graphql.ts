@@ -39,6 +39,7 @@ export type ClientGalleryBySlugQuery = {
     originalPhotoPriceCopSnapshot: number;
     selectionTrayMode: SelectionTrayMode;
     allowsOriginalSelection: boolean;
+    extraPhotoPriceTiersSnapshot: Array<{ minExtras: number; priceCop: number }> | null;
     package: { name: string };
     assets: Array<{
       id: string;
@@ -125,6 +126,17 @@ export const ClientGalleryBySlugDocument = {
                 { kind: "Field", name: { kind: "Name", value: "selectionSubmittedAt" } },
                 { kind: "Field", name: { kind: "Name", value: "includedPhotosSnapshot" } },
                 { kind: "Field", name: { kind: "Name", value: "extraPhotoPriceCopSnapshot" } },
+                {
+                  kind: "Field",
+                  name: { kind: "Name", value: "extraPhotoPriceTiersSnapshot" },
+                  selectionSet: {
+                    kind: "SelectionSet",
+                    selections: [
+                      { kind: "Field", name: { kind: "Name", value: "minExtras" } },
+                      { kind: "Field", name: { kind: "Name", value: "priceCop" } },
+                    ],
+                  },
+                },
                 { kind: "Field", name: { kind: "Name", value: "originalPhotoPriceCopSnapshot" } },
                 { kind: "Field", name: { kind: "Name", value: "selectionTrayMode" } },
                 { kind: "Field", name: { kind: "Name", value: "allowsOriginalSelection" } },

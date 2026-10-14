@@ -342,6 +342,7 @@ export const PATCH = withApiSession(async function PATCH(
   const quota = computeQuota(selectedEdited, selectedOriginal, {
     includedPhotosSnapshot: gallery.includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
+    extraPhotoPriceTiersSnapshot: gallery.extraPhotoPriceTiersSnapshot,
     originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,
   });
 

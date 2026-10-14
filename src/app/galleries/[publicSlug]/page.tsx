@@ -266,6 +266,7 @@ export default async function ClientGalleryPage({
         // not only for overridden galleries.
         includedPhotosSnapshot={gallery.includedPhotosSnapshot}
         extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}
+        extraPhotoPriceTiersSnapshot={gallery.extraPhotoPriceTiersSnapshot}
         // Task #206 — closes the wiring gap #205 left open deliberately (see
         // that task's kanban body). Now that `Gallery.originalPhotoPriceCopSnapshot`
         // is on the wire (src/lib/graphql/types/gallery.ts,

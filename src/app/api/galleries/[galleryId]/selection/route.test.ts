@@ -344,6 +344,43 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
     ]);
   });
 
+  // Task #231 — a gallery with a frozen volume scale must be priced by the
+  // tier its extras reach, off the row's own jsonb snapshot.
+  it("prices extras by the gallery's frozen volume scale once the row carries one", async () => {
+    getGallerySelectionMock.mockResolvedValue(
+      Array.from({ length: 13 + 3 }, (_, i) => ({
+        assetId: `asset-${i}`,
+        selectedAt: null,
+        pickedBy: null,
+      })) as never,
+    );
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(
+      galleryRow({
+        extraPhotoPriceCopSnapshot: 15_000,
+        extraPhotoPriceTiersSnapshot: [
+          { minExtras: 1, priceCop: 15_000 },
+          { minExtras: 3, priceCop: 13_000 },
+        ],
+      }),
+    );
+    authMock.mockResolvedValue(clientASession());
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
+    const body = (await response.json()) as {
+      quota: { extras: number; extraUnitPriceCop: number; surchargeCop: number };
+    };
+
+    // 3 extras x 13.000 (the 3+ tier), not 3 x 15.000.
+    expect(body.quota).toMatchObject({
+      extras: 3,
+      extraUnitPriceCop: 13_000,
+      surchargeCop: 39_000,
+    });
+  });
+
   it("recomputes the quota from the number of picks and the gallery's FROZEN terms", async () => {
     // Never the live `packages` row — a gallery created under last year's
     // price list keeps last year's numbers forever (PLAN.md §3).
@@ -372,6 +409,8 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
       selectedOriginal: 0,
       includedPhotosSnapshot: 13,
       extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
+      extraUnitPriceCop: 5_000,
       originalPhotoPriceCopSnapshot: 2_000,
       extras: 2,
       originals: 0,

@@ -21,12 +21,18 @@ type Asset {
   sortOrder: Int!
 }
 
+type ExtraPriceTier {
+  minExtras: Int!
+  priceCop: Int!
+}
+
 type Gallery {
   allowsOriginalSelection: Boolean!
   assets: [Asset!]!
   clients: [GalleryClient!]!
   createdAt: String!
   extraPhotoPriceCopSnapshot: Int!
+  extraPhotoPriceTiersSnapshot: [ExtraPriceTier!]
   id: ID!
   includedPhotosSnapshot: Int!
   originalPhotoPriceCopSnapshot: Int!

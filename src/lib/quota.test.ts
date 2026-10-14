@@ -9,6 +9,7 @@ import { computeQuota } from "./quota";
 const SNAPSHOT = {
   includedPhotosSnapshot: 13,
   extraPhotoPriceCopSnapshot: 5_000,
+  extraPhotoPriceTiersSnapshot: null,
   originalPhotoPriceCopSnapshot: 2_000,
 };
 
@@ -26,6 +27,8 @@ describe("computeQuota", () => {
         selectedOriginal: 0,
         includedPhotosSnapshot: 13,
         extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
+        extraUnitPriceCop: 5_000,
         originalPhotoPriceCopSnapshot: 2_000,
         extras: 0,
         originals: 0,
@@ -42,6 +45,8 @@ describe("computeQuota", () => {
         selectedOriginal: 0,
         includedPhotosSnapshot: 13,
         extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
+        extraUnitPriceCop: 5_000,
         originalPhotoPriceCopSnapshot: 2_000,
         extras: 0,
         originals: 0,
@@ -58,6 +63,8 @@ describe("computeQuota", () => {
         selectedOriginal: 0,
         includedPhotosSnapshot: 13,
         extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
+        extraUnitPriceCop: 5_000,
         originalPhotoPriceCopSnapshot: 2_000,
         extras: 1,
         originals: 0,
@@ -74,6 +81,8 @@ describe("computeQuota", () => {
         selectedOriginal: 0,
         includedPhotosSnapshot: 13,
         extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
+        extraUnitPriceCop: 5_000,
         originalPhotoPriceCopSnapshot: 2_000,
         extras: 17,
         originals: 0,
@@ -142,6 +151,7 @@ describe("computeQuota", () => {
     const snapshot = {
       includedPhotosSnapshot: 7,
       extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
       originalPhotoPriceCopSnapshot: 2_000,
     };
     // 9 edited -> 2 over the 7 included -> 2 * 5_000 = 10_000 edited surcharge.
@@ -157,6 +167,107 @@ describe("computeQuota", () => {
     expect(result.selected).toBe(12);
     expect(result.extrasSurchargeCop).toBe(10_000);
     expect(result.originalsSurchargeCop).toBe(6_000);
+  });
+
+  // Task #231 — volume tiers. EVERY extra pays the unit price of the tier the
+  // TOTAL extras count reaches; it is not marginal (tax-bracket) pricing.
+  describe("volume tiers (task #231)", () => {
+    const TIERS = [
+      { minExtras: 1, priceCop: 15_000 },
+      { minExtras: 3, priceCop: 13_000 },
+      { minExtras: 5, priceCop: 11_000 },
+      { minExtras: 10, priceCop: 10_000 },
+    ];
+    const TIERED = {
+      includedPhotosSnapshot: 13,
+      extraPhotoPriceCopSnapshot: 15_000,
+      extraPhotoPriceTiersSnapshot: TIERS,
+      originalPhotoPriceCopSnapshot: 2_000,
+    };
+    // `extras` extras on top of the 13 included, no originals.
+    const withExtras = (extras: number) => computeQuota(13 + extras, 0, TIERED);
+
+    it.each([
+      [1, 15_000, 15_000],
+      [2, 15_000, 30_000],
+      [3, 13_000, 39_000], // 3 x 13.000, NOT 2 x 15.000 + 1 x 13.000
+      [4, 13_000, 52_000],
+      [5, 11_000, 55_000],
+      [9, 11_000, 99_000],
+      [10, 10_000, 100_000],
+      [25, 10_000, 250_000],
+    ])("%i extras: every extra pays %i, total %i", (extras, unit, total) => {
+      const result = withExtras(extras);
+      expect(result.extras).toBe(extras);
+      expect(result.extraUnitPriceCop).toBe(unit);
+      expect(result.extrasSurchargeCop).toBe(total);
+      expect(result.surchargeCop).toBe(total);
+    });
+
+    it("zero extras quotes the first tier's price (what the next photo would cost)", () => {
+      const result = withExtras(0);
+      expect(result.extraUnitPriceCop).toBe(15_000);
+      expect(result.extrasSurchargeCop).toBe(0);
+    });
+
+    it("the total never goes down as extras grow (the owner's 9-vs-10 inversion cannot happen)", () => {
+      let previous = 0;
+      for (let extras = 0; extras <= 40; extras++) {
+        const total = withExtras(extras).extrasSurchargeCop;
+        expect(total).toBeGreaterThanOrEqual(previous);
+        previous = total;
+      }
+    });
+
+    it("does not depend on the tiers arriving sorted", () => {
+      const shuffled = {
+        ...TIERED,
+        extraPhotoPriceTiersSnapshot: [TIERS[2]!, TIERS[0]!, TIERS[3]!, TIERS[1]!],
+      };
+      expect(computeQuota(13 + 4, 0, shuffled).extrasSurchargeCop).toBe(52_000);
+      expect(computeQuota(13 + 10, 0, shuffled).extrasSurchargeCop).toBe(100_000);
+    });
+
+    it("echoes the frozen scale back and reads the tier, not the flat snapshot, once a scale exists", () => {
+      // A flat column that disagrees with the scale must lose: the jsonb is the truth.
+      const result = computeQuota(13 + 3, 0, { ...TIERED, extraPhotoPriceCopSnapshot: 99_999 });
+      expect(result.extraPhotoPriceTiersSnapshot).toEqual(TIERS);
+      expect(result.extraUnitPriceCop).toBe(13_000);
+    });
+
+    it("originals are still charged at their own flat price on top of tiered extras", () => {
+      const result = computeQuota(13 + 3, 2, TIERED);
+      expect(result.extrasSurchargeCop).toBe(39_000);
+      expect(result.originalsSurchargeCop).toBe(4_000);
+      expect(result.surchargeCop).toBe(43_000);
+    });
+
+    // The guarantee for every gallery that exists today.
+    describe("null (or absent) tiers are byte-identical to the flat formula", () => {
+      const FLAT = {
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
+        originalPhotoPriceCopSnapshot: 2_000,
+      };
+
+      it.each([0, 1, 2, 3, 4, 5, 9, 10, 11, 30])("%i extras", (extras) => {
+        const viaNull = computeQuota(13 + extras, 0, {
+          ...FLAT,
+          extraPhotoPriceTiersSnapshot: null,
+        });
+        const viaAbsent = computeQuota(13 + extras, 0, FLAT);
+        expect(viaNull).toEqual(viaAbsent);
+        expect(viaNull.extrasSurchargeCop).toBe(extras * 5_000);
+        expect(viaNull.extraUnitPriceCop).toBe(5_000);
+        expect(viaNull.extraPhotoPriceTiersSnapshot).toBeNull();
+      });
+
+      it("an empty scale is treated as flat, never as a crash", () => {
+        const result = computeQuota(15, 0, { ...FLAT, extraPhotoPriceTiersSnapshot: [] });
+        expect(result.extrasSurchargeCop).toBe(10_000);
+      });
+    });
   });
 
   // Acceptance criterion 8 — this module must never import `@/lib/db` or

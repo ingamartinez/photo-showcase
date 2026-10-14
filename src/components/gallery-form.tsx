@@ -3,6 +3,11 @@
 import { useActionState, useEffect, useState } from "react";
 import Link from "next/link";
 import { createGallery, type CreateGalleryState } from "@/app/dashboard/galleries/actions";
+import {
+  DEFAULT_TIER_ROWS,
+  ExtraPriceTiersEditor,
+  type TierRow,
+} from "@/components/extra-price-tiers-editor";
 import type { ClientForPicker } from "@/lib/clients";
 import type { PackageForPicker } from "@/lib/packages";
 
@@ -49,6 +54,18 @@ export function GalleryForm({
   // drive a UI hint.
   const [selectedPackageId, setSelectedPackageId] = useState("");
   const selectedPackage = packages.find((pkg) => String(pkg.id) === selectedPackageId);
+
+  // Task #231 — "Precio por escala". Off by default, which leaves the form
+  // posting exactly what it posted before. When on, the flat extra-price field
+  // below is not rendered (so it is not submitted) and the editor's hidden
+  // `extraPhotoPriceTiers` field carries the scale instead.
+  const [tiersEnabled, setTiersEnabled] = useState(false);
+  const [tierRows, setTierRows] = useState<TierRow[]>(DEFAULT_TIER_ROWS);
+  // The flat extra price unmounts while the scale is on (so it is not posted);
+  // mirroring what was typed into state and feeding it back through
+  // `defaultValue` keeps it across a toggle on/off. The input itself stays
+  // uncontrolled, preserving this form's existing post-submit reset behavior.
+  const [flatExtraPrice, setFlatExtraPrice] = useState("");
 
   // Narrowed to a boolean on purpose: `state` is a fresh object on every
   // action result, so depending on it directly would re-fire this on an error
@@ -206,26 +223,38 @@ export function GalleryForm({
         />
       </div>
 
-      <div className="flex flex-col gap-2">
-        <label
-          htmlFor="extraPhotoPriceCop"
-          className="text-fg-mute text-xs tracking-wide uppercase"
-        >
-          Precio foto extra, COP (opcional)
-        </label>
-        <input
-          id="extraPhotoPriceCop"
-          name="extraPhotoPriceCop"
-          type="number"
-          min={0}
-          step={1}
-          inputMode="numeric"
-          placeholder="Vacío = precio del paquete"
-          aria-invalid={state.status === "error"}
-          aria-describedby={state.status === "error" ? "gallery-form-error" : undefined}
-          className={inputClass}
-        />
-      </div>
+      {!tiersEnabled && (
+        <div className="flex flex-col gap-2">
+          <label
+            htmlFor="extraPhotoPriceCop"
+            className="text-fg-mute text-xs tracking-wide uppercase"
+          >
+            Precio foto extra, COP (opcional)
+          </label>
+          <input
+            id="extraPhotoPriceCop"
+            name="extraPhotoPriceCop"
+            type="number"
+            min={0}
+            step={1}
+            inputMode="numeric"
+            placeholder="Vacío = precio del paquete"
+            defaultValue={flatExtraPrice}
+            onChange={(event) => setFlatExtraPrice(event.target.value)}
+            aria-invalid={state.status === "error"}
+            aria-describedby={state.status === "error" ? "gallery-form-error" : undefined}
+            className={inputClass}
+          />
+        </div>
+      )}
+
+      <ExtraPriceTiersEditor
+        idPrefix="create-gallery"
+        enabled={tiersEnabled}
+        onEnabledChange={setTiersEnabled}
+        rows={tierRows}
+        onRowsChange={setTierRows}
+      />
 
       {/* Task #205 — same optional/inherit-from-package shape as the two
           fields above, for the new original-photo price. Same reason

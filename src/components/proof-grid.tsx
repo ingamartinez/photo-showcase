@@ -658,7 +658,11 @@ export function ProofGrid({
       {!isDelivered && !isLocked && (
         <div className="border-line-2 bg-bg/95 fixed inset-x-0 bottom-0 z-40 border-t px-4 pt-2 pb-[calc(8px+env(safe-area-inset-bottom,0px))] backdrop-blur-md min-[620px]:px-7 lg:px-12 lg:pt-3 lg:pb-[calc(12px+env(safe-area-inset-bottom,0px))]">
           <div className="mx-auto flex max-w-[1280px] items-center justify-between gap-3 lg:flex-wrap">
-            <SelectionCounter quota={quota} allowsOriginalSelection={allowsOriginalSelection} />
+            <SelectionCounter
+              quota={quota}
+              allowsOriginalSelection={allowsOriginalSelection}
+              collapsible
+            />
             <div className="flex items-center gap-3">
               {toggleError && <p className="text-danger text-xs">{toggleError}</p>}
               <SubmitSelectionPanel

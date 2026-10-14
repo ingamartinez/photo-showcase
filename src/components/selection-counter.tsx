@@ -91,8 +91,13 @@ import { tierIndexForExtras, type QuotaResult } from "@/lib/quota";
 export function SelectionCounter({
   quota,
   allowsOriginalSelection,
+  collapsible = false,
 }: {
   quota: QuotaResult;
+  /** Task #236 — only the sticky proofing bar turns this on: below `lg` the
+   * price detail folds behind a "Ver detalle" toggle. Every other caller (the
+   * `selected` view in normal flow) keeps the full detail visible, no toggle. */
+  collapsible?: boolean;
   /** Task #214 — the gallery's own switch. `false` (every gallery's default,
    * schema.ts's own comment on `galleries.allowsOriginalSelection`) hides the
    * originals breakdown below EVEN IF `quota.originals` is somehow non-zero
@@ -121,6 +126,17 @@ export function SelectionCounter({
   // not shown there either), exactly as before this task.
   const [detailOpen, setDetailOpen] = useState(false);
   const detailId = useId();
+  const folded = collapsible && !detailOpen;
+  // The compact row's amount. Without originals the surcharge IS the extras
+  // amount; with originals `surchargeCop` is the TOTAL of both tariffs, so it
+  // gets an honest "en total" label (and shows even at 0 extras).
+  const compactAmount = hasOriginals
+    ? quota.surchargeCop > 0
+      ? `${formatCop(quota.surchargeCop)} en total`
+      : ""
+    : quota.extras > 0
+      ? `${formatCop(quota.extrasSurchargeCop)} en extras`
+      : "";
 
   return (
     <div>
@@ -134,7 +150,7 @@ export function SelectionCounter({
         </p>
         <div
           id={detailId}
-          className={`max-h-[40vh] overflow-y-auto overscroll-contain lg:max-h-none lg:overflow-visible ${detailOpen ? "" : "max-lg:hidden"}`}
+          className={`max-h-[40vh] overflow-y-auto overscroll-contain lg:max-h-none lg:overflow-visible ${folded ? "max-lg:hidden" : ""}`}
         >
           <p className="text-fg-mute mt-1 text-sm">
             extras {quota.extras} × {formatCop(quota.extraUnitPriceCop)} ={" "}
@@ -178,22 +194,24 @@ export function SelectionCounter({
       {/* Mobile-only second row: the running extras amount (own live region,
           only while the detail is folded and there ARE extras — the expanded
           detail already says it) next to the disclosure toggle. */}
-      <div className="flex items-baseline gap-3 lg:hidden">
-        {/* Always mounted (live regions announce changes, not insertions);
+      {collapsible && (
+        <div className="flex items-baseline gap-3 lg:hidden">
+          {/* Always mounted (live regions announce changes, not insertions);
             `empty:hidden` drops its gap while there is nothing to say. */}
-        <span aria-live="polite" className="text-fg text-xs empty:hidden">
-          {quota.extras > 0 && !detailOpen && `${formatCop(quota.surchargeCop)} en extras`}
-        </span>
-        <button
-          type="button"
-          onClick={() => setDetailOpen((open) => !open)}
-          aria-expanded={detailOpen}
-          aria-controls={detailId}
-          className="text-accent focus-visible:ring-accent min-h-7 text-xs underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:outline-none"
-        >
-          {detailOpen ? "Ocultar detalle" : "Ver detalle"}
-        </button>
-      </div>
+          <span aria-live="polite" className="text-fg text-xs empty:hidden">
+            {!detailOpen && compactAmount}
+          </span>
+          <button
+            type="button"
+            onClick={() => setDetailOpen((open) => !open)}
+            aria-expanded={detailOpen}
+            aria-controls={detailId}
+            className="text-accent focus-visible:ring-accent min-h-7 text-xs underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:outline-none"
+          >
+            {detailOpen ? "Ocultar detalle" : "Ver detalle"}
+          </button>
+        </div>
+      )}
     </div>
   );
 }

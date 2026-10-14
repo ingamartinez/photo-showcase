@@ -650,6 +650,36 @@ describe("PATCH /api/assets/[assetId]/selection — persistence and quota recomp
     });
   });
 
+  // Task #231 — the per-toggle response is recomputed off the row's own scale.
+  it("prices extras by the gallery's frozen volume scale after a toggle", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(
+      galleryRow({
+        includedPhotosSnapshot: 0,
+        extraPhotoPriceCopSnapshot: 15_000,
+        extraPhotoPriceTiersSnapshot: [
+          { minExtras: 1, priceCop: 15_000 },
+          { minExtras: 2, priceCop: 10_000 },
+        ],
+      }),
+    );
+    db.__rows.assets.push(assetRow({ id: ASSET_2_ID, isSelected: true, sortOrder: 1 }));
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
+    const body = (await response.json()) as {
+      quota: { extras: number; extraUnitPriceCop: number; surchargeCop: number };
+    };
+
+    expect(body.quota).toMatchObject({
+      extras: 2,
+      extraUnitPriceCop: 10_000,
+      surchargeCop: 20_000,
+    });
+  });
+
   it("reflects extras and surcharge once the count passes the snapshot's included quota", async () => {
     authMock.mockResolvedValue(clientASession());
     const db = await seededDb();

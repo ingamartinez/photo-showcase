@@ -446,6 +446,43 @@ describe("POST /api/galleries/[galleryId]/submit-selection — locked statuses",
   });
 });
 
+describe("POST /api/galleries/[galleryId]/submit-selection — volume scale (task #231)", () => {
+  it("prices the submitted quota, and the admin email, by the gallery's frozen scale", async () => {
+    authMock.mockResolvedValue(clientSession());
+    const db = await seededDb();
+    db.__rows.assets.push(assetRow({ id: ASSET_2_ID, isSelected: true, sortOrder: 1 }));
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(
+      galleryRow({
+        includedPhotosSnapshot: 0,
+        extraPhotoPriceCopSnapshot: 15_000,
+        extraPhotoPriceTiersSnapshot: [
+          { minExtras: 1, priceCop: 15_000 },
+          { minExtras: 2, priceCop: 10_000 },
+        ],
+      }),
+    );
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    const body = (await response.json()) as {
+      quota: { extras: number; extraUnitPriceCop: number; surchargeCop: number };
+    };
+    // 2 extras, both at the 2+ tier's 10.000 — not 2 x 15.000.
+    expect(body.quota).toMatchObject({
+      extras: 2,
+      extraUnitPriceCop: 10_000,
+      surchargeCop: 20_000,
+    });
+    expect(sendSubmissionNotificationEmailMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        quota: expect.objectContaining({ extraUnitPriceCop: 10_000, surchargeCop: 20_000 }),
+      }),
+    );
+  });
+});
+
 describe("POST /api/galleries/[galleryId]/submit-selection — success", () => {
   it("flips proofing -> selected, stamps selectionSubmittedAt, and notifies the single admin naming WHO submitted (the session), gallery, count, extras, and surcharge", async () => {
     // Task #94: `gallery.clientId` is gone — the admin notification now

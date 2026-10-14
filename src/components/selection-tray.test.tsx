@@ -990,3 +990,58 @@ describe("SelectionTray — by-person mode (task #204)", () => {
     expect(within(scrollContainer).getAllByText("Original").length).toBeGreaterThan(0);
   });
 });
+
+// Task #236 — slim collapsed row on mobile. jsdom applies no Tailwind, so
+// these pin the structural contract: the subtitle lives INSIDE the collapsible
+// region (native `hidden` when collapsed), never in the header row.
+describe("SelectionTray — compact chrome (task #236)", () => {
+  it("keeps the subtitle inside the collapsible region, not in the header row", () => {
+    renderTray({ picks: [pick()] });
+
+    const subtitle = screen.getByText("Se actualiza sola con lo que elijan los demás.");
+    const toggle = screen.getByRole("button", { name: "Ocultar" });
+    const region = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(region?.contains(subtitle)).toBe(true);
+    const headerRow = screen.getByRole("heading", { name: "Fotos elegidas" }).parentElement
+      ?.parentElement;
+    expect(headerRow?.contains(subtitle)).toBe(false);
+  });
+
+  it("collapsed: the subtitle is inside a native-hidden region, the heading and count stay visible", async () => {
+    const user = userEvent.setup();
+    renderTray({ picks: [pick()] });
+
+    await user.click(screen.getByRole("button", { name: "Ocultar" }));
+
+    const subtitle = screen.getByText("Se actualiza sola con lo que elijan los demás.");
+    expect(subtitle.closest("[hidden]")).not.toBeNull();
+    const heading = screen.getByRole("heading", { name: "Fotos elegidas" });
+    expect(heading.closest("[hidden]")).toBeNull();
+    expect(screen.getByText("1").closest("[hidden]")).toBeNull();
+  });
+
+  it("locked: the 'ya fue enviada' note is inside the region too", async () => {
+    const user = userEvent.setup();
+    renderTray({ picks: [pick()], isLocked: true });
+
+    await user.click(screen.getByRole("button", { name: "Ocultar" }));
+    expect(screen.getByText("La selección ya fue enviada.").closest("[hidden]")).not.toBeNull();
+  });
+
+  it("zero picks: the toggle and the empty-state paragraph are hidden below lg (nothing to fold)", () => {
+    renderTray({ picks: [] });
+
+    expect(screen.getByRole("button", { name: "Ocultar" }).className).toContain("max-lg:hidden");
+    expect(screen.getByText(/Todavía no eligieron ninguna foto/).className).toContain(
+      "max-lg:hidden",
+    );
+  });
+
+  it("with picks the toggle is offered at every width", () => {
+    renderTray({ picks: [pick()] });
+
+    expect(screen.getByRole("button", { name: "Ocultar" }).className).not.toContain(
+      "max-lg:hidden",
+    );
+  });
+});

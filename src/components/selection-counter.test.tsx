@@ -1,8 +1,9 @@
 // @vitest-environment jsdom
 import { afterEach, describe, expect, it } from "vitest";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { SelectionCounter } from "./selection-counter";
 import { computeQuota } from "@/lib/quota";
+import { formatCop } from "@/lib/format";
 
 // No `@/lib/format` mock needed: unlike `@/lib/galleries`, it has no
 // `server-only`/`@/lib/db` import for jsdom to choke on — see that module's
@@ -322,8 +323,173 @@ describe("SelectionCounter — volume tiers (task #231)", () => {
   it("a flat-price gallery renders no scale at all — the UI stays as it was", () => {
     render(<SelectionCounter quota={computeQuota(15, 0, SNAPSHOT)} allowsOriginalSelection />);
 
-    expect(screen.queryAllByRole("listitem")).toEqual([]);
+    // `hidden: true` so a scale that rendered inside the collapsed detail
+    // would still be found (role queries skip `hidden` subtrees by default).
+    expect(screen.queryAllByRole("listitem", { hidden: true })).toEqual([]);
     expect(screen.queryByText(/Precio por foto extra/)).toBeNull();
     expect(counterText()).toContain("extras 2 × $ 5.000 = $ 10.000");
+  });
+});
+
+// Task #236 — the mobile disclosure. jsdom applies no Tailwind, so `lg:` is
+// invisible here: these tests pin the DEFAULT (below-lg) state and the
+// markup contract (collapse class, aria wiring, live region placement).
+describe("SelectionCounter — compact disclosure (task #236)", () => {
+  const TIERED = {
+    includedPhotosSnapshot: 13,
+    extraPhotoPriceCopSnapshot: 15_000,
+    extraPhotoPriceTiersSnapshot: [
+      { minExtras: 1, priceCop: 15_000 },
+      { minExtras: 3, priceCop: 13_000 },
+    ],
+    originalPhotoPriceCopSnapshot: 2_000,
+  };
+
+  it("starts collapsed: toggle says 'Ver detalle', aria-expanded=false, detail region hidden", () => {
+    render(
+      <SelectionCounter quota={computeQuota(16, 0, TIERED)} allowsOriginalSelection collapsible />,
+    );
+
+    const toggle = screen.getByRole("button", { name: "Ver detalle" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    const region = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(region).not.toBeNull();
+    expect(region?.className.includes("max-lg:hidden")).toBe(true);
+    // NOT the native `hidden` attribute: Tailwind's preflight makes
+    // `[hidden]` display:none !important, which no `lg:` utility can beat, so
+    // the detail would vanish on desktop (found in the 1280px visual check).
+    expect(region?.hasAttribute("hidden")).toBe(false);
+    // In the DOM (so `lg:block` can show it) but out of the accessibility
+    // tree while collapsed.
+    expect(region?.textContent).toContain("Precio por foto extra");
+  });
+
+  it("toggling expands the detail and flips the label and aria-expanded back and forth", () => {
+    render(
+      <SelectionCounter quota={computeQuota(16, 0, TIERED)} allowsOriginalSelection collapsible />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver detalle" }));
+    const toggle = screen.getByRole("button", { name: "Ocultar detalle" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const region = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(region?.className.includes("max-lg:hidden")).toBe(false);
+    expect(screen.getAllByRole("listitem")).toHaveLength(2);
+    expect(screen.getByText(/Todas las fotos extra se cobran/)).toBeDefined();
+
+    fireEvent.click(toggle);
+    expect(screen.getByRole("button", { name: "Ver detalle" }).getAttribute("aria-expanded")).toBe(
+      "false",
+    );
+    expect(region?.className.includes("max-lg:hidden")).toBe(true);
+  });
+
+  it("keeps the headline in the live region, OUTSIDE the hidden detail, and the toggle outside the live region", () => {
+    render(
+      <SelectionCounter quota={computeQuota(16, 0, TIERED)} allowsOriginalSelection collapsible />,
+    );
+
+    const headline = screen.getByText(/incluidas 13/);
+    const live = headline.closest('[aria-live="polite"]');
+    expect(live).not.toBeNull();
+    expect(headline.closest(".max-lg\\:hidden")).toBeNull();
+    // The hidden detail IS inside the same live region (desktop announces it).
+    expect(live?.contains(document.querySelector(".max-lg\\:hidden"))).toBe(true);
+    // The toggle is not: its label flipping must not be announced.
+    expect(live?.contains(screen.getByRole("button", { name: "Ver detalle" }))).toBe(false);
+  });
+
+  it("shows the running extras amount next to the toggle only once there are extras, in its own live region", () => {
+    const { unmount } = render(
+      <SelectionCounter quota={computeQuota(10, 0, TIERED)} allowsOriginalSelection collapsible />,
+    );
+    const toggleRow = screen.getByRole("button", { name: "Ver detalle" }).parentElement;
+    expect(toggleRow?.textContent).not.toMatch(/extras/);
+    unmount();
+
+    render(
+      <SelectionCounter quota={computeQuota(16, 0, TIERED)} allowsOriginalSelection collapsible />,
+    );
+    // 3 extras at the 3+ tier: 3 × 13.000 = 39.000
+    const row = screen.getByRole("button", { name: "Ver detalle" }).parentElement;
+    expect(row?.textContent?.replace(/\s+/g, " ")).toContain("$ 39.000 en extras");
+    expect(row?.querySelector('[aria-live="polite"]')?.textContent).toContain("en extras");
+
+    // Expanded: the detail already states it, so the row stops repeating it.
+    fireEvent.click(screen.getByRole("button", { name: "Ver detalle" }));
+    expect(row?.textContent).not.toMatch(/extras/);
+  });
+
+  // The compact amount must never mislabel: with originals `surchargeCop` is
+  // the TOTAL of both tariffs (src/lib/quota.ts), not "extras". Fixtures use
+  // DISTINCT extras / originals / total amounts so a swapped field is visible.
+  describe("compact amount with originals (price correctness)", () => {
+    const compact = () =>
+      screen
+        .getByRole("button", { name: "Ver detalle" })
+        .parentElement?.textContent?.replace(/\s+/g, " ") ?? "";
+
+    it("originals > 0 and extras > 0: shows the TOTAL labelled 'en total', not extras or originals alone", () => {
+      const quota = computeQuota(15, 3, SNAPSHOT);
+      expect(quota.extrasSurchargeCop).toBeGreaterThan(0);
+      expect(quota.originalsSurchargeCop).toBeGreaterThan(0);
+      expect(
+        new Set([quota.extrasSurchargeCop, quota.originalsSurchargeCop, quota.surchargeCop]).size,
+      ).toBe(3);
+
+      render(<SelectionCounter quota={quota} allowsOriginalSelection collapsible />);
+
+      expect(compact()).toContain(`${formatCop(quota.surchargeCop)} en total`.replace(/\s+/g, " "));
+      expect(compact()).not.toContain("en extras");
+    });
+
+    it("0 extras but originals > 0: the amount does not disappear — it is the originals total", () => {
+      const quota = computeQuota(5, 2, SNAPSHOT);
+      expect(quota.extras).toBe(0);
+      expect(quota.surchargeCop).toBeGreaterThan(0);
+
+      render(<SelectionCounter quota={quota} allowsOriginalSelection collapsible />);
+
+      expect(compact()).toContain(`${formatCop(quota.surchargeCop)} en total`.replace(/\s+/g, " "));
+    });
+
+    it("no originals: shows extrasSurchargeCop labelled 'en extras'", () => {
+      const quota = computeQuota(15, 0, SNAPSHOT);
+      render(<SelectionCounter quota={quota} allowsOriginalSelection collapsible />);
+
+      expect(compact()).toContain(
+        `${formatCop(quota.extrasSurchargeCop)} en extras`.replace(/\s+/g, " "),
+      );
+    });
+
+    it("allowsOriginalSelection off with a stray originals count: still labelled as extras", () => {
+      const quota = computeQuota(15, 3, SNAPSHOT);
+      render(<SelectionCounter quota={quota} allowsOriginalSelection={false} collapsible />);
+
+      expect(compact()).toContain(
+        `${formatCop(quota.extrasSurchargeCop)} en extras`.replace(/\s+/g, " "),
+      );
+      expect(compact()).not.toContain("en total");
+    });
+  });
+});
+
+describe("SelectionCounter — not collapsible (the `selected` view, task #236)", () => {
+  it("shows the full detail with no toggle and no collapse class", () => {
+    const { container } = render(
+      <SelectionCounter
+        quota={computeQuota(16, 0, {
+          ...SNAPSHOT,
+          extraPhotoPriceTiersSnapshot: [{ minExtras: 1, priceCop: 5_000 }],
+        })}
+        allowsOriginalSelection
+      />,
+    );
+
+    expect(screen.queryByRole("button")).toBeNull();
+    expect(container.querySelector(".max-lg\\:hidden")).toBeNull();
+    expect(screen.getByText(/Precio por foto extra/)).toBeDefined();
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(screen.getByText(/no se cobra nada/)).toBeDefined();
   });
 });

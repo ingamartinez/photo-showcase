@@ -118,3 +118,30 @@ describe("sendSubmissionNotificationEmail", () => {
     ).rejects.toThrow(/network unreachable/);
   });
 });
+
+describe("submission email — volume tiers (task #231)", () => {
+  // 13 included + 3 extras on the scale: every extra pays the 3-4 tier's 13.000.
+  const TIERED_QUOTA = computeQuota(16, 0, {
+    includedPhotosSnapshot: 13,
+    extraPhotoPriceCopSnapshot: 15_000,
+    extraPhotoPriceTiersSnapshot: [
+      { minExtras: 1, priceCop: 15_000 },
+      { minExtras: 3, priceCop: 13_000 },
+    ],
+    originalPhotoPriceCopSnapshot: 2_000,
+  });
+
+  it("states the reached tier's unit price, never the flat snapshot, in both bodies", () => {
+    for (const render of [submissionNotificationEmailHtml, submissionNotificationEmailText]) {
+      const body = render({ ...PARAMS, quota: TIERED_QUOTA }).replace(/\s+/g, " ");
+      expect(body).toContain("Extras: 3 × $ 13.000 = $ 39.000");
+      expect(body).not.toContain("$ 15.000");
+    }
+  });
+
+  it("a flat-price gallery's email line is unchanged", () => {
+    for (const render of [submissionNotificationEmailHtml, submissionNotificationEmailText]) {
+      expect(render(PARAMS).replace(/\s+/g, " ")).toContain("Extras: 2 × $ 5.000 = $ 10.000");
+    }
+  });
+});

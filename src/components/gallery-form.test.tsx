@@ -328,4 +328,17 @@ describe("GalleryForm — price by tier (task #231)", () => {
 
     expect(JSON.parse(tiersField(container)!.value)[0]).toEqual({ minExtras: 1, priceCop: null });
   });
+
+  it("keeps what was typed in the flat extra price across toggling the scale on and off", async () => {
+    const user = userEvent.setup();
+    render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
+
+    await user.type(screen.getByLabelText("Precio foto extra, COP (opcional)"), "12000");
+    await user.click(screen.getByLabelText("Precio por escala"));
+    await user.click(screen.getByLabelText("Precio por escala"));
+
+    expect(screen.getByLabelText<HTMLInputElement>("Precio foto extra, COP (opcional)").value).toBe(
+      "12000",
+    );
+  });
 });

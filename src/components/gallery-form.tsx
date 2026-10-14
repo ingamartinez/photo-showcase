@@ -61,6 +61,11 @@ export function GalleryForm({
   // `extraPhotoPriceTiers` field carries the scale instead.
   const [tiersEnabled, setTiersEnabled] = useState(false);
   const [tierRows, setTierRows] = useState<TierRow[]>(DEFAULT_TIER_ROWS);
+  // The flat extra price unmounts while the scale is on (so it is not posted);
+  // mirroring what was typed into state and feeding it back through
+  // `defaultValue` keeps it across a toggle on/off. The input itself stays
+  // uncontrolled, preserving this form's existing post-submit reset behavior.
+  const [flatExtraPrice, setFlatExtraPrice] = useState("");
 
   // Narrowed to a boolean on purpose: `state` is a fresh object on every
   // action result, so depending on it directly would re-fire this on an error
@@ -234,6 +239,8 @@ export function GalleryForm({
             step={1}
             inputMode="numeric"
             placeholder="Vacío = precio del paquete"
+            defaultValue={flatExtraPrice}
+            onChange={(event) => setFlatExtraPrice(event.target.value)}
             aria-invalid={state.status === "error"}
             aria-describedby={state.status === "error" ? "gallery-form-error" : undefined}
             className={inputClass}

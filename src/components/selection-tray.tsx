@@ -445,7 +445,7 @@ export function SelectionTray({
   return (
     <section
       aria-label="Fotos elegidas"
-      className="border-bg-2 bg-bg/95 sticky top-0 z-30 mb-3 rounded-sm border px-3 py-2 backdrop-blur-md lg:mb-6 lg:p-4"
+      className="border-bg-2 bg-bg/95 sticky top-0 z-30 mb-3 rounded-sm border px-3 py-1.5 backdrop-blur-md lg:mb-6 lg:p-4"
       // Announced politely: a pick landing from ANOTHER session is a change
       // the client did not cause, which is precisely the case a screen reader
       // user would otherwise never learn about. `polite`, not `assertive` —

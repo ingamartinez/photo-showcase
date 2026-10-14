@@ -129,9 +129,6 @@ export function SelectionCounter({
       <div aria-live="polite">
         <p className="text-fg font-serif text-sm leading-snug lg:text-lg">
           incluidas {quota.includedPhotosSnapshot} · seleccionadas {quota.selected}
-          {quota.extras > 0 && (
-            <span className="lg:hidden"> · extras {formatCop(quota.surchargeCop)}</span>
-          )}
         </p>
         <div
           id={detailId}
@@ -177,15 +174,25 @@ export function SelectionCounter({
           )}
         </div>
       </div>
-      <button
-        type="button"
-        onClick={() => setDetailOpen((open) => !open)}
-        aria-expanded={detailOpen}
-        aria-controls={detailId}
-        className="text-accent focus-visible:ring-accent min-h-7 text-xs underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:outline-none lg:hidden"
-      >
-        {detailOpen ? "Ocultar detalle" : "Ver detalle"}
-      </button>
+      {/* Mobile-only second row: the running extras amount (own live region,
+          only while the detail is folded and there ARE extras — the expanded
+          detail already says it) next to the disclosure toggle. */}
+      <div className="flex items-baseline gap-3 lg:hidden">
+        {/* Always mounted (live regions announce changes, not insertions);
+            `empty:hidden` drops its gap while there is nothing to say. */}
+        <span aria-live="polite" className="text-fg text-xs empty:hidden">
+          {quota.extras > 0 && !detailOpen && `${formatCop(quota.surchargeCop)} en extras`}
+        </span>
+        <button
+          type="button"
+          onClick={() => setDetailOpen((open) => !open)}
+          aria-expanded={detailOpen}
+          aria-controls={detailId}
+          className="text-accent focus-visible:ring-accent min-h-7 text-xs underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:outline-none"
+        >
+          {detailOpen ? "Ocultar detalle" : "Ver detalle"}
+        </button>
+      </div>
     </div>
   );
 }

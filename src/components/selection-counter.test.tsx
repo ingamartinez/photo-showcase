@@ -398,17 +398,22 @@ describe("SelectionCounter — compact disclosure (task #236)", () => {
     expect(live?.contains(screen.getByRole("button", { name: "Ver detalle" }))).toBe(false);
   });
 
-  it("shows the extras amount in the headline only once there are extras", () => {
+  it("shows the running extras amount next to the toggle only once there are extras, in its own live region", () => {
     const { unmount } = render(
       <SelectionCounter quota={computeQuota(10, 0, TIERED)} allowsOriginalSelection />,
     );
-    expect(screen.getByText(/incluidas 13/).textContent).not.toMatch(/extras/);
+    const toggleRow = screen.getByRole("button", { name: "Ver detalle" }).parentElement;
+    expect(toggleRow?.textContent).not.toMatch(/extras/);
     unmount();
 
     render(<SelectionCounter quota={computeQuota(16, 0, TIERED)} allowsOriginalSelection />);
     // 3 extras at the 3+ tier: 3 × 13.000 = 39.000
-    expect(screen.getByText(/incluidas 13/).textContent?.replace(/\s+/g, " ")).toContain(
-      "extras $ 39.000",
-    );
+    const row = screen.getByRole("button", { name: "Ver detalle" }).parentElement;
+    expect(row?.textContent?.replace(/\s+/g, " ")).toContain("$ 39.000 en extras");
+    expect(row?.querySelector('[aria-live="polite"]')?.textContent).toContain("en extras");
+
+    // Expanded: the detail already states it, so the row stops repeating it.
+    fireEvent.click(screen.getByRole("button", { name: "Ver detalle" }));
+    expect(row?.textContent).not.toMatch(/extras/);
   });
 });

@@ -34,13 +34,13 @@ const GLOBALS = path.resolve(__dirname, "./globals.css");
 const BUTTON = path.resolve(__dirname, "../components/ui/button.tsx");
 const DROPDOWN_MENU = path.resolve(__dirname, "../components/ui/dropdown-menu.tsx");
 
-// The two ink-on-brass values, pinned BY VALUE rather than only by plumbing.
+// The two ink-on-accent values, pinned BY VALUE rather than only by plumbing.
 // An earlier revision of this file asserted only that `text-accent-foreground`
 // resolved to `var(--accent-foreground)` and that the alias was declared —
 // which stayed green when the alias was mutated back to `var(--fg)`, i.e.
-// through the exact 2.02:1-on-brass defect this slice exists to remove. A
-// chain that is correctly connected to the wrong colour is still wrong.
-const INK = "#14100a";
+// through the exact low-contrast-on-amber defect this slice exists to remove.
+// A chain that is correctly connected to the wrong colour is still wrong.
+const INK = "#1a1512";
 
 // Every semantic colour name referenced by the primitives installed in this
 // slice (button, table, dialog, dropdown-menu, badge, input, label), paired
@@ -213,6 +213,22 @@ function rootDeclarations(): string {
   return blocks.join("\n");
 }
 
+/** WCAG 2.x relative luminance of a `#rrggbb` colour. */
+function relativeLuminance(hex: string): number {
+  const n = hex.replace("#", "");
+  const channels = [0, 2, 4].map((i) => {
+    const c = parseInt(n.slice(i, i + 2), 16) / 255;
+    return c <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+  });
+  return 0.2126 * channels[0] + 0.7152 * channels[1] + 0.0722 * channels[2];
+}
+
+/** WCAG 2.x contrast ratio between two `#rrggbb` colours. */
+function contrastRatio(a: string, b: string): number {
+  const [hi, lo] = [relativeLuminance(a), relativeLuminance(b)].sort((x, y) => y - x);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
 describe("shadcn semantic colour tokens compile to real rules", () => {
   it.each(SEMANTIC_COLORS)("emits .bg-%s resolving to %s", (name, resolvesTo) => {
     const body = ruleBody(`bg-${name}`);
@@ -236,11 +252,11 @@ describe("shadcn semantic colour tokens compile to real rules", () => {
     }
   });
 
-  it("pins the ink-on-brass values, not just the plumbing that carries them", () => {
+  it("pins the ink-on-accent values, not just the plumbing that carries them", () => {
     // --accent-foreground and --primary-foreground are the only two colours in
     // the mapping whose whole reason to exist is a contrast ratio, so they are
-    // asserted by VALUE. #14100a on #c8a15a is 7.85:1; the `var(--fg)` these
-    // used to fall back to is 2.02:1 on the same brass. Nothing else in this
+    // asserted by VALUE. #1a1512 on #e8a54b is 8.55:1; the `var(--fg)` these
+    // used to fall back to is ~2:1 on the same amber. Nothing else in this
     // file can tell those two apart.
     const root = rootDeclarations();
 
@@ -445,17 +461,16 @@ describe("app-surface aliases stay references, so the scope can still reach them
   });
 });
 
-describe("brass is a deliberate fill, never a focus or hover wash", () => {
-  // design/system/dashboard.html:82-91 — "STATUS PALETTE — semantic,
-  // deliberately NOT the brand accent". Brass fills exactly five things in the
-  // mock (:192, :223, :372, :437, :443) and every hover/focus surface is
-  // `var(--app-raised)` instead (:222, :527, :528). shadcn's dropdown-menu
-  // ships the opposite default because it means something else by "accent",
-  // so src/components/ui/dropdown-menu.tsx re-points those classes by hand.
+describe("the accent is a deliberate fill, never a focus or hover wash", () => {
+  // An accent fill is an "act now" signal. Every hover/focus surface is
+  // `var(--app-raised)` instead, and even the current nav item does not fill
+  // with the accent — only its icon does. shadcn's dropdown-menu ships the
+  // opposite default because it means something else by "accent", so
+  // src/components/ui/dropdown-menu.tsx re-points those classes by hand.
   //
   // THIS IS THE REGRESSION THIS TEST EXISTS FOR: `shadcn add dropdown-menu
   // --overwrite` silently restores the generated classes, and the result is a
-  // brass focus row at 2.02:1 that nothing else in the suite would notice.
+  // low-contrast accent focus row that nothing else in the suite would notice.
   const source = () => readFileSync(DROPDOWN_MENU, "utf8");
 
   // Class strings only — the file's header comment quotes the generated
@@ -528,11 +543,33 @@ describe("the rest of globals.css survives the shadcn wiring", () => {
   it("keeps the brand :root block intact", () => {
     const root = rootDeclarations();
 
-    expect(root).toMatch(/--bg:\s*#0b0b0f/);
-    expect(root).toMatch(/--bg-sunken:\s*#070709/);
-    expect(root).toMatch(/(^|[^-\w])--accent:\s*#c8a15a/m);
-    expect(root).toMatch(/--accent-2:\s*#e0be7e/);
-    expect(root).toMatch(/(^|[^-\w])--fg:\s*#eceaf2/m);
+    expect(root).toMatch(/--bg:\s*#1a1512/);
+    expect(root).toMatch(/--bg-sunken:\s*#120e0c/);
+    expect(root).toMatch(/(^|[^-\w])--accent:\s*#e8a54b/m);
+    expect(root).toMatch(/--accent-2:\s*#f0b35e/);
+    expect(root).toMatch(/(^|[^-\w])--fg:\s*#f0ebe3/m);
+    expect(root).toMatch(/--fg-mute:\s*#8f8474/);
+    expect(root).toMatch(/--line:\s*#3a454b/);
+    expect(root).toMatch(/--canvas:\s*#cfc3ae/);
+    expect(root).toMatch(/--steel:\s*#6b7a82/);
+    expect(root).toMatch(/--danger:\s*#d9695a/);
+    // The retired world's two signature values must not come back.
+    expect(root).not.toMatch(/#0b0b0f/i);
+    expect(root).not.toMatch(/#c8a15a/i);
+  });
+
+  it("keeps the mute tone above the 4.5:1 body-text floor on the ground", () => {
+    // Pinned as a computed ratio, not a hex: the whole reason `--fg-mute` has
+    // a floor is that secondary text still has to be readable. #8f8474 on
+    // #1a1512 measures 4.93:1. The formula is the WCAG 2.x relative-luminance
+    // one, written out here so a future palette edit can re-check itself
+    // without trusting this comment's arithmetic.
+    const ratio = contrastRatio("#8f8474", "#1a1512");
+
+    expect(ratio).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio("#b3a898", "#1a1512")).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(INK, "#e8a54b")).toBeGreaterThanOrEqual(4.5);
+    expect(contrastRatio(INK, "#d9695a")).toBeGreaterThanOrEqual(4.5);
   });
 
   it("keeps task #128's app-surface token layer intact", () => {
@@ -542,6 +579,7 @@ describe("the rest of globals.css survives the shadcn wiring", () => {
     expect(layer).toMatch(/--app-radius:\s*8px/);
     expect(layer).toMatch(/--app-ground:\s*var\(--bg-sunken\)/);
     expect(layer).toMatch(/--app-row-h:\s*52px/);
+    expect(layer).toMatch(/--app-danger:\s*var\(--danger\)/);
   });
 
   it("keeps the public site's own blocks intact", () => {
@@ -550,7 +588,33 @@ describe("the rest of globals.css survives the shadcn wiring", () => {
     expect(css).toContain(".col-tile");
     expect(css).toContain(".work figcaption");
     expect(css).toContain(".wrap");
-    expect(css).toContain(".label");
+  });
+
+  it("ships no kicker/eyebrow utility", () => {
+    // A heading carries its own weight. The tracked small-caps eyebrow
+    // utility is deleted outright, and this asserts the compiled stylesheet
+    // does not grow one back — including from a comment that names it, which
+    // is how an earlier draft of globals.css kept a dead utility alive.
+    expect(css).not.toContain(".label");
+  });
+
+  it("themes the browser surfaces from the palette", () => {
+    // Selection, caret, scrollbars, focus rings, underline offset and
+    // tabular figures. The parts nobody draws still carry the design.
+    expect(css).toContain("::selection");
+    expect(css).toContain("caret-color: var(--accent)");
+    expect(css).toContain("scrollbar-color: var(--line-2) var(--bg-sunken)");
+    expect(css).toContain("scrollbar-width: thin");
+    expect(css).toContain("::-webkit-scrollbar");
+    expect(css).toContain("text-underline-offset: 0.18em");
+    expect(css).toContain("font-variant-numeric: tabular-nums");
+    expect(css).toMatch(/:focus-visible\s*\{[^}]*outline: 2px solid var\(--accent\)/);
+  });
+
+  it("caps display type at 6rem and holds the body measure in range", () => {
+    // Craft floor, made mechanical: display max 6rem, body measure 65-75ch.
+    expect(css).toMatch(/--type-display:[^;]*\b6rem\b/);
+    expect(css).toContain("max-width: 70ch");
   });
 
   it("does not let the app surface try to re-skin --radius-*, which cannot work", () => {

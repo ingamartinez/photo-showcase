@@ -74,24 +74,27 @@
   Alejo Frames — one brand, two CSS surfaces, three reference mocks
   (epics #125 and #140).
 
-  This file used to describe a single world: the public portfolio and the
-  client gallery, both editorial — cool-biased near-black ground, a single
-  tungsten-brass accent used sparingly, high-contrast serif display, built to
-  seduce a visitor. See design/system/home.html for that reference mock.
-  That description was never wrong for those two, and it stays true of them.
+  THIS FILE USED TO CARRY THE PREVIOUS PALETTE AND TYPE. It described a cool
+  near-black ground with a gold accent and a different serif/sans/mono trio.
+  The token block below is the replacement: warm dark ground, one saturated
+  amber accent, cool steel structure lines, a light neutral for labels, and a
+  Bodoni/Archivo/Sometype type trio (display / UI / data). Everything above
+  the "APP SURFACE" block still describes the editorial world — it is simply
+  a different world now.
 
-  It was, however, silently being read as a description of the WHOLE app,
-  and epic #125 exists because `/dashboard` was built out of that same
-  system verbatim — the marketing chrome, the serif display headline, the
-  mono eyebrow — even though a work tool and a portfolio are opposite
-  products (that epic's own body has the full argument). `/dashboard` now
-  has its OWN surface: same brand tokens (`--bg`, `--fg`, `--accent`, the
-  Fraunces wordmark), but a sans working density, its own radii and raised
-  surfaces, and a sidebar/tab-bar shell instead of the `.wrap` centred
-  column. See design/system/dashboard.html for ITS reference mock, and the
-  "APP SURFACE" block further down in this file for the mechanism
-  (`[data-surface="app"]`) that scopes it so it cannot leak into the
-  editorial world above.
+  That description was never wrong for the public portfolio and the client
+  gallery, and it stays true of them. It was, however, silently being read as
+  a description of the WHOLE app, and epic #125 exists because `/dashboard`
+  was built out of that same system verbatim — the marketing chrome, the
+  serif display headline, the tracked small-caps label — even though a work
+  tool and a portfolio are opposite products (that epic's own body has the
+  full argument). `/dashboard` now has its OWN surface: same brand tokens
+  (`--bg`, `--fg`, `--accent`, the display-face wordmark), but a sans working
+  density, its own radii and raised surfaces, and a sidebar/tab-bar shell
+  instead of the `.wrap` centred column. See design/system/dashboard.html for
+  ITS reference mock, and the "APP SURFACE" block further down in this file
+  for the mechanism (`[data-surface="app"]`) that scopes it so it cannot leak
+  into the editorial world above.
 
   Epic #140 closed the third leg of the same argument for the CLIENT
   GALLERY (`/galleries/**`) rather than merging it into either existing
@@ -137,6 +140,12 @@
   --color-line-2: var(--line-2);
   --color-accent: var(--accent);
   --color-accent-2: var(--accent-2);
+  --color-accent-deep: var(--accent-deep);
+  --color-canvas: var(--canvas);
+  --color-canvas-dim: var(--canvas-dim);
+  --color-steel: var(--steel);
+  --color-danger: var(--danger);
+  --color-ink: var(--ink);
 
   /* shadcn/Radix semantic tokens, wired to the brand (task #127, the slice
      that finally installed the primitives this block was written ahead of).
@@ -174,33 +183,28 @@
   --color-popover-foreground: var(--popover-foreground);
   --color-destructive: var(--destructive);
 
-  /* NOT `--color-accent`. That name is already taken, twelve lines up, by the
-     BRAND accent — the tungsten brass this whole design system is built
-     around — and shadcn means something completely different by it: the
+  /* NOT `--color-accent`. That name is already taken, a dozen lines up, by the
+     BRAND accent, and shadcn means something completely different by it: the
      subtle neutral wash behind a focused menu item. Same utility name, one
      runtime variable; they cannot both exist, and the brand meaning wins
      because ~30 shipped components read `bg-accent` / `text-accent` and
      src/app/dashboard/galleries/page.chrome.test.tsx:173-179 asserts on
      `.bg-accent.rounded-full` directly (task #75's status dot).
 
-     THIS TOKEN IS FOR A DELIBERATE BRASS FILL ONLY — NEVER FOR A FOCUS OR
-     HOVER STATE. design/system/dashboard.html:82-91 states the rule in its
-     own words ("STATUS PALETTE — semantic, deliberately NOT the brand
-     accent"), and brass appears as a fill in exactly five places across the
-     whole mock: the unread-count dot (:192), the primary button (:223), the
-     current-step dot (:372), the selected-asset outline (:437) and badge
-     (:443). Every hover and focus surface in the mock is `var(--app-raised)`
-     instead — :222, :527, :528 — and even the current nav item does not fill
-     with brass, only its icon does (:186). `components.json`'s `menuAccent:
-     "subtle"` says the same thing.
+     THIS TOKEN IS FOR A DELIBERATE ACCENT FILL ONLY — NEVER FOR A FOCUS OR
+     HOVER STATE. An accent fill is a "act now" signal (the unread dot, the
+     primary button, the current-step dot, the selected-asset outline and
+     badge); every hover and focus surface is `var(--app-raised)` instead, and
+     even the current nav item does not fill with the accent — only its icon
+     does. `components.json`'s `menuAccent: "subtle"` says the same thing.
 
      So this exists for the case where a call site CHOOSES `bg-accent` (that
      unread dot, that selected-asset badge) and needs legible ink on top:
-     #14100a on #c8a15a measures 7.85:1. Without it the text would inherit
-     `--fg`, which is 2.02:1 on brass — the defect this token was added to
+     #1a1512 on #e8a54b measures 8.55:1. Without it the text would inherit
+     `--fg`, which is ~2:1 on amber — the defect this token was added to
      close. It is kept rather than deleted even though no primitive references
-     it today, because `bg-accent` IS in the mock and the next component that
-     needs ink on brass should find the token already correct instead of
+     it today, because `bg-accent` IS a real call site and the next component
+     that needs ink on amber should find the token already correct instead of
      silently rendering at 2:1.
 
      A shadcn component that arrives using `bg-accent` as a FOCUS wash (most
@@ -208,15 +212,18 @@
      in the generated file itself, the way src/components/ui/dropdown-menu.tsx
      documents. It cannot be fixed from the call site: tailwind-merge drops
      `focus:bg-accent` but keeps `focus:text-accent-foreground`, which lands
-     #14100a ink on #131318 at 1.02:1 — invisible, and worse than the brass it
-     was meant to replace. And it must NOT be fixed by re-pointing `--accent`:
+     the ink on the page ground at ~1:1 — invisible, and worse than the accent
+     it was meant to replace. And it must NOT be fixed by re-pointing `--accent`:
      that variable is the public site's, and re-pointing it inside
      `[data-surface="app"]` would silently recolour #75's dot. */
   --color-accent-foreground: var(--accent-foreground);
 
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
-  --font-serif: var(--font-fraunces);
+  /* Type roles. Display serif is the `font-serif` role; `--font-sans` is the
+     UI workhorse; `--font-mono` is reserved for code, data and measurement.
+     Each right-hand side is the next/font variable set in src/app/layout.tsx. */
+  --font-sans: var(--font-archivo);
+  --font-mono: var(--font-sometype-mono);
+  --font-serif: var(--font-display);
 
   --radius-sm: 2px;
   --radius-md: 3px;
@@ -287,19 +294,52 @@
   --text-app-lead: var(--app-text-lead);
   --text-app-head: var(--app-text-head);
   --text-app-title: var(--app-text-title);
+
+  /* Editorial type scale aliases. Every right-hand side is a `var()` for the
+     same reason the colour aliases are: `@theme inline` then compiles
+     `.text-display { font-size: var(--type-display) }`, so the scale stays a
+     reference the browser resolves — inspectable, and overridable per scope
+     later. A literal right-hand side would be inlined and the property
+     dropped from the output, which is also what makes the craft-floor cap
+     untestable. */
+  --text-display: var(--type-display);
+  --text-title: var(--type-title);
+  --text-head: var(--type-head);
+  --text-sub: var(--type-sub);
+  --text-lead: var(--type-lead);
 }
 
 :root {
-  --bg: #0b0b0f;
-  --bg-2: #131318;
-  --bg-sunken: #070709;
-  --fg: #eceaf2;
-  --fg-dim: #9a97a6;
-  --fg-mute: #63616e;
-  --line: rgba(236, 234, 242, 0.1);
-  --line-2: rgba(236, 234, 242, 0.16);
-  --accent: #c8a15a;
-  --accent-2: #e0be7e;
+  /* Palette. One saturated accent (amber); every other value is a neutral
+     warm dark, a cool structure line, or a light label tone. */
+  --bg: #1a1512;
+  --bg-2: #221c18;
+  --bg-sunken: #120e0c;
+  --fg: #f0ebe3;
+  --fg-dim: #b3a898;
+  --fg-mute: #8f8474;
+  --line: #3a454b;
+  --line-2: #2a3236;
+  --accent: #e8a54b;
+  --accent-2: #f0b35e;
+  --accent-deep: #c47a2d;
+  --canvas: #cfc3ae;
+  --canvas-dim: #9a8f7c;
+  --steel: #6b7a82;
+  --danger: #d9695a;
+  /* Ink for text that sits ON a saturated fill (accent or danger). Same value
+     as the ground, so one dark serves both. */
+  --ink: #1a1512;
+
+  /* Editorial type scale — obvious steps, one display size capped at 6rem.
+     Fluid only where a heading must survive a phone and a desk; the small
+     end of the scale is fixed. `--type-lead` is the reading size for running
+     copy and pairs with the 70ch measure further down. */
+  --type-display: clamp(2.75rem, 8vw, 6rem);
+  --type-title: clamp(2.125rem, 5.5vw, 4.25rem);
+  --type-head: clamp(1.625rem, 3.6vw, 2.75rem);
+  --type-sub: clamp(1.25rem, 2.2vw, 1.75rem);
+  --type-lead: clamp(0.9375rem, 1.5vw, 1.125rem);
 
   --maxw: 1280px;
   --gutter: clamp(20px, 5vw, 72px);
@@ -322,7 +362,7 @@
   --muted: var(--bg-2);
   --muted-foreground: var(--fg-dim);
   --primary: var(--accent);
-  --primary-foreground: #14100a;
+  --primary-foreground: #1a1512;
   --secondary: var(--bg-2);
   --secondary-foreground: var(--fg);
   /* Popovers, dropdown panels and dialog surfaces. --bg-2 rather than --bg so
@@ -330,17 +370,13 @@
      public site's ground is --bg, the app surface's is --bg-sunken. */
   --popover: var(--bg-2);
   --popover-foreground: var(--fg);
-  /* Ink on a deliberate brass FILL, never on a focus wash. 7.85:1 on
-     #c8a15a. See the --color-accent-foreground comment for the full rule. */
-  --accent-foreground: #14100a;
-  /* THE ONE VALUE NOT DERIVED FROM THE BRAND. The palette has no red, and it
-     needs one: the primitives reference `destructive` from their BASE classes
-     (`aria-invalid:border-destructive` on Input, Button and Badge), so
-     leaving it unmapped does not merely lose a red button variant — it makes
-     invalid-field styling silently do nothing on every form. This is
-     shadcn's own `neutral` base colour dark-mode destructive, taken verbatim
-     rather than invented, so a future `shadcn add` has nothing to argue with. */
-  --destructive: oklch(0.704 0.191 22.216);
+  /* Ink on a deliberate accent FILL, never on a focus wash. 8.55:1 on
+     #e8a54b. See the --color-accent-foreground comment for the full rule. */
+  --accent-foreground: #1a1512;
+  /* Semantic red for destructive and invalid states. Now a real palette
+     value rather than shadcn's stock neutral-base red, so a danger button
+     and an invalid field share one hue. */
+  --destructive: var(--danger);
 }
 
 /* ===================================================================
@@ -390,7 +426,7 @@
   /* Sans typographic scale, replacing the per-component `text-[15px]` /
      `clamp()` one-offs each dashboard screen currently invents on its
      own (#130-#134 each had a slightly different one). Reuses the
-     existing --font-sans (Geist Sans) — no new font stack, per the
+     existing --font-sans (the UI workhorse) — no new font stack, per the
      epic's "brand tokens stay" rule. */
   --app-text-micro: 11px;
   --app-text-meta: 12px;
@@ -481,17 +517,9 @@
   --app-sidebar-w: 236px;
 
   /* Destructive intent, for the one control in the shell that has it: the
-     sign-out button's hover (design/system/dashboard.html:170, --danger).
-     Scoped here with the --app- prefix rather than added to :root, because
-     nothing on the public site has a destructive action to colour.
-
-     This is NOT the mock's status ramp (--st-draft/proofing/selected/
-     delivered/archived, dashboard.html:82-96). That ramp describes gallery
-     STATE and belongs to the slices that ship badges and rows; it is
-     deliberately not smuggled in here by a shell that has no state to
-     show. If those tokens land later they should follow this same naming,
-     as --app-st-*. */
-  --app-danger: #c4756b;
+     sign-out button's hover. Scoped here with the --app- prefix rather than
+     added to :root as a second red, so danger stays one hue app-wide. */
+  --app-danger: var(--danger);
 }
 
 /* >=600px — small tablet / large phone landscape. Rows gain room ahead
@@ -528,14 +556,20 @@
 @layer base {
   * {
     border-color: var(--line);
+    scrollbar-color: var(--line-2) var(--bg-sunken);
+    scrollbar-width: thin;
+  }
+  html {
+    text-underline-offset: 0.18em;
+    caret-color: var(--accent);
   }
   body {
     background-color: var(--bg);
     color: var(--fg);
   }
   ::selection {
-    background: color-mix(in oklab, var(--accent) 40%, transparent);
-    color: var(--fg);
+    background: var(--accent);
+    color: var(--ink);
   }
   :focus-visible {
     outline: 2px solid var(--accent);
@@ -543,25 +577,98 @@
   }
 }
 
-/* Uppercase technical label — eyebrows, kickers, small-caps metadata. */
-.label {
+/* Scrollbars — the standard properties above cover Firefox and the scrollbar
+   spec; these cover the WebKit/Blink engines, which need pseudo-elements. */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-sunken);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--line-2);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--line);
+}
+
+/* Running-copy measure. Body text is held at 65-75ch; 70ch is the midpoint. */
+.measure {
+  max-width: 70ch;
+}
+
+/* Numeric readouts — prices, counts, quota, dimensions. Mono is reserved for
+   code and data; this pairs it with tabular figures so digits stay aligned
+   when values change. */
+.num {
   font-family: var(--font-mono);
-  font-size: 0.6875rem;
-  letter-spacing: 0.22em;
-  text-transform: uppercase;
+  font-variant-numeric: tabular-nums;
 }
 
 /* Hero scrim — layered gradients that seat the headline over the image. */
 .hero-scrim {
   background:
     linear-gradient(to top, var(--bg) 4%, transparent 46%),
-    linear-gradient(
-      to right,
-      rgba(11, 11, 15, 0.82) 0%,
-      rgba(11, 11, 15, 0.3) 46%,
-      transparent 75%
-    ),
-    radial-gradient(120% 90% at 80% 10%, transparent 40%, rgba(7, 7, 9, 0.55) 100%);
+    linear-gradient(to right, rgb(26 21 18 / 0.82) 0%, rgb(26 21 18 / 0.3) 46%, transparent 75%),
+    radial-gradient(120% 90% at 80% 10%, transparent 40%, rgb(18 14 12 / 0.55) 100%);
+}
+
+/* The one authored entrance on the public site: the mirror coming into focus.
+   Starts already visible (0.65) and eases to sharp — exponential ease-out, so
+   the photograph is never a blank frame waiting on motion. Everywhere else
+   stays still. */
+@media (prefers-reduced-motion: no-preference) {
+  .mirror-focus {
+    animation: mirror-focus 1.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+}
+
+@keyframes mirror-focus {
+  from {
+    opacity: 0.65;
+    filter: blur(10px);
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+  }
+}
+
+/* The gallery's one authored moment: picking a photo pulls it into focus,
+   the way a face resolves in a mirror. Plays once on selection; deselection
+   is instant and quiet. */
+@media (prefers-reduced-motion: no-preference) {
+  .selection-reveal {
+    animation: selection-reveal 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+}
+
+@keyframes selection-reveal {
+  0% {
+    filter: blur(5px) brightness(1.14) saturate(0.9);
+  }
+  100% {
+    filter: blur(0) brightness(1.06) saturate(1.04);
+  }
+}
+
+/* Delivery is the walk: one theatrical announce, then stillness. */
+@media (prefers-reduced-motion: no-preference) {
+  .delivery-announce {
+    animation: delivery-announce 0.9s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+}
+
+@keyframes delivery-announce {
+  0% {
+    opacity: 0;
+    letter-spacing: 0.14em;
+  }
+  100% {
+    opacity: 1;
+    letter-spacing: 0;
+  }
 }
 
 /* Colecciones — asymmetric editorial grid. */
@@ -599,7 +706,7 @@
   content: "";
   position: absolute;
   inset: 0;
-  background: linear-gradient(to top, rgba(7, 7, 9, 0.85) 6%, transparent 55%);
+  background: linear-gradient(to top, rgb(26 21 18 / 0.85) 6%, transparent 55%);
 }
 @media (max-width: 900px) {
   .collections {
@@ -641,10 +748,10 @@
   position: absolute;
   inset: auto 0 0 0;
   padding: 40px 16px 14px;
-  font-family: var(--font-mono);
-  font-size: 11px;
+  font-family: var(--font-sans);
+  font-size: 12px;
   letter-spacing: 0.04em;
-  background: linear-gradient(to top, rgba(7, 7, 9, 0.8), transparent);
+  background: linear-gradient(to top, rgb(26 21 18 / 0.8), transparent);
   opacity: 0;
   transform: translateY(8px);
   transition:
@@ -663,22 +770,5 @@
 @media (max-width: 560px) {
   .work {
     columns: 1;
-  }
-}
-
-/* Scroll-reveal: content is visible by default (SSR / no-JS safe). The reveal
-   animation is pure progressive enhancement — only the [data-reveal] hook, once
-   JS marks the document ready, hides then eases content in. */
-@media (prefers-reduced-motion: no-preference) {
-  html.js [data-reveal] {
-    opacity: 0;
-    transform: translateY(26px);
-    transition:
-      opacity 0.9s ease,
-      transform 0.9s cubic-bezier(0.2, 0.7, 0.2, 1);
-  }
-  html.js [data-reveal].is-in {
-    opacity: 1;
-    transform: none;
   }
 }

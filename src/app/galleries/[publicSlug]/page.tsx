@@ -259,6 +259,9 @@ export default async function ClientGalleryPage({
         initialPicks={initialPicks}
         initialViewerLock={lockSnapshot.viewerLock}
         initialLockedPickerIds={lockSnapshot.lockedPickerIds}
+        // The submit route refuses admins (`admin_cannot_submit`), so the
+        // previewing photographer gets a note instead of a dead button.
+        isAdminPreview={isAdminPreviewingClientGallery(session)}
         // Display only — the tray renders this session's own picks as "Vos".
         // Nothing is authorized by it: every route <ProofGrid> calls resolves
         // the acting session server-side.

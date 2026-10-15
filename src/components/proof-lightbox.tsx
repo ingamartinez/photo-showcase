@@ -30,6 +30,7 @@ export function ProofLightbox({
   selectionKindById,
   onSetSelectionKind,
   allowsOriginalSelection,
+  lockedAssetIds,
 }: {
   assets: ProofAsset[];
   // Keyed by asset id. <ProofGrid> owns this state and shares it with the
@@ -63,13 +64,21 @@ export function ProofLightbox({
   /** Task #214 — `false` (the default for every gallery) hides this screen's
    * type control entirely, regardless of `isSelected`/`isLocked`. */
   allowsOriginalSelection: boolean;
+  /** Epic #239 — assets whose pick belongs to a person who already submitted:
+   * read-only for everyone else, per photo (the viewer's own `isLocked` is the
+   * whole-screen version). */
+  lockedAssetIds?: ReadonlySet<string>;
 }) {
   const asset = assets[index];
   // Defensive only: <ProofGrid> never passes an out-of-range index.
   if (!asset) return null;
 
   const isSelected = asset.isSelected;
-  const isPickDisabled = pendingAssetIds.has(asset.id) || isLocked;
+  // Epic #239 — frozen for THIS photo even when the viewer is still free: it
+  // is a pick of somebody who already submitted. Navigating to another photo
+  // re-derives this, so the same open lightbox mixes frozen and live photos.
+  const isAssetLocked = isLocked || (lockedAssetIds?.has(asset.id) ?? false);
+  const isPickDisabled = pendingAssetIds.has(asset.id) || isAssetLocked;
   // Task #206 — only meaningful while `isSelected`.
   const selectionKind = selectionKindById[asset.id] ?? "edited";
 
@@ -125,7 +134,7 @@ export function ProofLightbox({
               unlocked, and only when the gallery allows originals; same gate
               as <ProofTile>'s own. Two explicit buttons rather than a flip,
               mirroring the PATCH route's body shape. */}
-          {isSelected && !isLocked && allowsOriginalSelection && (
+          {isSelected && !isAssetLocked && allowsOriginalSelection && (
             <div
               role="group"
               aria-label={`Tipo de foto: ${asset.originalFilename}`}

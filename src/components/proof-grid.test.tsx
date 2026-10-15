@@ -728,6 +728,8 @@ describe("ProofGrid", () => {
             status: "submitted",
             quota: submittedQuota,
             submittedAt: "2026-07-28T12:00:00.000Z",
+            // Single-client gallery: this submission closes the gallery too.
+            gallerySelected: true,
           }),
         ),
       );
@@ -742,8 +744,16 @@ describe("ProofGrid", () => {
         // whether the submit button starts enabled) comes from
         // `initialPicks` alone; without a matching pick here `quota.selected`
         // would be 0 and the button below would be disabled from the start.
+        // Attributed to the viewer: the submit button is gated on the
+        // VIEWER's own picks (the route refuses an empty selection per
+        // person), so an unattributed pick would leave it disabled.
         initialPicks: [
-          { assetId: "a1", selectedAt: null, pickedBy: null, selectionKind: "edited" },
+          {
+            assetId: "a1",
+            selectedAt: null,
+            pickedBy: { id: "client-a", label: "Ana" },
+            selectionKind: "edited",
+          },
         ],
       });
 

@@ -47,23 +47,29 @@ import type { QuotaResult } from "@/lib/quota";
 
 export type SubmitSelectionOutcome = {
   quota: QuotaResult;
+  /** The CALLER's own submission time (epic #239). */
   submittedAt: string | null;
+  /** Whether this submission left every active client locked, i.e. the
+   * gallery itself moved to `selected`. `false` while others are still
+   * choosing. */
+  gallerySelected: boolean;
 };
 
-function confirmationMessage(quota: QuotaResult, allowsOriginalSelection: boolean): string {
+function confirmationMessage(
+  quota: QuotaResult,
+  ownPickCount: number,
+  allowsOriginalSelection: boolean,
+): string {
   const lines = [
-    `¿Cerrar la selección de ${quota.selected} foto${quota.selected === 1 ? "" : "s"}?`,
-    // Task #147: the shared-board framing (schema.ts:272-273 — one selection,
-    // not one per client), restated here rather than assumed. "Tu selección"
-    // was accurate before task #94 let a gallery have several attached
-    // clients; on a shared board it understates what this button actually
-    // does — it closes the board for everyone still picking, not just the
-    // person tapping it. Same warning content the mock's own `enviar` sheet
-    // states out loud (design/system/client.html:858-863), without naming
-    // anyone or claiming presence data this app does not have (no viewer
-    // list — selection-tray.tsx's own "NO PRESENCE" stance).
-    "La selección se cierra para todos los que la están eligiendo con vos — si alguien más está eligiendo en este momento, no va a poder seguir.",
+    // Epic #239: submitting closes only THIS person's selection. The earlier
+    // (task #147) wording warned that the whole shared board closed for
+    // everyone; that stopped being true when the lock became per person.
+    `¿Cerrar tu selección (${ownPickCount} foto${ownPickCount === 1 ? "" : "s"} tuya${ownPickCount === 1 ? "" : "s"})?`,
+    "Solo se cierra tu selección: las demás personas de la galería pueden seguir eligiendo las suyas.",
     "Una vez enviada, no se puede modificar sola — si hace falta cambiarla, hay que escribirle a tu fotógrafo para que la reabra.",
+    // The quota and the extras are NOT per person: they are computed over the
+    // whole gallery's picks, and the lines below say so.
+    "Ojo: la cuota incluida y los extras se cuentan sobre las fotos de toda la galería, no solo las tuyas.",
   ];
 
   // Task #206 — one line per tariff that actually applies, built off
@@ -114,38 +120,81 @@ export function SubmitSelectionPanel({
   submittedAt,
   onSubmitted,
   allowsOriginalSelection,
+  isGalleryLocked = isLocked,
+  lockedByAdmin = false,
+  ownPickCount = quota.selected,
+  isAdminPreview = false,
 }: {
   galleryId: string;
   quota: QuotaResult;
-  // Whether the gallery is already past `proofing` (submitted once already,
-  // or further along) — <ProofGrid> derives this from the gallery's own
-  // status and flips it locally the moment a submission here succeeds, with
-  // no page reload. The SERVER independently refuses a submit attempt on a
-  // locked gallery regardless of what this prop says (this component's own
-  // header comment).
+  // Whether THIS viewer can no longer change anything: the gallery is past
+  // `proofing`, OR (epic #239) this person submitted / was locked while the
+  // gallery is still `proofing` for the others. <ProofGrid> derives it from
+  // the server's snapshot and flips it locally the moment a submission here
+  // succeeds, with no page reload. The SERVER independently refuses a submit
+  // attempt on a locked gallery or client regardless of what this prop says
+  // (this component's own header comment).
   isLocked: boolean;
   submittedAt: string | null;
   onSubmitted: (outcome: SubmitSelectionOutcome) => void;
   /** Task #214 — threaded through to `confirmationMessage` below, same gate
    * <SelectionCounter> applies. */
   allowsOriginalSelection: boolean;
+  /** Epic #239 — the gallery itself is past `proofing` (everybody is done).
+   * Defaults to `isLocked`, the pre-#239 meaning. When `isLocked` but this is
+   * `false`, only THIS person is locked and the others are still choosing, so
+   * the copy must not claim the photographer has the group's selection. */
+  isGalleryLocked?: boolean;
+  /** Epic #239 — the photographer locked this person (never submitted). */
+  lockedByAdmin?: boolean;
+  /** Epic #239 — how many photos THIS person picked (the submit route refuses
+   * an empty selection per person, so this gates the button and fills the
+   * confirmation). Defaults to the gallery-wide count. */
+  ownPickCount?: number;
+  /** Epic #239 — the photographer previewing the client page. The submit
+   * route refuses admins (`admin_cannot_submit`), so no button is offered. */
+  isAdminPreview?: boolean;
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
   if (isLocked) {
+    if (isGalleryLocked) {
+      return (
+        <p className="text-fg-mute text-sm" role="status">
+          Selección enviada
+          {submittedAt ? ` el ${new Date(submittedAt).toLocaleDateString("es-CO")}` : ""} — tu
+          fotógrafo ya tiene acceso a esta selección.
+        </p>
+      );
+    }
+    if (lockedByAdmin) {
+      return (
+        <p className="text-fg-mute text-sm" role="status">
+          Tu fotógrafo cerró tu selección, así que ya no se puede cambiar desde aquí.
+        </p>
+      );
+    }
     return (
       <p className="text-fg-mute text-sm" role="status">
-        Selección enviada
+        Enviaste tu selección
         {submittedAt ? ` el ${new Date(submittedAt).toLocaleDateString("es-CO")}` : ""} — tu
-        fotógrafo ya tiene acceso a esta selección.
+        fotógrafo ya tiene tus fotos. Los demás todavía están eligiendo.
+      </p>
+    );
+  }
+
+  if (isAdminPreview) {
+    return (
+      <p className="text-fg-mute text-sm" role="status">
+        Vista previa: el envío de la selección es solo para clientes.
       </p>
     );
   }
 
   async function handleSubmit() {
     if (pending) return;
-    if (!window.confirm(confirmationMessage(quota, allowsOriginalSelection))) return;
+    if (!window.confirm(confirmationMessage(quota, ownPickCount, allowsOriginalSelection))) return;
 
     setPending(true);
     setError(null);
@@ -159,6 +208,8 @@ export function SubmitSelectionPanel({
           setError("Elige al menos una foto antes de enviar.");
         } else if (body?.error === "gallery_not_submittable") {
           setError("Esta galería no está lista para recibir una selección todavía.");
+        } else if (body?.error === "admin_cannot_submit") {
+          setError("El envío de la selección es solo para clientes.");
         } else {
           setError("No se pudo enviar la selección. Prueba de nuevo en un momento.");
         }
@@ -168,8 +219,15 @@ export function SubmitSelectionPanel({
         status: "submitted" | "already_submitted";
         quota: QuotaResult;
         submittedAt: string | null;
+        gallerySelected?: boolean;
       };
-      onSubmitted({ quota: body.quota, submittedAt: body.submittedAt });
+      onSubmitted({
+        quota: body.quota,
+        submittedAt: body.submittedAt,
+        // A response from before epic #239 has no such field: that gallery-wide
+        // lock is what "submitted" meant then.
+        gallerySelected: body.gallerySelected ?? true,
+      });
     } catch {
       setError("No se pudo conectar.");
     } finally {
@@ -194,7 +252,7 @@ export function SubmitSelectionPanel({
       <button
         type="button"
         onClick={() => void handleSubmit()}
-        disabled={pending || quota.selected === 0}
+        disabled={pending || ownPickCount === 0}
         className="border-accent bg-accent hover:border-accent-2 hover:bg-accent-2 text-ink inline-flex min-h-11 items-center justify-center rounded-[3px] border px-3 text-sm font-semibold tracking-[0.02em] whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-12 lg:px-5"
       >
         {pending ? "Enviando…" : "Enviar selección"}

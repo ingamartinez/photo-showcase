@@ -132,10 +132,10 @@ describe("SubmitSelectionPanel", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  // Task #147: the shared-board framing (schema.ts:272-273's one-selection,
-  // not one-per-client model) — this button closes the board for every
-  // client attached to the gallery, not only the one tapping it.
-  it("states the selection closes for everyone still picking, and cannot be reopened by the client alone", async () => {
+  // Epic #239 replaced task #147's "closes the board for everyone" framing:
+  // the lock is per person now, so the dialog must say it closes only YOUR
+  // selection (with YOUR count) while the quota lines stay gallery-wide.
+  it("states it closes only YOUR selection with YOUR count, that the quota is group-wide, and that the client cannot reopen alone", async () => {
     const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
     vi.stubGlobal("fetch", vi.fn());
     const user = userEvent.setup();
@@ -144,6 +144,7 @@ describe("SubmitSelectionPanel", () => {
       <SubmitSelectionPanel
         galleryId="g1"
         quota={computeQuota(15, 0, SNAPSHOT)}
+        ownPickCount={9}
         isLocked={false}
         submittedAt={null}
         onSubmitted={vi.fn()}
@@ -154,7 +155,11 @@ describe("SubmitSelectionPanel", () => {
     await user.click(screen.getByRole("button", { name: "Enviar selección" }));
 
     const message = confirmSpy.mock.calls[0]?.[0] as string;
-    expect(message).toMatch(/se cierra para todos/);
+    // 9 own picks out of a group-wide 15: the headline counts the viewer's.
+    expect(message).toMatch(/¿Cerrar tu selección \(9 fotos tuyas\)\?/);
+    expect(message).toMatch(/Solo se cierra tu selección/);
+    expect(message).not.toMatch(/para todos/);
+    expect(message).toMatch(/toda la galería, no solo las tuyas/);
     expect(message).toMatch(/no se puede modificar sola/);
   });
 
@@ -167,6 +172,8 @@ describe("SubmitSelectionPanel", () => {
           status: "submitted",
           quota: submittedQuota,
           submittedAt: "2026-07-28T12:00:00.000Z",
+          // A group gallery: this submission did NOT close the gallery.
+          gallerySelected: false,
         }),
       ),
     );
@@ -194,6 +201,7 @@ describe("SubmitSelectionPanel", () => {
       expect(onSubmitted).toHaveBeenCalledWith({
         quota: submittedQuota,
         submittedAt: "2026-07-28T12:00:00.000Z",
+        gallerySelected: false,
       });
     });
   });
@@ -429,5 +437,61 @@ describe("SubmitSelectionPanel — volume tiers (task #231)", () => {
     const message = await confirmationFor(computeQuota(15, 0, SNAPSHOT));
 
     expect(message).toMatch(/Extras: 2 × \$ 5\.000 = \$ 10\.000\./);
+  });
+});
+
+// Epic #239 (task #241): the locked line depends on WHOSE lock it is.
+describe("SubmitSelectionPanel locked states (epic #239)", () => {
+  const base = {
+    galleryId: "g1",
+    quota: computeQuota(15, 0, SNAPSHOT),
+    submittedAt: "2026-10-15T13:00:00.000Z",
+    onSubmitted: vi.fn(),
+    allowsOriginalSelection: true,
+  };
+
+  it("viewer locked, gallery still open: their own selection was sent, the others still choose", () => {
+    render(<SubmitSelectionPanel {...base} isLocked={true} isGalleryLocked={false} />);
+
+    expect(screen.getByText(/Enviaste tu selección/)).toBeDefined();
+    expect(screen.getByText(/Los demás todavía están eligiendo/)).toBeDefined();
+    expect(screen.queryByText(/tiene acceso a esta selección/)).toBeNull();
+  });
+
+  it("locked by the photographer: says so and claims no submission", () => {
+    render(
+      <SubmitSelectionPanel
+        {...base}
+        submittedAt={null}
+        isLocked={true}
+        isGalleryLocked={false}
+        lockedByAdmin={true}
+      />,
+    );
+
+    expect(screen.getByText(/Tu fotógrafo cerró tu selección/)).toBeDefined();
+    expect(screen.queryByText(/Enviaste/)).toBeNull();
+  });
+
+  it("gallery locked: the unchanged gallery-wide line", () => {
+    render(<SubmitSelectionPanel {...base} isLocked={true} isGalleryLocked={true} />);
+
+    expect(screen.getByText(/tiene acceso a esta selección/)).toBeDefined();
+  });
+
+  it("shows the server's admin refusal as a sentence, not the generic error", async () => {
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() => Promise.resolve(jsonResponse(409, { error: "admin_cannot_submit" }))),
+    );
+    const user = userEvent.setup();
+
+    render(<SubmitSelectionPanel {...base} submittedAt={null} isLocked={false} />);
+    await user.click(screen.getByRole("button", { name: "Enviar selección" }));
+
+    expect(
+      await screen.findByText("El envío de la selección es solo para clientes."),
+    ).toBeDefined();
   });
 });

@@ -33,6 +33,13 @@ vi.mock("next/cache", () => ({
   revalidatePath: (...args: unknown[]) => revalidatePathMock(...args),
 }));
 
+// Epic #239: attaching can reopen a `selected` gallery, which must signal
+// every open client tab.
+const notifySelectionChangedMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/selection-events", () => ({
+  notifySelectionChanged: (...args: [string]) => notifySelectionChangedMock(...args),
+}));
+
 // A minimal, genuinely-behaving double for `@/lib/db` — real filtering via a
 // leaf-condition parser understanding `eq()`, `isNull()`, and `inArray()`
 // (this action's own reads/writes use all three). Duplicated per this
@@ -154,7 +161,14 @@ vi.mock("@/lib/db", async () => {
         }
         const rows = Array.isArray(rowOrRows) ? rowOrRows : [rowOrRows];
         galleryClientRows.push(
-          ...rows.map((row) => ({ createdAt: new Date(), removedAt: null, ...row })),
+          ...rows.map((row) => ({
+            createdAt: new Date(),
+            removedAt: null,
+            // Column defaults, as in Postgres (epic #239).
+            selectionLockedAt: null,
+            selectionSubmittedAt: null,
+            ...row,
+          })),
         );
         return Promise.resolve();
       },
@@ -162,22 +176,29 @@ vi.mock("@/lib/db", async () => {
     update: (table: unknown) => ({
       set: (patch: Row) => ({
         where: (condition: unknown) => {
-          if (table !== galleryClients) throw new Error("fake db: unsupported table in update()");
-          if (faults.failNextUpdate) {
+          if (table !== galleryClients && table !== galleries) {
+            throw new Error("fake db: unsupported table in update()");
+          }
+          if (table === galleryClients && faults.failNextUpdate) {
             faults.failNextUpdate = false;
             return Promise.reject(new Error("simulated failure clearing removed_at"));
           }
-          const matches = galleryClientRows.filter((row) =>
-            matchesRow(row, galleryClients as unknown as Record<string, unknown>, condition),
+          const matches = rowsFor(table).filter((row) =>
+            matchesRow(row, tableShapeFor(table), condition),
           );
           for (const row of matches) Object.assign(row, patch);
-          return Promise.resolve();
+          const promise = Promise.resolve() as Promise<void> & {
+            returning: (columns?: Record<string, unknown>) => Promise<Row[]>;
+          };
+          // Epic #239: `settleGalleryLockStatus` reads back the CAS result.
+          promise.returning = async () => matches.map((row) => ({ ...row }));
+          return promise;
         },
       }),
     }),
   };
 
-  return {
+  const fake = {
     db: {
       ...writeOps,
       // Genuinely rolls back, rather than just invoking the callback: the
@@ -189,11 +210,14 @@ vi.mock("@/lib/db", async () => {
       // unproven. A throw propagates out, exactly like a real ROLLBACK.
       transaction: async (fn: (tx: typeof writeOps) => Promise<unknown>) => {
         const snapshot = galleryClientRows.map((row) => ({ ...row }));
+        const gallerySnapshot = galleryRows.map((row) => ({ ...row }));
         try {
-          return await fn(writeOps);
+          return await fn({ ...writeOps, select: fake.db.select });
         } catch (error) {
           galleryClientRows.length = 0;
           galleryClientRows.push(...snapshot);
+          galleryRows.length = 0;
+          galleryRows.push(...gallerySnapshot);
           throw error;
         }
       },
@@ -203,17 +227,24 @@ vi.mock("@/lib/db", async () => {
             const rows = rowsFor(table).filter((row) =>
               matchesRow(row, tableShapeFor(table), condition),
             );
+            // Projects by COLUMN (alias -> the column's js key), like the real
+            // driver; `?? null` because a real row never yields `undefined`.
             const project = (row: Row) => {
               if (!columns) return { ...row };
               const projected: Row = {};
-              for (const key of Object.keys(columns)) projected[key] = row[key];
+              for (const [alias, column] of Object.entries(columns)) {
+                const jsKey = jsKeyFor(tableShapeFor(table), (column as { name: string }).name);
+                projected[alias] = row[jsKey] ?? null;
+              }
               return projected;
             };
             const projected = rows.map(project);
             const promise = Promise.resolve(projected) as Promise<Row[]> & {
               limit: (n: number) => Promise<Row[]>;
+              for: (mode: string) => Promise<Row[]>;
             };
             promise.limit = async (n: number) => projected.slice(0, n);
+            promise.for = async () => projected;
             return promise;
           },
         }),
@@ -223,6 +254,7 @@ vi.mock("@/lib/db", async () => {
       __faults: faults,
     },
   };
+  return fake;
 });
 
 async function seededDb() {
@@ -289,6 +321,8 @@ beforeEach(async () => {
   authMock.mockReset();
   signInMock.mockReset();
   revalidatePathMock.mockReset();
+  notifySelectionChangedMock.mockReset();
+  notifySelectionChangedMock.mockResolvedValue(undefined);
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
 
   const db = await seededDb();
@@ -698,5 +732,114 @@ describe("attachGalleryClients revalidation", () => {
 
     expect(revalidatePathMock).toHaveBeenCalledWith(`/dashboard/galleries/${GALLERY_ID}`);
     expect(revalidatePathMock).toHaveBeenCalledWith("/dashboard/galleries");
+  });
+});
+
+// Epic #239 — `selected` <=> every ACTIVE client is locked, so attaching must
+// re-settle the gallery and a re-attached client must come back OPEN.
+describe("attachGalleryClients — per-client lock state (epic #239)", () => {
+  const LOCKED_AT = new Date("2026-10-15T10:00:00.000Z");
+  const OTHER_GALLERY_ID = "22222222-2222-4222-8222-222222222222";
+
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+    signInMock.mockResolvedValue(
+      "http://localhost/api/auth/verify-request?provider=gallery-access",
+    );
+  });
+
+  function membership(galleryId: string, userId: string, overrides: Row = {}): Row {
+    return {
+      galleryId,
+      userId,
+      removedAt: null,
+      selectionLockedAt: null,
+      selectionSubmittedAt: null,
+      createdAt: new Date("2026-07-02"),
+      ...overrides,
+    };
+  }
+  const locked = { selectionLockedAt: LOCKED_AT, selectionSubmittedAt: LOCKED_AT };
+
+  async function attach(clientIds: string[]) {
+    const { attachGalleryClients } = await import("./actions");
+    return attachGalleryClients(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID, clientIds }),
+    );
+  }
+
+  it("clears BOTH lock columns of a re-attached client — a stale lock from their old stay must not carry over", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.push(
+      membership(GALLERY_ID, CLIENT_A, { removedAt: new Date("2026-09-01"), ...locked }),
+      membership(GALLERY_ID, CLIENT_B),
+    );
+
+    await attach([CLIENT_A]);
+
+    expect(
+      db.__rows.galleryClients.find((r) => r.galleryId === GALLERY_ID && r.userId === CLIENT_A),
+    ).toMatchObject({ removedAt: null, selectionLockedAt: null, selectionSubmittedAt: null });
+  });
+
+  it("does not touch the same user's membership in ANOTHER gallery", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.push(
+      membership(GALLERY_ID, CLIENT_A, { removedAt: new Date("2026-09-01"), ...locked }),
+      membership(OTHER_GALLERY_ID, CLIENT_A, locked),
+    );
+
+    await attach([CLIENT_A]);
+
+    expect(db.__rows.galleryClients.find((r) => r.galleryId === OTHER_GALLERY_ID)).toMatchObject({
+      selectionLockedAt: LOCKED_AT,
+      selectionSubmittedAt: LOCKED_AT,
+    });
+  });
+
+  it("reopens a SELECTED gallery to proofing when a brand-new (open) client is attached, and signals the tabs", async () => {
+    const db = await seededDb();
+    db.__rows.galleries[0]!.status = "selected";
+    db.__rows.galleryClients.push(membership(GALLERY_ID, CLIENT_B, locked));
+
+    await attach([CLIENT_A]);
+
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+    expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_ID);
+    expect(revalidatePathMock).toHaveBeenCalledWith("/galleries/abc123");
+  });
+
+  it("reopens a SELECTED gallery when a previously removed (formerly locked) client is re-attached", async () => {
+    const db = await seededDb();
+    db.__rows.galleries[0]!.status = "selected";
+    db.__rows.galleryClients.push(
+      membership(GALLERY_ID, CLIENT_B, locked),
+      membership(GALLERY_ID, CLIENT_A, { removedAt: new Date("2026-09-01"), ...locked }),
+    );
+
+    await attach([CLIENT_A]);
+
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+  });
+
+  it("leaves a proofing gallery in proofing and signals nothing", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.push(membership(GALLERY_ID, CLIENT_B, locked));
+
+    await attach([CLIENT_A]);
+
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
+  });
+
+  it("never reopens a DELIVERED gallery by attaching someone", async () => {
+    const db = await seededDb();
+    db.__rows.galleries[0]!.status = "delivered";
+    db.__rows.galleryClients.push(membership(GALLERY_ID, CLIENT_B, locked));
+
+    await attach([CLIENT_A]);
+
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "delivered" });
   });
 });

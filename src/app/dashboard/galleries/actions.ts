@@ -1713,8 +1713,17 @@ export async function attachGalleryClients(
   // still make `neverAttachedIds` stale. Atomicity of the two writes and
   // isolation from a concurrent reader are different problems; only the
   // first one is solved here.
+  //
+  // Epic #239 — `selected` means EVERY active client is locked, so attaching
+  // someone changes that fact. A re-attached client returns OPEN (both lock
+  // columns cleared — a stale lock from their previous stay must not carry
+  // over), a brand-new row is open by default, and then the gallery is
+  // re-settled under the gallery row lock: a new open client on a `selected`
+  // gallery reopens it to `proofing`. `delivered`/`archived` are left alone.
+  let lockTransition: Awaited<ReturnType<typeof settleGalleryLockStatus>> = null;
   if (neverAttachedIds.length > 0 || removedIds.length > 0) {
     await db.transaction(async (tx) => {
+      await lockGalleryRow(tx, gallery.id);
       if (neverAttachedIds.length > 0) {
         await tx
           .insert(galleryClients)
@@ -1723,7 +1732,7 @@ export async function attachGalleryClients(
       if (removedIds.length > 0) {
         await tx
           .update(galleryClients)
-          .set({ removedAt: null })
+          .set({ removedAt: null, selectionLockedAt: null, selectionSubmittedAt: null })
           .where(
             and(
               eq(galleryClients.galleryId, gallery.id),
@@ -1731,7 +1740,15 @@ export async function attachGalleryClients(
             ),
           );
       }
+      lockTransition = await settleGalleryLockStatus(tx, gallery.id);
     });
+  }
+
+  if (lockTransition !== null) {
+    void notifySelectionChanged(gallery.id).catch(() => {
+      // Swallowed — the 30s fallback poll is the backstop.
+    });
+    revalidatePath(`/galleries/${gallery.publicSlug}`);
   }
 
   revalidatePath(`/dashboard/galleries/${gallery.id}`);

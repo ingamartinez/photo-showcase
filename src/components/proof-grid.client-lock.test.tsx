@@ -358,6 +358,25 @@ describe("ProofGrid — per-person lock (epic #239, task #241)", () => {
       expect(disabledTiles()).toEqual([3]);
     });
 
+    it("relabels a person 'envió' -> 'cerrada' with no reload when a snapshot says the photographer closed them", async () => {
+      vi.stubGlobal(
+        "fetch",
+        vi.fn(() =>
+          Promise.resolve(
+            jsonResponse(200, snapshotBody({ lockedPickerIds: [BETO.id], submittedPickerIds: [] })),
+          ),
+        ),
+      );
+
+      renderGrid({ initialLockedPickerIds: [BETO.id], initialSubmittedPickerIds: [BETO.id] });
+      expect(screen.getByText("envió")).toBeDefined();
+
+      await pollTick();
+
+      expect(screen.getByText("cerrada")).toBeDefined();
+      expect(screen.queryByText("envió")).toBeNull();
+    });
+
     it("locks the viewer when the snapshot carries their lock (an admin locked them)", async () => {
       vi.stubGlobal(
         "fetch",

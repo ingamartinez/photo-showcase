@@ -18,6 +18,55 @@ export function clientSelectionState(lock: {
   return lock.submittedAt !== null ? "submitted" : "locked";
 }
 
+const SUBMITTED_ON = new Intl.DateTimeFormat("es-CO", {
+  day: "2-digit",
+  month: "2-digit",
+  year: "numeric",
+  timeZone: "America/Bogota",
+});
+
+/** "dd/mm/yyyy" in the studio's timezone — formatted on the SERVER and handed
+ * to the row as a string, so server and client renders cannot disagree. */
+export function formatSubmittedOn(date: Date): string {
+  return SUBMITTED_ON.format(date);
+}
+
+/** The dashboard's wording for each state (Spanish, user-facing). */
+export function clientSelectionStateLabel(
+  state: ClientSelectionState,
+  submittedOn: string | null,
+): string {
+  if (state === "open") return "Eligiendo";
+  if (state === "submitted") return submittedOn ? `Envió el ${submittedOn}` : "Envió su selección";
+  return "Bloqueado por vos";
+}
+
+export type ClientSelectionView = {
+  state: ClientSelectionState;
+  pickCount: number;
+  /** "dd/mm/yyyy"; only set for `submitted`. */
+  submittedOn: string | null;
+};
+
+/** What one dashboard row renders, from the raw per-client lock columns. */
+export function toClientSelectionView(input: {
+  lockedAt: Date | null;
+  submittedAt: Date | null;
+  pickCount: number;
+}): ClientSelectionView {
+  const state = clientSelectionState(input);
+  return {
+    state,
+    pickCount: input.pickCount,
+    submittedOn:
+      state === "submitted" && input.submittedAt ? formatSubmittedOn(input.submittedAt) : null,
+  };
+}
+
+export function clientPickCountLabel(count: number): string {
+  return count === 1 ? "1 foto elegida" : `${count} fotos elegidas`;
+}
+
 /** The admin per-client actions only make sense while picking is live:
  * `proofing` (open) or `selected` (everyone locked). */
 export function isClientLockActionableStatus(status: Gallery["status"]): boolean {

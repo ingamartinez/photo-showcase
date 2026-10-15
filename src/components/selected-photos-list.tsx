@@ -40,6 +40,9 @@ import { compareByFilenameNatural } from "@/lib/natural-sort";
 
 export type SelectedPhotoListItem = {
   id: string;
+  /** `assets.selected_by` — who picked it (epic #239). Optional: callers that
+   * cannot attribute picks never get the per-person filter. */
+  selectedBy?: string | null;
   originalFilename: string;
   selectionKind: "edited" | "original";
 };
@@ -61,8 +64,23 @@ const GROUP_LABELS: Record<SelectedPhotoListItem["selectionKind"], string> = {
  * picks yet has nothing to list, and an empty collapsible would just be dead
  * chrome on a page that already reads "Seleccionadas: 0" a few lines up.
  */
-export function SelectedPhotosList({ items }: { items: SelectedPhotoListItem[] }) {
-  if (items.length === 0) return null;
+export function SelectedPhotosList({
+  items: allItems,
+  frozenPickerIds = [],
+}: {
+  items: SelectedPhotoListItem[];
+  /** Active clients whose selection is locked (they submitted, or the admin
+   * locked them) — their picks will not change, so the photographer can start
+   * editing them. Epic #239 (#242). */
+  frozenPickerIds?: string[];
+}) {
+  const [onlyFrozen, setOnlyFrozen] = useState(false);
+  if (allItems.length === 0) return null;
+
+  const frozen = new Set(frozenPickerIds);
+  const items = onlyFrozen
+    ? allItems.filter((item) => item.selectedBy != null && frozen.has(item.selectedBy))
+    : allItems;
 
   const edited = items
     .filter((item) => item.selectionKind === "edited")
@@ -84,6 +102,16 @@ export function SelectedPhotosList({ items }: { items: SelectedPhotoListItem[] }
       <summary className="text-fg cursor-pointer text-sm font-medium">
         Fotos seleccionadas ({items.length})
       </summary>
+      {frozen.size > 0 && (
+        <label className="text-fg mt-4 flex min-h-11 items-center gap-2 text-sm lg:min-h-6">
+          <input
+            type="checkbox"
+            checked={onlyFrozen}
+            onChange={(event) => setOnlyFrozen(event.target.checked)}
+          />
+          Solo de quienes ya enviaron o quedaron bloqueados
+        </label>
+      )}
       <div className="mt-4 flex flex-col gap-6">
         {isMixed ? (
           <>

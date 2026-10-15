@@ -2197,8 +2197,6 @@ const galleryClientSelectionSchema = z.object({
   clientId: z.string().trim().min(1, "Cliente inválido."),
 });
 
-type ClientSelectionTx = Parameters<Parameters<typeof db.transaction>[0]>[0];
-
 type ClientSelectionTxResult =
   { ok: false; message: string } | { ok: true; gallery: Gallery; transition: LockTransition };
 

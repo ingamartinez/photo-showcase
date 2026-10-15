@@ -24,6 +24,7 @@ const getGalleryDetailMock = vi.fn<() => Promise<GalleryDetail | null>>();
 // Task #73's own read — mocked here too (this module is mocked wholesale,
 // not via `importActual`, so leaving this out would resolve to `undefined`
 // and the page's own `await getGalleryUnlockAudit(...)` call would throw).
+const getGalleryClientSelectionsMock = vi.fn();
 const getGalleryUnlockAuditMock = vi.fn<
   () => Promise<{
     unlockedAt: Date | null;
@@ -34,6 +35,7 @@ const getGalleryUnlockAuditMock = vi.fn<
 vi.mock("@/lib/galleries", () => ({
   getGalleryDetail: () => getGalleryDetailMock(),
   getGalleryUnlockAudit: () => getGalleryUnlockAuditMock(),
+  getGalleryClientSelections: () => getGalleryClientSelectionsMock(),
   formatGalleryStatus: (status: string) => {
     const labels: Record<string, string> = {
       draft: "Borrador",
@@ -161,6 +163,9 @@ vi.mock("@/app/dashboard/galleries/actions", () => ({
   updateGalleryTerms: (...args: unknown[]) => updateGalleryTermsMock(...args),
   updateSelectionTrayMode: (...args: unknown[]) => updateSelectionTrayModeMock(...args),
   updateAllowsOriginalSelection: (...args: unknown[]) => updateAllowsOriginalSelectionMock(...args),
+  lockGalleryClientSelection: vi.fn(),
+  unlockGalleryClientSelection: vi.fn(),
+  removeGalleryClientPicks: vi.fn(),
 }));
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
@@ -200,6 +205,8 @@ beforeEach(() => {
   } as Session);
   getGalleryDetailMock.mockReset();
   getGalleryUnlockAuditMock.mockReset();
+  getGalleryClientSelectionsMock.mockReset();
+  getGalleryClientSelectionsMock.mockResolvedValue({ clients: [], pickOwnerByAssetId: {} });
   getGalleryUnlockAuditMock.mockResolvedValue({
     unlockedAt: null,
     unlockedByEmail: null,
@@ -296,6 +303,53 @@ describe("GalleryDetailPage chrome", () => {
     expect(anaLine).not.toBe(betoLine);
     expect(anaLine.tagName).toBe("P");
     expect(betoLine.tagName).toBe("P");
+  });
+
+  // Epic #239 (#242): each client row shows ITS OWN count and state, taken
+  // from the per-client lock columns — three clients, three different states.
+  it("shows each client's own pick count and state (eligiendo / envió / bloqueado)", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        status: "proofing",
+        clients: [
+          { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+          { id: "u2", name: "Beto Gómez", email: "beto@example.com" },
+          { id: "u3", name: "Caro Ruiz", email: "caro@example.com" },
+        ],
+      }),
+    );
+    const sent = new Date("2026-10-12T15:00:00Z");
+    getGalleryClientSelectionsMock.mockResolvedValue({
+      clients: [
+        { userId: "u1", lockedAt: null, submittedAt: null, pickCount: 3 },
+        { userId: "u2", lockedAt: sent, submittedAt: sent, pickCount: 1 },
+        { userId: "u3", lockedAt: sent, submittedAt: null, pickCount: 0 },
+      ],
+      pickOwnerByAssetId: {},
+    });
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+
+    expect(screen.getByText("3 fotos elegidas · Eligiendo")).toBeDefined();
+    expect(screen.getByText("1 foto elegida · Envió el 12/10/2026")).toBeDefined();
+    expect(screen.getByText("0 fotos elegidas · Bloqueado por vos")).toBeDefined();
+  });
+
+  it("does not show the per-client panel on a draft gallery", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        status: "draft",
+        clients: [{ id: "u1", name: "Ana Pérez", email: "ana@example.com" }],
+      }),
+    );
+    getGalleryClientSelectionsMock.mockResolvedValue({
+      clients: [{ userId: "u1", lockedAt: null, submittedAt: null, pickCount: 0 }],
+      pickOwnerByAssetId: {},
+    });
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+
+    expect(screen.queryByText(/Eligiendo/)).toBeNull();
   });
 
   // The headline rule this epic repeats everywhere: the terms shown come off

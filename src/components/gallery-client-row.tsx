@@ -57,6 +57,8 @@ import {
   type ResendGalleryAccessEmailState,
 } from "@/app/dashboard/galleries/actions";
 import type { Gallery } from "@/lib/db/schema";
+import { GalleryClientSelection } from "@/components/gallery-client-selection";
+import type { ClientSelectionView } from "@/lib/client-selection-state";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -83,12 +85,16 @@ export function GalleryClientRow({
   status,
   removable,
   resendable,
+  selection,
 }: {
   galleryId: string;
   client: { id: string; name: string | null; email: string };
   status: Gallery["status"];
   removable: boolean;
   resendable: boolean;
+  /** Epic #239 (#242): this person's pick count and lock state. Omitted = the
+   * panel is not rendered (draft galleries). */
+  selection?: ClientSelectionView;
 }) {
   const [removeState, removeFormAction, removePending] = useActionState(
     removeGalleryClient,
@@ -166,6 +172,15 @@ export function GalleryClientRow({
           </DropdownMenu>
         )}
       </div>
+
+      {selection && (
+        <GalleryClientSelection
+          galleryId={galleryId}
+          clientId={client.id}
+          galleryStatus={status}
+          selection={selection}
+        />
+      )}
 
       {/* No visible submit control — see this file's header comment on why
           the menu item above triggers this via a ref instead of a native

@@ -17,7 +17,8 @@ export function UnlockSelectionPanel({ galleryId }: { galleryId: string }) {
   if (state.status === "unlocked") {
     return (
       <p role="status" className="text-accent-2 text-sm">
-        Selección desbloqueada — el cliente puede volver a elegir, y le avisamos por correo.
+        Selección desbloqueada — todos los clientes pueden volver a elegir, y les avisamos por
+        correo.
       </p>
     );
   }
@@ -37,6 +38,10 @@ export function UnlockSelectionPanel({ galleryId }: { galleryId: string }) {
 
   return (
     <form action={formAction} className="flex w-full max-w-xs flex-col items-end gap-2">
+      <p className="text-fg-mute w-full text-left text-xs">
+        Reabre la selección de TODAS las personas. Para reabrir a una sola, usá “Desbloquear” en su
+        fila.
+      </p>
       {/* Task #133: no `.label` (globals.css's mono, uppercase,
           0.22em-tracked eyebrow style) survives under /dashboard — epic
           #125's own done-when. Plain text instead. */}

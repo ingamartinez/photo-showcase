@@ -116,7 +116,8 @@ export type FakeDb = {
   transaction: <T>(fn: (tx: FakeDb) => Promise<T>) => Promise<T>;
   /** Test-only handle on the backing rows, keyed by the table object. */
   __tables: Map<unknown, Row[]>;
-  /** Every `for("update")` row lock requested, in order — lets a suite assert
+  /** Every select (`select`), row lock (`for:update`, replacing its select) and
+   * write (`update:<n>`), in order — lets a suite assert
    * the gallery row was locked before anything else in a transaction. */
   __log: string[];
 };
@@ -138,13 +139,18 @@ export function createFakeDb(tables: unknown[]): FakeDb {
           const found = rowsFor(table)
             .filter((row) => matches(row, table as Table, condition))
             .map((row) => project(row, table as Table, columns));
+          // Every select is logged, so a suite can prove ORDER (e.g. that a
+          // row lock precedes any other read). A `.for(mode)` call — made
+          // synchronously, right after `where` — turns this very entry into
+          // `for:<mode>`, so a locking select logs once, as the lock.
+          const logIndex = log.push("select") - 1;
           const promise = Promise.resolve(found) as Promise<Row[]> & {
             limit: (n: number) => Promise<Row[]>;
             for: (mode: string) => Promise<Row[]>;
           };
           promise.limit = async (n) => found.slice(0, n);
           promise.for = async (mode) => {
-            log.push(`for:${mode}`);
+            log[logIndex] = `for:${mode}`;
             return found;
           };
           return promise;

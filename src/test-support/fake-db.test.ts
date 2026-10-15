@@ -62,6 +62,20 @@ describe("fake db — supported conditions filter for real", () => {
   });
 });
 
+describe("fake db — operation log", () => {
+  it("logs plain selects, turns a locking select into for:update, and logs writes in order", async () => {
+    await read(eq(galleryClients.userId, "a"));
+    await (
+      db.select().from(galleryClients).where(eq(galleryClients.userId, "a")) as unknown as {
+        for: (mode: string) => Promise<unknown>;
+      }
+    ).for("update");
+    await db.update(galleryClients).set({ removedAt: null }).where(eq(galleryClients.userId, "a"));
+
+    expect(db.__log).toEqual(["select", "for:update", "update:2"]);
+  });
+});
+
 describe("fake db — unsupported conditions THROW instead of being mis-modelled", () => {
   const cases: [string, () => unknown][] = [
     ["ne", () => ne(galleryClients.userId, "a")],

@@ -385,6 +385,26 @@ describe("unlockGalleryClientSelection", () => {
     expect(notifySelectionChangedMock).toHaveBeenCalledWith(G1);
   });
 
+  it("emails the client being unlocked even when another client sorts first in users", async () => {
+    // `users` lists A before B, and A is locked too: a lookup that is not
+    // scoped to the unlocked client's id would pick A's address.
+    const r = await rows();
+    lockedA(r, true);
+    Object.assign(
+      r.galleryClients.find((m) => m.galleryId === G1 && m.userId === B)!,
+      {
+        selectionLockedAt: T0,
+        selectionSubmittedAt: T0,
+      },
+    );
+    const { unlockGalleryClientSelection } = await import("./actions");
+
+    await unlockGalleryClientSelection({ status: "idle" }, form(B));
+
+    expect(signInMock).toHaveBeenCalledTimes(1);
+    expect(signInMock.mock.calls[0]![1]).toMatchObject({ email: "b@example.com" });
+  });
+
   it("unlocking one client of a selected gallery moves it back to proofing", async () => {
     const r = await rows();
     r.galleries.find((g) => g.id === G1)!.status = "selected";
@@ -540,5 +560,27 @@ describe("removeGalleryClientPicks", () => {
     const result = await removeGalleryClientPicks({ status: "idle" }, form(C));
     expect(result.status).toBe("done");
     expect(result.message).toContain("0 fotos");
+  });
+});
+describe.each(ACTIONS)("%s — lock order", (name) => {
+  it("its FIRST db operation is the gallery row lock, before any membership read", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const r = await rows();
+    // Unlock needs a locked client; harmless for the other two.
+    Object.assign(
+      r.galleryClients.find((m) => m.galleryId === G1 && m.userId === A)!,
+      {
+        selectionLockedAt: name === "lockGalleryClientSelection" ? null : T0,
+        selectionSubmittedAt: name === "lockGalleryClientSelection" ? null : T0,
+      },
+    );
+    const { db } = (await import("@/lib/db")) as unknown as { db: { __log: string[] } };
+    db.__log.length = 0;
+    const action = await actionByName(name);
+
+    const result = await action({ status: "idle" }, form(A));
+
+    expect(result.status).not.toBe("error");
+    expect(db.__log[0]).toBe("for:update");
   });
 });

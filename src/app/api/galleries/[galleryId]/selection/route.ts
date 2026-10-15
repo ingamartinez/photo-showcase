@@ -131,6 +131,7 @@ import { galleries } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
 import { isGalleryVisibleToClient } from "@/lib/galleries";
 import { isGalleryOwner } from "@/lib/gallery-access";
+import { getSelectionLockSnapshot } from "@/lib/gallery-client-locks";
 import { getGallerySelection } from "@/lib/gallery-selection";
 import { computeQuota } from "@/lib/quota";
 
@@ -188,6 +189,10 @@ export const GET = withApiSession(async function GET(
   }
 
   const picks = await getGallerySelection(gallery.id);
+  // Epic #239 — the per-client lock state, for slice #241's UI. `viewerLock`
+  // is the CALLER's own (null while open, and for an admin, who has no
+  // membership); `lockedPickerIds` says whose picks are frozen.
+  const lockSnapshot = await getSelectionLockSnapshot(gallery.id, session.user.id);
 
   // `picks.length` IS the derived count (PLAN.md §3) — the same rows, counted
   // once. Off the gallery's own FROZEN snapshot terms, never the live
@@ -211,17 +216,20 @@ export const GET = withApiSession(async function GET(
   });
 
   return NextResponse.json({
-    // THE SUBMIT LOCK, live. `<ProofGrid>` derives its read-only state from
-    // this status on every tick, so the moment ONE client submits, every
-    // other open session stops accepting picks without a reload — the most
-    // damaging failure this screen could have is a collaborator cheerfully
-    // picking into a gallery that is already submitted, and this field is
-    // what closes it. The status is the SERVER's, so this converges in both
-    // directions: an admin unlocking a submitted selection (task #73) reopens
-    // every open tab on the next tick just as surely as a submit closes them.
+    // THE GALLERY-LEVEL LOCK, live. Since epic #239 `selected` means EVERY
+    // active client has submitted (one client submitting no longer closes the
+    // gallery — their own lock is `viewerLock` below), so `<ProofGrid>`'s
+    // read-only state from this status now means "everybody is done". The
+    // status is the SERVER's, so this converges in both directions: an admin
+    // unlocking a submitted selection (task #73) reopens every open tab on
+    // the next tick just as surely as the last submit closes them.
+    // `submittedAt` is the gallery's closing time (null while any client is
+    // still choosing); the per-person times live in `viewerLock`.
     status: gallery.status,
     submittedAt: gallery.selectionSubmittedAt ? gallery.selectionSubmittedAt.toISOString() : null,
     quota,
     picks,
+    viewerLock: lockSnapshot.viewerLock,
+    lockedPickerIds: lockSnapshot.lockedPickerIds,
   });
 });

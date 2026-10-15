@@ -45,150 +45,49 @@ vi.mock("@/lib/selection-events", () => ({
   notifySelectionChanged: (...args: [string]) => notifySelectionChangedMock(...args),
 }));
 
-// A minimal, genuinely-behaving double for `@/lib/db` — real filtering off
-// `eq()`/`and(eq(), eq())` conditions (this route's atomic conditional
-// UPDATE needs the latter; every sibling route test so far has only ever
-// needed the former). `and()`'s own queryChunks nest an inner `sql.join(...)`
-// SQL object rather than laying every chunk flat at the top level (verified
-// by reading node_modules/drizzle-orm/sql/expressions/conditions.js
-// directly, not assumed) — `flattenChunks` below recurses into any chunk
-// that itself carries `queryChunks` so both shapes end up in the same flat
-// list `eqConditions` scans.
-type Row = Record<string, unknown>;
-
-function flattenChunks(node: unknown, out: unknown[]): void {
-  if (node && typeof node === "object" && "queryChunks" in node) {
-    for (const chunk of (node as { queryChunks: unknown[] }).queryChunks) {
-      flattenChunks(chunk, out);
-    }
-    return;
-  }
-  out.push(node);
-}
-
-function eqConditions(condition: unknown): { dbColumnName: string; value: unknown }[] {
-  const flat: unknown[] = [];
-  flattenChunks(condition, flat);
-
-  const dbColumnNames: string[] = [];
-  const values: unknown[] = [];
-  for (const chunk of flat) {
-    if (chunk && typeof chunk === "object") {
-      if ("name" in chunk && "table" in chunk) {
-        dbColumnNames.push((chunk as { name: string }).name);
-      } else if ("value" in chunk && "encoder" in chunk) {
-        values.push((chunk as { value: unknown }).value);
-      }
-    }
-  }
-  if (dbColumnNames.length === 0 || dbColumnNames.length !== values.length) {
-    throw new Error("eqConditions: not a supported eq()/and(eq(), eq()) condition");
-  }
-  return dbColumnNames.map((dbColumnName, i) => ({ dbColumnName, value: values[i] }));
-}
-
-function jsKeyFor(table: Record<string, unknown>, dbColumnName: string): string {
-  const found = Object.entries(table).find(
-    ([, col]) => col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
-  );
-  if (!found) throw new Error(`jsKeyFor: no column named ${dbColumnName} on this table`);
-  return found[0];
-}
-
-function matchesRow(row: Row, table: Record<string, unknown>, condition: unknown): boolean {
-  return eqConditions(condition).every(
-    ({ dbColumnName, value }) => row[jsKeyFor(table, dbColumnName)] === value,
-  );
-}
-
-function project(row: Row, columns: Record<string, unknown> | undefined): Row {
-  // Task #84: a real Postgres SELECT hands back a value, not a live handle —
-  // returning `row` itself here (as this fake once did) let two concurrently
-  // raced calls alias the SAME object, so the winner's synchronous
-  // `Object.assign` inside `update()` could mutate what the loser had
-  // already read. `{ ...row }` gives every caller its own snapshot, exactly
-  // like a real SELECT.
-  if (!columns) return { ...row };
-  const projected: Row = {};
-  for (const key of Object.keys(columns)) projected[key] = row[key];
-  return projected;
-}
-
+// The shared in-memory double (src/test-support/fake-db.ts) — filters for real
+// off eq()/isNull()/and(), supports `transaction()` and `for("update")`.
 vi.mock("@/lib/db", async () => {
-  const { assets, galleries, users } = await import("@/lib/db/schema");
-
-  const galleryRows: Row[] = [];
-  const assetRows: Row[] = [];
-  const userRows: Row[] = [];
-
-  function rowsFor(table: unknown): Row[] {
-    if (table === galleries) return galleryRows;
-    if (table === assets) return assetRows;
-    if (table === users) return userRows;
-    throw new Error("fake db: unsupported table");
-  }
-
-  // Drizzle's `PgTable` type carries no index signature (each column is its
-  // own named, strongly-typed property) — `matchesRow`/`jsKeyFor` only ever
-  // need to enumerate those properties at runtime via `Object.entries`, so
-  // the cast here is purely to satisfy that mismatch, not a claim about the
-  // real shape.
-  function tableShapeFor(table: unknown): Record<string, unknown> {
-    if (table === galleries) return galleries as unknown as Record<string, unknown>;
-    if (table === assets) return assets as unknown as Record<string, unknown>;
-    if (table === users) return users as unknown as Record<string, unknown>;
-    throw new Error("fake db: unsupported table");
-  }
-
+  const { galleries, assets, users, galleryClients } = await import("@/lib/db/schema");
+  const { createFakeDb } = await import("@/test-support/fake-db");
+  const fake = createFakeDb([galleries, assets, users, galleryClients]);
+  // Test-only escape hatch, not part of the real `db` shape.
   return {
-    db: {
-      select: (columns?: Record<string, unknown>) => ({
-        from: (table: unknown) => ({
-          where: (condition: unknown) => {
-            const rows = rowsFor(table)
-              .filter((row) => matchesRow(row, tableShapeFor(table), condition))
-              .map((row) => project(row, columns));
-            const resultPromise = Promise.resolve(rows);
-            return {
-              limit: async (n: number) => rows.slice(0, n),
-              then: resultPromise.then.bind(resultPromise),
-              catch: resultPromise.catch.bind(resultPromise),
-            };
-          },
-        }),
-      }),
-      update: (table: unknown) => ({
-        set: (patch: Row) => ({
-          where: (condition: unknown) => {
-            if (table !== galleries) throw new Error("fake db: unsupported table in update()");
-            const matches = galleryRows.filter((row) =>
-              matchesRow(row, galleries as unknown as Record<string, unknown>, condition),
-            );
-            for (const row of matches) Object.assign(row, patch);
-            const snapshot = matches.map((row) => ({ ...row }));
-            const promise = Promise.resolve(snapshot) as Promise<Row[]> & {
-              returning: () => Promise<Row[]>;
-            };
-            promise.returning = async () => snapshot;
-            return promise;
-          },
-        }),
-      }),
-      // Test-only escape hatch, not part of the real `db` shape.
-      __rows: { galleries: galleryRows, assets: assetRows, users: userRows },
-    },
+    db: Object.assign(fake, {
+      __rows: {
+        galleries: fake.__tables.get(galleries)!,
+        assets: fake.__tables.get(assets)!,
+        users: fake.__tables.get(users)!,
+        galleryClients: fake.__tables.get(galleryClients)!,
+      },
+    }),
   };
 });
 
+type Row = Record<string, unknown>;
+
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
-    db: { __rows: { galleries: Row[]; assets: Row[]; users: Row[] } };
+    db: { __rows: { galleries: Row[]; assets: Row[]; users: Row[]; galleryClients: Row[] } };
   };
   return db;
 }
 
+/** One ACTIVE membership of the fixture gallery, open (not locked) by default. */
+function membership(userId: string, overrides: Row = {}): Row {
+  return {
+    galleryId: GALLERY_ID,
+    userId,
+    removedAt: null,
+    selectionLockedAt: null,
+    selectionSubmittedAt: null,
+    ...overrides,
+  };
+}
+
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
 const CLIENT_ID = "client-a";
+const CLIENT_B = "client-b";
 const CLIENT_EMAIL = "ana@example.com";
 const ADMIN_EMAIL = "photographer@example.com";
 const ASSET_1_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
@@ -237,6 +136,9 @@ function assetRow(overrides: Row = {}): Row {
     proofHeight: 1067,
     isSelected: false,
     selectedAt: null,
+    // Epic #239 — the picker. Defaults to the fixture's main client; the
+    // multi-client tests override it per asset.
+    selectedBy: CLIENT_ID,
     // Task #206 — the domain's own default; the mixed-case test overrides
     // this explicitly.
     selectionKind: "edited",
@@ -261,7 +163,10 @@ beforeEach(async () => {
   authMock.mockReset();
   isGalleryOwnerMock.mockReset();
   isGalleryOwnerMock.mockImplementation(
-    async (_galleryId, session) => session.user.role === "admin" || session.user.id === CLIENT_ID,
+    async (_galleryId, session) =>
+      session.user.role === "admin" ||
+      session.user.id === CLIENT_ID ||
+      session.user.id === CLIENT_B,
   );
   sendSubmissionNotificationEmailMock.mockReset();
   sendSubmissionNotificationEmailMock.mockResolvedValue(undefined);
@@ -277,7 +182,9 @@ beforeEach(async () => {
   db.__rows.galleries.length = 0;
   db.__rows.assets.length = 0;
   db.__rows.users.length = 0;
+  db.__rows.galleryClients.length = 0;
   db.__rows.galleries.push(galleryRow());
+  db.__rows.galleryClients.push(membership(CLIENT_ID));
   db.__rows.users.push({ id: CLIENT_ID, name: "Ana Pérez", email: CLIENT_EMAIL, role: "client" });
   db.__rows.users.push({ id: "admin-1", name: "Alejo", email: ADMIN_EMAIL, role: "admin" });
   db.__rows.assets.push(assetRow({ isSelected: true }));
@@ -415,6 +322,15 @@ describe("POST /api/galleries/[galleryId]/submit-selection — locked statuses",
     db.__rows.galleries.push(
       galleryRow({
         status: "selected",
+        selectionSubmittedAt: new Date("2026-07-28T11:00:00.000Z"),
+      }),
+    );
+    // The CALLER's own submission time is what comes back — deliberately
+    // different from the gallery's closing time above.
+    db.__rows.galleryClients.length = 0;
+    db.__rows.galleryClients.push(
+      membership(CLIENT_ID, {
+        selectionLockedAt: new Date("2026-07-28T10:00:00.000Z"),
         selectionSubmittedAt: new Date("2026-07-28T10:00:00.000Z"),
       }),
     );
@@ -441,6 +357,7 @@ describe("POST /api/galleries/[galleryId]/submit-selection — locked statuses",
         surchargeCop: 0,
       },
       submittedAt: "2026-07-28T10:00:00.000Z",
+      gallerySelected: true,
     });
     expect(sendSubmissionNotificationEmailMock).not.toHaveBeenCalled();
   });
@@ -612,26 +529,256 @@ describe("POST /api/galleries/[galleryId]/submit-selection — success", () => {
     expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_ID);
   });
 
-  it("lets an admin submit on behalf of the client too", async () => {
-    authMock.mockResolvedValue(adminSession());
+  it("reports the single-client submit as having closed the gallery, with the caller's own submittedAt", async () => {
+    authMock.mockResolvedValue(clientSession());
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    const body = (await response.json()) as { gallerySelected: boolean; submittedAt: string };
+    const db = await seededDb();
+    expect(body.gallerySelected).toBe(true);
+    expect(db.__rows.galleryClients[0]).toMatchObject({
+      selectionLockedAt: expect.any(Date),
+      selectionSubmittedAt: expect.any(Date),
+    });
+    expect(body.submittedAt).toBe(
+      (db.__rows.galleryClients[0]!.selectionSubmittedAt as Date).toISOString(),
+    );
+  });
+});
+
+// Epic #239 — the lock is PER PERSON. Fixture: Ana (client-a) and Beto
+// (client-b) share the gallery; each has one pick of their own.
+describe("POST /api/galleries/[galleryId]/submit-selection — per-client lock (epic #239)", () => {
+  async function twoClientGallery() {
+    const db = await seededDb();
+    db.__rows.users.push({
+      id: CLIENT_B,
+      name: "Beto Ruiz",
+      email: "beto@example.com",
+      role: "client",
+    });
+    db.__rows.galleryClients.push(membership(CLIENT_B));
+    db.__rows.assets.push(
+      assetRow({ id: ASSET_2_ID, isSelected: true, selectedBy: CLIENT_B, sortOrder: 1 }),
+    );
+    return db;
+  }
+
+  function sessionOf(userId: string, name: string): Session {
+    return {
+      user: { id: userId, role: "client", name, email: `${userId}@example.com` },
+      expires: "2099-01-01T00:00:00.000Z",
+    } as Session;
+  }
+
+  it("A submits: A is locked, the gallery stays proofing, B is untouched and the admin is told about A", async () => {
+    const db = await twoClientGallery();
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
     const { POST } = await import("./route");
 
     const response = await POST(requestFor(), paramsFor(GALLERY_ID));
 
     expect(response.status).toBe(200);
-    const db = await seededDb();
+    await expect(response.json()).resolves.toMatchObject({
+      status: "submitted",
+      gallerySelected: false,
+    });
+    expect(db.__rows.galleries[0]).toMatchObject({
+      status: "proofing",
+      selectionSubmittedAt: null,
+    });
+    expect(db.__rows.galleryClients.find((r) => r.userId === CLIENT_ID)).toMatchObject({
+      selectionLockedAt: expect.any(Date),
+      selectionSubmittedAt: expect.any(Date),
+    });
+    expect(db.__rows.galleryClients.find((r) => r.userId === CLIENT_B)).toMatchObject({
+      selectionLockedAt: null,
+      selectionSubmittedAt: null,
+    });
+    expect(sendSubmissionNotificationEmailMock).toHaveBeenCalledTimes(1);
+    expect(sendSubmissionNotificationEmailMock).toHaveBeenCalledWith(
+      expect.objectContaining({ clientName: "Ana Pérez" }),
+    );
+    // The board changed for everyone (A's picks froze), so tabs are told.
+    expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_ID);
+  });
+
+  it("B submitting afterwards, as the last open client, moves the gallery to selected exactly once", async () => {
+    const db = await twoClientGallery();
+    const { POST } = await import("./route");
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
+    await POST(requestFor(), paramsFor(GALLERY_ID));
+    authMock.mockResolvedValue(sessionOf(CLIENT_B, "Beto Ruiz"));
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    await expect(response.json()).resolves.toMatchObject({
+      status: "submitted",
+      gallerySelected: true,
+    });
     expect(db.__rows.galleries[0]).toMatchObject({ status: "selected" });
+    expect(db.__rows.galleries[0]!.selectionSubmittedAt).toBeInstanceOf(Date);
+    // One notification per client submission, each naming its own client.
+    expect(sendSubmissionNotificationEmailMock).toHaveBeenCalledTimes(2);
+    expect(sendSubmissionNotificationEmailMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ clientName: "Beto Ruiz" }),
+    );
+  });
+
+  it("refuses an empty OWN selection with 400 even though the other client has picks", async () => {
+    const db = await twoClientGallery();
+    // Ana picked nothing; every pick belongs to Beto.
+    db.__rows.assets.find((a) => a.id === ASSET_1_ID)!.selectedBy = CLIENT_B;
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "empty_selection" });
+    expect(db.__rows.galleryClients.find((r) => r.userId === CLIENT_ID)).toMatchObject({
+      selectionLockedAt: null,
+    });
+    expect(sendSubmissionNotificationEmailMock).not.toHaveBeenCalled();
+  });
+
+  it("is idempotent for a client who is already locked while the gallery is still open: own submittedAt, no email, gallerySelected false", async () => {
+    const db = await twoClientGallery();
+    const ownSubmittedAt = new Date("2026-10-15T09:00:00.000Z");
+    const own = db.__rows.galleryClients.find((r) => r.userId === CLIENT_ID)!;
+    own.selectionLockedAt = ownSubmittedAt;
+    own.selectionSubmittedAt = ownSubmittedAt;
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "already_submitted",
+      submittedAt: ownSubmittedAt.toISOString(),
+      gallerySelected: false,
+    });
+    expect(sendSubmissionNotificationEmailMock).not.toHaveBeenCalled();
+  });
+
+  it("ignores a REMOVED unlocked client: the last ACTIVE client submitting closes the gallery", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.push(membership(CLIENT_B, { removedAt: new Date("2026-09-01") }));
+    authMock.mockResolvedValue(clientSession());
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    await expect(response.json()).resolves.toMatchObject({ gallerySelected: true });
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "selected" });
+  });
+
+  // Every other fixture lives in ONE gallery, which hides a dropped
+  // `galleryId` condition. Here the SAME client also belongs to a second
+  // gallery, with the OPPOSITE lock state, listed first.
+  it("locks only THIS gallery's membership: the same client in another gallery stays untouched", async () => {
+    const db = await seededDb();
+    const OTHER = "22222222-2222-4222-8222-222222222222";
+    db.__rows.galleryClients.unshift(membership(CLIENT_ID, { galleryId: OTHER }));
+    authMock.mockResolvedValue(clientSession());
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(200);
+    expect(
+      db.__rows.galleryClients.find((r) => r.galleryId === OTHER && r.userId === CLIENT_ID),
+    ).toMatchObject({ selectionLockedAt: null, selectionSubmittedAt: null });
+    expect(
+      db.__rows.galleryClients.find((r) => r.galleryId === GALLERY_ID && r.userId === CLIENT_ID),
+    ).toMatchObject({ selectionLockedAt: expect.any(Date) });
+  });
+
+  it("reads the caller's lock in THIS gallery: being locked in another gallery does not make a first submit here idempotent", async () => {
+    const db = await seededDb();
+    const OTHER = "22222222-2222-4222-8222-222222222222";
+    const lockedAt = new Date("2026-10-01T10:00:00.000Z");
+    db.__rows.galleryClients.unshift(
+      membership(CLIENT_ID, {
+        galleryId: OTHER,
+        selectionLockedAt: lockedAt,
+        selectionSubmittedAt: lockedAt,
+      }),
+    );
+    authMock.mockResolvedValue(clientSession());
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    await expect(response.json()).resolves.toMatchObject({ status: "submitted" });
+    expect(sendSubmissionNotificationEmailMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("refuses an admin with 409 admin_cannot_submit — there is no membership to lock — and changes nothing", async () => {
+    const db = await twoClientGallery();
+    authMock.mockResolvedValue(adminSession());
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "admin_cannot_submit" });
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+    expect(db.__rows.galleryClients.every((r) => r.selectionLockedAt === null)).toBe(true);
+    expect(sendSubmissionNotificationEmailMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses with 403 a caller whose membership was removed after the ownership check", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients[0]!.removedAt = new Date("2026-09-01");
+    authMock.mockResolvedValue(clientSession());
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(403);
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+  });
+
+  it("refuses an UNLOCKED client of an already-selected gallery (attached after it closed) with 409, locking nothing", async () => {
+    const db = await seededDb();
+    db.__rows.galleries[0]!.status = "selected";
+    authMock.mockResolvedValue(clientSession());
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "gallery_not_submittable" });
+    expect(db.__rows.galleryClients[0]).toMatchObject({ selectionLockedAt: null });
+  });
+
+  it("takes the gallery row lock before it writes anything (what serializes two last submitters in Postgres)", async () => {
+    await twoClientGallery();
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
+    const { db } = (await import("@/lib/db")) as unknown as { db: { __log: string[] } };
+    db.__log.length = 0;
+    const { POST } = await import("./route");
+
+    await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    const firstUpdate = db.__log.findIndex((entry) => entry.startsWith("update:"));
+    expect(db.__log.indexOf("for:update")).toBeGreaterThanOrEqual(0);
+    expect(db.__log.indexOf("for:update")).toBeLessThan(firstUpdate);
   });
 });
 
 describe("POST /api/galleries/[galleryId]/submit-selection — double submission is idempotent", () => {
   // A SEQUENTIAL double-submit (the first call has already fully resolved
-  // before the second one starts) exercises the early `status === "selected"`
-  // short-circuit at the top of the route, never the atomic UPDATE itself —
-  // real, worth covering on its own, but NOT proof the CAS guard works: this
-  // same assertion would still pass even if the UPDATE's own `WHERE status =
-  // 'proofing'` clause were deleted entirely, because the second call never
-  // reaches it.
+  // before the second one starts) exercises the early `ownLock.lockedAt`
+  // short-circuit near the top of the route, never the atomic membership
+  // UPDATE itself — real, worth covering on its own, but NOT proof the CAS
+  // guard works: this same assertion would still pass even if the UPDATE's
+  // own `selection_locked_at IS NULL` clause were deleted entirely, because
+  // the second call never reaches it.
   it("the second of two SEQUENTIAL submits short-circuits before ever reaching the UPDATE", async () => {
     authMock.mockResolvedValue(clientSession());
     const { POST } = await import("./route");
@@ -652,20 +799,20 @@ describe("POST /api/galleries/[galleryId]/submit-selection — double submission
   // THE actual proof of the atomicity guard (route.ts's own "THE atomicity
   // guard" comment): two submits issued via `Promise.all`, so BOTH calls run
   // past every read (auth, gallery lookup, the empty-selection check) and
-  // reach `db.update(...).where(and(eq(id), eq(status, "proofing")))` before
-  // either one has mutated anything — genuinely racing the UPDATE itself, not
-  // the early short-circuit above. The fake `@/lib/db` mutates its rows
-  // SYNCHRONOUSLY inside `.where()` (no extra `await` in between), which is
-  // what makes this a meaningful test at all: JS's single-threaded run-to-
+  // reach the membership `UPDATE ... WHERE selection_locked_at IS NULL`
+  // before either one has mutated anything — genuinely racing the UPDATE
+  // itself, not the early short-circuit above. The fake `@/lib/db` mutates its
+  // rows SYNCHRONOUSLY inside `.where()` (no extra `await` in between), which
+  // is what makes this a meaningful test at all: JS's single-threaded run-to-
   // completion between `await` points means whichever of the two `POST`
   // calls' turns comes up first at that exact line completes its match-and-
   // mutate atomically before the other one can interleave — exactly
   // mirroring how Postgres serializes two concurrent UPDATEs against the
-  // same row. Deleting the `eq(status, "proofing")` half of the route's
-  // `and(...)` (turning it back into the unconditional
-  // `.where(eq(galleries.id, ...))` kanban #61 flagged for the publish path)
-  // makes BOTH calls match and mutate, and this test catches that: two
-  // notifications instead of one.
+  // same row. Deleting the `isNull(selectionLockedAt)` condition from the
+  // route's `and(...)` makes BOTH calls match and mutate, and this test
+  // catches that: two notifications instead of one. (Two DIFFERENT clients
+  // racing to be last is the row lock's job, which this fake cannot model —
+  // see src/test-support/fake-db.ts's header.)
   it("sends exactly one notification when two submits race via Promise.all", async () => {
     authMock.mockResolvedValue(clientSession());
     const { POST } = await import("./route");

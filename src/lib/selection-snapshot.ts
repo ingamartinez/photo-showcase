@@ -77,6 +77,26 @@ export type SelectionPick = {
   selectionKind: SelectionKind;
 };
 
+/** Epic #239 — the per-client selection lock, as the browser sees it. Dates
+ * are ISO 8601 strings (this crosses the server/client boundary). Slice #241
+ * renders from it; this slice only exposes it. */
+export type ViewerLock = {
+  /** When this viewer stopped being able to change picks. */
+  lockedAt: string;
+  /** When the viewer pressed "Enviar selección" themselves — `null` when an
+   * admin locked them instead. */
+  submittedAt: string | null;
+};
+
+export type SelectionLockSnapshot = {
+  /** `null` while the viewer is open (and always for an admin, who has no
+   * membership to lock). */
+  viewerLock: ViewerLock | null;
+  /** User ids of every ACTIVE client who is locked — their picks are frozen
+   * for everybody else. Includes the viewer when locked. */
+  lockedPickerIds: string[];
+};
+
 /** Copy shown when a pick carries no attribution at all — see
  * `SelectionPick.pickedBy`. Deliberately not a name-shaped guess: the tray
  * would rather admit it does not know than credit the wrong person. */

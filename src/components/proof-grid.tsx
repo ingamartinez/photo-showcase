@@ -134,7 +134,7 @@ import { useProofUrls } from "@/components/use-proof-urls";
 import { useSharedSelection, type GalleryStatus } from "@/components/use-shared-selection";
 import type { Gallery } from "@/lib/db/schema";
 import type { QuotaResult } from "@/lib/quota";
-import { pickerLabelFor, type SelectionPick } from "@/lib/selection-snapshot";
+import { pickerLabelFor, type SelectionPick, type ViewerLock } from "@/lib/selection-snapshot";
 
 // Re-exported, not re-declared: `GalleryStatus` and the fallback poll's
 // cadence belong next to the status machine and the loop they pace
@@ -229,6 +229,11 @@ export function ProofGrid({
   // paint comes from here; every refresh afterwards replaces it wholesale
   // with a fresh snapshot.
   initialPicks: SelectionPick[];
+  // Epic #239 — per-client lock state as of the server render (the viewer's
+  // own lock, and the ids of locked pickers). Optional and UNUSED here on
+  // purpose: slice #241 wires the UI to it; this slice only exposes it.
+  initialViewerLock?: ViewerLock | null;
+  initialLockedPickerIds?: string[];
   // The signed-in user's own id, so the tray can render their own picks as
   // "Vos" rather than their own name (see `pickerLabelFor`). Nothing is
   // authorized by this value — it is a display detail; every route this

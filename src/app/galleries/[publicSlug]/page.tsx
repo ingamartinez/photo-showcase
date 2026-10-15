@@ -9,6 +9,7 @@ import {
   isGalleryVisibleToClient,
 } from "@/lib/galleries";
 import { isAdminPreviewingClientGallery, isGalleryOwner } from "@/lib/gallery-access";
+import { getSelectionLockSnapshot } from "@/lib/gallery-client-locks";
 import { getGallerySelection } from "@/lib/gallery-selection";
 import { readClientGalleryBySlug } from "@/lib/graphql/client-gallery-reads";
 import { selectionTrayModeFromWire } from "@/lib/graphql/types/selection-tray-mode";
@@ -191,6 +192,10 @@ export default async function ClientGalleryPage({
   // presigned-URL calls above hold — see src/lib/graphql/
   // client-gallery-reads.ts's header for both.
   const initialPicks = await getGallerySelection(gallery.id);
+  // Epic #239 — per-client lock state for slice #241's UI (the viewer's own
+  // lock and whose picks are frozen). Same function the live selection route
+  // calls, for the same one-source-of-truth reason as `initialPicks`.
+  const lockSnapshot = await getSelectionLockSnapshot(gallery.id, session.user.id);
 
   return (
     <>
@@ -252,6 +257,8 @@ export default async function ClientGalleryPage({
         // wanted a string either way.
         initialSubmittedAt={gallery.selectionSubmittedAt}
         initialPicks={initialPicks}
+        initialViewerLock={lockSnapshot.viewerLock}
+        initialLockedPickerIds={lockSnapshot.lockedPickerIds}
         // Display only — the tray renders this session's own picks as "Vos".
         // Nothing is authorized by it: every route <ProofGrid> calls resolves
         // the acting session server-side.

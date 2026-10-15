@@ -1,21 +1,23 @@
 "use client";
 
 // Per-client selection status and admin actions for one row of the gallery
-// detail page (epic #239, task #242). Rendered by <GalleryClientRow> under the
-// name/email line: how many photos this person holds, what state they are in
-// (Eligiendo / Envió el … / Bloqueado por vos), and the buttons that are VALID
-// for that state — lock, unlock, remove picks.
+// detail page (epic #239, task #242).
 //
-// Hiding a button is UX, never the authority: each server action re-checks the
-// admin session, the gallery status and the client's active membership itself.
-// `clientLockActions` is the same pure predicate the page can reason about; it
-// lives in a module without `server-only` so this Client Component can import it.
+// TWO PIECES, ONE CONTROLLER. <GalleryClientRow> owns the row's single 44px
+// "Acciones" (⋯) menu, so the lock / unlock / remove-picks entries live in
+// THAT menu (<ClientSelectionMenuItems>) rather than as a second set of small
+// buttons on the row. The inline part (<GalleryClientSelection>) shows the pick
+// count + state line, the destructive confirmation and the latest result. Both
+// share one controller (`useClientSelectionController`), called by the row.
 //
-// "Quitar fotos" is destructive (it wipes the person's picks and reopens their
-// selection) and asks for a confirmation that says exactly that. No email goes
-// out for lock or remove; unlock emails THAT person, best-effort — a failed
-// email is shown as an alert so the photographer can warn them another way.
-import { useActionState, useState } from "react";
+// ONE `useActionState` FOR ALL THREE ACTIONS. Their results are mutually
+// exclusive in meaning ("Bloqueamos…" then "Desbloqueamos…" must not both be
+// on screen), and a single state is, by construction, the most recent result.
+// The runner picks the server action from a hidden `op` field.
+//
+// Hiding an entry is UX, never the authority: each server action re-checks the
+// admin session, the gallery status and the client's active membership.
+import { useActionState, useRef, useState } from "react";
 import {
   lockGalleryClientSelection,
   removeGalleryClientPicks,
@@ -29,31 +31,117 @@ import {
   clientSelectionStateLabel,
   type ClientSelectionView,
 } from "@/lib/client-selection-state";
+import { DropdownMenuItem } from "@/components/ui/dropdown-menu";
+
+type Op = "lock" | "unlock" | "remove";
 
 const idle: GalleryClientSelectionActionState = { status: "idle" };
 
-const BUTTON =
-  "border-line-2 hover:bg-bg-2 hover:border-fg-mute inline-flex min-h-11 items-center justify-center rounded-[5px] border px-3 text-xs transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-6";
+export function useClientSelectionController() {
+  const [confirming, setConfirming] = useState(false);
+  const [state, formAction, pending] = useActionState(
+    async (
+      prev: GalleryClientSelectionActionState,
+      formData: FormData,
+    ): Promise<GalleryClientSelectionActionState> => {
+      const op = formData.get("op") as Op;
+      const run =
+        op === "lock"
+          ? lockGalleryClientSelection
+          : op === "unlock"
+            ? unlockGalleryClientSelection
+            : removeGalleryClientPicks;
+      const result = await run(prev, formData);
+      // The destructive step is done (or the server refused it): either way
+      // the confirmation prompt must not linger and invite a second wipe.
+      if (op === "remove" && result.status !== "idle") setConfirming(false);
+      return result;
+    },
+    idle,
+  );
+  const formRef = useRef<HTMLFormElement>(null);
+  const opRef = useRef<HTMLInputElement>(null);
+
+  /** Lock / unlock: no confirmation, submit the hidden form right away. */
+  function submit(op: "lock" | "unlock") {
+    if (opRef.current) opRef.current.value = op;
+    formRef.current?.requestSubmit();
+  }
+
+  return { state, formAction, pending, confirming, setConfirming, formRef, opRef, submit };
+}
+
+export type ClientSelectionController = ReturnType<typeof useClientSelectionController>;
+
+/** Whether the ⋯ menu would have any per-client selection entry. */
+export function hasClientSelectionActions(
+  galleryStatus: Gallery["status"],
+  selection: ClientSelectionView | undefined,
+): boolean {
+  if (!selection) return false;
+  const actions = clientLockActions({
+    galleryStatus,
+    state: selection.state,
+    pickCount: selection.pickCount,
+  });
+  return actions.canLock || actions.canUnlock || actions.canRemovePicks;
+}
+
+/** The entries added to the row's ⋯ menu. Render INSIDE <DropdownMenuContent>. */
+export function ClientSelectionMenuItems({
+  galleryStatus,
+  selection,
+  controller,
+}: {
+  galleryStatus: Gallery["status"];
+  selection: ClientSelectionView;
+  controller: ClientSelectionController;
+}) {
+  const actions = clientLockActions({
+    galleryStatus,
+    state: selection.state,
+    pickCount: selection.pickCount,
+  });
+  return (
+    <>
+      {actions.canLock && (
+        <DropdownMenuItem disabled={controller.pending} onSelect={() => controller.submit("lock")}>
+          Bloquear selección
+        </DropdownMenuItem>
+      )}
+      {actions.canUnlock && (
+        <DropdownMenuItem
+          disabled={controller.pending}
+          onSelect={() => controller.submit("unlock")}
+        >
+          Desbloquear selección
+        </DropdownMenuItem>
+      )}
+      {actions.canRemovePicks && (
+        // Distinct from "Quitar" (removes the PERSON from the gallery): this
+        // only wipes their picks.
+        <DropdownMenuItem variant="destructive" onSelect={() => controller.setConfirming(true)}>
+          Quitar sus fotos elegidas
+        </DropdownMenuItem>
+      )}
+    </>
+  );
+}
 
 export function GalleryClientSelection({
   galleryId,
   clientId,
   galleryStatus,
   selection,
+  controller,
 }: {
   galleryId: string;
   clientId: string;
   galleryStatus: Gallery["status"];
   selection: ClientSelectionView;
+  controller: ClientSelectionController;
 }) {
-  const [lockState, lockAction, lockPending] = useActionState(lockGalleryClientSelection, idle);
-  const [unlockState, unlockAction, unlockPending] = useActionState(
-    unlockGalleryClientSelection,
-    idle,
-  );
-  const [removeState, removeAction, removePending] = useActionState(removeGalleryClientPicks, idle);
-  const [confirmingRemove, setConfirmingRemove] = useState(false);
-
+  const { state, formAction, pending, confirming, setConfirming, formRef, opRef } = controller;
   const actions = clientLockActions({
     galleryStatus,
     state: selection.state,
@@ -74,35 +162,17 @@ export function GalleryClientSelection({
         {clientSelectionStateLabel(selection.state, selection.submittedOn)}
       </p>
 
-      {(actions.canLock || actions.canUnlock || actions.canRemovePicks) && (
-        <div className="flex flex-wrap gap-2">
-          {actions.canLock && (
-            <form action={lockAction}>
-              {hidden}
-              <button type="submit" disabled={lockPending} className={BUTTON}>
-                {lockPending ? "Bloqueando…" : "Bloquear"}
-              </button>
-            </form>
-          )}
-          {actions.canUnlock && (
-            <form action={unlockAction}>
-              {hidden}
-              <button type="submit" disabled={unlockPending} className={BUTTON}>
-                {unlockPending ? "Desbloqueando…" : "Desbloquear"}
-              </button>
-            </form>
-          )}
-          {actions.canRemovePicks && !confirmingRemove && (
-            <button type="button" onClick={() => setConfirmingRemove(true)} className={BUTTON}>
-              Quitar fotos
-            </button>
-          )}
-        </div>
-      )}
+      {/* No visible submit control — the ⋯ menu items submit this through a
+          ref, exactly like the row's "Reenviar acceso" form. */}
+      <form ref={formRef} action={formAction}>
+        {hidden}
+        <input ref={opRef} type="hidden" name="op" defaultValue="lock" />
+      </form>
 
-      {actions.canRemovePicks && confirmingRemove && (
-        <form action={removeAction} className="flex flex-col items-start gap-2">
+      {actions.canRemovePicks && confirming && (
+        <form action={formAction} className="flex flex-col items-start gap-2">
           {hidden}
+          <input type="hidden" name="op" value="remove" />
           <p className="text-danger text-xs">
             Se van a quitar las fotos que eligió esta persona y se reabre su selección. No se le
             avisa por correo.
@@ -110,14 +180,14 @@ export function GalleryClientSelection({
           <div className="flex gap-4">
             <button
               type="submit"
-              disabled={removePending}
+              disabled={pending}
               className="text-danger min-h-11 text-sm font-medium disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-6"
             >
-              {removePending ? "Quitando…" : "Confirmar"}
+              {pending ? "Quitando…" : "Confirmar"}
             </button>
             <button
               type="button"
-              onClick={() => setConfirmingRemove(false)}
+              onClick={() => setConfirming(false)}
               className="text-fg-dim hover:text-accent-2 min-h-11 text-sm transition-colors lg:min-h-6"
             >
               Cancelar
@@ -126,16 +196,16 @@ export function GalleryClientSelection({
         </form>
       )}
 
-      {[lockState, unlockState, removeState].map((state, index) =>
-        state.status === "error" || state.status === "done_email_failed" ? (
-          <p key={index} role="alert" className="text-danger text-xs">
-            {state.message}
-          </p>
-        ) : state.status === "done" ? (
-          <p key={index} role="status" className="text-accent-2 text-xs">
-            {state.message}
-          </p>
-        ) : null,
+      {/* Only the MOST RECENT result, never a stack of stale ones. */}
+      {(state.status === "error" || state.status === "done_email_failed") && (
+        <p role="alert" className="text-danger text-xs">
+          {state.message}
+        </p>
+      )}
+      {state.status === "done" && (
+        <p role="status" className="text-accent-2 text-xs">
+          {state.message}
+        </p>
       )}
     </div>
   );

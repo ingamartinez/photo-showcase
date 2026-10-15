@@ -47,7 +47,8 @@ vi.mock("@/lib/gallery-selection", () => ({ getGallerySelection: () => Promise.r
 // Epic #239 — one fixed-cost read (the viewer's lock + locked pickers),
 // independent of the asset count, proven in its own suite.
 vi.mock("@/lib/gallery-client-locks", () => ({
-  getSelectionLockSnapshot: () => Promise.resolve({ viewerLock: null, lockedPickerIds: [] }),
+  getSelectionLockSnapshot: () =>
+    Promise.resolve({ viewerLock: null, lockedPickerIds: [], submittedPickerIds: [] }),
 }));
 
 vi.mock("@/lib/r2", () => ({

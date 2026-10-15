@@ -439,6 +439,7 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
       "quota",
       "status",
       "submittedAt",
+      "submittedPickerIds",
       "viewerLock",
     ]);
   });
@@ -465,6 +466,7 @@ describe("GET /api/galleries/[galleryId]/selection — per-client lock snapshot 
 
     expect(body.viewerLock).toBeNull();
     expect(body.lockedPickerIds).toEqual(["client-b"]);
+    expect(body.submittedPickerIds).toEqual(["client-b"]);
     // Gallery-level fields keep working: nobody closed the gallery.
     expect(body.status).toBe("proofing");
   });
@@ -495,6 +497,33 @@ describe("GET /api/galleries/[galleryId]/selection — per-client lock snapshot 
 
     expect(body.viewerLock).toBeNull();
     expect(body.lockedPickerIds).toEqual([]);
+    expect(body.submittedPickerIds).toEqual([]);
+  });
+
+  it("lists a photographer-locked picker as locked but NOT submitted, scoped to this gallery", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.unshift({
+      galleryId: "22222222-2222-4222-8222-222222222222",
+      userId: "client-b",
+      removedAt: null,
+      selectionLockedAt: LOCKED_AT,
+      selectionSubmittedAt: LOCKED_AT,
+    });
+    db.__rows.galleryClients.push({
+      galleryId: GALLERY_ID,
+      userId: "client-b",
+      removedAt: null,
+      selectionLockedAt: LOCKED_AT,
+      selectionSubmittedAt: null,
+    });
+    authMock.mockResolvedValue(clientASession());
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.lockedPickerIds).toEqual(["client-b"]);
+    expect(body.submittedPickerIds).toEqual([]);
   });
 
   it("reports the viewer's own lock, with their own submittedAt", async () => {
@@ -513,5 +542,6 @@ describe("GET /api/galleries/[galleryId]/selection — per-client lock snapshot 
       submittedAt: LOCKED_AT.toISOString(),
     });
     expect(body.lockedPickerIds).toEqual(["client-a"]);
+    expect(body.submittedPickerIds).toEqual(["client-a"]);
   });
 });

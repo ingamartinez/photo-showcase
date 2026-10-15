@@ -84,6 +84,7 @@ function snapshotBody(
     picks?: SelectionPick[];
     viewerLock?: ViewerLock | null;
     lockedPickerIds?: string[];
+    submittedPickerIds?: string[];
   } = {},
 ) {
   const picks = overrides.picks ?? PICKS;
@@ -94,6 +95,7 @@ function snapshotBody(
     picks,
     viewerLock: overrides.viewerLock ?? null,
     lockedPickerIds: overrides.lockedPickerIds ?? [],
+    submittedPickerIds: overrides.submittedPickerIds ?? overrides.lockedPickerIds ?? [],
   };
 }
 
@@ -155,6 +157,30 @@ describe("ProofGrid — per-person lock (epic #239, task #241)", () => {
       expect(screen.queryByText(/la enviaste/)).toBeNull();
       expect(screen.queryByText(/Enviaste tu selección/)).toBeNull();
     });
+
+    it("the TRAY note for a photographer-locked viewer agrees with the panel, and never says 'enviada'", () => {
+      renderGrid({
+        initialViewerLock: { lockedAt: "2026-10-15T13:00:00.000Z", submittedAt: null },
+        initialLockedPickerIds: [ANA.id],
+      });
+
+      expect(
+        screen.getByText("Tu fotógrafo cerró tu selección. Los demás todavía están eligiendo."),
+      ).toBeDefined();
+      expect(screen.queryByText(/Tu selección ya fue enviada/)).toBeNull();
+    });
+
+    it("keeps the TRAY note 'enviada' for a viewer who submitted themselves", () => {
+      renderGrid({
+        initialViewerLock: VIEWER_LOCK,
+        initialLockedPickerIds: [ANA.id],
+        initialSubmittedPickerIds: [ANA.id],
+      });
+
+      expect(
+        screen.getByText("Tu selección ya fue enviada. Los demás todavía están eligiendo."),
+      ).toBeDefined();
+    });
   });
 
   describe("another client locked, viewer still choosing", () => {
@@ -169,11 +195,23 @@ describe("ProofGrid — per-person lock (epic #239, task #241)", () => {
     });
 
     it("marks the locked person's tray group 'envió', and nobody else's", () => {
-      renderGrid({ initialLockedPickerIds: [BETO.id] });
+      renderGrid({
+        initialLockedPickerIds: [BETO.id],
+        initialSubmittedPickerIds: [BETO.id],
+      });
 
       const marker = screen.getByText("envió");
       expect(marker.parentElement?.textContent).toMatch(/Beto Ruiz/);
       expect(screen.getAllByText("envió")).toHaveLength(1);
+    });
+
+    it("marks a photographer-locked person 'cerrada' in the tray, not 'envió', and still freezes their picks", () => {
+      renderGrid({ initialLockedPickerIds: [BETO.id], initialSubmittedPickerIds: [] });
+
+      const marker = screen.getByText("cerrada");
+      expect(marker.parentElement?.textContent).toMatch(/Beto Ruiz/);
+      expect(screen.queryByText("envió")).toBeNull();
+      expect(disabledTiles()).toEqual([2]);
     });
 
     it("freezes the locked person's photo in the lightbox too, but not the others'", () => {
@@ -213,7 +251,7 @@ describe("ProofGrid — per-person lock (epic #239, task #241)", () => {
       vi.spyOn(window, "confirm").mockReturnValue(true);
       vi.stubGlobal("fetch", submitFetch({ gallerySelected: false }));
 
-      renderGrid({ initialLockedPickerIds: [BETO.id] });
+      renderGrid({ initialLockedPickerIds: [BETO.id], initialSubmittedPickerIds: [BETO.id] });
       expect(disabledTiles()).toEqual([2]);
 
       await act(async () => {

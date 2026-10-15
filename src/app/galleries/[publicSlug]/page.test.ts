@@ -74,7 +74,11 @@ vi.mock("@/lib/gallery-client-locks", () => ({
 beforeEach(() => {
   authMock.mockReset();
   getSelectionLockSnapshotMock.mockReset();
-  getSelectionLockSnapshotMock.mockResolvedValue({ viewerLock: null, lockedPickerIds: [] });
+  getSelectionLockSnapshotMock.mockResolvedValue({
+    viewerLock: null,
+    lockedPickerIds: [],
+    submittedPickerIds: [],
+  });
   getGallerySelectionMock.mockReset();
   getGallerySelectionMock.mockResolvedValue([]);
   getGalleryDetailBySlugMock.mockReset();
@@ -237,6 +241,7 @@ describe("ClientGalleryPage", () => {
     const snapshot = {
       viewerLock: { lockedAt: "2026-10-15T10:00:00.000Z", submittedAt: "2026-10-15T10:00:00.000Z" },
       lockedPickerIds: ["client-a", "client-b"],
+      submittedPickerIds: ["client-a"],
     };
     getSelectionLockSnapshotMock.mockResolvedValue(snapshot);
 
@@ -256,6 +261,7 @@ describe("ClientGalleryPage", () => {
     expect(found[0]).toMatchObject({
       initialViewerLock: snapshot.viewerLock,
       initialLockedPickerIds: snapshot.lockedPickerIds,
+      initialSubmittedPickerIds: snapshot.submittedPickerIds,
     });
   });
 

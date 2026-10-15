@@ -212,7 +212,7 @@ vi.mock("@/lib/db", async () => {
         const snapshot = galleryClientRows.map((row) => ({ ...row }));
         const gallerySnapshot = galleryRows.map((row) => ({ ...row }));
         try {
-          return await fn({ ...writeOps, select: fake.db.select });
+          return await fn({ ...writeOps, select: fake.db.select } as never);
         } catch (error) {
           galleryClientRows.length = 0;
           galleryClientRows.push(...snapshot);

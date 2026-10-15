@@ -20,35 +20,68 @@ type Table = Record<string, unknown>;
 type Leaf =
   { dbColumnName: string; op: "eq"; value: unknown } | { dbColumnName: string; op: "isNull" };
 
-function parseLeaf(node: unknown): Leaf | undefined {
-  const chunks = (node as { queryChunks?: unknown[] } | null)?.queryChunks;
-  if (!chunks) return undefined;
-  let dbColumnName: string | undefined;
-  let value: unknown;
-  let hasValue = false;
-  let isNullText = false;
-  for (const chunk of chunks) {
-    if (chunk && typeof chunk === "object") {
-      if ("name" in chunk && "table" in chunk) dbColumnName = (chunk as { name: string }).name;
-      if ("value" in chunk && "encoder" in chunk) {
-        value = (chunk as { value: unknown }).value;
-        hasValue = true;
-      }
-      const text = (chunk as { value?: unknown }).value;
-      if (Array.isArray(text) && text.join("").includes("is null")) isNullText = true;
-    }
+const isColumn = (chunk: unknown): chunk is { name: string } =>
+  !!chunk && typeof chunk === "object" && "name" in chunk && "table" in chunk;
+const isParam = (chunk: unknown): chunk is { value: unknown } =>
+  !!chunk && typeof chunk === "object" && "value" in chunk && "encoder" in chunk;
+const hasChunks = (chunk: unknown): chunk is { queryChunks: unknown[] } =>
+  !!chunk && typeof chunk === "object" && "queryChunks" in chunk;
+
+/** The SQL text of a node made ONLY of string chunks (`" and "`, `"("`, ...),
+ * or `null` when it carries a column, a parameter or anything else. */
+function textOf(node: unknown): string | null {
+  if (isColumn(node) || isParam(node)) return null;
+  if (hasChunks(node)) {
+    const parts = node.queryChunks.map(textOf);
+    return parts.some((part) => part === null) ? null : parts.join("");
   }
-  if (!dbColumnName) return undefined;
-  if (isNullText) return { dbColumnName, op: "isNull" };
-  if (hasValue) return { dbColumnName, op: "eq", value };
-  return undefined;
+  const value = (node as { value?: unknown } | null)?.value;
+  if (Array.isArray(value) && value.every((v) => typeof v === "string")) return value.join("");
+  return null;
 }
 
+function unsupported(detail: string): never {
+  throw new Error(
+    `fake db: unsupported condition (${detail}). Supported: eq(column, value), ` +
+      "isNull(column), and(...) of those. Extend src/test-support/fake-db.ts deliberately " +
+      "rather than letting a query be mis-modelled.",
+  );
+}
+
+/** Parses ONE leaf — a node with a column among its immediate chunks — and
+ * accepts exactly `col = <param>` and `col is null`. Everything else (`<>`,
+ * `is not null`, `in (...)`, `col = col`, `<`, a lone column...) throws. */
+function parseLeaf(chunks: unknown[]): Leaf {
+  const parts = chunks.filter((chunk) => textOf(chunk) !== "");
+  const [column, op, operand, ...rest] = parts;
+  if (!isColumn(column) || rest.length > 0) unsupported("leaf shape");
+  const opText = textOf(op)?.trim();
+  if (opText === "is null" && operand === undefined) {
+    return { dbColumnName: column.name, op: "isNull" };
+  }
+  if (opText === "=" && isParam(operand)) {
+    return { dbColumnName: column.name, op: "eq", value: operand.value };
+  }
+  return unsupported(`operator ${JSON.stringify(opText ?? null)}`);
+}
+
+const COMPOSITE_TEXT = new Set(["", "(", ")", " and "]);
+
 function leaves(node: unknown): Leaf[] {
-  const leaf = parseLeaf(node);
-  if (leaf) return [leaf];
-  const chunks = (node as { queryChunks?: unknown[] } | null)?.queryChunks ?? [];
-  return chunks.flatMap((chunk) => leaves(chunk));
+  if (!hasChunks(node)) unsupported("not a drizzle condition");
+  if (node.queryChunks.some(isColumn)) return [parseLeaf(node.queryChunks)];
+  const out: Leaf[] = [];
+  for (const chunk of node.queryChunks) {
+    const text = textOf(chunk);
+    if (text !== null) {
+      if (!COMPOSITE_TEXT.has(text)) unsupported(`connective ${JSON.stringify(text)}`);
+    } else if (hasChunks(chunk)) {
+      out.push(...leaves(chunk));
+    } else {
+      unsupported("bare operand outside a leaf");
+    }
+  }
+  return out;
 }
 
 function jsKeyFor(table: Table, dbColumnName: string): string {
@@ -61,9 +94,7 @@ function jsKeyFor(table: Table, dbColumnName: string): string {
 
 function matches(row: Row, table: Table, condition: unknown): boolean {
   const parsed = leaves(condition);
-  if (parsed.length === 0) {
-    throw new Error("fake db: not a supported eq()/isNull()/and(...) condition");
-  }
+  if (parsed.length === 0) unsupported("empty condition");
   return parsed.every((leaf) => {
     const value = row[jsKeyFor(table, leaf.dbColumnName)];
     return leaf.op === "isNull" ? value == null : value === leaf.value;

@@ -44,6 +44,7 @@ import {
 } from "@/lib/gallery-access-rate-limiters";
 import { validateExtraPriceTiers, type ExtraPriceTier } from "@/lib/extra-price-tiers";
 import { generateGallerySlug } from "@/lib/slug";
+import { lockGalleryRow, settleGalleryLockStatus } from "@/lib/gallery-client-locks";
 import { notifySelectionChanged } from "@/lib/selection-events";
 
 // Task #193 — a manual override of a snapshot's value.
@@ -1101,16 +1102,33 @@ export async function unlockSelection(
   const unlockedByEmail = session.user.email ?? session.user.id;
   const now = new Date();
 
-  const updated = await db
-    .update(galleries)
-    .set({
-      status: "proofing",
-      unlockedAt: now,
-      unlockedByEmail,
-      unlockReason: reason,
-    })
-    .where(and(eq(galleries.id, gallery.id), eq(galleries.status, "selected")))
-    .returning();
+  // Epic #239 — a gallery-wide unlock reopens EVERY person: the status flip
+  // and the per-client lock reset commit together or not at all. Clearing
+  // only the status would leave a `proofing` gallery full of still-locked
+  // clients, who could neither pick nor resubmit. BOTH columns are cleared
+  // (unlocking always clears both — the epic's state model), on every
+  // membership row of the gallery. The gallery row lock comes first, the same
+  // order every other writer of these columns uses (`lockGalleryRow`).
+  const updated = await db.transaction(async (tx) => {
+    await lockGalleryRow(tx, gallery.id);
+    const flipped = await tx
+      .update(galleries)
+      .set({
+        status: "proofing",
+        unlockedAt: now,
+        unlockedByEmail,
+        unlockReason: reason,
+      })
+      .where(and(eq(galleries.id, gallery.id), eq(galleries.status, "selected")))
+      .returning();
+    if (flipped.length > 0) {
+      await tx
+        .update(galleryClients)
+        .set({ selectionLockedAt: null, selectionSubmittedAt: null })
+        .where(eq(galleryClients.galleryId, gallery.id));
+    }
+    return flipped;
+  });
 
   if (updated.length === 0) {
     // Lost the race — some other call already moved this gallery out of
@@ -2077,17 +2095,31 @@ export async function removeGalleryClient(
   }
 
   const now = new Date();
-  const updated = await db
-    .update(galleryClients)
-    .set({ removedAt: now })
-    .where(
-      and(
-        eq(galleryClients.galleryId, gallery.id),
-        eq(galleryClients.userId, parsed.data.clientId),
-        isNull(galleryClients.removedAt),
-      ),
-    )
-    .returning();
+  // Epic #239 — removing a person can complete the gallery: if the removed
+  // client was the only one still choosing, everybody who remains is locked
+  // and the gallery must close (`proofing -> selected`), otherwise it would
+  // stay open forever waiting on someone who is no longer part of it. The
+  // removal and the settle share one transaction, gallery row locked first
+  // (the order every writer of these locks uses — `lockGalleryRow`).
+  let transition: Awaited<ReturnType<typeof settleGalleryLockStatus>> = null;
+  const updated = await db.transaction(async (tx) => {
+    await lockGalleryRow(tx, gallery.id);
+    const removed = await tx
+      .update(galleryClients)
+      .set({ removedAt: now })
+      .where(
+        and(
+          eq(galleryClients.galleryId, gallery.id),
+          eq(galleryClients.userId, parsed.data.clientId),
+          isNull(galleryClients.removedAt),
+        ),
+      )
+      .returning();
+    if (removed.length > 0) {
+      transition = await settleGalleryLockStatus(tx, gallery.id);
+    }
+    return removed;
+  });
 
   if (updated.length === 0) {
     // Lost a narrow race — see this function's own header comment on the
@@ -2096,6 +2128,15 @@ export async function removeGalleryClient(
       status: "error",
       message: "Ese cliente ya no está activo en esta galería — puede que ya se haya actualizado.",
     };
+  }
+
+  if (transition !== null) {
+    // The gallery changed status under every open client tab — same
+    // convergence signal the submit route and the unlock send.
+    void notifySelectionChanged(gallery.id).catch(() => {
+      // Swallowed — the 30s fallback poll is the backstop.
+    });
+    revalidatePath(`/galleries/${gallery.publicSlug}`);
   }
 
   revalidatePath(`/dashboard/galleries/${gallery.id}`);

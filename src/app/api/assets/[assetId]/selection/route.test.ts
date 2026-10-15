@@ -1114,6 +1114,52 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
     expect(db.__rows.assets[0]).toMatchObject({ isSelected: false });
   });
 
+  // Gallery scoping: the SAME users also sit in a second gallery with the
+  // OPPOSITE lock state, listed first, so a lock lookup that forgets
+  // `galleryId` reads the wrong row.
+  it("ignores locks the same users hold in ANOTHER gallery (caller lock and picker lock alike)", async () => {
+    const db = await groupGallery();
+    const LOCKED_ELSEWHERE = {
+      removedAt: null,
+      selectionLockedAt: LOCKED_AT,
+      selectionSubmittedAt: LOCKED_AT,
+    };
+    db.__rows.galleryClients.unshift(
+      { galleryId: GALLERY_B_ID, userId: "client-a", ...LOCKED_ELSEWHERE },
+      { galleryId: GALLERY_B_ID, userId: "client-b", ...LOCKED_ELSEWHERE },
+    );
+    const { PATCH } = await import("./route");
+
+    // B is locked only in the other gallery: may still deselect A's pick here.
+    authMock.mockResolvedValue(clientBSession());
+    const byB = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+    expect(byB.status).toBe(200);
+
+    // A is locked only in the other gallery: may still pick here.
+    authMock.mockResolvedValue(clientASession());
+    const byA = await PATCH(requestFor(ASSET_2_ID, true), paramsFor(ASSET_2_ID));
+    expect(byA.status).toBe(200);
+    expect(db.__rows.assets[1]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
+  });
+
+  it("still refuses B when A is locked HERE and open in another gallery", async () => {
+    const db = await groupGallery({ aLocked: true });
+    db.__rows.galleryClients.unshift({
+      galleryId: GALLERY_B_ID,
+      userId: "client-a",
+      removedAt: null,
+      selectionLockedAt: null,
+      selectionSubmittedAt: null,
+    });
+    authMock.mockResolvedValue(clientBSession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "pick_locked" });
+  });
+
   it("keeps the gallery-level gate for everyone: a selected gallery still refuses with gallery_locked", async () => {
     const db = await groupGallery({ aLocked: true, bLocked: true });
     db.__rows.galleries[0]!.status = "selected";

@@ -469,6 +469,34 @@ describe("GET /api/galleries/[galleryId]/selection — per-client lock snapshot 
     expect(body.status).toBe("proofing");
   });
 
+  it("ignores locks the same users hold in ANOTHER gallery (viewer and picker list)", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.unshift(
+      {
+        galleryId: "22222222-2222-4222-8222-222222222222",
+        userId: "client-a",
+        removedAt: null,
+        selectionLockedAt: LOCKED_AT,
+        selectionSubmittedAt: LOCKED_AT,
+      },
+      {
+        galleryId: "22222222-2222-4222-8222-222222222222",
+        userId: "client-z",
+        removedAt: null,
+        selectionLockedAt: LOCKED_AT,
+        selectionSubmittedAt: LOCKED_AT,
+      },
+    );
+    authMock.mockResolvedValue(clientASession());
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.viewerLock).toBeNull();
+    expect(body.lockedPickerIds).toEqual([]);
+  });
+
   it("reports the viewer's own lock, with their own submittedAt", async () => {
     const db = await seededDb();
     const row = db.__rows.galleryClients.find((r) => r.userId === "client-a")!;

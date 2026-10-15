@@ -676,6 +676,47 @@ describe("POST /api/galleries/[galleryId]/submit-selection — per-client lock (
     expect(db.__rows.galleries[0]).toMatchObject({ status: "selected" });
   });
 
+  // Every other fixture lives in ONE gallery, which hides a dropped
+  // `galleryId` condition. Here the SAME client also belongs to a second
+  // gallery, with the OPPOSITE lock state, listed first.
+  it("locks only THIS gallery's membership: the same client in another gallery stays untouched", async () => {
+    const db = await seededDb();
+    const OTHER = "22222222-2222-4222-8222-222222222222";
+    db.__rows.galleryClients.unshift(membership(CLIENT_ID, { galleryId: OTHER }));
+    authMock.mockResolvedValue(clientSession());
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(200);
+    expect(
+      db.__rows.galleryClients.find((r) => r.galleryId === OTHER && r.userId === CLIENT_ID),
+    ).toMatchObject({ selectionLockedAt: null, selectionSubmittedAt: null });
+    expect(
+      db.__rows.galleryClients.find((r) => r.galleryId === GALLERY_ID && r.userId === CLIENT_ID),
+    ).toMatchObject({ selectionLockedAt: expect.any(Date) });
+  });
+
+  it("reads the caller's lock in THIS gallery: being locked in another gallery does not make a first submit here idempotent", async () => {
+    const db = await seededDb();
+    const OTHER = "22222222-2222-4222-8222-222222222222";
+    const lockedAt = new Date("2026-10-01T10:00:00.000Z");
+    db.__rows.galleryClients.unshift(
+      membership(CLIENT_ID, {
+        galleryId: OTHER,
+        selectionLockedAt: lockedAt,
+        selectionSubmittedAt: lockedAt,
+      }),
+    );
+    authMock.mockResolvedValue(clientSession());
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    await expect(response.json()).resolves.toMatchObject({ status: "submitted" });
+    expect(sendSubmissionNotificationEmailMock).toHaveBeenCalledTimes(1);
+  });
+
   it("refuses an admin with 409 admin_cannot_submit — there is no membership to lock — and changes nothing", async () => {
     const db = await twoClientGallery();
     authMock.mockResolvedValue(adminSession());

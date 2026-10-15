@@ -197,3 +197,53 @@ describe("settleGalleryLockStatus", () => {
     await expect(settle()).resolves.toBeNull();
   });
 });
+
+// Every fixture above lives in ONE gallery, which hides a dropped
+// `galleryId` condition (the query would still find the right rows by
+// accident). These put the SAME user ids in a SECOND gallery with the
+// OPPOSITE lock state, and list the other gallery's rows FIRST so a query that
+// forgets to scope returns them before the right ones.
+describe("gallery scoping — the same users in another gallery with the opposite state", () => {
+  const OTHER_GALLERY_ID = "22222222-2222-4222-8222-222222222222";
+  const other = (userId: string, overrides: Record<string, unknown> = {}) =>
+    member(userId, { galleryId: OTHER_GALLERY_ID, ...overrides });
+
+  it("getClientLock reads the lock of THIS gallery, not the same user's lock in another", async () => {
+    clientRows().push(other("a", locked), member("a"));
+
+    await expect(getClientLock(db, GALLERY_ID, "a")).resolves.toEqual({
+      lockedAt: null,
+      submittedAt: null,
+    });
+  });
+
+  it("getSelectionLockSnapshot ignores another gallery's locks, for the viewer and for the picker list", async () => {
+    clientRows().push(other("a", locked), other("b", locked), member("a"), member("b"));
+
+    await expect(getSelectionLockSnapshot(GALLERY_ID, "a")).resolves.toEqual({
+      viewerLock: null,
+      lockedPickerIds: [],
+    });
+  });
+
+  it("settle closes this gallery even though the same user is still OPEN in another gallery", async () => {
+    clientRows().push(other("a"), member("a", locked));
+
+    await expect(settle()).resolves.toBe("selected");
+  });
+
+  it("settle keeps a selected gallery selected even though the same user is open elsewhere, and reopens only for an unlocked member of THIS gallery", async () => {
+    galleryRows()[0]!.status = "selected";
+    clientRows().push(other("a"), member("a", locked));
+
+    await expect(settle()).resolves.toBeNull();
+    expect(galleryRows()[0]).toMatchObject({ status: "selected" });
+  });
+
+  it("settle does not stay open because another gallery's locked member shares an id with an open one here", async () => {
+    clientRows().push(other("b", locked), member("a", locked), member("b"));
+
+    await expect(settle()).resolves.toBeNull();
+    expect(galleryRows()[0]).toMatchObject({ status: "proofing" });
+  });
+});

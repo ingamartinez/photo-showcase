@@ -259,6 +259,7 @@ export default async function ClientGalleryPage({
         initialPicks={initialPicks}
         initialViewerLock={lockSnapshot.viewerLock}
         initialLockedPickerIds={lockSnapshot.lockedPickerIds}
+        initialSubmittedPickerIds={lockSnapshot.submittedPickerIds}
         // The submit route refuses admins (`admin_cannot_submit`), so the
         // previewing photographer gets a note instead of a dead button.
         isAdminPreview={isAdminPreviewingClientGallery(session)}

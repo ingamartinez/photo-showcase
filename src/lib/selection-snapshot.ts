@@ -95,6 +95,10 @@ export type SelectionLockSnapshot = {
   /** User ids of every ACTIVE client who is locked — their picks are frozen
    * for everybody else. Includes the viewer when locked. */
   lockedPickerIds: string[];
+  /** The subset of `lockedPickerIds` who pressed "Enviar selección"
+   * themselves. The rest of the locked ones were closed by the photographer
+   * (`selectionSubmittedAt` is null), which the tray words differently. */
+  submittedPickerIds: string[];
 };
 
 /** Copy shown when a pick carries no attribution at all — see

@@ -231,5 +231,6 @@ export const GET = withApiSession(async function GET(
     picks,
     viewerLock: lockSnapshot.viewerLock,
     lockedPickerIds: lockSnapshot.lockedPickerIds,
+    submittedPickerIds: lockSnapshot.submittedPickerIds,
   });
 });

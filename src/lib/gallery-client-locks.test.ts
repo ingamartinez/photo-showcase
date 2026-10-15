@@ -79,6 +79,7 @@ describe("getSelectionLockSnapshot", () => {
     await expect(getSelectionLockSnapshot(GALLERY_ID, "a")).resolves.toEqual({
       viewerLock: null,
       lockedPickerIds: ["b"],
+      submittedPickerIds: ["b"],
     });
   });
 
@@ -88,15 +89,30 @@ describe("getSelectionLockSnapshot", () => {
     await expect(getSelectionLockSnapshot(GALLERY_ID, "a")).resolves.toEqual({
       viewerLock: { lockedAt: LOCKED_AT.toISOString(), submittedAt: null },
       lockedPickerIds: ["a"],
+      submittedPickerIds: [],
     });
   });
 
-  it("never reports a removed client as a locked picker", async () => {
+  it("splits submitted from photographer-locked pickers, and omits open ones from both", async () => {
+    clientRows().push(
+      member("a"),
+      member("sub", locked),
+      member("adm", { selectionLockedAt: LOCKED_AT }),
+    );
+
+    const snapshot = await getSelectionLockSnapshot(GALLERY_ID, "a");
+
+    expect(snapshot.lockedPickerIds).toEqual(["sub", "adm"]);
+    expect(snapshot.submittedPickerIds).toEqual(["sub"]);
+  });
+
+  it("never reports a removed client as a locked or submitted picker", async () => {
     clientRows().push(member("a"), member("gone", { ...locked, removedAt: new Date() }));
 
     const snapshot = await getSelectionLockSnapshot(GALLERY_ID, "a");
 
     expect(snapshot.lockedPickerIds).toEqual([]);
+    expect(snapshot.submittedPickerIds).toEqual([]);
   });
 
   it("gives an admin (no membership at all) a null viewerLock", async () => {
@@ -104,7 +120,11 @@ describe("getSelectionLockSnapshot", () => {
 
     const snapshot = await getSelectionLockSnapshot(GALLERY_ID, "admin-1");
 
-    expect(snapshot).toEqual({ viewerLock: null, lockedPickerIds: ["a"] });
+    expect(snapshot).toEqual({
+      viewerLock: null,
+      lockedPickerIds: ["a"],
+      submittedPickerIds: ["a"],
+    });
   });
 });
 
@@ -223,7 +243,21 @@ describe("gallery scoping — the same users in another gallery with the opposit
     await expect(getSelectionLockSnapshot(GALLERY_ID, "a")).resolves.toEqual({
       viewerLock: null,
       lockedPickerIds: [],
+      submittedPickerIds: [],
     });
+  });
+
+  it("getSelectionLockSnapshot does not take another gallery's submission as this gallery's (admin-locked here, submitted there)", async () => {
+    clientRows().push(
+      other("b", locked),
+      member("b", { selectionLockedAt: LOCKED_AT }),
+      member("a"),
+    );
+
+    const snapshot = await getSelectionLockSnapshot(GALLERY_ID, "a");
+
+    expect(snapshot.lockedPickerIds).toEqual(["b"]);
+    expect(snapshot.submittedPickerIds).toEqual([]);
   });
 
   it("settle closes this gallery even though the same user is still OPEN in another gallery", async () => {

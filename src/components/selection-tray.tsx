@@ -263,6 +263,10 @@ export function SelectionTray({
   isLocked,
   isStale,
   allowsOriginalSelection,
+  lockedPickerIds = [],
+  submittedPickerIds = [],
+  lockedByAdmin = false,
+  isGalleryLocked = isLocked,
   onOpenAsset,
   onImageError,
 }: {
@@ -301,6 +305,22 @@ export function SelectionTray({
    * — but this component does not trust its callers to guarantee that; see
    * `showType`'s own computation below). */
   allowsOriginalSelection: boolean;
+  /** Epic #239 — user ids of the people who already submitted (or were
+   * locked). Their group gets a small "envió" marker: their picks are frozen
+   * for everybody else. Includes the viewer when locked. */
+  lockedPickerIds?: string[];
+  /** Epic #239 — the subset of `lockedPickerIds` who submitted themselves.
+   * Only these get the "envió" marker; the other locked people were closed by
+   * the photographer and get "cerrada". Both stay frozen. */
+  submittedPickerIds?: string[];
+  /** Epic #239 — the VIEWER was locked by the photographer without ever
+   * submitting, so the note must not claim they sent anything. */
+  lockedByAdmin?: boolean;
+  /** Epic #239 — the gallery itself is past `proofing`. Defaults to
+   * `isLocked`. When `isLocked` is true but this is false, only THIS viewer is
+   * locked and the others are still choosing, so the note must not say the
+   * whole selection was sent. */
+  isGalleryLocked?: boolean;
   onOpenAsset: (assetId: string) => void;
   /** `<ProofGrid>`'s own `refreshUrl` — the SAME one-shot re-sign the grid
    * tiles and the lightbox already use, sharing the same `refreshedAssetIds`
@@ -509,7 +529,13 @@ export function SelectionTray({
           both inert to assistive tech AND unreachable by Tab. */}
       <div id={listRegionId} hidden={isCollapsed}>
         {isLocked ? (
-          <p className="text-fg-mute mb-2 text-xs">La selección ya fue enviada.</p>
+          <p className="text-fg-mute mb-2 text-xs">
+            {isGalleryLocked
+              ? "La selección ya fue enviada."
+              : lockedByAdmin
+                ? "Tu fotógrafo cerró tu selección. Los demás todavía están eligiendo."
+                : "Tu selección ya fue enviada. Los demás todavía están eligiendo."}
+          </p>
         ) : (
           <p className={`text-fg-mute mb-2 text-xs ${hasPicks ? "" : "max-lg:hidden"}`}>
             Se actualiza sola con lo que elijan los demás.
@@ -553,6 +579,14 @@ export function SelectionTray({
                 >
                   {group.label}{" "}
                   <span className="text-fg-mute font-normal">({group.picks.length})</span>
+                  {/* Epic #239 — this person submitted: their picks are
+                      frozen for everybody. Matched by id (the group key),
+                      never by label. Plain text, no new chrome. */}
+                  {lockedPickerIds.includes(group.key) && (
+                    <span className="text-accent ml-2 text-xs font-normal">
+                      {submittedPickerIds.includes(group.key) ? "envió" : "cerrada"}
+                    </span>
+                  )}
                 </p>
                 <ul className="flex flex-wrap gap-3">
                   {group.picks.map((pick) => (

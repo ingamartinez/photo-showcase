@@ -1044,4 +1044,73 @@ describe("SelectionTray — compact chrome (task #236)", () => {
       "max-lg:hidden",
     );
   });
+
+  // Epic #239 (task #241).
+  describe("per-person lock", () => {
+    // Two people who SHARE a display name: only the id may decide who "envió".
+    const twin1 = { id: "client-b", label: "Beto Ruiz" };
+    const twin2 = { id: "client-c", label: "Beto Ruiz" };
+
+    it("marks only the group whose id is locked, even when another person has the same name", () => {
+      renderTray({
+        mode: "by-person",
+        picks: [pick({ assetId: "a1", pickedBy: twin1 }), pick({ assetId: "a2", pickedBy: twin2 })],
+        lockedPickerIds: ["client-c"],
+        submittedPickerIds: ["client-c"],
+      });
+
+      expect(screen.getAllByText("envió")).toHaveLength(1);
+      // Both group headers read "Beto Ruiz (1)"; exactly one carries the marker.
+      const headers = screen
+        .getAllByText(/Beto Ruiz/, { selector: "p" })
+        .filter((node) => node.textContent?.includes("(1)"));
+      expect(headers).toHaveLength(2);
+      expect(headers.filter((header) => header.textContent?.includes("envió"))).toHaveLength(1);
+    });
+
+    it("marks a submitter 'envió' and a photographer-locked person 'cerrada', never the reverse", () => {
+      renderTray({
+        mode: "by-person",
+        picks: [pick({ assetId: "a1", pickedBy: twin1 }), pick({ assetId: "a2", pickedBy: twin2 })],
+        lockedPickerIds: ["client-b", "client-c"],
+        submittedPickerIds: ["client-c"],
+      });
+
+      expect(screen.getAllByText("envió")).toHaveLength(1);
+      expect(screen.getAllByText("cerrada")).toHaveLength(1);
+      expect(screen.getByText("envió").parentElement?.textContent).toBe("Beto Ruiz (1)envió");
+      expect(screen.getByText("cerrada").parentElement?.textContent).toBe("Beto Ruiz (1)cerrada");
+    });
+
+    it("shows no marker when nobody is locked", () => {
+      renderTray({ mode: "by-person", picks: [pick()], lockedPickerIds: [] });
+
+      expect(screen.queryByText("envió")).toBeNull();
+      expect(screen.queryByText("cerrada")).toBeNull();
+    });
+
+    it("tells a photographer-locked viewer their selection was closed, never that it was sent", () => {
+      renderTray({ picks: [pick()], isLocked: true, isGalleryLocked: false, lockedByAdmin: true });
+
+      expect(
+        screen.getByText("Tu fotógrafo cerró tu selección. Los demás todavía están eligiendo."),
+      ).toBeDefined();
+      expect(screen.queryByText(/ya fue enviada/)).toBeNull();
+    });
+
+    it("says only the viewer's selection was sent when they are locked but the gallery is not", () => {
+      renderTray({ picks: [pick()], isLocked: true, isGalleryLocked: false });
+
+      expect(
+        screen.getByText("Tu selección ya fue enviada. Los demás todavía están eligiendo."),
+      ).toBeDefined();
+      expect(screen.queryByText("La selección ya fue enviada.")).toBeNull();
+    });
+
+    it("keeps the gallery-wide wording when the gallery itself is locked", () => {
+      renderTray({ picks: [pick()], isLocked: true, isGalleryLocked: true });
+
+      expect(screen.getByText("La selección ya fue enviada.")).toBeDefined();
+    });
+  });
 });

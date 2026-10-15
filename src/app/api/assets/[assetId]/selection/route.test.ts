@@ -18,147 +18,26 @@ vi.mock("@/lib/selection-events", () => ({
   notifySelectionChanged: (...args: [string]) => notifySelectionChangedMock(...args),
 }));
 
-// A minimal, genuinely-behaving double for `@/lib/db` — same
-// `eqColumnAndValue` (the CORRECTED version, see
-// src/app/api/galleries/[galleryId]/proofs/route.test.ts's comment) plus a
-// real `update`. `where()` on `assets` returns an object that is both
-// directly awaitable (a plain `.select().from().where(cond)` with no further
-// chained call, the shape this route's re-read query uses) AND still
-// supports `.limit()` (the shape `loadOwnedAsset` uses) — mirroring how the
-// real drizzle query builder is itself thenable. `@/lib/asset-access` is
-// deliberately left UNMOCKED: this suite exercises the real ownership check
-// end to end through the route, same reasoning as every sibling asset route
-// test.
-type Row = Record<string, unknown>;
-
-// Resolves EVERY `eq()` this condition is built from, however deep — a bare
-// `eq()` at the top level, or several nested inside an `and(...)` (drizzle
-// wraps `and(eqA, eqB)` in an EXTRA parens/`" and "` SQL node one level
-// deeper than a flat `queryChunks` array). Task #94's `isGalleryOwner`
-// (src/lib/gallery-access.ts) is the first caller in this suite to need the
-// `and(eq(), eq())` shape at all — every prior `eq()`-only condition here
-// still resolves to a single-element list.
-function eqConditions(condition: unknown): { column?: string; value?: unknown }[] {
-  const results: { column?: string; value?: unknown }[] = [];
-  function walk(node: unknown) {
-    if (!node || typeof node !== "object") return;
-    const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
-    if (!chunks) return;
-    let dbColumnName: string | undefined;
-    let table: unknown;
-    let value: unknown;
-    for (const chunk of chunks) {
-      if (chunk && typeof chunk === "object") {
-        if ("name" in chunk && "table" in chunk) {
-          dbColumnName = (chunk as { name: string }).name;
-          table = (chunk as { table: unknown }).table;
-        }
-        if ("value" in chunk && "encoder" in chunk) value = (chunk as { value: unknown }).value;
-      }
-    }
-    if (dbColumnName && table) {
-      const jsKey = Object.entries(table as Record<string, unknown>).find(
-        ([, col]) =>
-          col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
-      )?.[0];
-      results.push({ column: jsKey, value });
-      return;
-    }
-    for (const chunk of chunks) walk(chunk);
-  }
-  walk(condition);
-  return results;
-}
-
+// The shared in-memory double (src/test-support/fake-db.ts) — filters for real
+// off eq()/isNull()/and(), supports `transaction()` and `for("update")`.
 vi.mock("@/lib/db", async () => {
   const { assets, galleries, galleryClients, users } = await import("@/lib/db/schema");
-
-  const assetRows: Row[] = [];
-  const galleryRows: Row[] = [];
-  const galleryClientRows: Row[] = [];
-  const userRows: Row[] = [];
-
-  function project(row: Row, columns: Record<string, unknown> | undefined): Row {
-    if (!columns) return row;
-    const projected: Row = {};
-    for (const key of Object.keys(columns)) projected[key] = row[key];
-    return projected;
-  }
-
-  function rowsFor(table: unknown): Row[] {
-    if (table === assets) return assetRows;
-    if (table === galleries) return galleryRows;
-    if (table === galleryClients) return galleryClientRows;
-    // Task #206 — the type-only-change branch looks up a DIFFERENT picker's
-    // name when the acting session isn't the original one; see this route's
-    // own comment on why it never substitutes the acting session's name.
-    if (table === users) return userRows;
-    throw new Error("fake db: unsupported table in select().where()");
-  }
-
-  function selectFrom(columns: Record<string, unknown> | undefined, table: unknown) {
-    return {
-      where: (condition: unknown) => {
-        const conditions = eqConditions(condition);
-        if (conditions.length === 0 || conditions.some((c) => !c.column)) {
-          throw new Error("eqConditions: not a supported eq()/and(eq(), eq()) condition");
-        }
-        const matches = (r: Row) => conditions.every(({ column, value }) => r[column!] === value);
-
-        if (table === assets) {
-          const rows = assetRows.filter(matches).map((r) => project(r, columns));
-          const resultPromise = Promise.resolve(rows);
-          return {
-            limit: async (n: number) => rows.slice(0, n),
-            then: resultPromise.then.bind(resultPromise),
-            catch: resultPromise.catch.bind(resultPromise),
-          };
-        }
-        // Round-2 review finding: this branch used to skip `project()`
-        // entirely, so a query reading a column it never selected (or a
-        // typo'd alias) would pass here regardless — `assets`' own branch
-        // above already projected; the other tables (this route's own
-        // `users` lookup is the first non-`assets` caller through here) must
-        // too.
-        const rows = rowsFor(table)
-          .filter(matches)
-          .map((r) => project(r, columns));
-        return { limit: async (n: number) => rows.slice(0, n) };
-      },
-    };
-  }
-
+  const { createFakeDb } = await import("@/test-support/fake-db");
+  const fake = createFakeDb([assets, galleries, galleryClients, users]);
+  // Test-only escape hatch, not part of the real `db` shape.
   return {
-    db: {
-      select: (columns?: Record<string, unknown>) => ({
-        from: (table: unknown) => selectFrom(columns, table),
-      }),
-      update: (table: unknown) => ({
-        set: (patch: Row) => ({
-          where: async (condition: unknown) => {
-            if (table !== assets) throw new Error("fake db: unsupported table in update()");
-            const conditions = eqConditions(condition);
-            if (conditions.length === 0 || conditions.some((c) => !c.column)) {
-              throw new Error("eqConditions: not a supported eq()/and(eq(), eq()) condition");
-            }
-            for (const row of assetRows) {
-              if (conditions.every(({ column, value }) => row[column!] === value)) {
-                Object.assign(row, patch);
-              }
-            }
-          },
-        }),
-      }),
-      // Test-only escape hatch, not part of the real `db` shape.
+    db: Object.assign(fake, {
       __rows: {
-        assets: assetRows,
-        galleries: galleryRows,
-        galleryClients: galleryClientRows,
-        users: userRows,
+        assets: fake.__tables.get(assets)!,
+        galleries: fake.__tables.get(galleries)!,
+        galleryClients: fake.__tables.get(galleryClients)!,
+        users: fake.__tables.get(users)!,
       },
-    },
+    }),
   };
 });
+
+type Row = Record<string, unknown>;
 
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
@@ -1086,6 +965,214 @@ describe("PATCH /api/assets/[assetId]/selection — allowsOriginalSelection is O
 // `ASSET_MUTATION_BLOCKED_STATUSES`, checked here by reference (`toBe`, not
 // `toEqual`) so a future refactor that reintroduces a second `new Set([...])`
 // literal fails this assertion immediately.
+// Epic #239 — the lock is per PERSON. Fixture: client-a and client-b share
+// the gallery; ASSET_1 is picked by client-a (`edited`), ASSET_2 is unpicked.
+describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)", () => {
+  const LOCKED_AT = new Date("2026-10-15T10:00:00.000Z");
+
+  async function groupGallery(
+    options: { aLocked?: boolean; aRemoved?: boolean; bLocked?: boolean } = {},
+  ) {
+    const db = await seededDb();
+    db.__rows.galleryClients.length = 0;
+    db.__rows.galleryClients.push(
+      {
+        galleryId: GALLERY_A_ID,
+        userId: "client-a",
+        removedAt: options.aRemoved ? new Date("2026-09-01") : null,
+        selectionLockedAt: options.aLocked ? LOCKED_AT : null,
+        selectionSubmittedAt: options.aLocked ? LOCKED_AT : null,
+      },
+      {
+        galleryId: GALLERY_A_ID,
+        userId: "client-b",
+        removedAt: null,
+        selectionLockedAt: options.bLocked ? LOCKED_AT : null,
+        selectionSubmittedAt: options.bLocked ? LOCKED_AT : null,
+      },
+    );
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(
+      assetRow({
+        id: ASSET_1_ID,
+        isSelected: true,
+        selectedBy: "client-a",
+        selectedAt: new Date("2026-10-15T09:00:00.000Z"),
+      }),
+      assetRow({ id: ASSET_2_ID, sortOrder: 1 }),
+    );
+    return db;
+  }
+
+  it("refuses B deselecting a pick of the LOCKED A with 409 pick_locked, leaving the pick intact", async () => {
+    const db = await groupGallery({ aLocked: true });
+    authMock.mockResolvedValue(clientBSession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "pick_locked" });
+    expect(db.__rows.assets[0]).toMatchObject({
+      isSelected: true,
+      selectedBy: "client-a",
+      selectionKind: "edited",
+    });
+    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses B re-typing a pick of the LOCKED A (type-only change) with 409 pick_locked", async () => {
+    const db = await groupGallery({ aLocked: true });
+    authMock.mockResolvedValue(clientBSession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "pick_locked" });
+    expect(db.__rows.assets[0]).toMatchObject({ selectionKind: "edited" });
+  });
+
+  it("refuses B re-selecting A's locked pick (which would take over selectedBy) with 409 pick_locked", async () => {
+    const db = await groupGallery({ aLocked: true });
+    authMock.mockResolvedValue(clientBSession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "pick_locked" });
+    expect(db.__rows.assets[0]).toMatchObject({ selectedBy: "client-a" });
+  });
+
+  it("refuses the LOCKED A toggling anything, even an unpicked photo, with 409 client_selection_locked", async () => {
+    const db = await groupGallery({ aLocked: true });
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    const onOwnPick = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+    const onNewPhoto = await PATCH(requestFor(ASSET_2_ID, true), paramsFor(ASSET_2_ID));
+
+    for (const response of [onOwnPick, onNewPhoto]) {
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({ error: "client_selection_locked" });
+    }
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: true });
+    expect(db.__rows.assets[1]).toMatchObject({ isSelected: false });
+  });
+
+  it("lets the still-open B keep picking while A is locked", async () => {
+    const db = await groupGallery({ aLocked: true });
+    authMock.mockResolvedValue(clientBSession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_2_ID, true), paramsFor(ASSET_2_ID));
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assets[1]).toMatchObject({ isSelected: true, selectedBy: "client-b" });
+  });
+
+  it("still lets B deselect A's pick while A is NOT locked (the shared board is unchanged for open clients)", async () => {
+    const db = await groupGallery();
+    authMock.mockResolvedValue(clientBSession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: false, selectedBy: null });
+  });
+
+  it("lets an ADMIN deselect and re-type the picks of a locked client (the photographer edits submitted picks)", async () => {
+    const db = await groupGallery({ aLocked: true });
+    authMock.mockResolvedValue(adminSession());
+    const { PATCH } = await import("./route");
+
+    const retype = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+    expect(retype.status).toBe(200);
+    expect(db.__rows.assets[0]).toMatchObject({ selectionKind: "original" });
+
+    const deselect = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+    expect(deselect.status).toBe(200);
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: false, selectedBy: null });
+  });
+
+  it("does not let a REMOVED client's old lock freeze their picks: B may deselect them", async () => {
+    const db = await groupGallery({ aLocked: true, aRemoved: true });
+    authMock.mockResolvedValue(clientBSession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: false });
+  });
+
+  // Gallery scoping: the SAME users also sit in a second gallery with the
+  // OPPOSITE lock state, listed first, so a lock lookup that forgets
+  // `galleryId` reads the wrong row.
+  it("ignores locks the same users hold in ANOTHER gallery (caller lock and picker lock alike)", async () => {
+    const db = await groupGallery();
+    const LOCKED_ELSEWHERE = {
+      removedAt: null,
+      selectionLockedAt: LOCKED_AT,
+      selectionSubmittedAt: LOCKED_AT,
+    };
+    db.__rows.galleryClients.unshift(
+      { galleryId: GALLERY_B_ID, userId: "client-a", ...LOCKED_ELSEWHERE },
+      { galleryId: GALLERY_B_ID, userId: "client-b", ...LOCKED_ELSEWHERE },
+    );
+    const { PATCH } = await import("./route");
+
+    // B is locked only in the other gallery: may still deselect A's pick here.
+    authMock.mockResolvedValue(clientBSession());
+    const byB = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+    expect(byB.status).toBe(200);
+
+    // A is locked only in the other gallery: may still pick here.
+    authMock.mockResolvedValue(clientASession());
+    const byA = await PATCH(requestFor(ASSET_2_ID, true), paramsFor(ASSET_2_ID));
+    expect(byA.status).toBe(200);
+    expect(db.__rows.assets[1]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
+  });
+
+  it("still refuses B when A is locked HERE and open in another gallery", async () => {
+    const db = await groupGallery({ aLocked: true });
+    db.__rows.galleryClients.unshift({
+      galleryId: GALLERY_B_ID,
+      userId: "client-a",
+      removedAt: null,
+      selectionLockedAt: null,
+      selectionSubmittedAt: null,
+    });
+    authMock.mockResolvedValue(clientBSession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "pick_locked" });
+  });
+
+  it("keeps the gallery-level gate for everyone: a selected gallery still refuses with gallery_locked", async () => {
+    const db = await groupGallery({ aLocked: true, bLocked: true });
+    db.__rows.galleries[0]!.status = "selected";
+    authMock.mockResolvedValue(adminSession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "gallery_locked" });
+  });
+});
+
 describe("SELECTION_LOCKED_STATUSES — single shared definition (task #58)", () => {
   it("is reference-identical to the shared ASSET_MUTATION_BLOCKED_STATUSES", async () => {
     const { SELECTION_LOCKED_STATUSES } = await import("./route");

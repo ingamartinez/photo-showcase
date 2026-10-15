@@ -38,7 +38,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SubmitSelectionOutcome } from "@/components/submit-selection-panel";
 import { computeQuota, type QuotaResult } from "@/lib/quota";
-import type { SelectionKind, SelectionPick, SelectionPicker } from "@/lib/selection-snapshot";
+import type {
+  SelectionKind,
+  SelectionPick,
+  SelectionPicker,
+  ViewerLock,
+} from "@/lib/selection-snapshot";
 
 // Hand-rolled, not imported from `@/lib/db/schema`'s `Gallery["status"]`:
 // even a type-only import is erased at compile time and technically safe
@@ -123,6 +128,12 @@ type SelectionSnapshot = {
   submittedAt: string | null;
   quota: QuotaResult;
   picks: SelectionPick[];
+  // Epic #239 — per-person lock state. Optional only so an older server (or a
+  // test double) that omits them reads as "nobody locked"; the real route
+  // always sends both.
+  viewerLock?: ViewerLock | null;
+  lockedPickerIds?: string[];
+  submittedPickerIds?: string[];
 };
 
 /** The two fields of `ProofAsset` (src/components/proof-grid.tsx) this hook
@@ -134,6 +145,24 @@ export type SharedSelectionAsset = {
   isSelected: boolean;
 };
 
+// Epic #239 — the PATCH selection route's lock refusals. All three mean "the
+// board changed under you" (somebody just submitted, or an admin locked a
+// person), so the right response is a calm sentence AND a snapshot refresh so
+// the controls catch up — not the generic "no se pudo actualizar" red flag.
+const LOCK_REFUSALS: Record<string, string> = {
+  client_selection_locked: "Tu selección ya está cerrada, así que no se puede cambiar.",
+  pick_locked: "Esa foto es de alguien que ya envió su selección, así que no se puede cambiar.",
+  gallery_locked: "La selección ya fue enviada, así que no se puede cambiar.",
+};
+
+/** The calm message for a 409 lock refusal, or `null` for any other failure.
+ * Reads the body defensively: a non-JSON error is simply "not a lock refusal". */
+async function lockRefusalMessage(response: Response): Promise<string | null> {
+  if (response.status !== 409) return null;
+  const body = (await response.json().catch(() => null)) as { error?: string } | null;
+  return (body?.error && LOCK_REFUSALS[body.error]) || null;
+}
+
 export function useSharedSelection({
   galleryId,
   initialAssets,
@@ -144,6 +173,10 @@ export function useSharedSelection({
   extraPhotoPriceCopSnapshot,
   extraPhotoPriceTiersSnapshot,
   originalPhotoPriceCopSnapshot,
+  viewerId,
+  initialViewerLock = null,
+  initialLockedPickerIds = [],
+  initialSubmittedPickerIds = [],
 }: {
   galleryId: string;
   initialAssets: SharedSelectionAsset[];
@@ -164,6 +197,16 @@ export function useSharedSelection({
   // at every call site that doesn't supply it, rather than a comment asking
   // nicely for it.
   originalPhotoPriceCopSnapshot: number;
+  // Epic #239 (task #241) — the signed-in user's id, so a submit by THIS
+  // session can add itself to `lockedPickerIds` without waiting for a poll.
+  viewerId: string;
+  // Epic #239 — the viewer's OWN lock and whose picks are frozen, as of the
+  // server render. After the first paint both are replaced wholesale by each
+  // accepted snapshot, so an admin unlocking this person reopens the controls
+  // with no reload.
+  initialViewerLock?: ViewerLock | null;
+  initialLockedPickerIds?: string[];
+  initialSubmittedPickerIds?: string[];
 }) {
   // `is_selected` per asset. Seeded from the initial server-rendered paint,
   // then only ever overwritten by a toggle response's own `asset.isSelected`
@@ -229,7 +272,22 @@ export function useSharedSelection({
   // in BOTH directions: an admin unlocking a submitted selection (task #73)
   // reopens every open tab on the next tick, which used to need a reload.
   const [status, setStatus] = useState<GalleryStatus>(initialStatus);
-  const isLocked = SUBMITTED_STATUSES.has(status);
+  // Epic #239 — the lock is now TWO facts. `isGalleryLocked` is the gallery
+  // being past `proofing` (everybody is done, or it was delivered). The
+  // VIEWER's own lock is `viewerLock` from the server snapshot: non-null means
+  // this person submitted (or an admin locked them) and may not change picks
+  // even though the gallery is still `proofing` for the others. Never derive
+  // "viewer submitted" from `galleries.selectionSubmittedAt`: reopening does
+  // not clear it, `viewerLock` is the truth.
+  const [viewerLock, setViewerLock] = useState<ViewerLock | null>(initialViewerLock);
+  const [lockedPickerIds, setLockedPickerIds] = useState<string[]>(initialLockedPickerIds);
+  // The subset of `lockedPickerIds` who submitted themselves (the rest were
+  // closed by the photographer).
+  const [submittedPickerIds, setSubmittedPickerIds] = useState<string[]>(initialSubmittedPickerIds);
+  const isGalleryLocked = SUBMITTED_STATUSES.has(status);
+  const isViewerLocked = viewerLock !== null;
+  // What every control gates on: either lock freezes THIS viewer's controls.
+  const isLocked = isGalleryLocked || isViewerLocked;
   const [submittedAt, setSubmittedAt] = useState<string | null>(initialSubmittedAt);
   // `toggleSelection` below is a `useCallback` with an EMPTY dependency
   // array (deliberate — see its own existing comments on why the guards
@@ -359,7 +417,11 @@ export function useSharedSelection({
     if (issuedAtClock <= lastLocalWriteClockRef.current) return;
 
     setStatus(snapshot.status);
-    isLockedRef.current = SUBMITTED_STATUSES.has(snapshot.status);
+    const nextViewerLock = snapshot.viewerLock ?? null;
+    isLockedRef.current = SUBMITTED_STATUSES.has(snapshot.status) || nextViewerLock !== null;
+    setViewerLock(nextViewerLock);
+    setLockedPickerIds(snapshot.lockedPickerIds ?? []);
+    setSubmittedPickerIds(snapshot.submittedPickerIds ?? []);
     setSubmittedAt(snapshot.submittedAt);
     setPicks(snapshot.picks);
 
@@ -597,81 +659,94 @@ export function useSharedSelection({
     };
   }, [galleryId, status, requestRefresh]);
 
-  const toggleSelection = useCallback(async (assetId: string, nextSelected: boolean) => {
-    // UX-only mirror of the PATCH route's own server-side lock — a click
-    // that somehow still reaches here (a stale render, a race with
-    // `handleSubmitted` below) would get refused with a 409 anyway; this
-    // just avoids firing the request at all once the UI already knows the
-    // answer.
-    if (isLockedRef.current) return;
-    if (pendingIdsRef.current.has(assetId)) return;
-    pendingIdsRef.current.add(assetId);
-    setPendingIds(new Set(pendingIdsRef.current));
-    setToggleError(null);
-
-    const sequence = ++quotaSequenceRef.current;
-    try {
-      const response = await fetch(`/api/assets/${assetId}/selection`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selected: nextSelected }),
-      });
-      if (!response.ok) {
-        setToggleError("No se pudo actualizar la selección.");
-        return;
-      }
-      const body = (await response.json()) as SelectionResponse;
-      // The asset's own confirmed flag — no sequencing needed, see
-      // `quotaSequenceRef`'s own comment above for why.
-      setSelectionById((prev) => ({ ...prev, [body.asset.id]: body.asset.isSelected }));
-
-      // Task #95: the tray moves the photo the instant the server confirms
-      // it, not one poll interval later — waiting up to 5 seconds to see your
-      // OWN click take effect would read as the app being broken. Every field
-      // written here comes from the response (`isSelected`, `selectedAt`,
-      // `pickedBy`, `selectionKind`), never guessed: this is the same row the
-      // route just wrote, reported back by the route that wrote it (task
-      // #206's own "always `edited` on a fresh select" rule lives in that
-      // route, not here). The next accepted snapshot replaces the whole list
-      // anyway.
-      //
-      // Removed-then-appended on select rather than sorted: the server orders
-      // by `selected_at` ascending, and a pick made now IS the newest, so
-      // appending reproduces the server's own order without re-sorting a list
-      // whose other timestamps this hook never re-reads.
-      setPicks((prev) => {
-        const without = prev.filter((pick) => pick.assetId !== body.asset.id);
-        if (!body.asset.isSelected) return without;
-        return [
-          ...without,
-          {
-            assetId: body.asset.id,
-            selectedAt: body.asset.selectedAt,
-            pickedBy: body.asset.pickedBy,
-            selectionKind: body.asset.selectionKind,
-          },
-        ];
-      });
-
-      // This session now holds a write the server has confirmed. Any snapshot
-      // ISSUED at or before this moment is a photograph of the past and must
-      // not be applied over it — see the LIVE SYNC section above.
-      lastLocalWriteClockRef.current = quotaSequenceRef.current;
-
-      // The server's own recomputed quota — only applied if no LATER-issued
-      // toggle's response (or accepted snapshot) has already been applied. See
-      // the header comment on `quotaSequenceRef` above.
-      if (sequence > appliedQuotaSequenceRef.current) {
-        appliedQuotaSequenceRef.current = sequence;
-        setQuota(body.quota);
-      }
-    } catch {
-      setToggleError("No se pudo conectar.");
-    } finally {
-      pendingIdsRef.current.delete(assetId);
+  const toggleSelection = useCallback(
+    async (assetId: string, nextSelected: boolean) => {
+      // UX-only mirror of the PATCH route's own server-side lock — a click
+      // that somehow still reaches here (a stale render, a race with
+      // `handleSubmitted` below) would get refused with a 409 anyway; this
+      // just avoids firing the request at all once the UI already knows the
+      // answer.
+      if (isLockedRef.current) return;
+      if (pendingIdsRef.current.has(assetId)) return;
+      pendingIdsRef.current.add(assetId);
       setPendingIds(new Set(pendingIdsRef.current));
-    }
-  }, []);
+      setToggleError(null);
+
+      const sequence = ++quotaSequenceRef.current;
+      let refreshAfter = false;
+      try {
+        const response = await fetch(`/api/assets/${assetId}/selection`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ selected: nextSelected }),
+        });
+        if (!response.ok) {
+          const lockMessage = await lockRefusalMessage(response);
+          if (lockMessage) {
+            setToggleError(lockMessage);
+            refreshAfter = true;
+          } else {
+            setToggleError("No se pudo actualizar la selección.");
+          }
+          return;
+        }
+        const body = (await response.json()) as SelectionResponse;
+        // The asset's own confirmed flag — no sequencing needed, see
+        // `quotaSequenceRef`'s own comment above for why.
+        setSelectionById((prev) => ({ ...prev, [body.asset.id]: body.asset.isSelected }));
+
+        // Task #95: the tray moves the photo the instant the server confirms
+        // it, not one poll interval later — waiting up to 5 seconds to see your
+        // OWN click take effect would read as the app being broken. Every field
+        // written here comes from the response (`isSelected`, `selectedAt`,
+        // `pickedBy`, `selectionKind`), never guessed: this is the same row the
+        // route just wrote, reported back by the route that wrote it (task
+        // #206's own "always `edited` on a fresh select" rule lives in that
+        // route, not here). The next accepted snapshot replaces the whole list
+        // anyway.
+        //
+        // Removed-then-appended on select rather than sorted: the server orders
+        // by `selected_at` ascending, and a pick made now IS the newest, so
+        // appending reproduces the server's own order without re-sorting a list
+        // whose other timestamps this hook never re-reads.
+        setPicks((prev) => {
+          const without = prev.filter((pick) => pick.assetId !== body.asset.id);
+          if (!body.asset.isSelected) return without;
+          return [
+            ...without,
+            {
+              assetId: body.asset.id,
+              selectedAt: body.asset.selectedAt,
+              pickedBy: body.asset.pickedBy,
+              selectionKind: body.asset.selectionKind,
+            },
+          ];
+        });
+
+        // This session now holds a write the server has confirmed. Any snapshot
+        // ISSUED at or before this moment is a photograph of the past and must
+        // not be applied over it — see the LIVE SYNC section above.
+        lastLocalWriteClockRef.current = quotaSequenceRef.current;
+
+        // The server's own recomputed quota — only applied if no LATER-issued
+        // toggle's response (or accepted snapshot) has already been applied. See
+        // the header comment on `quotaSequenceRef` above.
+        if (sequence > appliedQuotaSequenceRef.current) {
+          appliedQuotaSequenceRef.current = sequence;
+          setQuota(body.quota);
+        }
+      } catch {
+        setToggleError("No se pudo conectar.");
+      } finally {
+        pendingIdsRef.current.delete(assetId);
+        setPendingIds(new Set(pendingIdsRef.current));
+        // After the pending guard is released, or the snapshot this asks for
+        // would be dropped by LIVE SYNC condition 1.
+        if (refreshAfter) requestRefresh();
+      }
+    },
+    [requestRefresh],
+  );
 
   // Task #206 — set an ALREADY-selected pick's type, reusing every mechanism
   // `toggleSelection` above already built rather than inventing a second
@@ -684,60 +759,71 @@ export function useSharedSelection({
   // cannot flip the tray's local view back for one interval). The ONLY
   // difference from `toggleSelection` is the request body and which fields
   // of the response this writes back.
-  const setSelectionKind = useCallback(async (assetId: string, kind: SelectionKind) => {
-    // Same UX-only mirror of the server-side lock as `toggleSelection` — see
-    // that callback's own comment.
-    if (isLockedRef.current) return;
-    if (pendingIdsRef.current.has(assetId)) return;
-    pendingIdsRef.current.add(assetId);
-    setPendingIds(new Set(pendingIdsRef.current));
-    setToggleError(null);
-
-    const sequence = ++quotaSequenceRef.current;
-    try {
-      const response = await fetch(`/api/assets/${assetId}/selection`, {
-        method: "PATCH",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ selectionKind: kind }),
-      });
-      if (!response.ok) {
-        setToggleError("No se pudo actualizar el tipo de foto.");
-        return;
-      }
-      const body = (await response.json()) as SelectionResponse;
-
-      // `isSelected` is unchanged by a type-only write (the route's own
-      // guarantee — see its `asset_not_selected` guard), but writing it back
-      // here costs nothing and keeps this handler symmetric with
-      // `toggleSelection`'s own "trust only the response" stance.
-      setSelectionById((prev) => ({ ...prev, [body.asset.id]: body.asset.isSelected }));
-      // `pickedBy` too — not just `selectionKind` — for the SAME reason
-      // `toggleSelection` above writes back every field its own response
-      // carries rather than assuming the pick's existing local copy is still
-      // right: the route's own `pickedBy` is a REAL lookup (a type change can
-      // be made by any client attached to the gallery, not only the one who
-      // originally picked the photo — task #94/#95's shared-selection model),
-      // and this is the one place that lookup's result is actually consumed.
-      setPicks((prev) =>
-        prev.map((pick) =>
-          pick.assetId === body.asset.id
-            ? { ...pick, selectionKind: body.asset.selectionKind, pickedBy: body.asset.pickedBy }
-            : pick,
-        ),
-      );
-
-      lastLocalWriteClockRef.current = quotaSequenceRef.current;
-      if (sequence > appliedQuotaSequenceRef.current) {
-        appliedQuotaSequenceRef.current = sequence;
-        setQuota(body.quota);
-      }
-    } catch {
-      setToggleError("No se pudo conectar.");
-    } finally {
-      pendingIdsRef.current.delete(assetId);
+  const setSelectionKind = useCallback(
+    async (assetId: string, kind: SelectionKind) => {
+      // Same UX-only mirror of the server-side lock as `toggleSelection` — see
+      // that callback's own comment.
+      if (isLockedRef.current) return;
+      if (pendingIdsRef.current.has(assetId)) return;
+      pendingIdsRef.current.add(assetId);
       setPendingIds(new Set(pendingIdsRef.current));
-    }
-  }, []);
+      setToggleError(null);
+
+      const sequence = ++quotaSequenceRef.current;
+      let refreshAfter = false;
+      try {
+        const response = await fetch(`/api/assets/${assetId}/selection`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ selectionKind: kind }),
+        });
+        if (!response.ok) {
+          const lockMessage = await lockRefusalMessage(response);
+          if (lockMessage) {
+            setToggleError(lockMessage);
+            refreshAfter = true;
+          } else {
+            setToggleError("No se pudo actualizar el tipo de foto.");
+          }
+          return;
+        }
+        const body = (await response.json()) as SelectionResponse;
+
+        // `isSelected` is unchanged by a type-only write (the route's own
+        // guarantee — see its `asset_not_selected` guard), but writing it back
+        // here costs nothing and keeps this handler symmetric with
+        // `toggleSelection`'s own "trust only the response" stance.
+        setSelectionById((prev) => ({ ...prev, [body.asset.id]: body.asset.isSelected }));
+        // `pickedBy` too — not just `selectionKind` — for the SAME reason
+        // `toggleSelection` above writes back every field its own response
+        // carries rather than assuming the pick's existing local copy is still
+        // right: the route's own `pickedBy` is a REAL lookup (a type change can
+        // be made by any client attached to the gallery, not only the one who
+        // originally picked the photo — task #94/#95's shared-selection model),
+        // and this is the one place that lookup's result is actually consumed.
+        setPicks((prev) =>
+          prev.map((pick) =>
+            pick.assetId === body.asset.id
+              ? { ...pick, selectionKind: body.asset.selectionKind, pickedBy: body.asset.pickedBy }
+              : pick,
+          ),
+        );
+
+        lastLocalWriteClockRef.current = quotaSequenceRef.current;
+        if (sequence > appliedQuotaSequenceRef.current) {
+          appliedQuotaSequenceRef.current = sequence;
+          setQuota(body.quota);
+        }
+      } catch {
+        setToggleError("No se pudo conectar.");
+      } finally {
+        pendingIdsRef.current.delete(assetId);
+        setPendingIds(new Set(pendingIdsRef.current));
+        if (refreshAfter) requestRefresh();
+      }
+    },
+    [requestRefresh],
+  );
 
   // <SubmitSelectionPanel>'s success callback — this session's OWN
   // submission. Also replaces `quota` wholesale with the submit route's own
@@ -754,14 +840,31 @@ export function useSharedSelection({
   // two paths from being able to disagree. The write clock is stamped for the
   // same reason a toggle stamps it: a snapshot issued before this submission
   // committed must not reopen the UI for one interval.
-  const handleSubmitted = useCallback((outcome: SubmitSelectionOutcome) => {
-    isLockedRef.current = true;
-    setStatus("selected");
-    setSubmittedAt(outcome.submittedAt);
-    setQuota(outcome.quota);
-    lastLocalWriteClockRef.current = ++quotaSequenceRef.current;
-    appliedQuotaSequenceRef.current = quotaSequenceRef.current;
-  }, []);
+  //
+  // Epic #239: a submit now locks only THIS person. The gallery moves to
+  // `selected` only when the server says this submission closed it
+  // (`gallerySelected`); otherwise it stays `proofing` for the others, and this
+  // session's lock is recorded as `viewerLock` right away — no reload, no
+  // waiting for a poll. `outcome.submittedAt` is the caller's OWN time.
+  const handleSubmitted = useCallback(
+    (outcome: SubmitSelectionOutcome) => {
+      isLockedRef.current = true;
+      if (outcome.gallerySelected) {
+        setStatus("selected");
+        setSubmittedAt(outcome.submittedAt);
+      }
+      setViewerLock({
+        lockedAt: outcome.submittedAt ?? new Date().toISOString(),
+        submittedAt: outcome.submittedAt,
+      });
+      setLockedPickerIds((prev) => (prev.includes(viewerId) ? prev : [...prev, viewerId]));
+      setSubmittedPickerIds((prev) => (prev.includes(viewerId) ? prev : [...prev, viewerId]));
+      setQuota(outcome.quota);
+      lastLocalWriteClockRef.current = ++quotaSequenceRef.current;
+      appliedQuotaSequenceRef.current = quotaSequenceRef.current;
+    },
+    [viewerId],
+  );
 
   return {
     selectionById,
@@ -769,6 +872,11 @@ export function useSharedSelection({
     picks,
     status,
     isLocked,
+    isGalleryLocked,
+    isViewerLocked,
+    viewerLock,
+    lockedPickerIds,
+    submittedPickerIds,
     submittedAt,
     pendingIds,
     toggleError,

@@ -134,7 +134,7 @@ import { useProofUrls } from "@/components/use-proof-urls";
 import { useSharedSelection, type GalleryStatus } from "@/components/use-shared-selection";
 import type { Gallery } from "@/lib/db/schema";
 import type { QuotaResult } from "@/lib/quota";
-import { pickerLabelFor, type SelectionPick } from "@/lib/selection-snapshot";
+import { pickerLabelFor, type SelectionPick, type ViewerLock } from "@/lib/selection-snapshot";
 
 // Re-exported, not re-declared: `GalleryStatus` and the fallback poll's
 // cadence belong next to the status machine and the loop they pace
@@ -215,6 +215,10 @@ export function ProofGrid({
   originalPhotoPriceCopSnapshot,
   selectionTrayMode,
   allowsOriginalSelection,
+  initialViewerLock = null,
+  initialLockedPickerIds = [],
+  initialSubmittedPickerIds = [],
+  isAdminPreview = false,
 }: {
   // Task #25's submit route is keyed on this — see that route's own header
   // comment for why the internal id, not the page's `publicSlug`, is the
@@ -229,6 +233,17 @@ export function ProofGrid({
   // paint comes from here; every refresh afterwards replaces it wholesale
   // with a fresh snapshot.
   initialPicks: SelectionPick[];
+  // Epic #239 — per-client lock state as of the server render: the viewer's
+  // own lock (their controls freeze while the gallery is still `proofing` for
+  // the others) and the ids of locked pickers (their picks are read-only for
+  // everybody else). Seeds `useSharedSelection`; every snapshot after replaces
+  // both wholesale.
+  initialViewerLock?: ViewerLock | null;
+  initialLockedPickerIds?: string[];
+  initialSubmittedPickerIds?: string[];
+  // Epic #239 — the photographer previewing this page. The submit route
+  // refuses admins, so no working submit button is rendered for them.
+  isAdminPreview?: boolean;
   // The signed-in user's own id, so the tray can render their own picks as
   // "Vos" rather than their own name (see `pickerLabelFor`). Nothing is
   // authorized by this value — it is a display detail; every route this
@@ -303,6 +318,10 @@ export function ProofGrid({
     quota,
     picks,
     isLocked,
+    isGalleryLocked,
+    viewerLock,
+    lockedPickerIds,
+    submittedPickerIds,
     submittedAt,
     pendingIds,
     toggleError,
@@ -311,6 +330,10 @@ export function ProofGrid({
     setSelectionKind,
     handleSubmitted,
   } = useSharedSelection({
+    viewerId,
+    initialViewerLock,
+    initialLockedPickerIds,
+    initialSubmittedPickerIds,
     galleryId,
     initialAssets,
     initialStatus,
@@ -424,6 +447,34 @@ export function ProofGrid({
     [picks],
   );
 
+  // Epic #239 — what THIS viewer's controls reflect beyond their own lock:
+  //   - `lockedAssetIds`: picks that belong to somebody who already submitted.
+  //     Read-only on the tile and in the lightbox for everyone else (the server
+  //     answers 409 `pick_locked` regardless; this just doesn't offer it).
+  //   - `ownPickCount`: how many photos THIS person picked, by id (never by
+  //     label). The submit route refuses an empty selection per person.
+  //   - `lockedByAdmin`: locked without ever having submitted themselves.
+  const lockedAssetIds = useMemo(
+    () =>
+      new Set(
+        picks
+          .filter((pick) => {
+            const pickerId = pick.pickedBy?.id;
+            return pickerId !== undefined && lockedPickerIds.includes(pickerId);
+          })
+          .map((pick) => pick.assetId),
+      ),
+    [picks, lockedPickerIds],
+  );
+  const ownPickCount = useMemo(
+    () => picks.filter((pick) => pick.pickedBy?.id === viewerId).length,
+    [picks, viewerId],
+  );
+  const lockedByAdmin = viewerLock !== null && viewerLock.submittedAt === null;
+  // The date the VIEWER sees as "enviada": their own time, not the gallery's
+  // closing time (which is the LAST person's).
+  const ownSubmittedAt = viewerLock ? viewerLock.submittedAt : submittedAt;
+
   // Task #95: the tray's accessible labels, and nothing else. Frozen off the
   // server-rendered props on purpose — a snapshot can name an asset this page
   // never rendered, and <SelectionTray> handles that explicitly rather than
@@ -484,7 +535,7 @@ export function ProofGrid({
         src={urls[asset.id] ?? asset.proofUrl}
         isSelected={asset.isSelected}
         isPending={pendingIds.has(asset.id)}
-        isLocked={isLocked}
+        isLocked={isLocked || lockedAssetIds.has(asset.id)}
         showDownload={isDelivered && asset.hasFinal}
         onError={() => void refreshUrl(asset.id)}
         onOpen={() => setLightbox({ group, index })}
@@ -515,6 +566,10 @@ export function ProofGrid({
           viewerId={viewerId}
           mode={selectionTrayMode}
           isLocked={isLocked}
+          isGalleryLocked={isGalleryLocked}
+          lockedPickerIds={lockedPickerIds}
+          submittedPickerIds={submittedPickerIds}
+          lockedByAdmin={lockedByAdmin}
           isStale={isStale}
           allowsOriginalSelection={allowsOriginalSelection}
           onOpenAsset={openAssetInLightbox}
@@ -543,8 +598,20 @@ export function ProofGrid({
           quota={quota}
           picks={picks}
           viewerId={viewerId}
-          submittedAt={submittedAt}
+          submittedAt={ownSubmittedAt}
+          isGalleryLocked={isGalleryLocked}
+          lockedByAdmin={lockedByAdmin}
+          ownPickCount={ownPickCount}
         />
+      )}
+
+      {/* A refused write (409 lock refusal, snapshot refresh already on its
+          way) must stay readable after the viewer's own controls froze: the
+          bottom bar that normally carries this message is gone once locked. */}
+      {!isDelivered && isLocked && toggleError && (
+        <p className="text-fg-dim mb-4 text-sm" role="status">
+          {toggleError}
+        </p>
       )}
 
       {/* Task #145 — the one instruction the redesigned tile needs, and the
@@ -669,7 +736,11 @@ export function ProofGrid({
                 galleryId={galleryId}
                 quota={quota}
                 isLocked={isLocked}
-                submittedAt={submittedAt}
+                isGalleryLocked={isGalleryLocked}
+                lockedByAdmin={lockedByAdmin}
+                ownPickCount={ownPickCount}
+                isAdminPreview={isAdminPreview}
+                submittedAt={ownSubmittedAt}
                 onSubmitted={handleSubmitted}
                 allowsOriginalSelection={allowsOriginalSelection}
               />
@@ -690,7 +761,11 @@ export function ProofGrid({
             galleryId={galleryId}
             quota={quota}
             isLocked={isLocked}
-            submittedAt={submittedAt}
+            isGalleryLocked={isGalleryLocked}
+            lockedByAdmin={lockedByAdmin}
+            ownPickCount={ownPickCount}
+            isAdminPreview={isAdminPreview}
+            submittedAt={ownSubmittedAt}
             onSubmitted={handleSubmitted}
             allowsOriginalSelection={allowsOriginalSelection}
           />
@@ -732,6 +807,7 @@ export function ProofGrid({
           onToggleSelection={(assetId, nextSelected) => void toggleSelection(assetId, nextSelected)}
           pendingAssetIds={pendingIds}
           isLocked={isLocked}
+          lockedAssetIds={lockedAssetIds}
           isDelivered={isDelivered}
           selectionKindById={selectionKindById}
           onSetSelectionKind={(assetId, kind) => void setSelectionKind(assetId, kind)}
@@ -763,13 +839,26 @@ function SelectedStateNote({
   picks,
   viewerId,
   submittedAt,
+  isGalleryLocked,
+  lockedByAdmin,
+  ownPickCount,
 }: {
   quota: QuotaResult;
   picks: SelectionPick[];
   /** Same prop <SelectionTray> already takes — the viewer's own picks read
    * "Vos" in the per-picker recap below too, for the same reason. */
   viewerId: string;
+  /** The VIEWER's own submission time (epic #239), not the gallery's closing
+   * time. `null` when an admin locked them. */
   submittedAt: string | null;
+  /** Epic #239 — every active client is done and the gallery left `proofing`.
+   * When `false` this note is shown to ONE locked person while the others are
+   * still choosing, so it must not say the photographer has "la selección". */
+  isGalleryLocked: boolean;
+  /** Epic #239 — the photographer locked this person; they never submitted. */
+  lockedByAdmin: boolean;
+  /** Epic #239 — photos THIS person picked. */
+  ownPickCount: number;
 }) {
   // Per-picker tally (task #94's shared gallery, not per-client): "Vos 9 ·
   // Beto 4 · Sara 2" (client.html:726, :848-850), computed off the SAME
@@ -791,17 +880,34 @@ function SelectedStateNote({
   return (
     <div className="border-line-2 mt-2 mb-6 rounded-sm border p-[18px]">
       <h2 className="font-serif text-lg">¿Qué pasa ahora?</h2>
+      {isGalleryLocked ? (
+        <p className="text-fg-dim mt-2 text-sm">
+          Tu fotógrafo ya tiene la selección
+          {submittedAt
+            ? ` — la enviaste el ${new Date(submittedAt).toLocaleDateString("es-CO")}`
+            : ""}{" "}
+          y está editando {quota.selected} foto{quota.selected === 1 ? "" : "s"} en alta resolución
+          y sin marca de agua. Te avisamos por correo apenas estén.
+        </p>
+      ) : (
+        // Epic #239 — only THIS person is locked; the group is still choosing.
+        // Says what is true: their own picks are with the photographer, nobody
+        // else's are, and no editing/ETA claim for a gallery that is not done.
+        <p className="text-fg-dim mt-2 text-sm">
+          {lockedByAdmin
+            ? "Tu fotógrafo cerró tu selección"
+            : `Tu fotógrafo ya tiene tu selección${
+                submittedAt
+                  ? ` — la enviaste el ${new Date(submittedAt).toLocaleDateString("es-CO")}`
+                  : ""
+              }`}{" "}
+          ({ownPickCount} foto{ownPickCount === 1 ? "" : "s"} tuya{ownPickCount === 1 ? "" : "s"}).
+          Los demás todavía están eligiendo.
+        </p>
+      )}
       <p className="text-fg-dim mt-2 text-sm">
-        Tu fotógrafo ya tiene la selección
-        {submittedAt
-          ? ` — la enviaste el ${new Date(submittedAt).toLocaleDateString("es-CO")}`
-          : ""}{" "}
-        y está editando {quota.selected} foto{quota.selected === 1 ? "" : "s"} en alta resolución y
-        sin marca de agua. Te avisamos por correo apenas estén.
-      </p>
-      <p className="text-fg-dim mt-2 text-sm">
-        ¿Te arrepentiste de alguna? La selección quedó cerrada, pero escribile a tu fotógrafo y él
-        la reabre.
+        ¿Te arrepentiste de alguna? {isGalleryLocked ? "La selección" : "Tu selección"} quedó
+        cerrada, pero escribile a tu fotógrafo y él la reabre.
       </p>
       {/* Only worth a breakdown once more than one person actually picked
           something — a solo client seeing "Vos: 15" would just be the same

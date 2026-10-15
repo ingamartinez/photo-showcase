@@ -600,6 +600,23 @@ export const galleryClients = pgTable(
     // admin ever exists — at that point the argument above stops holding and
     // the column earns itself.
     removedAt: timestamp("removed_at", { withTimezone: true }),
+    // Epic #239 — the selection lock is PER PERSON, not per gallery. Two
+    // nullable timestamps, same "has this happened yet" vocabulary as
+    // `removedAt` above:
+    //   - `selectionLockedAt`: non-null = this client can no longer change
+    //     picks (and nobody else can undo the picks they made).
+    //   - `selectionSubmittedAt`: non-null = the client pressed "Enviar
+    //     selección" themselves.
+    // Three states follow: open (locked NULL), submitted (both set) and
+    // locked by the admin (locked set, submitted NULL — slice #242).
+    // Unlocking clears BOTH. The gallery moves `proofing -> selected` once
+    // EVERY ACTIVE membership is locked (src/lib/gallery-client-locks.ts's
+    // `settleGalleryLockStatus`), so a single-client gallery behaves exactly
+    // as it did when the lock was gallery-wide. Like every other read of
+    // this table, anything consulting these columns must filter
+    // `removedAt IS NULL` — a removed client's lock state is history.
+    selectionLockedAt: timestamp("selection_locked_at", { withTimezone: true }),
+    selectionSubmittedAt: timestamp("selection_submitted_at", { withTimezone: true }),
   },
   (t) => [primaryKey({ columns: [t.galleryId, t.userId] })],
 );

@@ -63,8 +63,22 @@ vi.mock("@/lib/gallery-selection", () => ({
   getGallerySelection: (...args: [string]) => getGallerySelectionMock(...args),
 }));
 
+// Epic #239: the per-client lock snapshot, mocked for the same reason —
+// proven for real in src/lib/gallery-client-locks.test.ts.
+const getSelectionLockSnapshotMock =
+  vi.fn<(galleryId: string, viewerId: string) => Promise<unknown>>();
+vi.mock("@/lib/gallery-client-locks", () => ({
+  getSelectionLockSnapshot: (...args: [string, string]) => getSelectionLockSnapshotMock(...args),
+}));
+
 beforeEach(() => {
   authMock.mockReset();
+  getSelectionLockSnapshotMock.mockReset();
+  getSelectionLockSnapshotMock.mockResolvedValue({
+    viewerLock: null,
+    lockedPickerIds: [],
+    submittedPickerIds: [],
+  });
   getGallerySelectionMock.mockReset();
   getGallerySelectionMock.mockResolvedValue([]);
   getGalleryDetailBySlugMock.mockReset();
@@ -217,6 +231,39 @@ describe("ClientGalleryPage", () => {
       await expect(ClientGalleryPage(paramsFor(SLUG))).resolves.toBeTruthy();
     },
   );
+
+  // Epic #239 — slice #241 reads these two props. The snapshot must be asked
+  // for with the gallery's OWN id and the VIEWER's id (not the gallery's
+  // clients), and handed to <ProofGrid> untouched.
+  it("reads the lock snapshot for this gallery and viewer and hands it to <ProofGrid>", async () => {
+    authMock.mockResolvedValue(sessionFor("client", "client-a"));
+    getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+    const snapshot = {
+      viewerLock: { lockedAt: "2026-10-15T10:00:00.000Z", submittedAt: "2026-10-15T10:00:00.000Z" },
+      lockedPickerIds: ["client-a", "client-b"],
+      submittedPickerIds: ["client-a"],
+    };
+    getSelectionLockSnapshotMock.mockResolvedValue(snapshot);
+
+    const tree = await ClientGalleryPage(paramsFor(SLUG));
+
+    expect(getSelectionLockSnapshotMock).toHaveBeenCalledWith("g1", "client-a");
+    const found: Record<string, unknown>[] = [];
+    const walk = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) return node.forEach(walk);
+      const props = (node as { props?: Record<string, unknown> }).props;
+      if (props && "initialLockedPickerIds" in props) found.push(props);
+      if (props) walk(props.children);
+    };
+    walk(tree);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({
+      initialViewerLock: snapshot.viewerLock,
+      initialLockedPickerIds: snapshot.lockedPickerIds,
+      initialSubmittedPickerIds: snapshot.submittedPickerIds,
+    });
+  });
 
   it("presigns a proof URL for every asset in the gallery", async () => {
     authMock.mockResolvedValue(sessionFor("client", "client-a"));

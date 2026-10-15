@@ -83,6 +83,7 @@ import { assets, users } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
 import { ASSET_MUTATION_BLOCKED_STATUSES, loadOwnedAsset } from "@/lib/asset-access";
 import { isGalleryVisibleToClient } from "@/lib/galleries";
+import { getClientLock } from "@/lib/gallery-client-locks";
 import { computeQuota } from "@/lib/quota";
 import { notifySelectionChanged } from "@/lib/selection-events";
 
@@ -133,7 +134,9 @@ const bodySchema = z
 // `isGalleryVisibleToClient` gate above just because their status lists
 // happen to overlap today — they gate different principals (everyone
 // including admin, vs. non-admins only) and are checked independently
-// below.
+// below. (Epic #239: `selected` is now reached only once EVERY active client
+// has submitted; before that, the per-client `client_selection_locked` /
+// `pick_locked` gates below do the freezing person by person.)
 //
 // Exported (task #73) so the admin unlock action's own test suite
 // (src/app/dashboard/galleries/actions.unlock.test.ts) can assert "after
@@ -202,6 +205,34 @@ export const PATCH = withApiSession(async function PATCH(
   // without the photographer ever seeing it happen.
   if (SELECTION_LOCKED_STATUSES.has(gallery.status)) {
     return errorResponse("gallery_locked", 409);
+  }
+
+  // Epic #239 — the PER-CLIENT lock, for non-admin callers (an admin has no
+  // membership and bypasses both gates: the photographer is exactly who must
+  // be able to edit the picks of someone who already submitted). Two
+  // distinct 409s, checked in this order, both BEFORE any mutation:
+  //
+  //   1. `client_selection_locked` — the CALLER submitted (or was locked by
+  //      the admin) and may not change anything any more.
+  //   2. `pick_locked` — the asset is CURRENTLY picked by a DIFFERENT client
+  //      who is locked. This covers every write that touches the asset —
+  //      deselect, re-select (which would take over `selectedBy`) and a
+  //      type-only change — because the shared board lets any client act on
+  //      any asset (task #94/#95), so without this B could silently undo or
+  //      re-type the selection A already submitted, and with it the surcharge
+  //      A was quoted. Only ACTIVE memberships count (`getClientLock` filters
+  //      `removedAt IS NULL`): a removed client's picks stay editable.
+  if (!isAdmin) {
+    const ownLock = await getClientLock(db, gallery.id, session.user.id);
+    if (ownLock?.lockedAt) {
+      return errorResponse("client_selection_locked", 409);
+    }
+    if (asset.isSelected && asset.selectedBy !== null && asset.selectedBy !== session.user.id) {
+      const pickerLock = await getClientLock(db, gallery.id, asset.selectedBy);
+      if (pickerLock?.lockedAt) {
+        return errorResponse("pick_locked", 409);
+      }
+    }
   }
 
   const { selected, selectionKind } = bodyResult.data;

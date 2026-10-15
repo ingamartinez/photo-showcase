@@ -58,6 +58,13 @@ import {
 } from "@/app/dashboard/galleries/actions";
 import type { Gallery } from "@/lib/db/schema";
 import {
+  ClientSelectionMenuItems,
+  GalleryClientSelection,
+  hasClientSelectionActions,
+  useClientSelectionController,
+} from "@/components/gallery-client-selection";
+import type { ClientSelectionView } from "@/lib/client-selection-state";
+import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
@@ -83,12 +90,16 @@ export function GalleryClientRow({
   status,
   removable,
   resendable,
+  selection,
 }: {
   galleryId: string;
   client: { id: string; name: string | null; email: string };
   status: Gallery["status"];
   removable: boolean;
   resendable: boolean;
+  /** Epic #239 (#242): this person's pick count and lock state. Omitted = the
+   * panel is not rendered (draft galleries). */
+  selection?: ClientSelectionView;
 }) {
   const [removeState, removeFormAction, removePending] = useActionState(
     removeGalleryClient,
@@ -100,6 +111,9 @@ export function GalleryClientRow({
   );
   const [confirming, setConfirming] = useState(false);
   const resendFormRef = useRef<HTMLFormElement>(null);
+  // Epic #239 (#242): lock / unlock / remove-picks share one controller; its
+  // entries live in the ⋯ menu below, its state line and prompts inline.
+  const selectionController = useClientSelectionController();
 
   if (removeState.status === "removed") {
     return (
@@ -110,7 +124,8 @@ export function GalleryClientRow({
   }
 
   const displayName = client.name ?? client.email;
-  const hasActions = resendable || removable;
+  const hasSelectionActions = hasClientSelectionActions(status, selection);
+  const hasActions = resendable || removable || hasSelectionActions;
 
   return (
     <div className="border-line-2 flex flex-col gap-2 rounded-[6px] border py-1.5 pr-1.5 pl-3">
@@ -134,6 +149,13 @@ export function GalleryClientRow({
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="end">
+              {selection && hasSelectionActions && (
+                <ClientSelectionMenuItems
+                  galleryStatus={status}
+                  selection={selection}
+                  controller={selectionController}
+                />
+              )}
               {resendable && (
                 <DropdownMenuItem
                   disabled={resendPending}
@@ -166,6 +188,16 @@ export function GalleryClientRow({
           </DropdownMenu>
         )}
       </div>
+
+      {selection && (
+        <GalleryClientSelection
+          galleryId={galleryId}
+          clientId={client.id}
+          galleryStatus={status}
+          selection={selection}
+          controller={selectionController}
+        />
+      )}
 
       {/* No visible submit control — see this file's header comment on why
           the menu item above triggers this via a ref instead of a native

@@ -35,12 +35,14 @@ const getGalleryDetailMock = vi.fn();
 // mocked anywhere in this suite) — leaving it real via `importActual` would
 // make every test in this file reach for the real, unmocked database.
 const getGalleryUnlockAuditMock = vi.fn();
+const getGalleryClientSelectionsMock = vi.fn();
 vi.mock("@/lib/galleries", async () => {
   const actual = await vi.importActual<typeof import("@/lib/galleries")>("@/lib/galleries");
   return {
     ...actual,
     getGalleryDetail: (...args: unknown[]) => getGalleryDetailMock(...args),
     getGalleryUnlockAudit: (...args: unknown[]) => getGalleryUnlockAuditMock(...args),
+    getGalleryClientSelections: (...args: unknown[]) => getGalleryClientSelectionsMock(...args),
   };
 });
 
@@ -76,6 +78,8 @@ beforeEach(() => {
   authMock.mockReset();
   getGalleryDetailMock.mockReset();
   getGalleryUnlockAuditMock.mockReset();
+  getGalleryClientSelectionsMock.mockReset();
+  getGalleryClientSelectionsMock.mockResolvedValue({ clients: [], pickOwnerByAssetId: {} });
   getGalleryUnlockAuditMock.mockResolvedValue({
     unlockedAt: null,
     unlockedByEmail: null,

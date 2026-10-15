@@ -725,6 +725,52 @@ export async function getGalleryClients(galleryId: string): Promise<GalleryClien
   return rows.map((row) => ({ id: row.user.id, name: row.user.name, email: row.user.email }));
 }
 
+export type GalleryClientSelection = {
+  userId: string;
+  lockedAt: Date | null;
+  submittedAt: Date | null;
+  /** `assets.selected_by = userId` within THIS gallery. */
+  pickCount: number;
+};
+
+/** Epic #239 (slice #242) — per ACTIVE client on one gallery: the per-client
+ * lock columns and how many assets they currently hold, plus which client owns
+ * each picked asset (so the admin's selected-photos list can filter by person).
+ * Admin dashboard only; derived on read, nothing stored. `removedAt IS NULL`
+ * on memberships — a removed client has no row here — and picks are scoped to
+ * this gallery's assets. */
+export async function getGalleryClientSelections(galleryId: string): Promise<{
+  clients: GalleryClientSelection[];
+  pickOwnerByAssetId: Record<string, string>;
+}> {
+  const members = await db
+    .select({
+      userId: galleryClients.userId,
+      lockedAt: galleryClients.selectionLockedAt,
+      submittedAt: galleryClients.selectionSubmittedAt,
+    })
+    .from(galleryClients)
+    .where(and(eq(galleryClients.galleryId, galleryId), isNull(galleryClients.removedAt)));
+
+  const picked = await db
+    .select({ id: assets.id, selectedBy: assets.selectedBy })
+    .from(assets)
+    .where(and(eq(assets.galleryId, galleryId), eq(assets.isSelected, true)));
+
+  const pickOwnerByAssetId: Record<string, string> = {};
+  const counts = new Map<string, number>();
+  for (const asset of picked) {
+    if (asset.selectedBy === null) continue;
+    pickOwnerByAssetId[asset.id] = asset.selectedBy;
+    counts.set(asset.selectedBy, (counts.get(asset.selectedBy) ?? 0) + 1);
+  }
+
+  return {
+    clients: members.map((member) => ({ ...member, pickCount: counts.get(member.userId) ?? 0 })),
+    pickOwnerByAssetId,
+  };
+}
+
 export type ClientGalleryListItem = {
   id: string;
   title: string;

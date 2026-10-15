@@ -123,6 +123,13 @@ vi.mock("@/lib/gallery-selection", () => ({
   getGallerySelection: (...args: [string]) => getGallerySelectionMock(...args),
 }));
 
+// Epic #239: the per-client lock snapshot reaches Postgres too; proven in
+// src/lib/gallery-client-locks.test.ts. An open viewer is the default here.
+vi.mock("@/lib/gallery-client-locks", () => ({
+  getSelectionLockSnapshot: () =>
+    Promise.resolve({ viewerLock: null, lockedPickerIds: [], submittedPickerIds: [] }),
+}));
+
 const SLUG = "abc123def456";
 
 function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {

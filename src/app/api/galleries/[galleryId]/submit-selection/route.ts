@@ -1,6 +1,12 @@
 // POST /api/galleries/[galleryId]/submit-selection — the client's "these
-// ones" moment (task #25): `proofing -> selected`, `selectionSubmittedAt`
-// stamped, and the admin notified with what they need to start working.
+// ones" moment (task #25), per PERSON since epic #239: it locks ONLY the
+// caller's `gallery_clients` row (`selectionLockedAt` + `selectionSubmittedAt`)
+// and notifies the admin. The gallery itself moves `proofing -> selected`
+// only when that submission leaves EVERY active client locked
+// (`settleGalleryLockStatus`, src/lib/gallery-client-locks.ts) — so a
+// single-client gallery behaves exactly as it did when the lock was
+// gallery-wide, and in a group gallery the others keep picking until they
+// submit too.
 //
 // Keyed on the gallery's internal `id`, not its `publicSlug` — a deliberate
 // difference from the PAGE route (`/galleries/[publicSlug]`), not an
@@ -12,33 +18,32 @@
 // gallery's `id` here — already passed to `<ProofGrid>` by the page that
 // renders it — needs no new lookup and introduces no new identifier.
 //
-// REOPEN POLICY (decided in this slice, not left as an open question):
-// once submitted, the CLIENT can never toggle or resubmit — see the
-// SELECTION_LOCKED_STATUSES set on the sibling PATCH
-// /api/assets/[assetId]/selection route, which already includes "selected".
-// Only an ADMIN can unlock a submitted selection, from the dashboard — this
-// is a deliberate, asymmetric human escape hatch. The submitted selection is
-// the evidence a real payment conversation (extras, surcharge — settled
-// outside the app, PLAN.md §3) gets built on, so it must freeze; but "the
-// client changed their mind" WILL happen, and when it does, the fix is a
-// phone call with the photographer, not a client-facing "undo" button that
-// would let a submission be silently revised after that conversation already
-// started. The unlock action itself is NOT part of this slice — see this
-// route's own header note in the task body (kanban #25) for why: it is a
-// materially separate piece of work (an admin-facing action + its own
-// authorization story) from "lock and notify", and half-building it here
-// would risk shipping neither cleanly.
+// REOPEN POLICY (task #25, now per person): once a client is locked they can
+// never toggle or resubmit — see the PATCH /api/assets/[assetId]/selection
+// route, which refuses a locked caller (`client_selection_locked`) and refuses
+// anyone undoing a locked client's pick (`pick_locked`). Only an ADMIN can
+// reopen, from the dashboard — a deliberate, asymmetric human escape hatch.
+// The submitted selection is the evidence a real payment conversation
+// (extras, surcharge — settled outside the app, PLAN.md §3) gets built on, so
+// it must freeze; "the client changed their mind" is a phone call, not a
+// client-facing "undo" button.
+//
+// ADMIN CALLERS ARE REFUSED (409 `admin_cannot_submit`). An admin has no
+// `gallery_clients` row, so there is no membership to lock; locking people on
+// their behalf is the dashboard's per-client action (slice #242), which reuses
+// the same helper.
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { assets, galleries, users } from "@/lib/db/schema";
+import { assets, galleries, galleryClients, users } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
 import { isGalleryVisibleToClient } from "@/lib/galleries";
 import { isGalleryOwner } from "@/lib/gallery-access";
 import { authEnv, resendEnv } from "@/lib/env";
 import { sendSubmissionNotificationEmail } from "@/lib/admin-notification-email";
+import { getClientLock, lockGalleryRow, settleGalleryLockStatus } from "@/lib/gallery-client-locks";
 import { computeQuota, type QuotaResult } from "@/lib/quota";
 import { notifySelectionChanged } from "@/lib/selection-events";
 
@@ -83,12 +88,17 @@ async function currentQuota(gallery: Gallery): Promise<QuotaResult> {
   });
 }
 
-async function idempotentResponse(gallery: Gallery): Promise<NextResponse> {
+async function idempotentResponse(
+  gallery: Gallery,
+  submittedAt: Date | null,
+): Promise<NextResponse> {
   const quota = await currentQuota(gallery);
   return NextResponse.json({
     status: "already_submitted",
     quota,
-    submittedAt: gallery.selectionSubmittedAt ? gallery.selectionSubmittedAt.toISOString() : null,
+    // The CALLER's own submission time, not the gallery's.
+    submittedAt: submittedAt ? submittedAt.toISOString() : null,
+    gallerySelected: gallery.status === "selected",
   });
 }
 
@@ -133,88 +143,129 @@ export const POST = withApiSession(async function POST(
     return errorResponse("gallery_not_found", 404);
   }
 
-  // Idempotent double-submit, part 1: the gallery is ALREADY `selected` —
-  // this is a second click (or a second tab) after a first submission that
-  // already succeeded. No mutation, no email, a calm 200 that reflects
-  // reality — kanban #61's exact guidance, applied here instead of repeated
-  // as a bug: "the losing caller gets a sensible, non-alarming result... the
-  // gallery IS [submitted]; it just was not this call that did it."
-  if (gallery.status === "selected") {
-    return idempotentResponse(gallery);
+  // Only `proofing` and `selected` can hold a submission at all: `draft` is
+  // reachable only by an admin preview (gate 2 already refused a client), and
+  // `delivered`/`archived` are further along than submission even matters
+  // for. PLAN.md §2's state machine is linear.
+  if (gallery.status !== "proofing" && gallery.status !== "selected") {
+    return errorResponse("gallery_not_submittable", 409);
   }
 
-  // Everything else that isn't `proofing` is not eligible to transition
-  // right now: `draft` (reachable only by an admin preview, gate 2 already
-  // refused a client), and `delivered`/`archived` (further along than
-  // submission even matters for). PLAN.md §2's state machine is linear —
-  // `proofing -> selected` is the only transition this route ever performs.
-  if (gallery.status !== "proofing") {
+  // An admin has no membership to lock — see the header comment.
+  if (isAdmin) {
+    return errorResponse("admin_cannot_submit", 409);
+  }
+
+  // The caller's OWN lock. `isGalleryOwner` already proved an active
+  // membership, so `null` here can only mean it was removed in the gap
+  // between the two reads — refused like any non-owner.
+  const ownLock = await getClientLock(db, gallery.id, session.user.id);
+  if (!ownLock) {
+    return errorResponse("forbidden", 403);
+  }
+
+  // Idempotent double-submit: THIS caller is already locked — a second click,
+  // or a second tab, after a first submission that succeeded. No mutation, no
+  // email, a calm 200 that reflects reality (kanban #61's guidance): they ARE
+  // submitted; it just was not this call that did it.
+  if (ownLock.lockedAt) {
+    return idempotentResponse(gallery, ownLock.submittedAt);
+  }
+
+  // The gallery is `selected` but THIS client is still open — only reachable
+  // for a client attached after the gallery closed (re-attaching leaves them
+  // unlocked, see attachGalleryClients). They cannot pick either (the PATCH
+  // route refuses every write in a `selected` gallery), so there is nothing
+  // for them to submit until an admin reopens the gallery.
+  if (gallery.status === "selected") {
     return errorResponse("gallery_not_submittable", 409);
   }
 
   // Submitting an EMPTY selection is refused (task #25's own acceptance
-  // criterion) — checked BEFORE the conditional UPDATE below, off a fresh
-  // read, same "reject cheaply and early" stance as the proofs upload
-  // route's own status check before it ever reads the request body. A
-  // client could in principle deselect their last photo in one tab between
-  // this read and the UPDATE a moment later; accepted, not fixed here — the
-  // same class of small, undocumented-away race the proofs route's
-  // `sort_order` assignment already tolerates ("not strictly serialized...
-  // not a correctness bug"), and closing it would mean folding this count
-  // into the UPDATE's own WHERE clause as a correlated EXISTS subquery,
-  // more machinery than this slice's acceptance criterion asks for.
+  // criterion) — and "empty" is about the CALLER's own picks
+  // (`selected_by = caller`): in a group gallery, someone else's picks must
+  // not let a client who chose nothing lock themselves out. The quota the
+  // response reports stays gallery-wide (epic #239: quota is NOT per person).
+  // Checked BEFORE the transaction, off a fresh read; a client deselecting
+  // their last photo in another tab inside that window is the same accepted,
+  // tiny race the proofs route's `sort_order` assignment tolerates.
   const preSubmitQuota = await currentQuota(gallery);
-  if (preSubmitQuota.selected === 0) {
+  const ownPicks = await db
+    .select({ id: assets.id })
+    .from(assets)
+    .where(
+      and(
+        eq(assets.galleryId, gallery.id),
+        eq(assets.isSelected, true),
+        eq(assets.selectedBy, session.user.id),
+      ),
+    );
+  if (ownPicks.length === 0) {
     return errorResponse("empty_selection", 400);
   }
 
-  // THE atomicity guard — this is what makes a true concurrent double-submit
-  // send exactly one email instead of two. Guard the UPDATE itself, don't
-  // reorder anything to work around it: kanban #61 found the identical bug
-  // in the publish path (an unconditional `UPDATE ... SET status =
-  // 'proofing'` with no `WHERE status = 'draft'`) and its own review is
-  // explicit that the fix is a `WHERE` clause on the update, NOT reordering
-  // the send/update pair. Applied here from the start rather than
-  // discovered later: two requests racing this exact code both read
-  // `status = 'proofing'` above, but Postgres serializes the two UPDATEs
-  // against the same row — the second to actually execute evaluates its
-  // `WHERE` against the FIRST one's already-committed result and matches
-  // zero rows. Only the winner (`updated.length === 1`) ever reaches the
-  // email-sending branch below.
+  // THE atomicity guard. Everything that decides the outcome happens inside
+  // ONE transaction that first takes the GALLERY ROW's write lock
+  // (`lockGalleryRow`): two clients submitting last at the same moment each
+  // lock their own membership row, so without that serialization both would
+  // read the other as still open and the gallery would never close. With it,
+  // the second transaction's membership read starts after the first
+  // committed, and `settleGalleryLockStatus`'s compare-and-swap on `status`
+  // guarantees exactly ONE `proofing -> selected` transition (kanban #61's
+  // stance: guard the UPDATE itself with a `WHERE`, never reorder around it).
   const now = new Date();
-  const updated = await db
-    .update(galleries)
-    .set({ status: "selected", selectionSubmittedAt: now })
-    .where(and(eq(galleries.id, gallery.id), eq(galleries.status, "proofing")))
-    .returning();
-
-  if (updated.length === 0) {
-    // Lost the race. The winner's UPDATE has already committed by the time
-    // ours evaluated its own WHERE clause (Postgres locks the row for the
-    // duration of a concurrent UPDATE), so re-reading now reflects the
-    // winner's committed result. There is no revert anywhere in this route
-    // (see the notification try/catch below for why), so `selected` is the
-    // ONLY status this re-read can ever observe once our own CAS has lost —
-    // nothing else in this route ever moves the gallery back out of it.
-    const [fresh] = await db.select().from(galleries).where(eq(galleries.id, gallery.id)).limit(1);
-    if (fresh && fresh.status === "selected") {
-      return idempotentResponse(fresh);
+  const outcome = await db.transaction(async (tx) => {
+    const fresh = await lockGalleryRow(tx, gallery.id);
+    if (!fresh || fresh.status !== "proofing") {
+      return { kind: "not_proofing" as const, gallery: fresh ?? gallery };
     }
-    // Defensive only — unreachable given the invariant above, kept so this
-    // route fails closed (a clear error) rather than crashing if that
-    // invariant is ever violated by a future change.
-    return errorResponse("submission_failed", 502);
+
+    // CAS on the membership: only the call that flips `selection_locked_at`
+    // from NULL gets a row back, so a double-click that raced past the
+    // pre-check above still sends exactly one email.
+    const locked = await tx
+      .update(galleryClients)
+      .set({ selectionLockedAt: now, selectionSubmittedAt: now })
+      .where(
+        and(
+          eq(galleryClients.galleryId, gallery.id),
+          eq(galleryClients.userId, session.user.id),
+          isNull(galleryClients.removedAt),
+          isNull(galleryClients.selectionLockedAt),
+        ),
+      )
+      .returning({ userId: galleryClients.userId });
+    if (locked.length === 0) {
+      return { kind: "lost_race" as const, gallery: fresh };
+    }
+
+    const transition = await settleGalleryLockStatus(tx, gallery.id);
+    return { kind: "submitted" as const, gallery: fresh, transition };
+  });
+
+  if (outcome.kind === "not_proofing" || outcome.kind === "lost_race") {
+    // Somebody moved the gallery (or this very membership) between our reads
+    // and the lock. Reflect reality: if the caller is locked now, it is the
+    // idempotent answer; otherwise the gallery is simply not submittable.
+    const latest = await getClientLock(db, gallery.id, session.user.id);
+    if (latest?.lockedAt) {
+      return idempotentResponse(outcome.gallery, latest.submittedAt);
+    }
+    return errorResponse("gallery_not_submittable", 409);
   }
-  const submittedGallery = updated[0]!;
 
-  // We won the race. The selection is durably locked in the database at
-  // this point, full stop — nothing below this line ever changes that.
+  const gallerySelected = outcome.transition === "selected";
+  const submittedGallery = outcome.gallery;
 
-  // Task #114 — every OTHER open session's submit lock (proof-grid.tsx's
-  // live `status`) converges the instant this commits, instead of waiting up
-  // to a poll tick. Fire-and-forget, same reasoning as the sibling PATCH
-  // route's own call: the status transition above already committed, and
-  // this must never delay or fail a response that already succeeded.
+  // We won. The caller's lock is durably committed at this point, full stop —
+  // nothing below this line ever changes that.
+
+  // Task #114 — every OTHER open session converges the instant this commits
+  // (the gallery status when this was the LAST client to submit, the locked
+  // picker set either way), instead of waiting up to a poll tick.
+  // Fire-and-forget, same reasoning as the sibling PATCH route's own call:
+  // the lock above already committed, and this must never delay or fail a
+  // response that already succeeded.
   void notifySelectionChanged(submittedGallery.id).catch(() => {
     // Swallowed — see src/lib/selection-events.ts's own header comment; the
     // 30s fallback poll is the backstop.
@@ -273,7 +324,7 @@ export const POST = withApiSession(async function POST(
   // submission already committed either way; a 500 here would be a
   // DISHONEST response for a request that, from the database's point of
   // view, fully succeeded — and every later call would just short-circuit
-  // on the `status === "selected"` check above without ever retrying the
+  // on the caller's `lockedAt` check above without ever retrying the
   // notification, so nothing is gained by failing loudly here. This is also
   // why the response below reads `quota` — the outer variable, last written
   // either by the successful refresh inside this try or left at its
@@ -293,10 +344,11 @@ export const POST = withApiSession(async function POST(
     // needs no extra query and can never be "missing" the way a lookup by id
     // could — `session` is already a verified, authenticated session by the
     // time this line runs (`withApiSession` only invokes this handler once
-    // the check has passed, so `session` cannot be a NextResponse). An admin
-    // submitting on a client's behalf (gate 1 allows it, same as every
-    // sibling route) is named honestly here too: the admin, not a client —
-    // that IS who acted.
+    // the check has passed, so `session` cannot be a NextResponse). Since
+    // epic #239 this is sent once PER CLIENT submission, not once per
+    // gallery: the photographer learns that Ana is done even while Beto is
+    // still choosing, which is the point of the per-person lock. An admin
+    // never reaches this line (refused above).
     const submittedByName = session.user.name ?? null;
     // `session.user.email` is typed optional by NextAuth's `DefaultSession`,
     // but `users.email` is NOT NULL (schema.ts) and the database session
@@ -350,6 +402,9 @@ export const POST = withApiSession(async function POST(
   return NextResponse.json({
     status: "submitted",
     quota,
+    // The CALLER's own submission time (their `selectionSubmittedAt`).
     submittedAt: now.toISOString(),
+    // Whether this submission was the one that closed the gallery.
+    gallerySelected,
   });
 });

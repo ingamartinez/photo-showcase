@@ -23,133 +23,27 @@ vi.mock("next/cache", () => ({
   revalidatePath: (...args: unknown[]) => revalidatePathMock(...args),
 }));
 
-// A minimal, genuinely-behaving double for `@/lib/db` — real filtering via a
-// leaf-condition parser understanding `eq()` and `isNull()`. Duplicated per
-// this codebase's own per-file test-double convention, same shape as
-// src/lib/gallery-access.test.ts's own version.
-type Row = Record<string, unknown>;
+// Epic #239: removing the last unsubmitted person closes the gallery, which
+// must signal every open client tab.
+const notifySelectionChangedMock = vi.fn().mockResolvedValue(undefined);
+vi.mock("@/lib/selection-events", () => ({
+  notifySelectionChanged: (...args: [string]) => notifySelectionChangedMock(...args),
+}));
 
-type LeafCondition =
-  { dbColumnName: string; op: "eq"; value: unknown } | { dbColumnName: string; op: "isNull" };
-
-function parseLeaf(node: unknown): LeafCondition | undefined {
-  const chunks = (node as { queryChunks?: unknown[] } | null)?.queryChunks;
-  if (!chunks) return undefined;
-  let dbColumnName: string | undefined;
-  let value: unknown;
-  let hasValue = false;
-  let isNullText = false;
-  for (const chunk of chunks) {
-    if (chunk && typeof chunk === "object") {
-      if ("name" in chunk && "table" in chunk) dbColumnName = (chunk as { name: string }).name;
-      if ("value" in chunk && "encoder" in chunk) {
-        value = (chunk as { value: unknown }).value;
-        hasValue = true;
-      }
-      if ("value" in chunk && Array.isArray((chunk as { value: unknown }).value)) {
-        if ((chunk as { value: string[] }).value.join("").includes("is null")) isNullText = true;
-      }
-    }
-  }
-  if (!dbColumnName) return undefined;
-  if (isNullText) return { dbColumnName, op: "isNull" };
-  if (hasValue) return { dbColumnName, op: "eq", value };
-  return undefined;
-}
-
-function walkConditions(node: unknown): LeafCondition[] {
-  const leaf = parseLeaf(node);
-  if (leaf) return [leaf];
-  const chunks = (node as { queryChunks?: unknown[] } | null)?.queryChunks ?? [];
-  const results: LeafCondition[] = [];
-  for (const chunk of chunks) results.push(...walkConditions(chunk));
-  return results;
-}
-
-function conditions(condition: unknown): LeafCondition[] {
-  const results = walkConditions(condition);
-  if (results.length === 0) {
-    throw new Error("conditions: not a supported eq()/isNull()/and(...) condition");
-  }
-  return results;
-}
-
-function jsKeyFor(table: Record<string, unknown>, dbColumnName: string): string {
-  const found = Object.entries(table).find(
-    ([, col]) => col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
-  );
-  if (!found) throw new Error(`jsKeyFor: no column named ${dbColumnName} on this table`);
-  return found[0];
-}
-
-function matchesRow(row: Row, table: Record<string, unknown>, condition: unknown): boolean {
-  return conditions(condition).every((c) => {
-    const jsKey = jsKeyFor(table, c.dbColumnName);
-    return c.op === "isNull" ? row[jsKey] == null : row[jsKey] === c.value;
-  });
-}
-
+// The shared in-memory double (src/test-support/fake-db.ts) — filters for real
+// off eq()/isNull()/and(), supports `transaction()` and `for("update")`.
 vi.mock("@/lib/db", async () => {
   const { galleries, galleryClients } = await import("@/lib/db/schema");
-
-  const galleryRows: Row[] = [];
-  const galleryClientRows: Row[] = [];
-
-  function rowsFor(table: unknown): Row[] {
-    if (table === galleries) return galleryRows;
-    if (table === galleryClients) return galleryClientRows;
-    throw new Error("fake db: unsupported table");
-  }
-
-  function tableShapeFor(table: unknown): Record<string, unknown> {
-    if (table === galleries) return galleries as unknown as Record<string, unknown>;
-    if (table === galleryClients) return galleryClients as unknown as Record<string, unknown>;
-    throw new Error("fake db: unsupported table");
-  }
-
+  const { createFakeDb } = await import("@/test-support/fake-db");
+  const fake = createFakeDb([galleries, galleryClients]);
+  // Test-only escape hatch, not part of the real `db` shape.
   return {
-    db: {
-      select: (columns?: Record<string, unknown>) => ({
-        from: (table: unknown) => ({
-          where: (condition: unknown) => {
-            const rows = rowsFor(table).filter((row) =>
-              matchesRow(row, tableShapeFor(table), condition),
-            );
-            const project = (row: Row) => {
-              if (!columns) return { ...row };
-              const projected: Row = {};
-              for (const key of Object.keys(columns)) projected[key] = row[key];
-              return projected;
-            };
-            const projected = rows.map(project);
-            const promise = Promise.resolve(projected) as Promise<Row[]> & {
-              limit: (n: number) => Promise<Row[]>;
-            };
-            promise.limit = async (n: number) => projected.slice(0, n);
-            return promise;
-          },
-        }),
-      }),
-      update: (table: unknown) => ({
-        set: (patch: Row) => ({
-          where: (condition: unknown) => {
-            if (table !== galleryClients) throw new Error("fake db: unsupported table in update()");
-            const matches = galleryClientRows.filter((row) =>
-              matchesRow(row, galleryClients as unknown as Record<string, unknown>, condition),
-            );
-            for (const row of matches) Object.assign(row, patch);
-            const snapshot = matches.map((row) => ({ ...row }));
-            const promise = Promise.resolve(snapshot) as Promise<Row[]> & {
-              returning: () => Promise<Row[]>;
-            };
-            promise.returning = async () => snapshot;
-            return promise;
-          },
-        }),
-      }),
-      // Test-only escape hatches, not part of the real `db` shape.
-      __rows: { galleries: galleryRows, galleryClients: galleryClientRows },
-    },
+    db: Object.assign(fake, {
+      __rows: {
+        galleries: fake.__tables.get(galleries)!,
+        galleryClients: fake.__tables.get(galleryClients)!,
+      },
+    }),
   };
 });
 
@@ -206,6 +100,8 @@ function formDataWith(fields: Record<string, string | undefined>) {
 beforeEach(async () => {
   authMock.mockReset();
   revalidatePathMock.mockReset();
+  notifySelectionChangedMock.mockReset();
+  notifySelectionChangedMock.mockResolvedValue(undefined);
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
 
   const db = await seededDb();
@@ -213,8 +109,22 @@ beforeEach(async () => {
   db.__rows.galleryClients.length = 0;
   db.__rows.galleries.push(galleryRow());
   db.__rows.galleryClients.push(
-    { galleryId: GALLERY_ID, userId: CLIENT_A, removedAt: null, createdAt: new Date("2026-07-01") },
-    { galleryId: GALLERY_ID, userId: CLIENT_B, removedAt: null, createdAt: new Date("2026-07-02") },
+    {
+      galleryId: GALLERY_ID,
+      userId: CLIENT_A,
+      removedAt: null,
+      selectionLockedAt: null,
+      selectionSubmittedAt: null,
+      createdAt: new Date("2026-07-01"),
+    },
+    {
+      galleryId: GALLERY_ID,
+      userId: CLIENT_B,
+      removedAt: null,
+      selectionLockedAt: null,
+      selectionSubmittedAt: null,
+      createdAt: new Date("2026-07-02"),
+    },
   );
 });
 
@@ -469,5 +379,59 @@ describe("removeGalleryClient — never touches asset attribution", () => {
         formDataWith({ galleryId: GALLERY_ID, clientId: CLIENT_A }),
       ),
     ).resolves.toEqual({ status: "removed" });
+  });
+});
+
+// Epic #239 — removal must re-settle the gallery's per-client lock state.
+describe("removeGalleryClient — settles the gallery's lock status (epic #239)", () => {
+  const LOCKED_AT = new Date("2026-10-15T10:00:00.000Z");
+
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+  });
+
+  async function lockMember(userId: string) {
+    const db = await seededDb();
+    const row = db.__rows.galleryClients.find((r) => r.userId === userId)!;
+    row.selectionLockedAt = LOCKED_AT;
+    row.selectionSubmittedAt = LOCKED_AT;
+  }
+
+  async function remove(clientId: string) {
+    const { removeGalleryClient } = await import("./actions");
+    return removeGalleryClient(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID, clientId }),
+    );
+  }
+
+  it("moves proofing -> selected when the removed client was the only one still choosing", async () => {
+    await lockMember(CLIENT_A);
+    const db = await seededDb();
+
+    await expect(remove(CLIENT_B)).resolves.toEqual({ status: "removed" });
+
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "selected" });
+    expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_ID);
+    expect(revalidatePathMock).toHaveBeenCalledWith("/galleries/abc123");
+  });
+
+  it("keeps the gallery in proofing when the client left behind is still choosing", async () => {
+    await lockMember(CLIENT_B);
+    const db = await seededDb();
+
+    // The LOCKED client leaves; the open one remains and keeps it open.
+    await expect(remove(CLIENT_B)).resolves.toEqual({ status: "removed" });
+
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
+  });
+
+  it("does not close the gallery when nobody has submitted yet", async () => {
+    const db = await seededDb();
+
+    await expect(remove(CLIENT_A)).resolves.toEqual({ status: "removed" });
+
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
   });
 });

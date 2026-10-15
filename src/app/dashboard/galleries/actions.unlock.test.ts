@@ -161,10 +161,15 @@ vi.mock("@/lib/db", async () => {
     if (table === galleries) return galleries as unknown as Record<string, unknown>;
     if (table === assets) return assets as unknown as Record<string, unknown>;
     if (table === users) return users as unknown as Record<string, unknown>;
+    if (table === galleryClients) return galleryClients as unknown as Record<string, unknown>;
     throw new Error("fake db: unsupported table");
   }
 
-  return {
+  // Epic #239: `unlockSelection` now runs in a transaction that first takes
+  // the gallery row's lock (`select ... for update`) and also resets the
+  // per-client lock columns. The fake models `transaction()` as "run the body
+  // against the same double" (no rollback) and `for()` as a plain read.
+  const fakeDb = {
     db: {
       select: (columns?: Record<string, unknown>) => ({
         from: (table: unknown) => ({
@@ -175,6 +180,7 @@ vi.mock("@/lib/db", async () => {
             const resultPromise = Promise.resolve(rows);
             return {
               limit: async (n: number) => rows.slice(0, n),
+              for: async () => rows,
               then: resultPromise.then.bind(resultPromise),
               catch: resultPromise.catch.bind(resultPromise),
             };
@@ -184,9 +190,11 @@ vi.mock("@/lib/db", async () => {
       update: (table: unknown) => ({
         set: (patch: Row) => ({
           where: (condition: unknown) => {
-            if (table !== galleries) throw new Error("fake db: unsupported table in update()");
-            const matches = galleryRows.filter((row) =>
-              matchesRow(row, galleries as unknown as Record<string, unknown>, condition),
+            if (table !== galleries && table !== galleryClients) {
+              throw new Error("fake db: unsupported table in update()");
+            }
+            const matches = rowsFor(table).filter((row) =>
+              matchesRow(row, tableShapeFor(table), condition),
             );
             for (const row of matches) Object.assign(row, patch);
             const snapshot = matches.map((row) => ({ ...row }));
@@ -198,6 +206,7 @@ vi.mock("@/lib/db", async () => {
           },
         }),
       }),
+      transaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(fakeDb.db),
       // Task #94: `getGalleryClients` (src/lib/galleries.ts) reads through
       // the relational API, `db.query.galleryClients.findMany(...)` — this
       // is what unlockSelection now calls instead of a `users` lookup by
@@ -241,6 +250,7 @@ vi.mock("@/lib/db", async () => {
       },
     },
   };
+  return fakeDb;
 });
 
 async function seededDb() {
@@ -435,6 +445,66 @@ describe("unlockSelection success", () => {
     // Task #114 — every open client tab reopens live off this signal.
     expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_ID);
     expect(revalidatePathMock).toHaveBeenCalledWith("/dashboard/galleries");
+  });
+
+  // Epic #239 — the gallery-wide unlock must reopen EVERY person, not just
+  // the status: a `proofing` gallery full of still-locked clients could
+  // neither pick nor resubmit.
+  it("clears BOTH per-client lock columns on every membership, including a removed one", async () => {
+    const { unlockSelection } = await import("./actions");
+    const db = await seededDb();
+    const lockedAt = new Date("2026-10-15T10:00:00.000Z");
+    db.__rows.users.push({ id: "client-b", name: "Beto Ruiz", email: "beto@example.com" });
+    db.__rows.galleryClients.length = 0;
+    db.__rows.galleryClients.push(
+      {
+        galleryId: GALLERY_ID,
+        userId: CLIENT_ID,
+        removedAt: null,
+        selectionLockedAt: lockedAt,
+        selectionSubmittedAt: lockedAt,
+      },
+      {
+        galleryId: GALLERY_ID,
+        userId: "client-b",
+        removedAt: null,
+        selectionLockedAt: lockedAt,
+        selectionSubmittedAt: null,
+      },
+      {
+        galleryId: GALLERY_ID,
+        userId: "client-gone",
+        removedAt: new Date("2026-09-01"),
+        selectionLockedAt: lockedAt,
+        selectionSubmittedAt: lockedAt,
+      },
+    );
+
+    await unlockSelection({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID }));
+
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+    for (const row of db.__rows.galleryClients) {
+      expect(row).toMatchObject({ selectionLockedAt: null, selectionSubmittedAt: null });
+    }
+  });
+
+  it("leaves another gallery's memberships locked", async () => {
+    const { unlockSelection } = await import("./actions");
+    const db = await seededDb();
+    const lockedAt = new Date("2026-10-15T10:00:00.000Z");
+    db.__rows.galleryClients.push({
+      galleryId: "22222222-2222-4222-8222-222222222222",
+      userId: "client-z",
+      removedAt: null,
+      selectionLockedAt: lockedAt,
+      selectionSubmittedAt: lockedAt,
+    });
+
+    await unlockSelection({ status: "idle" }, formDataWith({ galleryId: GALLERY_ID }));
+
+    expect(db.__rows.galleryClients.find((r) => r.userId === "client-z")).toMatchObject({
+      selectionLockedAt: lockedAt,
+    });
   });
 
   // Acceptance criterion: "the unlock is visible in the record — who did it

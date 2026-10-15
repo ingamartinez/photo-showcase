@@ -44,7 +44,13 @@ import {
 } from "@/lib/gallery-access-rate-limiters";
 import { validateExtraPriceTiers, type ExtraPriceTier } from "@/lib/extra-price-tiers";
 import { generateGallerySlug } from "@/lib/slug";
-import { lockGalleryRow, settleGalleryLockStatus } from "@/lib/gallery-client-locks";
+import {
+  lockGalleryRow,
+  settleGalleryLockStatus,
+  type DbTransaction,
+  type LockTransition,
+} from "@/lib/gallery-client-locks";
+import { isClientLockActionableStatus } from "@/lib/client-selection-state";
 import { notifySelectionChanged } from "@/lib/selection-events";
 
 // Task #193 — a manual override of a snapshot's value.
@@ -2159,6 +2165,241 @@ export async function removeGalleryClient(
   revalidatePath(`/dashboard/galleries/${gallery.id}`);
   revalidatePath("/dashboard/galleries");
   return { status: "removed" };
+}
+
+// ---------------------------------------------------------------------------
+// Per-client selection lock, admin side (epic #239, task #242).
+//
+// Three actions on ONE person of a group gallery: lock them, unlock them,
+// or wipe their picks. All share the same shape:
+//   1. `requireAdmin()` at the action itself;
+//   2. zod-validated `galleryId` + `clientId`;
+//   3. ONE transaction that takes the gallery row lock FIRST
+//      (`lockGalleryRow` — the order every writer of the per-client lock
+//      columns uses, see src/lib/gallery-client-locks.ts) and only THEN reads
+//      the gallery status and the client's membership. Validating before the
+//      lock would let a concurrent submit/removal change the answer between
+//      the check and the write;
+//   4. refuse unless the gallery is `proofing`/`selected` and the client is
+//      ACTIVE (`removedAt IS NULL`) on THIS gallery;
+//   5. `settleGalleryLockStatus` in the same tx, so the gallery status follows
+//      the locks (`proofing -> selected` when the last open client is locked,
+//      `selected -> proofing` when anyone reopens).
+// ---------------------------------------------------------------------------
+
+export type GalleryClientSelectionActionState = {
+  status: "idle" | "error" | "done" | "done_email_failed";
+  message?: string;
+};
+
+const galleryClientSelectionSchema = z.object({
+  galleryId: z.uuid(),
+  clientId: z.string().trim().min(1, "Cliente inválido."),
+});
+
+type ClientSelectionTxResult =
+  { ok: false; message: string } | { ok: true; gallery: Gallery; transition: LockTransition };
+
+/** Shared body of the three actions: admin gate, validation, one transaction
+ * with the gallery row locked first, the status + active-membership refusals,
+ * then `mutate` (the action's own writes) and `settleGalleryLockStatus`. */
+async function runClientSelectionAction(
+  formData: FormData,
+  mutate: (
+    tx: DbTransaction,
+    ctx: { gallery: Gallery; clientId: string; lockedAt: Date | null; submittedAt: Date | null },
+  ) => Promise<string | null>,
+): Promise<
+  | { ok: false; state: GalleryClientSelectionActionState }
+  | { ok: true; gallery: Gallery; clientId: string; transition: LockTransition }
+> {
+  await requireAdmin();
+
+  const parsed = galleryClientSelectionSchema.safeParse({
+    galleryId: formData.get("galleryId"),
+    clientId: formData.get("clientId"),
+  });
+  if (!parsed.success) {
+    return {
+      ok: false,
+      state: { status: "error", message: parsed.error.issues[0]?.message ?? "Datos inválidos." },
+    };
+  }
+  const { galleryId, clientId } = parsed.data;
+
+  const result: ClientSelectionTxResult = await db.transaction(async (tx) => {
+    const gallery = await lockGalleryRow(tx, galleryId);
+    if (!gallery) return { ok: false, message: "La galería no existe." };
+    if (!isClientLockActionableStatus(gallery.status)) {
+      return {
+        ok: false,
+        message:
+          "Solo se puede cambiar la selección de una persona mientras la galería está en elección o con selección enviada.",
+      };
+    }
+    const [membership] = await tx
+      .select({
+        lockedAt: galleryClients.selectionLockedAt,
+        submittedAt: galleryClients.selectionSubmittedAt,
+      })
+      .from(galleryClients)
+      .where(
+        and(
+          eq(galleryClients.galleryId, galleryId),
+          eq(galleryClients.userId, clientId),
+          isNull(galleryClients.removedAt),
+        ),
+      )
+      .limit(1);
+    if (!membership) {
+      return { ok: false, message: "Ese cliente ya no está activo en esta galería." };
+    }
+    const refusal = await mutate(tx, {
+      gallery,
+      clientId,
+      lockedAt: membership.lockedAt,
+      submittedAt: membership.submittedAt,
+    });
+    if (refusal) return { ok: false, message: refusal };
+    const transition = await settleGalleryLockStatus(tx, galleryId);
+    return { ok: true, gallery, transition };
+  });
+
+  if (!result.ok) return { ok: false, state: { status: "error", message: result.message } };
+  return { ok: true, gallery: result.gallery, clientId, transition: result.transition };
+}
+
+function finishClientSelectionAction(gallery: Gallery) {
+  // Every open client tab re-reads the board (lock state, and the status when
+  // it moved) — fire-and-forget, the 30s poll is the backstop.
+  void notifySelectionChanged(gallery.id).catch(() => {});
+  revalidatePath(`/dashboard/galleries/${gallery.id}`);
+  revalidatePath("/dashboard/galleries");
+  revalidatePath(`/galleries/${gallery.publicSlug}`);
+}
+
+/** Locks ONE client's selection without them having submitted
+ * (`selection_locked_at` set, `selection_submitted_at` left NULL). Locking the
+ * last open client closes the gallery (`proofing -> selected`). */
+export async function lockGalleryClientSelection(
+  _prevState: GalleryClientSelectionActionState,
+  formData: FormData,
+): Promise<GalleryClientSelectionActionState> {
+  const outcome = await runClientSelectionAction(formData, async (tx, ctx) => {
+    if (ctx.lockedAt !== null) return "La selección de esa persona ya está bloqueada.";
+    await tx
+      .update(galleryClients)
+      .set({ selectionLockedAt: new Date() })
+      .where(
+        and(
+          eq(galleryClients.galleryId, ctx.gallery.id),
+          eq(galleryClients.userId, ctx.clientId),
+          isNull(galleryClients.removedAt),
+        ),
+      );
+    return null;
+  });
+  if (!outcome.ok) return outcome.state;
+  finishClientSelectionAction(outcome.gallery);
+  return { status: "done", message: "Bloqueamos la selección de esa persona." };
+}
+
+/** Reopens ONE client (clears BOTH lock columns), moves a `selected` gallery
+ * back to `proofing`, and emails THAT client through the same
+ * `gallery-unlock` magic-link mechanism `unlockSelection` uses. The email is
+ * best-effort: a failure is reported, never rolled back. */
+export async function unlockGalleryClientSelection(
+  _prevState: GalleryClientSelectionActionState,
+  formData: FormData,
+): Promise<GalleryClientSelectionActionState> {
+  const outcome = await runClientSelectionAction(formData, async (tx, ctx) => {
+    if (ctx.lockedAt === null) return "La selección de esa persona no está bloqueada.";
+    await tx
+      .update(galleryClients)
+      .set({ selectionLockedAt: null, selectionSubmittedAt: null })
+      .where(
+        and(
+          eq(galleryClients.galleryId, ctx.gallery.id),
+          eq(galleryClients.userId, ctx.clientId),
+          isNull(galleryClients.removedAt),
+        ),
+      );
+    return null;
+  });
+  if (!outcome.ok) return outcome.state;
+  finishClientSelectionAction(outcome.gallery);
+
+  const [user] = await db
+    .select({ email: users.email })
+    .from(users)
+    .where(eq(users.id, outcome.clientId))
+    .limit(1);
+  if (!user) {
+    return {
+      status: "done_email_failed",
+      message:
+        "Desbloqueamos la selección, pero no encontramos el correo de esa persona. " +
+        "Avisale por otro medio (WhatsApp / llamada).",
+    };
+  }
+  try {
+    await signIn("gallery-unlock", {
+      email: user.email,
+      redirect: false,
+      redirectTo: `/galleries/${outcome.gallery.publicSlug}`,
+    });
+  } catch (error) {
+    // Anything but an AuthError is a real bug/outage — same stance as
+    // `unlockSelection`.
+    if (!(error instanceof AuthError)) throw error;
+    return {
+      status: "done_email_failed",
+      message:
+        `Desbloqueamos la selección, pero no pudimos avisarle por correo a: ${user.email}. ` +
+        "Avisale por otro medio (WhatsApp / llamada).",
+    };
+  }
+  return { status: "done", message: "Desbloqueamos la selección y le avisamos por correo." };
+}
+
+/** Wipes ONE client's picks: every asset of THIS gallery with `selected_by =
+ * client` is deselected (the same reset the PATCH route does on deselect),
+ * both lock columns are cleared, and the gallery is settled — all in one
+ * transaction. No email. Other clients' picks and other galleries are never
+ * touched. */
+export async function removeGalleryClientPicks(
+  _prevState: GalleryClientSelectionActionState,
+  formData: FormData,
+): Promise<GalleryClientSelectionActionState> {
+  let removed = 0;
+  const outcome = await runClientSelectionAction(formData, async (tx, ctx) => {
+    const deselected = await tx
+      .update(assets)
+      .set({ isSelected: false, selectedAt: null, selectedBy: null, selectionKind: "edited" })
+      .where(and(eq(assets.galleryId, ctx.gallery.id), eq(assets.selectedBy, ctx.clientId)))
+      .returning({ id: assets.id });
+    removed = deselected.length;
+    await tx
+      .update(galleryClients)
+      .set({ selectionLockedAt: null, selectionSubmittedAt: null })
+      .where(
+        and(
+          eq(galleryClients.galleryId, ctx.gallery.id),
+          eq(galleryClients.userId, ctx.clientId),
+          isNull(galleryClients.removedAt),
+        ),
+      );
+    return null;
+  });
+  if (!outcome.ok) return outcome.state;
+  finishClientSelectionAction(outcome.gallery);
+  return {
+    status: "done",
+    message:
+      removed === 1
+        ? "Quitamos 1 foto elegida por esa persona y reabrimos su selección."
+        : `Quitamos ${removed} fotos elegidas por esa persona y reabrimos su selección.`,
+  };
 }
 
 // ---------------------------------------------------------------------------

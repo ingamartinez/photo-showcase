@@ -52,7 +52,7 @@ describe("UnlockSelectionPanel", () => {
     await user.click(screen.getByRole("button", { name: "Desbloquear selección" }));
 
     await screen.findByRole("status");
-    expect(screen.getByText(/el cliente puede volver a elegir/)).toBeDefined();
+    expect(screen.getByText(/todos los clientes pueden volver a elegir/)).toBeDefined();
     expect(screen.queryByRole("button", { name: "Desbloquear selección" })).toBeNull();
   });
 

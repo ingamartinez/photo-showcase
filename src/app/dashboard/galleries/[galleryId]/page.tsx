@@ -8,6 +8,7 @@ import {
   activeClientRuleViolation,
   formatGalleryStatus,
   formatSessionDate,
+  getGalleryClientSelections,
   getGalleryDetail,
   getGalleryUnlockAudit,
   isGalleryVisibleToClient,
@@ -29,6 +30,7 @@ import { SelectionTrayModeControl } from "@/components/selection-tray-mode-contr
 import { SelectedPhotosList } from "@/components/selected-photos-list";
 import { ExtrasPersonAssignment } from "@/components/extras-person-assignment";
 import type { Gallery } from "@/lib/db/schema";
+import { toClientSelectionView } from "@/lib/client-selection-state";
 
 export const metadata: Metadata = {
   title: "Galería",
@@ -127,6 +129,23 @@ export default async function GalleryDetailPage({
   // plainly (nothing shown at all, see below), not treat as missing data.
   const unlockAudit = await getGalleryUnlockAudit(gallery.id);
 
+  // Epic #239 (#242): per-client pick count + lock state, and who owns each
+  // pick. A draft has no picks to show, so its rows stay plain.
+  const clientSelections = await getGalleryClientSelections(gallery.id);
+  const selectionByClientId = new Map(
+    clientSelections.clients.map((selection) => [
+      selection.userId,
+      toClientSelectionView({
+        lockedAt: selection.lockedAt,
+        submittedAt: selection.submittedAt,
+        pickCount: selection.pickCount,
+      }),
+    ]),
+  );
+  const frozenPickerIds = clientSelections.clients
+    .filter((selection) => selection.lockedAt !== null)
+    .map((selection) => selection.userId);
+
   // Task #92: the SAME question GET .../download-all's own pre-flight asks
   // ("how big would this gallery's zip be"), asked here instead so the
   // photographer — the one who can actually fix an oversized gallery —
@@ -173,6 +192,7 @@ export default async function GalleryDetailPage({
     .filter((asset) => asset.isSelected)
     .map((asset) => ({
       id: asset.id,
+      selectedBy: clientSelections.pickOwnerByAssetId[asset.id] ?? null,
       originalFilename: asset.originalFilename,
       selectionKind: asset.selectionKind,
     }));
@@ -337,6 +357,9 @@ export default async function GalleryDetailPage({
                   status={gallery.status}
                   removable={canRemoveAnyClient}
                   resendable={canResendAccess}
+                  selection={
+                    gallery.status === "draft" ? undefined : selectionByClientId.get(client.id)
+                  }
                 />
               ))
             )}
@@ -585,7 +608,7 @@ export default async function GalleryDetailPage({
         </aside>
       </div>
 
-      <SelectedPhotosList items={selectedPhotos} />
+      <SelectedPhotosList items={selectedPhotos} frozenPickerIds={frozenPickerIds} />
 
       {/* Task #223 — only in `by-person` mode; see the component's own header
           for why offering this in `flat` mode would be asking for a decision

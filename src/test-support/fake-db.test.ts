@@ -7,7 +7,7 @@ import { createFakeDb, type FakeDb } from "@/test-support/fake-db";
 // THROW, because silently treating `ne` as `eq`, dropping a leaf inside
 // `and`, or reading `or` as `and` makes a suite green for the wrong reason.
 
-type Fake = FakeDb & {
+type Fake = Omit<FakeDb, "select" | "update"> & {
   select: (columns?: Record<string, unknown>) => {
     from: (t: unknown) => { where: (c: unknown) => Promise<Record<string, unknown>[]> };
   };

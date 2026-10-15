@@ -133,6 +133,7 @@ type SelectionSnapshot = {
   // always sends both.
   viewerLock?: ViewerLock | null;
   lockedPickerIds?: string[];
+  submittedPickerIds?: string[];
 };
 
 /** The two fields of `ProofAsset` (src/components/proof-grid.tsx) this hook
@@ -175,6 +176,7 @@ export function useSharedSelection({
   viewerId,
   initialViewerLock = null,
   initialLockedPickerIds = [],
+  initialSubmittedPickerIds = [],
 }: {
   galleryId: string;
   initialAssets: SharedSelectionAsset[];
@@ -204,6 +206,7 @@ export function useSharedSelection({
   // with no reload.
   initialViewerLock?: ViewerLock | null;
   initialLockedPickerIds?: string[];
+  initialSubmittedPickerIds?: string[];
 }) {
   // `is_selected` per asset. Seeded from the initial server-rendered paint,
   // then only ever overwritten by a toggle response's own `asset.isSelected`
@@ -278,6 +281,9 @@ export function useSharedSelection({
   // not clear it, `viewerLock` is the truth.
   const [viewerLock, setViewerLock] = useState<ViewerLock | null>(initialViewerLock);
   const [lockedPickerIds, setLockedPickerIds] = useState<string[]>(initialLockedPickerIds);
+  // The subset of `lockedPickerIds` who submitted themselves (the rest were
+  // closed by the photographer).
+  const [submittedPickerIds, setSubmittedPickerIds] = useState<string[]>(initialSubmittedPickerIds);
   const isGalleryLocked = SUBMITTED_STATUSES.has(status);
   const isViewerLocked = viewerLock !== null;
   // What every control gates on: either lock freezes THIS viewer's controls.
@@ -415,6 +421,7 @@ export function useSharedSelection({
     isLockedRef.current = SUBMITTED_STATUSES.has(snapshot.status) || nextViewerLock !== null;
     setViewerLock(nextViewerLock);
     setLockedPickerIds(snapshot.lockedPickerIds ?? []);
+    setSubmittedPickerIds(snapshot.submittedPickerIds ?? []);
     setSubmittedAt(snapshot.submittedAt);
     setPicks(snapshot.picks);
 
@@ -851,6 +858,7 @@ export function useSharedSelection({
         submittedAt: outcome.submittedAt,
       });
       setLockedPickerIds((prev) => (prev.includes(viewerId) ? prev : [...prev, viewerId]));
+      setSubmittedPickerIds((prev) => (prev.includes(viewerId) ? prev : [...prev, viewerId]));
       setQuota(outcome.quota);
       lastLocalWriteClockRef.current = ++quotaSequenceRef.current;
       appliedQuotaSequenceRef.current = quotaSequenceRef.current;
@@ -868,6 +876,7 @@ export function useSharedSelection({
     isViewerLocked,
     viewerLock,
     lockedPickerIds,
+    submittedPickerIds,
     submittedAt,
     pendingIds,
     toggleError,

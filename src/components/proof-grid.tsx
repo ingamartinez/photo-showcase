@@ -217,6 +217,7 @@ export function ProofGrid({
   allowsOriginalSelection,
   initialViewerLock = null,
   initialLockedPickerIds = [],
+  initialSubmittedPickerIds = [],
   isAdminPreview = false,
 }: {
   // Task #25's submit route is keyed on this — see that route's own header
@@ -239,6 +240,7 @@ export function ProofGrid({
   // both wholesale.
   initialViewerLock?: ViewerLock | null;
   initialLockedPickerIds?: string[];
+  initialSubmittedPickerIds?: string[];
   // Epic #239 — the photographer previewing this page. The submit route
   // refuses admins, so no working submit button is rendered for them.
   isAdminPreview?: boolean;
@@ -319,6 +321,7 @@ export function ProofGrid({
     isGalleryLocked,
     viewerLock,
     lockedPickerIds,
+    submittedPickerIds,
     submittedAt,
     pendingIds,
     toggleError,
@@ -330,6 +333,7 @@ export function ProofGrid({
     viewerId,
     initialViewerLock,
     initialLockedPickerIds,
+    initialSubmittedPickerIds,
     galleryId,
     initialAssets,
     initialStatus,
@@ -564,6 +568,8 @@ export function ProofGrid({
           isLocked={isLocked}
           isGalleryLocked={isGalleryLocked}
           lockedPickerIds={lockedPickerIds}
+          submittedPickerIds={submittedPickerIds}
+          lockedByAdmin={lockedByAdmin}
           isStale={isStale}
           allowsOriginalSelection={allowsOriginalSelection}
           onOpenAsset={openAssetInLightbox}

@@ -83,6 +83,9 @@ export async function getSelectionLockSnapshot(
         }
       : null,
     lockedPickerIds: locked.map((member) => member.userId),
+    submittedPickerIds: locked
+      .filter((member) => member.submittedAt !== null)
+      .map((member) => member.userId),
   };
 }
 

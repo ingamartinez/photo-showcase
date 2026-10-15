@@ -32,105 +32,24 @@ vi.mock("@/lib/gallery-selection", () => ({
   getGallerySelection: (...args: [string]) => getGallerySelectionMock(...args),
 }));
 
-// A minimal, genuinely-behaving double for `@/lib/db` — real filtering off
-// drizzle's own `eq()`/`and()` condition objects, plus `isNull()`, which
-// `isGalleryOwner` needs (`removedAt IS NULL`, task #97) and which no
-// existing route suite's harness models explicitly.
-type Row = Record<string, unknown>;
-
-type Condition = { dbColumnName: string; kind: "eq" | "isNull"; value?: unknown };
-
-function flattenChunks(node: unknown, out: unknown[]): void {
-  if (node && typeof node === "object" && "queryChunks" in node) {
-    for (const chunk of (node as { queryChunks: unknown[] }).queryChunks) {
-      flattenChunks(chunk, out);
-    }
-    return;
-  }
-  out.push(node);
-}
-
-/** Every column referenced by a condition, tagged with whether it is being
- * compared to a parameter (`eq`) or tested for NULL (`isNull`). Reading the
- * REAL condition object rather than intercepting the call is what makes a
- * dropped `isNull(removedAt)` visible to these tests instead of silent. */
-function conditionsOf(condition: unknown): Condition[] {
-  const flat: unknown[] = [];
-  flattenChunks(condition, flat);
-
-  const conditions: Condition[] = [];
-  for (const chunk of flat) {
-    if (!chunk || typeof chunk !== "object") continue;
-    if ("name" in chunk && "table" in chunk) {
-      conditions.push({ dbColumnName: (chunk as { name: string }).name, kind: "eq" });
-    } else if ("value" in chunk && "encoder" in chunk) {
-      const last = conditions.at(-1);
-      if (last) last.value = (chunk as { value: unknown }).value;
-    } else if (
-      "value" in chunk &&
-      typeof (chunk as { value: unknown }).value === "object" &&
-      Array.isArray((chunk as { value: unknown[] }).value) &&
-      (chunk as { value: string[] }).value.join("").includes("is null")
-    ) {
-      const last = conditions.at(-1);
-      if (last) last.kind = "isNull";
-    }
-  }
-  return conditions;
-}
-
-function jsKeyFor(table: Record<string, unknown>, dbColumnName: string): string {
-  const found = Object.entries(table).find(
-    ([, col]) => col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
-  );
-  if (!found) throw new Error(`jsKeyFor: no column named ${dbColumnName}`);
-  return found[0];
-}
-
+// The shared in-memory double (src/test-support/fake-db.ts) — filters for real
+// off eq()/isNull()/and(), supports `transaction()` and `for("update")`.
 vi.mock("@/lib/db", async () => {
   const { galleries, galleryClients } = await import("@/lib/db/schema");
-
-  const galleryRows: Row[] = [];
-  const galleryClientRows: Row[] = [];
-
-  function shapeFor(table: unknown): Record<string, unknown> {
-    if (table === galleries) return galleries as unknown as Record<string, unknown>;
-    if (table === galleryClients) return galleryClients as unknown as Record<string, unknown>;
-    throw new Error("fake db: unsupported table");
-  }
-  function rowsFor(table: unknown): Row[] {
-    if (table === galleries) return galleryRows;
-    if (table === galleryClients) return galleryClientRows;
-    throw new Error("fake db: unsupported table");
-  }
-
+  const { createFakeDb } = await import("@/test-support/fake-db");
+  const fake = createFakeDb([galleries, galleryClients]);
+  // Test-only escape hatch, not part of the real `db` shape.
   return {
-    db: {
-      select: (columns?: Record<string, unknown>) => ({
-        from: (table: unknown) => ({
-          where: (condition: unknown) => {
-            const shape = shapeFor(table);
-            const matched = rowsFor(table).filter((row) =>
-              conditionsOf(condition).every(({ dbColumnName, kind, value }) => {
-                const cell = row[jsKeyFor(shape, dbColumnName)];
-                return kind === "isNull" ? cell === null || cell === undefined : cell === value;
-              }),
-            );
-            const projected = columns
-              ? matched.map((row) => {
-                  const out: Row = {};
-                  for (const key of Object.keys(columns)) out[key] = row[key];
-                  return out;
-                })
-              : matched;
-            return { limit: async (n: number) => projected.slice(0, n) };
-          },
-        }),
-      }),
-      __rows: { galleries: galleryRows, galleryClients: galleryClientRows },
-    },
+    db: Object.assign(fake, {
+      __rows: {
+        galleries: fake.__tables.get(galleries)!,
+        galleryClients: fake.__tables.get(galleryClients)!,
+      },
+    }),
   };
 });
+
+type Row = Record<string, unknown>;
 
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
@@ -198,7 +117,13 @@ beforeEach(async () => {
   db.__rows.galleries.length = 0;
   db.__rows.galleryClients.length = 0;
   db.__rows.galleries.push(galleryRow());
-  db.__rows.galleryClients.push({ galleryId: GALLERY_ID, userId: "client-a", removedAt: null });
+  db.__rows.galleryClients.push({
+    galleryId: GALLERY_ID,
+    userId: "client-a",
+    removedAt: null,
+    selectionLockedAt: null,
+    selectionSubmittedAt: null,
+  });
 });
 
 describe("GET /api/galleries/[galleryId]/selection — the guard", () => {
@@ -508,6 +433,57 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
     const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
     const body = (await response.json()) as Record<string, unknown>;
 
-    expect(Object.keys(body).sort()).toEqual(["picks", "quota", "status", "submittedAt"]);
+    expect(Object.keys(body).sort()).toEqual([
+      "lockedPickerIds",
+      "picks",
+      "quota",
+      "status",
+      "submittedAt",
+      "viewerLock",
+    ]);
+  });
+});
+
+// Epic #239 — what slice #241 renders from.
+describe("GET /api/galleries/[galleryId]/selection — per-client lock snapshot (epic #239)", () => {
+  const LOCKED_AT = new Date("2026-10-15T10:00:00.000Z");
+
+  it("reports an open viewer as viewerLock null and lists the OTHER locked pickers", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.push({
+      galleryId: GALLERY_ID,
+      userId: "client-b",
+      removedAt: null,
+      selectionLockedAt: LOCKED_AT,
+      selectionSubmittedAt: LOCKED_AT,
+    });
+    authMock.mockResolvedValue(clientASession());
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.viewerLock).toBeNull();
+    expect(body.lockedPickerIds).toEqual(["client-b"]);
+    // Gallery-level fields keep working: nobody closed the gallery.
+    expect(body.status).toBe("proofing");
+  });
+
+  it("reports the viewer's own lock, with their own submittedAt", async () => {
+    const db = await seededDb();
+    const row = db.__rows.galleryClients.find((r) => r.userId === "client-a")!;
+    row.selectionLockedAt = LOCKED_AT;
+    row.selectionSubmittedAt = LOCKED_AT;
+    authMock.mockResolvedValue(clientASession());
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
+    const body = (await response.json()) as Record<string, unknown>;
+
+    expect(body.viewerLock).toEqual({
+      lockedAt: LOCKED_AT.toISOString(),
+      submittedAt: LOCKED_AT.toISOString(),
+    });
+    expect(body.lockedPickerIds).toEqual(["client-a"]);
   });
 });

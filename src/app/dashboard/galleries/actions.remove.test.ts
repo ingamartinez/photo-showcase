@@ -47,6 +47,8 @@ vi.mock("@/lib/db", async () => {
   };
 });
 
+type Row = Record<string, unknown>;
+
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
     db: { __rows: { galleries: Row[]; galleryClients: Row[] } };

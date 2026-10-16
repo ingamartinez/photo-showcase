@@ -2375,7 +2375,14 @@ export async function removeGalleryClientPicks(
   const outcome = await runClientSelectionAction(formData, async (tx, ctx) => {
     const deselected = await tx
       .update(assets)
-      .set({ isSelected: false, selectedAt: null, selectedBy: null, selectionKind: "edited" })
+      .set({
+        isSelected: false,
+        selectedAt: null,
+        selectedBy: null,
+        selectionKind: "edited",
+        // Task #244: removing a pick also cancels its order.
+        requestedAt: null,
+      })
       .where(and(eq(assets.galleryId, ctx.gallery.id), eq(assets.selectedBy, ctx.clientId)))
       .returning({ id: assets.id });
     removed = deselected.length;

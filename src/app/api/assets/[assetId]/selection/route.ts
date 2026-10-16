@@ -235,15 +235,15 @@ export const PATCH = withApiSession(async function PATCH(
     }
   }
 
-  // Task #244 — ROLLING DELIVERY FREEZE. With the flag on, submitting never
-  // locks a client (so the per-client gates above stay open), which makes
-  // THIS the gate that stops a client from undoing a photo the photographer
-  // already edited and uploaded: deselect, re-take-over and kind change are
-  // all refused for ANY non-admin client (not only the picker) once the pick
-  // has a final. Checked off the asset row, not the client's lock. Admin is
-  // unaffected; with the flag off nothing here applies.
-  if (!isAdmin && gallery.rollingDelivery && asset.isSelected && asset.isEdited && asset.finalKey) {
-    return errorResponse("final_already_delivered", 409);
+  // Task #244 — ROLLING DELIVERY ORDER FREEZE. With the flag on, submitting
+  // never locks a client (so the per-client gates above stay open); it stamps
+  // `requested_at` on the cart instead. THIS is the gate that makes an
+  // ordered pick permanent for clients: deselect, re-take-over and kind
+  // change are refused for ANY non-admin client (not only the picker),
+  // whether or not the final exists yet. Removing an ordered pick goes
+  // through the photographer. Admin is unaffected; flag off = nothing here.
+  if (!isAdmin && gallery.rollingDelivery && asset.isSelected && asset.requestedAt !== null) {
+    return errorResponse("already_requested", 409);
   }
 
   const { selected, selectionKind } = bodyResult.data;
@@ -297,7 +297,16 @@ export const PATCH = withApiSession(async function PATCH(
 
     await db
       .update(assets)
-      .set({ isSelected, selectedAt, selectedBy, selectionKind: nextSelectionKind })
+      // Task #244 lockstep: a fresh pick starts in the cart and a deselect
+      // (admin only, once ordered) clears the order; only an admin
+      // re-select of an already-ordered pick keeps its original stamp.
+      .set({
+        isSelected,
+        selectedAt,
+        selectedBy,
+        selectionKind: nextSelectionKind,
+        requestedAt: isSelected && asset.isSelected ? asset.requestedAt : null,
+      })
       .where(eq(assets.id, asset.id));
   } else {
     // Type-only change (task #206): `bodySchema`'s own `.refine` guarantees

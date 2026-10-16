@@ -645,6 +645,14 @@ export const assets = pgTable("assets", {
   proofHeight: integer("proof_height").notNull(),
   isSelected: boolean("is_selected").notNull().default(false),
   selectedAt: timestamp("selected_at", { withTimezone: true }),
+  // Task #244 — ROLLING DELIVERY "order" stamp. A selected asset with
+  // `requestedAt IS NULL` is still in its picker's CART (freely removable);
+  // submitting stamps it, which freezes it for every non-admin client
+  // (`already_requested`, PATCH selection route) and makes it the
+  // photographer's work. Only ever written in galleries with
+  // `rolling_delivery` on. Kept in lockstep with `isSelected`: null whenever
+  // the asset is not selected (every deselect path clears it).
+  requestedAt: timestamp("requested_at", { withTimezone: true }),
   // WHO last set `isSelected`/`selectedAt` — task #94's "shared selection,
   // ATTRIBUTED" decision (2026-07-29, owner-approved): with several clients
   // now able to pick into the SAME shared set, an anonymous boolean is no

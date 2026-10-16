@@ -50,6 +50,7 @@ const GALLERY_A_ID = "11111111-1111-4111-8111-111111111111";
 const GALLERY_B_ID = "22222222-2222-4222-8222-222222222222";
 const ASSET_1_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
 const ASSET_2_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
+const ASSET_3_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
 
 function clientASession(): Session {
   return {
@@ -108,6 +109,7 @@ function assetRow(overrides: Partial<Row> = {}): Row {
     proofHeight: 1067,
     isSelected: false,
     selectedAt: null,
+    requestedAt: null,
     // Task #206 — the domain's own default; the tests exercising a type
     // change override this explicitly.
     selectionKind: "edited",
@@ -957,11 +959,13 @@ describe("PATCH /api/assets/[assetId]/selection — allowsOriginalSelection is O
   });
 });
 
-// Task #244 — with rolling delivery on, a pick whose final is uploaded is
-// frozen for EVERY non-admin client. Fixture: ASSET_1 is picked by client-a
-// and has an uploaded final; ASSET_2 is picked by client-a WITHOUT a final;
-// the pickers differ from the reader on purpose.
-describe("PATCH /api/assets/[assetId]/selection — rolling delivery freeze (#244)", () => {
+// Task #244 — with rolling delivery on, a pick the client already ORDERED
+// (`requestedAt` set) is frozen for EVERY non-admin client. Fixture: ASSET_1 is
+// ordered (client-a's), ASSET_2 is client-a's pick still in the cart; client-b
+// is a different active client, on purpose.
+describe("PATCH /api/assets/[assetId]/selection — rolling delivery order freeze (#244)", () => {
+  const REQUESTED_AT = new Date("2026-10-16T10:00:00.000Z");
+
   async function rollingGallery(rollingDelivery: boolean) {
     const db = await seededDb();
     db.__rows.galleries.length = 0;
@@ -982,15 +986,20 @@ describe("PATCH /api/assets/[assetId]/selection — rolling delivery freeze (#24
         id: ASSET_1_ID,
         isSelected: true,
         selectedBy: "client-a",
-        isEdited: true,
-        finalKey: "finals/one.jpg",
+        requestedAt: REQUESTED_AT,
       }),
-      assetRow({ id: ASSET_2_ID, isSelected: true, selectedBy: "client-a", sortOrder: 1 }),
+      assetRow({
+        id: ASSET_2_ID,
+        isSelected: true,
+        selectedBy: "client-a",
+        requestedAt: null,
+        sortOrder: 1,
+      }),
     );
     return db;
   }
 
-  it("refuses the PICKER deselecting a pick that has a final: 409 final_already_delivered, row untouched", async () => {
+  it("refuses the PICKER deselecting an ordered pick: 409 already_requested, row untouched", async () => {
     const db = await rollingGallery(true);
     authMock.mockResolvedValue(clientASession());
     const { PATCH } = await import("./route");
@@ -998,8 +1007,12 @@ describe("PATCH /api/assets/[assetId]/selection — rolling delivery freeze (#24
     const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
 
     expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({ error: "final_already_delivered" });
-    expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
+    await expect(response.json()).resolves.toEqual({ error: "already_requested" });
+    expect(db.__rows.assets[0]).toMatchObject({
+      isSelected: true,
+      selectedBy: "client-a",
+      requestedAt: REQUESTED_AT,
+    });
     expect(notifySelectionChangedMock).not.toHaveBeenCalled();
   });
 
@@ -1011,11 +1024,11 @@ describe("PATCH /api/assets/[assetId]/selection — rolling delivery freeze (#24
     const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
 
     expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({ error: "final_already_delivered" });
+    await expect(response.json()).resolves.toEqual({ error: "already_requested" });
     expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
   });
 
-  it("refuses a kind change on a pick that has a final, for the picker and for another client", async () => {
+  it("refuses a kind change on an ordered pick, for the picker and for another client", async () => {
     const db = await rollingGallery(true);
     const { PATCH } = await import("./route");
     for (const session of [clientASession(), clientBSession()]) {
@@ -1025,12 +1038,12 @@ describe("PATCH /api/assets/[assetId]/selection — rolling delivery freeze (#24
         paramsFor(ASSET_1_ID),
       );
       expect(response.status).toBe(409);
-      await expect(response.json()).resolves.toEqual({ error: "final_already_delivered" });
+      await expect(response.json()).resolves.toEqual({ error: "already_requested" });
     }
     expect(db.__rows.assets[0]).toMatchObject({ selectionKind: "edited" });
   });
 
-  it("still lets the client deselect a pick WITHOUT a final, and pick a brand-new photo", async () => {
+  it("still lets the client deselect a pick that is only in the cart (not ordered yet)", async () => {
     const db = await rollingGallery(true);
     authMock.mockResolvedValue(clientASession());
     const { PATCH } = await import("./route");
@@ -1038,10 +1051,22 @@ describe("PATCH /api/assets/[assetId]/selection — rolling delivery freeze (#24
     const removed = await PATCH(requestFor(ASSET_2_ID, false), paramsFor(ASSET_2_ID));
 
     expect(removed.status).toBe(200);
-    expect(db.__rows.assets[1]).toMatchObject({ isSelected: false });
+    expect(db.__rows.assets[1]).toMatchObject({ isSelected: false, requestedAt: null });
   });
 
-  it("does not bind the admin: removing a person's frozen pick still works", async () => {
+  it("a fresh pick starts in the cart: requestedAt stays null", async () => {
+    const db = await rollingGallery(true);
+    db.__rows.assets.push(assetRow({ id: ASSET_3_ID, sortOrder: 2 }));
+    authMock.mockResolvedValue(clientBSession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_3_ID, true), paramsFor(ASSET_3_ID));
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assets[2]).toMatchObject({ isSelected: true, requestedAt: null });
+  });
+
+  it("the admin is not bound: removing an ordered pick works and clears requestedAt", async () => {
     const db = await rollingGallery(true);
     authMock.mockResolvedValue(adminSession());
     const { PATCH } = await import("./route");
@@ -1049,10 +1074,10 @@ describe("PATCH /api/assets/[assetId]/selection — rolling delivery freeze (#24
     const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
 
     expect(response.status).toBe(200);
-    expect(db.__rows.assets[0]).toMatchObject({ isSelected: false });
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: false, requestedAt: null });
   });
 
-  it("flag OFF: a final does not freeze the pick (today's behavior)", async () => {
+  it("flag OFF: an ordered-looking row does not freeze anything (today's behavior)", async () => {
     const db = await rollingGallery(false);
     authMock.mockResolvedValue(clientASession());
     const { PATCH } = await import("./route");

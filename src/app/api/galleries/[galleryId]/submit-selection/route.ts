@@ -198,6 +198,9 @@ export const POST = withApiSession(async function POST(
         eq(assets.galleryId, gallery.id),
         eq(assets.isSelected, true),
         eq(assets.selectedBy, session.user.id),
+        // Task #244 — under rolling delivery a submit acts on the CART: own
+        // picks not yet ordered. An all-requested cart is empty: same 400.
+        ...(gallery.rollingDelivery ? [isNull(assets.requestedAt)] : []),
       ),
     );
   if (ownPicks.length === 0) {
@@ -220,14 +223,34 @@ export const POST = withApiSession(async function POST(
       return { kind: "not_proofing" as const, gallery: fresh ?? gallery };
     }
 
-    // Task #244 — ROLLING DELIVERY: submitting is a notification, not a
-    // lock. Refresh `selection_submitted_at` only, leave `selection_locked_at`
-    // NULL so the client keeps picking and may submit again, and never run
-    // `settleGalleryLockStatus`: nobody gets locked, so the gallery never
-    // auto-moves to `selected` from client submits. The `isNull(lockedAt)`
-    // predicate keeps an admin-locked client out (the pre-check above already
-    // answered those idempotently).
+    // Task #244 — ROLLING DELIVERY: submitting places an ORDER, not a lock.
+    // ONE conditional UPDATE stamps `requested_at` on exactly THIS client's
+    // cart (own picks not yet requested): the `selected_by` predicate keeps
+    // other people's cart picks untouched, and `requested_at IS NULL` keeps
+    // earlier orders' original stamps. `selection_submitted_at` is refreshed,
+    // `selection_locked_at` stays NULL (the client keeps picking and may
+    // submit again) and `settleGalleryLockStatus` never runs, so the gallery
+    // never auto-moves to `selected` from client submits. The
+    // `isNull(lockedAt)` predicate keeps an admin-locked client out (the
+    // pre-check above already answered those idempotently).
     if (fresh.rollingDelivery) {
+      const stamped = await tx
+        .update(assets)
+        .set({ requestedAt: now })
+        .where(
+          and(
+            eq(assets.galleryId, gallery.id),
+            eq(assets.isSelected, true),
+            eq(assets.selectedBy, session.user.id),
+            isNull(assets.requestedAt),
+          ),
+        )
+        .returning({ id: assets.id });
+      if (stamped.length === 0) {
+        // The cart emptied between the pre-check and the gallery lock
+        // (another tab). Nothing was written yet.
+        return { kind: "empty_cart" as const, gallery: fresh };
+      }
       const refreshed = await tx
         .update(galleryClients)
         .set({ selectionSubmittedAt: now })
@@ -243,7 +266,12 @@ export const POST = withApiSession(async function POST(
       if (refreshed.length === 0) {
         return { kind: "lost_race" as const, gallery: fresh };
       }
-      return { kind: "submitted" as const, gallery: fresh, transition: null };
+      return {
+        kind: "submitted" as const,
+        gallery: fresh,
+        transition: null,
+        requestedCount: stamped.length,
+      };
     }
 
     // CAS on the membership: only the call that flips `selection_locked_at`
@@ -268,6 +296,10 @@ export const POST = withApiSession(async function POST(
     const transition = await settleGalleryLockStatus(tx, gallery.id);
     return { kind: "submitted" as const, gallery: fresh, transition };
   });
+
+  if (outcome.kind === "empty_cart") {
+    return errorResponse("empty_selection", 400);
+  }
 
   if (outcome.kind === "not_proofing" || outcome.kind === "lost_race") {
     // Somebody moved the gallery (or this very membership) between our reads
@@ -411,6 +443,8 @@ export const POST = withApiSession(async function POST(
       galleryTitle: gallery.title,
       galleryUrl: new URL(`/dashboard/galleries/${gallery.id}`, AUTH_URL).toString(),
       quota,
+      // Task #244: only the rolling-delivery order carries a count.
+      ...("requestedCount" in outcome ? { requestedCount: outcome.requestedCount } : {}),
     });
   } catch {
     // Swallowed on purpose — see the comment above this try block. The

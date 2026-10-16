@@ -22,6 +22,7 @@
 // the second while quietly skipping the first.
 import type { Session } from "next-auth";
 import type { Asset, Gallery } from "@/lib/db/schema";
+import { isGalleryVisibleToClient } from "@/lib/galleries";
 
 /**
  * Whether the paid deliverables for `asset` may be served to `session`.
@@ -54,6 +55,13 @@ import type { Asset, Gallery } from "@/lib/db/schema";
  *   the one the photographer's leverage rests on: before delivery, a client
  *   must not reach an unwatermarked pixel of their session, no matter what is
  *   already sitting in R2.
+ *
+ *   TASK #244 — ROLLING DELIVERY widens this leg, and ONLY this leg, via
+ *   `areFinalsOpenToClient` below: a gallery with `rollingDelivery` on is
+ *   also open while `proofing`/`selected`. Opt-in per gallery so one that
+ *   never turned it on keeps the "no unwatermarked pixel before delivery"
+ *   guarantee. The final GET, the display derivative and the download-all zip
+ *   all go through this module, so none can disagree about it.
  *
  * ADMIN CARVE-OUT, on the delivered leg ONLY (decided in task #26, inherited
  * from #63's review, and preserved verbatim here rather than re-litigated):
@@ -108,12 +116,31 @@ import type { Asset, Gallery } from "@/lib/db/schema";
  */
 export function canReadFinalDeliverable<
   A extends Pick<Asset, "isSelected" | "isExtra" | "isEdited" | "finalKey">,
->(asset: A, gallery: Pick<Gallery, "status">, session: Session): asset is A & { finalKey: string } {
+>(
+  asset: A,
+  gallery: Pick<Gallery, "status" | "rollingDelivery">,
+  session: Session,
+): asset is A & { finalKey: string } {
   const deliveredGateAppliesToThisSession = session.user.role !== "admin";
   return (
     (asset.isSelected || asset.isExtra) &&
     asset.isEdited &&
     !!asset.finalKey &&
-    !(deliveredGateAppliesToThisSession && gallery.status !== "delivered")
+    !(deliveredGateAppliesToThisSession && !areFinalsOpenToClient(gallery))
+  );
+}
+
+/**
+ * The gallery-level half of the gate (task #244): may a CLIENT reach
+ * finals in this gallery at all? `delivered` always; `proofing`/`selected`
+ * only with `rollingDelivery` on; `draft`/`archived` never, flag or no flag
+ * (`isGalleryVisibleToClient` keeps them closed). Exported so the
+ * download-all route's early gallery-level refusal uses this exact rule
+ * instead of a hand-written copy.
+ */
+export function areFinalsOpenToClient(gallery: Pick<Gallery, "status" | "rollingDelivery">) {
+  return (
+    gallery.status === "delivered" ||
+    (gallery.rollingDelivery && isGalleryVisibleToClient(gallery.status))
   );
 }

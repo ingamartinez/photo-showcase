@@ -51,6 +51,10 @@ export const runtime = "nodejs";
 
 const galleryIdSchema = z.uuid();
 
+// Task #244 — thrown inside the rolling-delivery transaction when the cart
+// turned out empty, so Drizzle rolls back the submit-timestamp refresh too.
+class EmptyCartError extends Error {}
+
 function errorResponse(error: string, status: number): NextResponse {
   return NextResponse.json({ error }, { status });
 }
@@ -217,43 +221,78 @@ export const POST = withApiSession(async function POST(
   // guarantees exactly ONE `proofing -> selected` transition (kanban #61's
   // stance: guard the UPDATE itself with a `WHERE`, never reorder around it).
   const now = new Date();
-  const outcome = await db.transaction(async (tx) => {
-    const fresh = await lockGalleryRow(tx, gallery.id);
-    if (!fresh || fresh.status !== "proofing") {
-      return { kind: "not_proofing" as const, gallery: fresh ?? gallery };
-    }
+  let outcome;
+  try {
+    outcome = await runSubmitTransaction();
+  } catch (error) {
+    if (error instanceof EmptyCartError) return errorResponse("empty_selection", 400);
+    throw error;
+  }
 
-    // Task #244 — ROLLING DELIVERY: submitting places an ORDER, not a lock.
-    // ONE conditional UPDATE stamps `requested_at` on exactly THIS client's
-    // cart (own picks not yet requested): the `selected_by` predicate keeps
-    // other people's cart picks untouched, and `requested_at IS NULL` keeps
-    // earlier orders' original stamps. `selection_submitted_at` is refreshed,
-    // `selection_locked_at` stays NULL (the client keeps picking and may
-    // submit again) and `settleGalleryLockStatus` never runs, so the gallery
-    // never auto-moves to `selected` from client submits. The
-    // `isNull(lockedAt)` predicate keeps an admin-locked client out (the
-    // pre-check above already answered those idempotently).
-    if (fresh.rollingDelivery) {
-      const stamped = await tx
-        .update(assets)
-        .set({ requestedAt: now })
-        .where(
-          and(
-            eq(assets.galleryId, gallery.id),
-            eq(assets.isSelected, true),
-            eq(assets.selectedBy, session.user.id),
-            isNull(assets.requestedAt),
-          ),
-        )
-        .returning({ id: assets.id });
-      if (stamped.length === 0) {
-        // The cart emptied between the pre-check and the gallery lock
-        // (another tab). Nothing was written yet.
-        return { kind: "empty_cart" as const, gallery: fresh };
+  function runSubmitTransaction() {
+    return db.transaction(async (tx) => {
+      const fresh = await lockGalleryRow(tx, gallery.id);
+      if (!fresh || fresh.status !== "proofing") {
+        return { kind: "not_proofing" as const, gallery: fresh ?? gallery };
       }
-      const refreshed = await tx
+
+      // Task #244 — ROLLING DELIVERY: submitting places an ORDER, not a lock.
+      // The membership update runs FIRST: it matches only an ACTIVE, unlocked
+      // client (`isNull(lockedAt)` keeps an admin-locked or removed client out;
+      // the pre-check above already answered those idempotently), and when it
+      // matches nothing we return BEFORE any asset is written. Drizzle commits
+      // a normally-returning callback, so returning after the stamps would have
+      // committed them. THEN ONE conditional UPDATE stamps `requested_at` on
+      // exactly THIS client's cart (the `selected_by` predicate keeps other
+      // people's cart picks untouched, `requested_at IS NULL` keeps earlier
+      // orders' original stamps). If the cart emptied meanwhile (another tab)
+      // the callback THROWS, rolling back the timestamp refresh too.
+      // `selection_locked_at` stays NULL (the client keeps picking and may
+      // submit again) and `settleGalleryLockStatus` never runs, so the gallery
+      // never auto-moves to `selected` from client submits.
+      if (fresh.rollingDelivery) {
+        const refreshed = await tx
+          .update(galleryClients)
+          .set({ selectionSubmittedAt: now })
+          .where(
+            and(
+              eq(galleryClients.galleryId, gallery.id),
+              eq(galleryClients.userId, session.user.id),
+              isNull(galleryClients.removedAt),
+              isNull(galleryClients.selectionLockedAt),
+            ),
+          )
+          .returning({ userId: galleryClients.userId });
+        if (refreshed.length === 0) {
+          return { kind: "lost_race" as const, gallery: fresh };
+        }
+        const stamped = await tx
+          .update(assets)
+          .set({ requestedAt: now })
+          .where(
+            and(
+              eq(assets.galleryId, gallery.id),
+              eq(assets.isSelected, true),
+              eq(assets.selectedBy, session.user.id),
+              isNull(assets.requestedAt),
+            ),
+          )
+          .returning({ id: assets.id });
+        if (stamped.length === 0) throw new EmptyCartError();
+        return {
+          kind: "submitted" as const,
+          gallery: fresh,
+          transition: null,
+          requestedCount: stamped.length,
+        };
+      }
+
+      // CAS on the membership: only the call that flips `selection_locked_at`
+      // from NULL gets a row back, so a double-click that raced past the
+      // pre-check above still sends exactly one email.
+      const locked = await tx
         .update(galleryClients)
-        .set({ selectionSubmittedAt: now })
+        .set({ selectionLockedAt: now, selectionSubmittedAt: now })
         .where(
           and(
             eq(galleryClients.galleryId, gallery.id),
@@ -263,42 +302,13 @@ export const POST = withApiSession(async function POST(
           ),
         )
         .returning({ userId: galleryClients.userId });
-      if (refreshed.length === 0) {
+      if (locked.length === 0) {
         return { kind: "lost_race" as const, gallery: fresh };
       }
-      return {
-        kind: "submitted" as const,
-        gallery: fresh,
-        transition: null,
-        requestedCount: stamped.length,
-      };
-    }
 
-    // CAS on the membership: only the call that flips `selection_locked_at`
-    // from NULL gets a row back, so a double-click that raced past the
-    // pre-check above still sends exactly one email.
-    const locked = await tx
-      .update(galleryClients)
-      .set({ selectionLockedAt: now, selectionSubmittedAt: now })
-      .where(
-        and(
-          eq(galleryClients.galleryId, gallery.id),
-          eq(galleryClients.userId, session.user.id),
-          isNull(galleryClients.removedAt),
-          isNull(galleryClients.selectionLockedAt),
-        ),
-      )
-      .returning({ userId: galleryClients.userId });
-    if (locked.length === 0) {
-      return { kind: "lost_race" as const, gallery: fresh };
-    }
-
-    const transition = await settleGalleryLockStatus(tx, gallery.id);
-    return { kind: "submitted" as const, gallery: fresh, transition };
-  });
-
-  if (outcome.kind === "empty_cart") {
-    return errorResponse("empty_selection", 400);
+      const transition = await settleGalleryLockStatus(tx, gallery.id);
+      return { kind: "submitted" as const, gallery: fresh, transition };
+    });
   }
 
   if (outcome.kind === "not_proofing" || outcome.kind === "lost_race") {

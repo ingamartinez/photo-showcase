@@ -905,6 +905,27 @@ describe("POST /api/galleries/[galleryId]/submit-selection — rolling delivery 
     expect(stampOf(db, B1)).toBeInstanceOf(Date);
   });
 
+  it("an admin lock landing between the pre-check and the transaction stamps NOTHING and sends no email", async () => {
+    const db = await rollingGallery();
+    const membershipRow = db.__rows.galleryClients.find((r) => r.userId === CLIENT_ID)!;
+    // Open on the route's FIRST read (the pre-check), locked on every read
+    // after it: the lock lands "mid-transaction".
+    let reads = 0;
+    Object.defineProperty(membershipRow, "selectionLockedAt", {
+      configurable: true,
+      get: () => (reads++ === 0 ? null : new Date("2026-10-16T11:00:00.000Z")),
+      set: () => {},
+    });
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    await expect(response.json()).resolves.toMatchObject({ status: "already_submitted" });
+    for (const id of [A1, A2, A3, B1]) expect(stampOf(db, id)).toBeNull();
+    expect(sendSubmissionNotificationEmailMock).not.toHaveBeenCalled();
+  });
+
   it("flag OFF: submit locks as in #239 and never writes requestedAt", async () => {
     const db = await seededDb();
     const { POST } = await import("./route");

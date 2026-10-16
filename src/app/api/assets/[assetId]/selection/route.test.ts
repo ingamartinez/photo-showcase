@@ -1066,6 +1066,37 @@ describe("PATCH /api/assets/[assetId]/selection — rolling delivery order freez
     expect(db.__rows.assets[2]).toMatchObject({ isSelected: true, requestedAt: null });
   });
 
+  it("an order landing between the freeze check and the write makes the UPDATE match nothing: 409, row untouched", async () => {
+    const db = await rollingGallery(true);
+    // Not ordered on the route's FIRST read of the row (the freeze check),
+    // ordered on every read after it: the order lands "in between".
+    const row = db.__rows.assets[1]!;
+    let reads = 0;
+    Object.defineProperty(row, "requestedAt", {
+      configurable: true,
+      get: () => (reads++ === 0 ? null : REQUESTED_AT),
+      set: () => {},
+    });
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    const deselect = await PATCH(requestFor(ASSET_2_ID, false), paramsFor(ASSET_2_ID));
+
+    expect(deselect.status).toBe(409);
+    await expect(deselect.json()).resolves.toEqual({ error: "already_requested" });
+    expect(row.isSelected).toBe(true);
+    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
+
+    reads = 0;
+    const retype = await PATCH(
+      requestBody(ASSET_2_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_2_ID),
+    );
+    expect(retype.status).toBe(409);
+    await expect(retype.json()).resolves.toEqual({ error: "already_requested" });
+    expect(row.selectionKind).toBe("edited");
+  });
+
   it("the admin is not bound: removing an ordered pick works and clears requestedAt", async () => {
     const db = await rollingGallery(true);
     authMock.mockResolvedValue(adminSession());

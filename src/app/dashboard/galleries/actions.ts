@@ -2489,6 +2489,71 @@ export async function updateSelectionTrayMode(
 }
 
 // ---------------------------------------------------------------------------
+// Toggle "rolling delivery" (task #244) — the per-gallery opt-in that makes
+// uploaded finals readable to the gallery's active clients while it is still
+// `proofing`/`selected`, and turns "Enviar" into an order (see
+// `galleries.rolling_delivery` in schema.ts). Changeable at ANY status, like
+// `updateSelectionTrayMode`: there is no "too late" moment, and billing
+// (`computeQuota`) never reads it.
+// ---------------------------------------------------------------------------
+
+export type UpdateRollingDeliveryState = {
+  status: "idle" | "error" | "updated";
+  message?: string;
+};
+
+const updateRollingDeliverySchema = z.object({
+  galleryId: z.uuid(),
+  rollingDelivery: z.enum(["true", "false"]).transform((value) => value === "true"),
+});
+
+/**
+ * Flips `galleries.rolling_delivery`. Turning it OFF hides finals from clients
+ * again on the next load (the read gate is `canReadFinalDeliverable`) but
+ * deliberately does not touch `assets.requested_at`: the photographer's queue
+ * of ordered photos must survive a toggle, and the freeze that reads it is
+ * itself gated on the flag. Same two `revalidatePath` surfaces as the sibling
+ * toggles, so the client's own page re-renders with or without the finals.
+ */
+export async function updateRollingDelivery(
+  _prevState: UpdateRollingDeliveryState,
+  formData: FormData,
+): Promise<UpdateRollingDeliveryState> {
+  await requireAdmin();
+
+  const parsed = updateRollingDeliverySchema.safeParse({
+    galleryId: formData.get("galleryId"),
+    rollingDelivery: formData.get("rollingDelivery"),
+  });
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Revisa los datos del formulario.",
+    };
+  }
+
+  const [gallery] = await db
+    .select({ id: galleries.id, publicSlug: galleries.publicSlug })
+    .from(galleries)
+    .where(eq(galleries.id, parsed.data.galleryId))
+    .limit(1);
+  if (!gallery) {
+    return { status: "error", message: "La galería no existe." };
+  }
+
+  await db
+    .update(galleries)
+    .set({ rollingDelivery: parsed.data.rollingDelivery })
+    .where(eq(galleries.id, gallery.id));
+
+  revalidatePath(`/dashboard/galleries/${gallery.id}`);
+  revalidatePath("/dashboard/galleries");
+  revalidatePath(`/galleries/${gallery.publicSlug}`);
+
+  return { status: "updated" };
+}
+
+// ---------------------------------------------------------------------------
 // TASK #223 — WHICH PERSON A GIFTED EXTRA BELONGS TO
 //
 // The photographer's own request (2026-08-07): "si esta la opción de

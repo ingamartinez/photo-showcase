@@ -27,6 +27,7 @@ import {
 import type { Gallery } from "@/lib/db/schema";
 import {
   clientLockActions,
+  clientOrderTallyLabel,
   clientPickCountLabel,
   clientSelectionStateLabel,
   type ClientSelectionView,
@@ -158,8 +159,10 @@ export function GalleryClientSelection({
   return (
     <div className="flex flex-col gap-2 pb-1">
       <p className="text-fg-mute text-xs">
-        {clientPickCountLabel(selection.pickCount)} ·{" "}
-        {clientSelectionStateLabel(selection.state, selection.submittedOn)}
+        {selection.order
+          ? clientOrderTallyLabel(selection.order)
+          : clientPickCountLabel(selection.pickCount)}{" "}
+        · {clientSelectionStateLabel(selection.state, selection.submittedOn)}
       </p>
 
       {/* No visible submit control — the ⋯ menu items submit this through a

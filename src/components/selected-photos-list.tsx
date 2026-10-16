@@ -45,6 +45,10 @@ export type SelectedPhotoListItem = {
   selectedBy?: string | null;
   originalFilename: string;
   selectionKind: "edited" | "original";
+  /** Task #244 — rolling delivery: the client ORDERED this pick. */
+  isRequested?: boolean;
+  /** Task #244 — the edited final is already uploaded. */
+  hasFinal?: boolean;
 };
 
 const GROUP_LABELS: Record<SelectedPhotoListItem["selectionKind"], string> = {
@@ -67,20 +71,33 @@ const GROUP_LABELS: Record<SelectedPhotoListItem["selectionKind"], string> = {
 export function SelectedPhotosList({
   items: allItems,
   frozenPickerIds = [],
+  rollingDelivery = false,
+  people = [],
 }: {
   items: SelectedPhotoListItem[];
   /** Active clients whose selection is locked (they submitted, or the admin
    * locked them) — their picks will not change, so the photographer can start
    * editing them. Epic #239 (#242). */
   frozenPickerIds?: string[];
+  /** Task #244 — rolling delivery: adds the work-queue filters below. */
+  rollingDelivery?: boolean;
+  /** Task #244 — the gallery's active clients, for the per-person filter. */
+  people?: { id: string; label: string }[];
 }) {
   const [onlyFrozen, setOnlyFrozen] = useState(false);
+  const [personId, setPersonId] = useState("");
+  const [onlyPending, setOnlyPending] = useState(false);
   if (allItems.length === 0) return null;
 
   const frozen = new Set(frozenPickerIds);
-  const items = onlyFrozen
-    ? allItems.filter((item) => item.selectedBy != null && frozen.has(item.selectedBy))
-    : allItems;
+  const items = allItems
+    .filter((item) => !onlyFrozen || (item.selectedBy != null && frozen.has(item.selectedBy)))
+    .filter((item) => !rollingDelivery || personId === "" || item.selectedBy === personId)
+    // The photographer's work list: ORDERED and still without a final. Photos
+    // still "por enviar" are not work yet and never appear here.
+    .filter(
+      (item) => !rollingDelivery || !onlyPending || (item.isRequested === true && !item.hasFinal),
+    );
 
   const edited = items
     .filter((item) => item.selectionKind === "edited")
@@ -111,6 +128,35 @@ export function SelectedPhotosList({
           />
           Solo de quienes ya enviaron o quedaron bloqueados
         </label>
+      )}
+      {rollingDelivery && (
+        <div className="mt-4 flex flex-wrap items-center gap-4">
+          {people.length > 1 && (
+            <label className="text-fg flex items-center gap-2 text-sm">
+              Persona
+              <select
+                value={personId}
+                onChange={(event) => setPersonId(event.target.value)}
+                className="border-line-2 text-fg rounded-[5px] border bg-transparent px-2 py-1 text-sm"
+              >
+                <option value="">Todas</option>
+                {people.map((person) => (
+                  <option key={person.id} value={person.id}>
+                    {person.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label className="text-fg flex min-h-11 items-center gap-2 text-sm lg:min-h-6">
+            <input
+              type="checkbox"
+              checked={onlyPending}
+              onChange={(event) => setOnlyPending(event.target.checked)}
+            />
+            Solo pedidas sin editar
+          </label>
+        </div>
       )}
       <div className="mt-4 flex flex-col gap-6">
         {isMixed ? (

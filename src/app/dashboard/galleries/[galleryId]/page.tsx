@@ -26,6 +26,7 @@ import { GalleryClientRow } from "@/components/gallery-client-row";
 import { AttachGalleryClientsForm } from "@/components/attach-gallery-clients-form";
 import { EditGalleryTermsDialog } from "@/components/edit-gallery-terms-dialog";
 import { AllowsOriginalSelectionControl } from "@/components/allows-original-selection-control";
+import { RollingDeliveryControl } from "@/components/rolling-delivery-control";
 import { SelectionTrayModeControl } from "@/components/selection-tray-mode-control";
 import { SelectedPhotosList } from "@/components/selected-photos-list";
 import { ExtrasPersonAssignment } from "@/components/extras-person-assignment";
@@ -139,6 +140,16 @@ export default async function GalleryDetailPage({
         lockedAt: selection.lockedAt,
         submittedAt: selection.submittedAt,
         pickCount: selection.pickCount,
+        // Task #244: the per-person tally only exists under rolling delivery.
+        ...(gallery.rollingDelivery
+          ? {
+              order: {
+                requested: selection.requestedCount,
+                edited: selection.editedCount,
+                unsent: selection.unsentCount,
+              },
+            }
+          : {}),
       }),
     ]),
   );
@@ -195,6 +206,9 @@ export default async function GalleryDetailPage({
       selectedBy: clientSelections.pickOwnerByAssetId[asset.id] ?? null,
       originalFilename: asset.originalFilename,
       selectionKind: asset.selectionKind,
+      // Task #244 — what the photographer's work queue filters on.
+      isRequested: asset.requestedAt != null,
+      hasFinal: asset.isEdited && asset.finalKey !== null,
     }));
   // Task #223 — the gifted extras, built off the SAME already-fetched
   // `gallery.assets` array as `selectedPhotos` above (no second query), and
@@ -552,6 +566,16 @@ export default async function GalleryDetailPage({
             />
           </div>
 
+          {/* Task #244 — opt-in rolling delivery, changeable at any status.
+              Its own card: it is a delivery policy, not a commercial term
+              and not tray presentation. */}
+          <div className="border-line-2 rounded-[6px] border p-4">
+            <RollingDeliveryControl
+              galleryId={gallery.id}
+              rollingDelivery={gallery.rollingDelivery}
+            />
+          </div>
+
           {/* Task #139: the ONLY link from the panel to
               `/galleries/[publicSlug]` anywhere in the codebase — before
               this, reaching the client's own view meant hand-building the
@@ -608,7 +632,15 @@ export default async function GalleryDetailPage({
         </aside>
       </div>
 
-      <SelectedPhotosList items={selectedPhotos} frozenPickerIds={frozenPickerIds} />
+      <SelectedPhotosList
+        items={selectedPhotos}
+        frozenPickerIds={frozenPickerIds}
+        rollingDelivery={gallery.rollingDelivery}
+        people={gallery.clients.map((client) => ({
+          id: client.id,
+          label: client.name ?? client.email,
+        }))}
+      />
 
       {/* Task #223 — only in `by-person` mode; see the component's own header
           for why offering this in `flat` mode would be asking for a decision

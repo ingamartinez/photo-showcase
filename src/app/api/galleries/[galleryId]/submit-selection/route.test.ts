@@ -771,6 +771,103 @@ describe("POST /api/galleries/[galleryId]/submit-selection — per-client lock (
   });
 });
 
+// Task #244 — with rolling delivery on, submitting is a notification, not a
+// lock: the flag-off behavior above is pinned by the epic #239 suite, which
+// this block does not touch.
+describe("POST /api/galleries/[galleryId]/submit-selection — rolling delivery (#244)", () => {
+  async function rollingGallery() {
+    const db = await seededDb();
+    db.__rows.galleries[0]!.rollingDelivery = true;
+    db.__rows.users.push({
+      id: CLIENT_B,
+      name: "Beto Ruiz",
+      email: "beto@example.com",
+      role: "client",
+    });
+    db.__rows.galleryClients.push(membership(CLIENT_B));
+    // B's pick, so "everyone submitted" would be reachable if the lock leaked.
+    db.__rows.assets.push(
+      assetRow({ id: ASSET_2_ID, isSelected: true, selectedBy: CLIENT_B, sortOrder: 1 }),
+    );
+    return db;
+  }
+
+  function sessionOf(userId: string, name: string): Session {
+    return {
+      user: { id: userId, role: "client", name, email: `${userId}@example.com` },
+      expires: "2099-01-01T00:00:00.000Z",
+    } as Session;
+  }
+
+  it("records the submission and notifies the photographer, but does NOT lock the client", async () => {
+    const db = await rollingGallery();
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "submitted",
+      gallerySelected: false,
+    });
+    expect(db.__rows.galleryClients.find((r) => r.userId === CLIENT_ID)).toMatchObject({
+      selectionLockedAt: null,
+      selectionSubmittedAt: expect.any(Date),
+    });
+    expect(sendSubmissionNotificationEmailMock).toHaveBeenCalledTimes(1);
+    expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_ID);
+  });
+
+  it("lets the client submit again: the timestamp is refreshed and the photographer is told again", async () => {
+    const db = await rollingGallery();
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
+    const { POST } = await import("./route");
+    await POST(requestFor(), paramsFor(GALLERY_ID));
+    const first = db.__rows.galleryClients.find((r) => r.userId === CLIENT_ID)!
+      .selectionSubmittedAt as Date;
+    // Push the stored stamp into the past so a refresh is observable.
+    db.__rows.galleryClients.find((r) => r.userId === CLIENT_ID)!.selectionSubmittedAt = new Date(
+      first.getTime() - 60_000,
+    );
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    await expect(response.json()).resolves.toMatchObject({ status: "submitted" });
+    const row = db.__rows.galleryClients.find((r) => r.userId === CLIENT_ID)!;
+    expect((row.selectionSubmittedAt as Date).getTime()).toBeGreaterThan(first.getTime() - 60_000);
+    expect(row.selectionLockedAt).toBeNull();
+    expect(sendSubmissionNotificationEmailMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("never auto-moves the gallery to selected, even once EVERY client has submitted", async () => {
+    const db = await rollingGallery();
+    const { POST } = await import("./route");
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
+    await POST(requestFor(), paramsFor(GALLERY_ID));
+    authMock.mockResolvedValue(sessionOf(CLIENT_B, "Beto Ruiz"));
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    await expect(response.json()).resolves.toMatchObject({ gallerySelected: false });
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+    expect(db.__rows.galleries[0]!.selectionSubmittedAt).toBeNull();
+    expect(db.__rows.galleryClients.every((r) => r.selectionLockedAt === null)).toBe(true);
+  });
+
+  it("still refuses an empty OWN selection", async () => {
+    await rollingGallery();
+    authMock.mockResolvedValue(sessionOf(CLIENT_B, "Beto Ruiz"));
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(400);
+  });
+});
+
 describe("POST /api/galleries/[galleryId]/submit-selection — double submission is idempotent", () => {
   // A SEQUENTIAL double-submit (the first call has already fully resolved
   // before the second one starts) exercises the early `ownLock.lockedAt`

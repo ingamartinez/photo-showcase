@@ -957,6 +957,113 @@ describe("PATCH /api/assets/[assetId]/selection — allowsOriginalSelection is O
   });
 });
 
+// Task #244 — with rolling delivery on, a pick whose final is uploaded is
+// frozen for EVERY non-admin client. Fixture: ASSET_1 is picked by client-a
+// and has an uploaded final; ASSET_2 is picked by client-a WITHOUT a final;
+// the pickers differ from the reader on purpose.
+describe("PATCH /api/assets/[assetId]/selection — rolling delivery freeze (#244)", () => {
+  async function rollingGallery(rollingDelivery: boolean) {
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ rollingDelivery }));
+    db.__rows.galleryClients.length = 0;
+    for (const userId of ["client-a", "client-b"]) {
+      db.__rows.galleryClients.push({
+        galleryId: GALLERY_A_ID,
+        userId,
+        removedAt: null,
+        selectionLockedAt: null,
+        selectionSubmittedAt: null,
+      });
+    }
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(
+      assetRow({
+        id: ASSET_1_ID,
+        isSelected: true,
+        selectedBy: "client-a",
+        isEdited: true,
+        finalKey: "finals/one.jpg",
+      }),
+      assetRow({ id: ASSET_2_ID, isSelected: true, selectedBy: "client-a", sortOrder: 1 }),
+    );
+    return db;
+  }
+
+  it("refuses the PICKER deselecting a pick that has a final: 409 final_already_delivered, row untouched", async () => {
+    const db = await rollingGallery(true);
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "final_already_delivered" });
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
+    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses ANOTHER client deselecting it too (the freeze is not tied to the picker)", async () => {
+    const db = await rollingGallery(true);
+    authMock.mockResolvedValue(clientBSession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "final_already_delivered" });
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
+  });
+
+  it("refuses a kind change on a pick that has a final, for the picker and for another client", async () => {
+    const db = await rollingGallery(true);
+    const { PATCH } = await import("./route");
+    for (const session of [clientASession(), clientBSession()]) {
+      authMock.mockResolvedValue(session);
+      const response = await PATCH(
+        requestBody(ASSET_1_ID, { selectionKind: "original" }),
+        paramsFor(ASSET_1_ID),
+      );
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({ error: "final_already_delivered" });
+    }
+    expect(db.__rows.assets[0]).toMatchObject({ selectionKind: "edited" });
+  });
+
+  it("still lets the client deselect a pick WITHOUT a final, and pick a brand-new photo", async () => {
+    const db = await rollingGallery(true);
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    const removed = await PATCH(requestFor(ASSET_2_ID, false), paramsFor(ASSET_2_ID));
+
+    expect(removed.status).toBe(200);
+    expect(db.__rows.assets[1]).toMatchObject({ isSelected: false });
+  });
+
+  it("does not bind the admin: removing a person's frozen pick still works", async () => {
+    const db = await rollingGallery(true);
+    authMock.mockResolvedValue(adminSession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: false });
+  });
+
+  it("flag OFF: a final does not freeze the pick (today's behavior)", async () => {
+    const db = await rollingGallery(false);
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: false });
+  });
+});
+
 // Task #58: proves this route's mutation lock is literally the SAME Set as
 // the DELETE/reorder routes' — not a separately maintained copy of the same
 // three strings, which is exactly the shape that drifted silently before.

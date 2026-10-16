@@ -384,6 +384,100 @@ describe("GET /api/galleries/[galleryId]/download-all — authorization", () => 
   });
 });
 
+// Task #244 — rolling delivery opens the zip before `delivered`, scoped to the
+// finals that already exist.
+describe("GET /api/galleries/[galleryId]/download-all — rolling delivery (#244)", () => {
+  it("flag OFF: a client still gets 404 gallery_not_delivered while proofing", async () => {
+    authMock.mockResolvedValue(clientSession());
+    const db = await seededDb();
+    db.__rows.galleries.push(galleryRow({ status: "proofing", rollingDelivery: false }));
+    db.__rows.assets.push(assetRow({ isSelected: true, isEdited: true, finalKey: "k" }));
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "gallery_not_delivered" });
+  });
+
+  it.each(["draft", "archived"])("flag ON: %s stays closed to a client", async (status) => {
+    authMock.mockResolvedValue(clientSession());
+    const db = await seededDb();
+    db.__rows.galleries.push(galleryRow({ status, rollingDelivery: true }));
+    db.__rows.assets.push(assetRow({ isSelected: true, isEdited: true, finalKey: "k" }));
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "gallery_not_delivered" });
+  });
+
+  it.each(["proofing", "selected"])(
+    "flag ON: %s zips ONLY the readable finals, not picks still awaiting edit",
+    async (status) => {
+      authMock.mockResolvedValue(clientSession());
+      const db = await seededDb();
+      db.__rows.galleries.push(galleryRow({ status, rollingDelivery: true }));
+      store.set("finals/ready.jpg", { data: Buffer.from("READY BYTES") });
+      store.set("finals/extra.jpg", { data: Buffer.from("EXTRA BYTES") });
+      db.__rows.assets.push(
+        assetRow({
+          id: ASSET_1_ID,
+          isSelected: true,
+          isEdited: true,
+          finalKey: "finals/ready.jpg",
+          sortOrder: 0,
+        }),
+        // Picked, final not uploaded yet: excluded.
+        assetRow({ id: ASSET_2_ID, isSelected: true, isEdited: false, sortOrder: 1 }),
+        // Gifted extra with an uploaded final: included.
+        assetRow({
+          id: ASSET_3_ID,
+          isSelected: false,
+          isExtra: true,
+          isEdited: true,
+          finalKey: "finals/extra.jpg",
+          sortOrder: 2,
+        }),
+      );
+      const { GET } = await import("./route");
+
+      const response = await GET(requestFor(), paramsFor(GALLERY_ID));
+
+      expect(response.status).toBe(200);
+      const dir = mkdtempSync(path.join(tmpdir(), "download-all-rolling-"));
+      try {
+        const zipPath = path.join(dir, "g.zip");
+        writeFileSync(zipPath, Buffer.from(await response.arrayBuffer()));
+        const names = execFileSync("zipinfo", ["-1", zipPath], { encoding: "utf-8" })
+          .trim()
+          .split("\n");
+        expect(names).toHaveLength(2);
+        const bodies = names.map((n) =>
+          execFileSync("unzip", ["-p", zipPath, n], { encoding: "utf-8" }),
+        );
+        expect(bodies).toEqual(["READY BYTES", "EXTRA BYTES"]);
+      } finally {
+        rmSync(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("flag ON but nothing uploaded yet: 404 no_finals_available", async () => {
+    authMock.mockResolvedValue(clientSession());
+    const db = await seededDb();
+    db.__rows.galleries.push(galleryRow({ status: "proofing", rollingDelivery: true }));
+    db.__rows.assets.push(assetRow({ isSelected: true, isEdited: false }));
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "no_finals_available" });
+  });
+});
+
 describe("GET /api/galleries/[galleryId]/download-all — the filter itself", () => {
   // THE other mutation-tested gate: only isSelected && isEdited && finalKey
   // assets may ever end up in the archive. Verified by mutation during

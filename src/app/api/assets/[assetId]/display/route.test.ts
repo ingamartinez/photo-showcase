@@ -352,6 +352,39 @@ describe("GET /api/assets/[assetId]/display — the negative cases", () => {
     expect(objectExistsMock).not.toHaveBeenCalled();
   });
 
+  // Task #244 — rolling delivery through THIS route's real call into the
+  // shared gate.
+  it.each(["proofing", "selected"])(
+    "serves the display derivative while %s when the gallery has rolling delivery on",
+    async (status) => {
+      authMock.mockResolvedValue(clientASession());
+      const db = await seededDb();
+      db.__rows.galleries.length = 0;
+      db.__rows.galleries.push(galleryRow({ status, rollingDelivery: true }));
+      const { GET } = await import("./route");
+
+      const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
+
+      expect(response.status).toBe(200);
+    },
+  );
+
+  it.each(["draft", "archived"])(
+    "still refuses a client while %s, even with rolling delivery on",
+    async (status) => {
+      authMock.mockResolvedValue(clientASession());
+      const db = await seededDb();
+      db.__rows.galleries.length = 0;
+      db.__rows.galleries.push(galleryRow({ status, rollingDelivery: true }));
+      const { GET } = await import("./route");
+
+      const response = await GET(requestFor(ASSET_A_ID), paramsFor(ASSET_A_ID));
+
+      expect(response.status).toBe(404);
+      expect(getPresignedUrlMock).not.toHaveBeenCalled();
+    },
+  );
+
   it("refuses an asset the client never selected, even in a delivered gallery", async () => {
     authMock.mockResolvedValue(clientASession());
     const db = await seededDb();

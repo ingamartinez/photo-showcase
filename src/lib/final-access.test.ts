@@ -30,8 +30,8 @@ function asset(overrides: Partial<GateAsset> = {}): GateAsset {
   };
 }
 
-function gallery(status: string = "delivered"): GateGallery {
-  return { status } as GateGallery;
+function gallery(status: string = "delivered", rollingDelivery = false): GateGallery {
+  return { status, rollingDelivery } as GateGallery;
 }
 
 function clientSession(): Session {
@@ -138,5 +138,40 @@ describe("canReadFinalDeliverable", () => {
     } else {
       throw new Error("fixture should have passed the gate");
     }
+  });
+});
+
+// Task #244 — rolling delivery widens ONLY the gallery-status leg.
+describe("canReadFinalDeliverable with rollingDelivery", () => {
+  it.each(["proofing", "selected", "delivered"])("opens a client's read while %s", (status) => {
+    expect(canReadFinalDeliverable(asset(), gallery(status, true), clientSession())).toBe(true);
+  });
+
+  it.each(["draft", "archived"])("keeps %s closed to a client even with the flag on", (status) => {
+    expect(canReadFinalDeliverable(asset(), gallery(status, true), clientSession())).toBe(false);
+  });
+
+  it.each(["draft", "proofing", "selected", "archived"])(
+    "flag OFF keeps %s closed to a client (regression)",
+    (status) => {
+      expect(canReadFinalDeliverable(asset(), gallery(status, false), clientSession())).toBe(false);
+    },
+  );
+
+  it("does not widen any other leg: unedited, unentitled or keyless stays refused", () => {
+    const g = gallery("proofing", true);
+    expect(canReadFinalDeliverable(asset({ isEdited: false }), g, clientSession())).toBe(false);
+    expect(canReadFinalDeliverable(asset({ isSelected: false }), g, clientSession())).toBe(false);
+    expect(canReadFinalDeliverable(asset({ finalKey: null }), g, clientSession())).toBe(false);
+  });
+
+  it("serves an uploaded extra (nobody picked it) under the flag", () => {
+    expect(
+      canReadFinalDeliverable(
+        asset({ isSelected: false, isExtra: true }),
+        gallery("proofing", true),
+        clientSession(),
+      ),
+    ).toBe(true);
   });
 });

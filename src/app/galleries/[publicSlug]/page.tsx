@@ -8,6 +8,7 @@ import {
   getGalleryDetailBySlug,
   isGalleryVisibleToClient,
 } from "@/lib/galleries";
+import { areFinalsOpenToClient } from "@/lib/final-access";
 import { isAdminPreviewingClientGallery, isGalleryOwner } from "@/lib/gallery-access";
 import { getSelectionLockSnapshot } from "@/lib/gallery-client-locks";
 import { getGallerySelection } from "@/lib/gallery-selection";
@@ -115,7 +116,13 @@ export default async function ClientGalleryPage({
   // that silently drops the watermark would show the photographer something
   // no client of theirs can see. The admin's own preview of an
   // undelivered final lives in the dashboard workspace, not here.
-  const showsDeliveredPhotos = gallery.status === "delivered";
+  // Task #244: rolling delivery shows readable finals before `delivered`.
+  // `areFinalsOpenToClient` is the SAME gallery-level rule the final, display
+  // and download-all routes enforce (src/lib/final-access.ts).
+  const showsDeliveredPhotos = areFinalsOpenToClient({
+    status: gallery.status,
+    rollingDelivery: gallery.rollingDelivery,
+  });
   const initialAssets = gallery.assets.map((asset) => {
     // Task #28's own acceptance criterion — "only assets that were selected
     // AND edited are downloadable" — computed here as a plain boolean, the
@@ -297,6 +304,9 @@ export default async function ClientGalleryPage({
         // before this column did — see schema.ts's own comment on
         // `galleries.allowsOriginalSelection`.
         allowsOriginalSelection={gallery.allowsOriginalSelection}
+        // Task #244 — opt-in rolling delivery and the viewer's last submit.
+        rollingDelivery={gallery.rollingDelivery}
+        initialViewerSubmittedAt={lockSnapshot.viewerSubmittedAt ?? null}
       />
     </>
   );

@@ -267,6 +267,8 @@ export function SelectionTray({
   submittedPickerIds = [],
   lockedByAdmin = false,
   isGalleryLocked = isLocked,
+  rollingDelivery = false,
+  readableAssetIds,
   onOpenAsset,
   onImageError,
 }: {
@@ -321,6 +323,14 @@ export function SelectionTray({
    * locked and the others are still choosing, so the note must not say the
    * whole selection was sent. */
   isGalleryLocked?: boolean;
+  /** Task #244 — rolling delivery: the tray groups picks into "Por enviar"
+   * (not yet sent, removable by their picker) and "Pedidas" (sent; labelled
+   * "Editada" once the final is readable). Replaces the flat/by-person
+   * layouts while on. */
+  rollingDelivery?: boolean;
+  /** Task #244 — asset ids whose final the viewer can already open. A UI
+   * hint only (the routes re-check); decides "Pedida" vs "Editada". */
+  readableAssetIds?: ReadonlySet<string>;
   onOpenAsset: (assetId: string) => void;
   /** `<ProofGrid>`'s own `refreshUrl` — the SAME one-shot re-sign the grid
    * tiles and the lightbox already use, sharing the same `refreshedAssetIds`
@@ -551,6 +561,50 @@ export function SelectionTray({
             Todavía no eligieron ninguna foto. Las que elijan van a aparecer acá, con el nombre de
             quién las eligió.
           </p>
+        ) : rollingDelivery ? (
+          // Task #244 — two groups, "Por enviar" then "Pedidas". Its own
+          // container: the flat/by-person height-measuring refs stay unmounted
+          // (their effects are no-ops when the ref is null), so this uses the
+          // pre-measure cap as a plain fixed ceiling.
+          <div
+            className="flex flex-col gap-4 overflow-y-auto overscroll-contain"
+            style={{ maxHeight: PRE_MEASURE_MAX_HEIGHT_PX }}
+          >
+            {[
+              { key: "unsent", label: "Por enviar", items: picks.filter((p) => !p.requestedAt) },
+              { key: "requested", label: "Pedidas", items: picks.filter((p) => !!p.requestedAt) },
+            ]
+              .filter((group) => group.items.length > 0)
+              .map((group) => (
+                <div key={group.key}>
+                  <p className="text-fg-dim mb-2 text-sm font-medium">
+                    {group.label}{" "}
+                    <span className="text-fg-mute font-normal">({group.items.length})</span>
+                  </p>
+                  <ul className="flex flex-wrap gap-3">
+                    {group.items.map((pick) => (
+                      <TrayItem
+                        key={pick.assetId}
+                        pick={pick}
+                        src={urls[pick.assetId]}
+                        originalFilename={filenamesByAssetId[pick.assetId]}
+                        viewerId={viewerId}
+                        onOpen={() => onOpenAsset(pick.assetId)}
+                        onError={() => onImageError(pick.assetId)}
+                        showType={showType}
+                        statusLabel={
+                          group.key === "unsent"
+                            ? "Por enviar"
+                            : readableAssetIds?.has(pick.assetId)
+                              ? "Editada"
+                              : "Pedida"
+                        }
+                      />
+                    ))}
+                  </ul>
+                </div>
+              ))}
+          </div>
         ) : mode === "by-person" ? (
           // Task #204 — one row per picker, viewer first, alphabetical rest,
           // unattributed last (`groupPicksByPicker` above). Same
@@ -643,7 +697,12 @@ function TrayItem({
   onOpen,
   onError,
   showType,
+  statusLabel,
 }: {
+  /** Task #244 — rolling delivery's per-pick state line ("Por enviar" /
+   * "Pedida" / "Editada"). Absent outside that mode, so every other gallery
+   * renders exactly the markup it always did. */
+  statusLabel?: string;
   pick: SelectionPick;
   /** `undefined` when this pick's asset was not in the page's initial render
    * — see this file's header comment on why that is a real, honest state. */
@@ -734,6 +793,7 @@ function TrayItem({
             height is what keeps every item's box the SAME height, which is
             what makes the #203 height-cap measurement (reads the FIRST
             `<li>`'s box) trustworthy for every OTHER item too. */}
+        {statusLabel && <p className="text-accent truncate text-[10px]">{statusLabel}</p>}
         {showType && (
           <p className={`truncate text-[10px] ${isOriginal ? "text-accent" : "text-fg-mute"}`}>
             {isOriginal ? "Original" : "Editada"}

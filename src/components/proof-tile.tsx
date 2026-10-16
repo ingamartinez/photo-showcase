@@ -54,6 +54,7 @@ export function ProofTile({
   selectionKind,
   onSetSelectionKind,
   allowsOriginalSelection,
+  orderLabel = null,
 }: {
   asset: ProofAsset;
   /** 1-based position in the grid, rendered in the tile's corner
@@ -93,6 +94,10 @@ export function ProofTile({
    * comment on the render gate below for why this is ANDed in rather than
    * checked separately. */
   allowsOriginalSelection: boolean;
+  /** Task #244 — rolling delivery's state of THIS photo: "Por enviar"
+   * (picked, not sent yet), "Pedida" (sent) or "Editada" (final readable).
+   * `null` everywhere else, which renders nothing. */
+  orderLabel?: "Por enviar" | "Pedida" | "Editada" | null;
 }) {
   return (
     <PhotoTile
@@ -291,6 +296,12 @@ export function ProofTile({
           (a status past `isLocked` becoming true) — the same "never both at
           once" property `showDownload` and the pick-button corner already
           had before this slice. */}
+      {orderLabel && (
+        <span className="bg-[rgb(26 21 18 /0.62)] text-fg pointer-events-none absolute top-2 right-2 z-10 rounded-full px-2 py-0.5 text-[10px] leading-none backdrop-blur-[6px]">
+          {orderLabel}
+        </span>
+      )}
+
       {showDownload && (
         <div className="absolute bottom-2 left-2 z-10">
           <DownloadFinalButton assetId={asset.id} originalFilename={asset.originalFilename} />

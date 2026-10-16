@@ -441,6 +441,7 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
       "submittedAt",
       "submittedPickerIds",
       "viewerLock",
+      "viewerSubmittedAt",
     ]);
   });
 });

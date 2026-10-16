@@ -868,6 +868,10 @@ export function useSharedSelection({
   const handleSubmitted = useCallback(
     (outcome: SubmitSelectionOutcome) => {
       if (rollingDelivery) {
+        // Only an order that THIS call actually placed marks anything. The
+        // idempotent 200 (e.g. an admin-locked client: nothing was stamped)
+        // carries no `requestedCount`; the next snapshot tells the truth.
+        if (!outcome.requestedCount) return;
         // Task #244: an ORDER, not a lock. The viewer's "por enviar" picks
         // become "pedidas" right away (the server stamped exactly those) and
         // the grid stays interactive: no `viewerLock`, no `isLockedRef`.

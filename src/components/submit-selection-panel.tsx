@@ -53,6 +53,9 @@ export type SubmitSelectionOutcome = {
    * gallery itself moved to `selected`. `false` while others are still
    * choosing. */
   gallerySelected: boolean;
+  /** Task #244 — rolling delivery: how many photos this call actually
+   * stamped as ordered. Absent on the idempotent `already_submitted` 200. */
+  requestedCount?: number;
 };
 
 function confirmationMessage(
@@ -234,6 +237,7 @@ export function SubmitSelectionPanel({
         quota: QuotaResult;
         submittedAt: string | null;
         gallerySelected?: boolean;
+        requestedCount?: number;
       };
       onSubmitted({
         quota: body.quota,
@@ -241,6 +245,7 @@ export function SubmitSelectionPanel({
         // A response from before epic #239 has no such field: that gallery-wide
         // lock is what "submitted" meant then.
         gallerySelected: body.gallerySelected ?? true,
+        requestedCount: body.requestedCount,
       });
     } catch {
       setError("No se pudo conectar.");

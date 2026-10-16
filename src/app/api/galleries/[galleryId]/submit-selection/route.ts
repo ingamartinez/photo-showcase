@@ -476,5 +476,9 @@ export const POST = withApiSession(async function POST(
     submittedAt: now.toISOString(),
     // Whether this submission was the one that closed the gallery.
     gallerySelected,
+    // Task #244 — how many photos THIS call actually stamped (rolling
+    // delivery only). The client marks picks as ordered only when this is
+    // positive; the idempotent 200 above carries no such field.
+    ...("requestedCount" in outcome ? { requestedCount: outcome.requestedCount } : {}),
   });
 });

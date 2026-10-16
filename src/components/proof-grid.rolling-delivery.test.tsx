@@ -180,6 +180,7 @@ describe("ProofGrid — rolling delivery (#244)", () => {
         quota: computeQuota(5, 0, TERMS),
         submittedAt: "2026-10-16T12:00:00.000Z",
         gallerySelected: false,
+        requestedCount: 1,
       }),
     }));
     vi.stubGlobal("fetch", fetchMock);
@@ -195,6 +196,30 @@ describe("ProofGrid — rolling delivery (#244)", () => {
     expect(tileButton(6).disabled).toBe(false);
     expect(screen.queryByText(/Enviaste tu selección/)).toBeNull();
     expect(screen.getByRole("button", { name: "Enviar 0 fotos" })).toBeTruthy();
+  });
+
+  it("an idempotent already_submitted 200 (nothing stamped) does NOT mark the por-enviar photos as ordered", async () => {
+    vi.stubGlobal("confirm", () => true);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          status: "already_submitted",
+          quota: computeQuota(5, 0, TERMS),
+          submittedAt: "2026-10-16T12:00:00.000Z",
+          gallerySelected: false,
+        }),
+      })),
+    );
+    renderGrid();
+
+    fireEvent.click(screen.getByRole("button", { name: "Enviar 1 foto" }));
+
+    await waitFor(() => expect(screen.getByRole("button", { name: "Enviar 1 foto" })).toBeTruthy());
+    expect(tileButton(3).disabled).toBe(false);
+    expect(screen.queryByText(/Último envío:/)).toBeNull();
   });
 
   it("explains a refused removal of an ordered photo in the owner's words", async () => {

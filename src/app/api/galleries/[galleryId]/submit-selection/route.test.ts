@@ -824,6 +824,7 @@ describe("POST /api/galleries/[galleryId]/submit-selection — rolling delivery 
     await expect(response.json()).resolves.toMatchObject({
       status: "submitted",
       gallerySelected: false,
+      requestedCount: 3,
     });
     for (const id of [A1, A2, A3]) expect(stampOf(db, id)).toBeInstanceOf(Date);
     expect(stampOf(db, B1)).toBeNull();

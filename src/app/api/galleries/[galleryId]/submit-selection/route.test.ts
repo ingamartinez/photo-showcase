@@ -874,12 +874,20 @@ describe("POST /api/galleries/[galleryId]/submit-selection — rolling delivery 
     const { POST } = await import("./route");
     await POST(requestFor(), paramsFor(GALLERY_ID));
     sendSubmissionNotificationEmailMock.mockClear();
+    const stampsBefore = [A1, A2, A3].map((id) => stampOf(db, id));
+    const submittedBefore = db.__rows.galleryClients.find(
+      (r) => r.userId === CLIENT_ID,
+    )!.selectionSubmittedAt;
 
     const response = await POST(requestFor(), paramsFor(GALLERY_ID));
 
     expect(response.status).toBe(400);
     await expect(response.json()).resolves.toEqual({ error: "empty_selection" });
     expect(sendSubmissionNotificationEmailMock).not.toHaveBeenCalled();
+    expect([A1, A2, A3].map((id) => stampOf(db, id))).toEqual(stampsBefore);
+    expect(db.__rows.galleryClients.find((r) => r.userId === CLIENT_ID)!.selectionSubmittedAt).toBe(
+      submittedBefore,
+    );
   });
 
   it("never auto-moves the gallery to selected, even once EVERY client has ordered", async () => {

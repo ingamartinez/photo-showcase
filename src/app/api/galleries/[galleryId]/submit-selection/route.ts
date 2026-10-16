@@ -220,6 +220,32 @@ export const POST = withApiSession(async function POST(
       return { kind: "not_proofing" as const, gallery: fresh ?? gallery };
     }
 
+    // Task #244 — ROLLING DELIVERY: submitting is a notification, not a
+    // lock. Refresh `selection_submitted_at` only, leave `selection_locked_at`
+    // NULL so the client keeps picking and may submit again, and never run
+    // `settleGalleryLockStatus`: nobody gets locked, so the gallery never
+    // auto-moves to `selected` from client submits. The `isNull(lockedAt)`
+    // predicate keeps an admin-locked client out (the pre-check above already
+    // answered those idempotently).
+    if (fresh.rollingDelivery) {
+      const refreshed = await tx
+        .update(galleryClients)
+        .set({ selectionSubmittedAt: now })
+        .where(
+          and(
+            eq(galleryClients.galleryId, gallery.id),
+            eq(galleryClients.userId, session.user.id),
+            isNull(galleryClients.removedAt),
+            isNull(galleryClients.selectionLockedAt),
+          ),
+        )
+        .returning({ userId: galleryClients.userId });
+      if (refreshed.length === 0) {
+        return { kind: "lost_race" as const, gallery: fresh };
+      }
+      return { kind: "submitted" as const, gallery: fresh, transition: null };
+    }
+
     // CAS on the membership: only the call that flips `selection_locked_at`
     // from NULL gets a row back, so a double-click that raced past the
     // pre-check above still sends exactly one email.

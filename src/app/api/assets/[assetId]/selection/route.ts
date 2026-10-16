@@ -235,6 +235,17 @@ export const PATCH = withApiSession(async function PATCH(
     }
   }
 
+  // Task #244 — ROLLING DELIVERY FREEZE. With the flag on, submitting never
+  // locks a client (so the per-client gates above stay open), which makes
+  // THIS the gate that stops a client from undoing a photo the photographer
+  // already edited and uploaded: deselect, re-take-over and kind change are
+  // all refused for ANY non-admin client (not only the picker) once the pick
+  // has a final. Checked off the asset row, not the client's lock. Admin is
+  // unaffected; with the flag off nothing here applies.
+  if (!isAdmin && gallery.rollingDelivery && asset.isSelected && asset.isEdited && asset.finalKey) {
+    return errorResponse("final_already_delivered", 409);
+  }
+
   const { selected, selectionKind } = bodyResult.data;
 
   // Task #214 — THE SERVER GATE, independent of anything the client's own

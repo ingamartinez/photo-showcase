@@ -306,6 +306,7 @@ export default async function ClientGalleryPage({
         allowsOriginalSelection={gallery.allowsOriginalSelection}
         // Task #244 — opt-in rolling delivery and the viewer's last submit.
         rollingDelivery={gallery.rollingDelivery}
+        finalsOpen={showsDeliveredPhotos}
         initialViewerSubmittedAt={lockSnapshot.viewerSubmittedAt ?? null}
       />
     </>

@@ -220,6 +220,7 @@ export function ProofGrid({
   initialSubmittedPickerIds = [],
   isAdminPreview = false,
   rollingDelivery = false,
+  finalsOpen = initialStatus === "delivered",
   initialViewerSubmittedAt = null,
 }: {
   // Task #25's submit route is keyed on this — see that route's own header
@@ -252,6 +253,12 @@ export function ProofGrid({
   // places an order instead of locking the viewer. `false` = every other
   // gallery, unchanged.
   rollingDelivery?: boolean;
+  // Task #244 — whether this viewer may see finals at all: the PAGE's
+  // `areFinalsOpenToClient` result (src/lib/final-access.ts), passed down so
+  // this component never carries its own copy of the rule. Defaults to
+  // "delivered", the pre-#244 meaning. An admin previewing a `draft` gallery
+  // with the flag on gets `false` here: no finals UI.
+  finalsOpen?: boolean;
   // Task #244 — the viewer's own last submit time, for "Último envío".
   initialViewerSubmittedAt?: string | null;
   // The signed-in user's own id, so the tray can render their own picks as
@@ -385,7 +392,7 @@ export function ProofGrid({
   // Task #244 — finals are readable on this page either because the gallery is
   // delivered or because it has rolling delivery on (the server only presigns
   // `displayUrl`/sets `hasFinal` accordingly). A UI hint; the routes re-check.
-  const showsFinals = isDelivered || rollingDelivery;
+  const showsFinals = finalsOpen;
 
   // Task #222 — every asset's CURRENT `isSelected`, resolved the SAME way
   // each grid tile already resolved it inline before this slice
@@ -505,8 +512,11 @@ export function ProofGrid({
     [picks, viewerId],
   );
   const readableAssetIds = useMemo(
-    () => new Set(initialAssets.filter((asset) => asset.hasFinal).map((asset) => asset.id)),
-    [initialAssets],
+    () =>
+      new Set(
+        finalsOpen ? initialAssets.filter((asset) => asset.hasFinal).map((asset) => asset.id) : [],
+      ),
+    [initialAssets, finalsOpen],
   );
   const lockedByAdmin = viewerLock !== null && viewerLock.submittedAt === null;
   // The date the VIEWER sees as "enviada": their own time, not the gallery's
@@ -578,11 +588,11 @@ export function ProofGrid({
         orderLabel={
           rollingDelivery && !isDelivered && asset.isSelected
             ? requestedAssetIds.has(asset.id)
-              ? asset.hasFinal
+              ? showsFinals && asset.hasFinal
                 ? "Editada"
                 : "Pedida"
               : "Por enviar"
-            : rollingDelivery && asset.hasFinal
+            : rollingDelivery && showsFinals && asset.hasFinal
               ? "Editada"
               : null
         }
@@ -636,7 +646,7 @@ export function ProofGrid({
       {/* Task #244 — rolling delivery before `delivered`: the editadas that are
           already readable, with the zip of exactly those. Nothing here while
           no final exists yet. */}
-      {rollingDelivery && !isDelivered && finalAssetCount > 0 && (
+      {rollingDelivery && showsFinals && !isDelivered && finalAssetCount > 0 && (
         <div className="mb-6">
           <p className="text-fg-dim text-sm">
             {finalAssetCount} foto{finalAssetCount === 1 ? "" : "s"} editada

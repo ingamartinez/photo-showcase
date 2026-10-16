@@ -80,6 +80,7 @@ function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
       selectionTrayMode="flat"
       allowsOriginalSelection={false}
       rollingDelivery
+      finalsOpen
       {...overrides}
     />,
   );
@@ -219,6 +220,15 @@ describe("ProofGrid — rolling delivery (#244)", () => {
     renderGrid({ initialViewerSubmittedAt: ORDERED_AT });
 
     expect(document.body.textContent ?? "").not.toMatch(/carrito/i);
+  });
+
+  it("an admin preview of a DRAFT gallery with the flag on shows no finals UI (the page says finals are closed)", () => {
+    renderGrid({ initialStatus: "draft", finalsOpen: false, isAdminPreview: true });
+
+    expect(screen.queryByRole("button", { name: /Descargar:/ })).toBeNull();
+    expect(screen.queryByRole("link", { name: /Descargar todo/ })).toBeNull();
+    expect(screen.queryByText("Editada")).toBeNull();
+    expect(screen.queryByText(/editada ya disponible/)).toBeNull();
   });
 
   it("flag OFF: no order labels, no download in proofing, locked-submit copy untouched", () => {

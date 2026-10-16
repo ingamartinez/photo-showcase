@@ -472,6 +472,8 @@ export type GalleryDetail = {
   // that existed before this column did, which is what restores this app's
   // pre-#206 behavior for all of them (see `proof-tile.tsx`'s own gate).
   allowsOriginalSelection: boolean;
+  // Task #244 — opt-in rolling delivery; see `galleries.rolling_delivery`.
+  rollingDelivery: boolean;
   assets: GalleryDetailAsset[];
   // `Date | null`, not optional (task #25's own review): `findGalleryDetail`
   // below populates this UNCONDITIONALLY off the row's own column, so an
@@ -603,6 +605,7 @@ function toGalleryDetail(row: RawGalleryDetailRow): GalleryDetail {
     termsOverridden: row.termsOverridden,
     selectionTrayMode: row.selectionTrayMode,
     allowsOriginalSelection: row.allowsOriginalSelection,
+    rollingDelivery: row.rollingDelivery,
     assets: row.assets,
     selectionSubmittedAt: row.selectionSubmittedAt,
   };

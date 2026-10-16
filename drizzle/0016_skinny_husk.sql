@@ -1,0 +1,1 @@
+ALTER TABLE "galleries" ADD COLUMN "rolling_delivery" boolean DEFAULT false NOT NULL;

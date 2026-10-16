@@ -120,6 +120,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     termsOverridden: false,
     selectionTrayMode: "flat",
     allowsOriginalSelection: false,
+    rollingDelivery: false,
     assets: [],
     selectionSubmittedAt: null,
     ...overrides,

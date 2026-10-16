@@ -38,6 +38,7 @@ type Gallery {
   originalPhotoPriceCopSnapshot: Int!
   package: Package!
   publicSlug: String!
+  rollingDelivery: Boolean!
   selectionSubmittedAt: String
   selectionTrayMode: SelectionTrayMode!
   sessionDate: String!

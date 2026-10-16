@@ -500,6 +500,14 @@ export const galleries = pgTable(
     //      comment for the full reasoning, including why turning the switch ON
     //      does not notify (it never touches `assets` at all).
     allowsOriginalSelection: boolean("allows_original_selection").notNull().default(false),
+    // Task #244 — opt-in "rolling delivery". When true, a client of a
+    // `proofing`/`selected` gallery can read every uploaded final the moment
+    // it exists, instead of waiting for the whole gallery to be `delivered`
+    // (src/lib/final-access.ts's `canReadFinalDeliverable` is the ONE place
+    // that reads it). Default false: without it, every existing gallery would
+    // expose finals the photographer uploads while still editing. Not a
+    // commercial term: billing (`computeQuota`) is unaffected.
+    rollingDelivery: boolean("rolling_delivery").notNull().default(false),
   },
   (t) => [uniqueIndex("galleries_public_slug_idx").on(t.publicSlug)],
 );

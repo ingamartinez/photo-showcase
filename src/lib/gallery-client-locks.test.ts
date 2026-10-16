@@ -80,6 +80,7 @@ describe("getSelectionLockSnapshot", () => {
       viewerLock: null,
       lockedPickerIds: ["b"],
       submittedPickerIds: ["b"],
+      viewerSubmittedAt: null,
     });
   });
 
@@ -90,6 +91,7 @@ describe("getSelectionLockSnapshot", () => {
       viewerLock: { lockedAt: LOCKED_AT.toISOString(), submittedAt: null },
       lockedPickerIds: ["a"],
       submittedPickerIds: [],
+      viewerSubmittedAt: null,
     });
   });
 
@@ -124,7 +126,20 @@ describe("getSelectionLockSnapshot", () => {
       viewerLock: null,
       lockedPickerIds: ["a"],
       submittedPickerIds: ["a"],
+      viewerSubmittedAt: null,
     });
+  });
+
+  it("exposes the viewer's own submit time even when they are NOT locked (rolling delivery, task #244)", async () => {
+    clientRows().push(
+      member("a", { selectionSubmittedAt: LOCKED_AT }),
+      member("b", { selectionSubmittedAt: new Date("2026-01-01") }),
+    );
+
+    const snapshot = await getSelectionLockSnapshot(GALLERY_ID, "a");
+
+    expect(snapshot.viewerLock).toBeNull();
+    expect(snapshot.viewerSubmittedAt).toBe(LOCKED_AT.toISOString());
   });
 });
 
@@ -244,6 +259,7 @@ describe("gallery scoping — the same users in another gallery with the opposit
       viewerLock: null,
       lockedPickerIds: [],
       submittedPickerIds: [],
+      viewerSubmittedAt: null,
     });
   });
 

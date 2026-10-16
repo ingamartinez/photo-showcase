@@ -419,6 +419,12 @@ export const PATCH = withApiSession(async function PATCH(
       selectedAt: selectedAtIso,
       pickedBy,
       selectionKind: nextSelectionKind,
+      // Task #244 — the same value the write above left in the column.
+      requestedAt:
+        (selected !== undefined && !(isSelected && asset.isSelected)
+          ? null
+          : asset.requestedAt
+        )?.toISOString() ?? null,
     },
     quota,
   });

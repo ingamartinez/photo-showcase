@@ -75,7 +75,9 @@ export async function getSelectionLockSnapshot(
 
   const locked = members.filter((member) => member.lockedAt !== null);
   const own = locked.find((member) => member.userId === viewerId);
+  const ownMembership = members.find((member) => member.userId === viewerId);
   return {
+    viewerSubmittedAt: ownMembership?.submittedAt ? ownMembership.submittedAt.toISOString() : null,
     viewerLock: own
       ? {
           lockedAt: own.lockedAt!.toISOString(),

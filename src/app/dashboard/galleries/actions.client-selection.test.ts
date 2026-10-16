@@ -494,6 +494,18 @@ describe("removeGalleryClientPicks", () => {
     expect(byId("free")).toMatchObject({ isSelected: false, selectedBy: null });
   });
 
+  it("clears requestedAt on the removed picks (task #244 lockstep) and leaves other people's orders alone", async () => {
+    const r = await rows();
+    const ORDERED = new Date("2026-10-16T09:00:00.000Z");
+    for (const id of ["a1", "b1"]) r.assets.find((a) => a.id === id)!.requestedAt = ORDERED;
+    const { removeGalleryClientPicks } = await import("./actions");
+
+    await removeGalleryClientPicks({ status: "idle" }, form(A));
+
+    expect(r.assets.find((a) => a.id === "a1")!.requestedAt).toBeNull();
+    expect(r.assets.find((a) => a.id === "b1")!.requestedAt).toBe(ORDERED);
+  });
+
   it("clears both lock columns of that client only (other client and other gallery keep theirs)", async () => {
     const r = await rows();
     for (const id of [A, B]) {

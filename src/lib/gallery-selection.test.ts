@@ -152,7 +152,7 @@ function assetRow(overrides: Partial<Row> = {}): Row {
     galleryId: GALLERY_A,
     isSelected: true,
     selectedAt: new Date("2026-07-30T12:00:00.000Z"),
-    selectedBy: "client-a",
+    billedTo: "client-a",
     // Task #206 — the domain's own default; the tests exercising a marked
     // original override this explicitly.
     selectionKind: "edited",
@@ -173,7 +173,7 @@ beforeEach(async () => {
 describe("getGallerySelection", () => {
   it("returns nothing, and never touches `users` at all, when the gallery has no picks yet", async () => {
     const db = await seededDb();
-    db.__rows.assets.push(assetRow({ id: "asset-1", isSelected: false, selectedBy: null }));
+    db.__rows.assets.push(assetRow({ id: "asset-1", isSelected: false, billedTo: null }));
     // Emptying `users` proves the second query is genuinely skipped rather
     // than merely returning nothing: if it ran, the fake would still resolve,
     // but a picker lookup with an empty id list is a round trip this function
@@ -188,7 +188,7 @@ describe("getGallerySelection", () => {
     const db = await seededDb();
     db.__rows.assets.push(
       assetRow({ id: "picked" }),
-      assetRow({ id: "not-picked", isSelected: false, selectedBy: null, selectedAt: null }),
+      assetRow({ id: "not-picked", isSelected: false, billedTo: null, selectedAt: null }),
       assetRow({ id: "other-gallery", galleryId: GALLERY_B }),
     );
     const { getGallerySelection } = await import("@/lib/gallery-selection");
@@ -203,12 +203,12 @@ describe("getGallerySelection", () => {
     db.__rows.assets.push(
       assetRow({
         id: "asset-1",
-        selectedBy: "client-a",
+        billedTo: "client-a",
         selectedAt: new Date("2026-07-30T12:00:00.000Z"),
       }),
       assetRow({
         id: "asset-2",
-        selectedBy: "client-b",
+        billedTo: "client-b",
         selectedAt: new Date("2026-07-30T12:01:00.000Z"),
       }),
     );
@@ -238,7 +238,7 @@ describe("getGallerySelection", () => {
 
   it("reports a pick with no `selected_by` as unattributed rather than inventing a picker", async () => {
     const db = await seededDb();
-    db.__rows.assets.push(assetRow({ id: "asset-1", selectedBy: null }));
+    db.__rows.assets.push(assetRow({ id: "asset-1", billedTo: null }));
     const { getGallerySelection } = await import("@/lib/gallery-selection");
 
     const picks = await getGallerySelection(GALLERY_A);
@@ -251,7 +251,7 @@ describe("getGallerySelection", () => {
     // a narrow window rather than a permanent state — but a `undefined`
     // leaking into the JSON would render as a missing key on the client.
     const db = await seededDb();
-    db.__rows.assets.push(assetRow({ id: "asset-1", selectedBy: "deleted-user" }));
+    db.__rows.assets.push(assetRow({ id: "asset-1", billedTo: "deleted-user" }));
     const { getGallerySelection } = await import("@/lib/gallery-selection");
 
     const picks = await getGallerySelection(GALLERY_A);

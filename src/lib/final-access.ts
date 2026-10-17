@@ -40,7 +40,7 @@ import { isGalleryVisibleToClient } from "@/lib/galleries";
  *   WHY THIS IS NOT SIMPLY DROPPED once extras exist — the tempting reading
  *   is that a `finalKey` on an unpicked asset already IS the photographer's
  *   intent, making this leg redundant. It is not. `finalKey`/`isEdited`
- *   survive a DESELECT untouched (only `selectedAt`/`selectedBy` are cleared
+ *   survive a DESELECT untouched (only `selectedAt`/`billedTo` are cleared
  *   — see schema.ts), so "picked, finished, then discarded by the client"
  *   produces byte-identical row state to a gift. Dropping this leg would
  *   hand every such discarded photo to the client for free. `isExtra` is the

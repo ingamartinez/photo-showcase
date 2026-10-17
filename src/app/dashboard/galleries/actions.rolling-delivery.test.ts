@@ -93,12 +93,12 @@ function member(userId: string, overrides: Row = {}, galleryId = GALLERY_ID): Ro
   };
 }
 
-function pick(id: string, selectedBy: string | null, overrides: Row = {}): Row {
+function pick(id: string, billedTo: string | null, overrides: Row = {}): Row {
   return {
     id,
     galleryId: GALLERY_ID,
-    isSelected: selectedBy !== null,
-    selectedBy,
+    isSelected: billedTo !== null,
+    billedTo,
     requestedAt: null,
     ...overrides,
   };

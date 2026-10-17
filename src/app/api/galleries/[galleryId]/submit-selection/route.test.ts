@@ -139,7 +139,7 @@ function assetRow(overrides: Row = {}): Row {
     selectedAt: null,
     // Epic #239 — the picker. Defaults to the fixture's main client; the
     // multi-client tests override it per asset.
-    selectedBy: CLIENT_ID,
+    billedTo: CLIENT_ID,
     // Task #206 — the domain's own default; the mixed-case test overrides
     // this explicitly.
     selectionKind: "edited",
@@ -562,7 +562,7 @@ describe("POST /api/galleries/[galleryId]/submit-selection — per-client lock (
     });
     db.__rows.galleryClients.push(membership(CLIENT_B));
     db.__rows.assets.push(
-      assetRow({ id: ASSET_2_ID, isSelected: true, selectedBy: CLIENT_B, sortOrder: 1 }),
+      assetRow({ id: ASSET_2_ID, isSelected: true, billedTo: CLIENT_B, sortOrder: 1 }),
     );
     return db;
   }
@@ -631,7 +631,7 @@ describe("POST /api/galleries/[galleryId]/submit-selection — per-client lock (
   it("refuses an empty OWN selection with 400 even though the other client has picks", async () => {
     const db = await twoClientGallery();
     // Ana picked nothing; every pick belongs to Beto.
-    db.__rows.assets.find((a) => a.id === ASSET_1_ID)!.selectedBy = CLIENT_B;
+    db.__rows.assets.find((a) => a.id === ASSET_1_ID)!.billedTo = CLIENT_B;
     authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
     const { POST } = await import("./route");
 
@@ -795,10 +795,10 @@ describe("POST /api/galleries/[galleryId]/submit-selection — rolling delivery 
     });
     db.__rows.galleryClients.push(membership(CLIENT_B));
     db.__rows.assets.push(
-      assetRow({ id: A1, isSelected: true, selectedBy: CLIENT_ID, sortOrder: 0 }),
-      assetRow({ id: A2, isSelected: true, selectedBy: CLIENT_ID, sortOrder: 1 }),
-      assetRow({ id: A3, isSelected: true, selectedBy: CLIENT_ID, sortOrder: 2 }),
-      assetRow({ id: B1, isSelected: true, selectedBy: CLIENT_B, sortOrder: 3 }),
+      assetRow({ id: A1, isSelected: true, billedTo: CLIENT_ID, sortOrder: 0 }),
+      assetRow({ id: A2, isSelected: true, billedTo: CLIENT_ID, sortOrder: 1 }),
+      assetRow({ id: A3, isSelected: true, billedTo: CLIENT_ID, sortOrder: 2 }),
+      assetRow({ id: B1, isSelected: true, billedTo: CLIENT_B, sortOrder: 3 }),
     );
     return db;
   }
@@ -851,8 +851,8 @@ describe("POST /api/galleries/[galleryId]/submit-selection — rolling delivery 
     const past = new Date(firstStamp.getTime() - 3_600_000);
     for (const id of [A1, A2, A3]) db.__rows.assets.find((r) => r.id === id)!.requestedAt = past;
     db.__rows.assets.push(
-      assetRow({ id: "n1", isSelected: true, selectedBy: CLIENT_ID, sortOrder: 4 }),
-      assetRow({ id: "n2", isSelected: false, selectedBy: null, sortOrder: 5 }),
+      assetRow({ id: "n1", isSelected: true, billedTo: CLIENT_ID, sortOrder: 4 }),
+      assetRow({ id: "n2", isSelected: false, billedTo: null, sortOrder: 5 }),
     );
 
     const response = await POST(requestFor(), paramsFor(GALLERY_ID));

@@ -315,7 +315,7 @@ export const galleries = pgTable(
     // is `null` — see that function's own comment for the read side, and
     // src/app/galleries/page.tsx for the fallback markup.
     //
-    // `onDelete: "set null"`, same reasoning as `assets.selectedBy` below:
+    // `onDelete: "set null"`, same reasoning as `assets.billedTo` below:
     // deleting the underlying asset (`DELETE /api/assets/[assetId]`) must not
     // leave this column pointing at a row that no longer exists — the
     // gallery falls back to no-cover, which already renders correctly,
@@ -355,7 +355,7 @@ export const galleries = pgTable(
     // overwrite destroys is the history of the PHOTOGRAPHER'S OWN unlocks.
     // The evidence a disputed money conversation actually turns on — which
     // photos were picked, when, and by whom — lives in `assets.isSelected` /
-    // `selectedAt` / `selectedBy`, and an unlock touches none of it;
+    // `selectedAt` / `billedTo`, and an unlock touches none of it;
     // `selectionSubmittedAt` above is likewise preserved. So the only record
     // that degrades belongs to the single trusted operator, who has direct
     // database access anyway and is explicitly outside the threat model
@@ -363,7 +363,7 @@ export const galleries = pgTable(
     // is not something a counterparty litigates against the photographer's
     // own records.
     //
-    // This also keeps the codebase consistent with itself: `assets.selectedBy`
+    // This also keeps the codebase consistent with itself: `assets.billedTo`
     // below reached the same conclusion independently (task #94) — a true
     // "who did what, in order" audit needs a separate append-only event
     // table, not a column, and neither slice had a real dispute to justify
@@ -424,7 +424,7 @@ export const galleries = pgTable(
     // not that kind of fact, and there is no dispute this column could ever
     // need to settle. Changeable by the admin at ANY gallery status
     // (src/app/dashboard/galleries/actions.ts's `updateSelectionTrayMode`) —
-    // it never touches `assets.isSelected`/`selectedBy` or the snapshot
+    // it never touches `assets.isSelected`/`billedTo` or the snapshot
     // columns, so there is no state gate to enforce.
     selectionTrayMode: selectionTrayMode("selection_tray_mode").notNull().default("flat"),
     // Task #214 — gates whether THIS gallery's client can pick `original` at
@@ -518,7 +518,7 @@ export const galleries = pgTable(
 // a gallery can now have SEVERAL clients attached to it at once — a couple's
 // own separate logins into the SAME gallery, a family, two businesses
 // sharing a shoot. Everyone attached shares the same rights and picks into
-// the SAME shared selection (see `assets.selectedBy` below for how that
+// the SAME shared selection (see `assets.billedTo` below for how that
 // shared selection still shows who chose what) — there is no per-client
 // permission model in this slice, deliberately (kanban #94's own "Not in
 // this slice").
@@ -666,6 +666,11 @@ export const assets = pgTable(
     // `rolling_delivery` on. Kept in lockstep with `isSelected`: null whenever
     // the asset is not selected (every deselect path clears it).
     requestedAt: timestamp("requested_at", { withTimezone: true }),
+    // Epic #250, S4 — the TS field is now `billedTo`: the person this asset's
+    // single billed unit is attributed to (the claim's holder, or the
+    // escalation's winner). The DB column stays `selected_by`. The rest of
+    // this docblock is task #94's history, rewritten in full by S6.
+    //
     // WHO last set `isSelected`/`selectedAt` — task #94's "shared selection,
     // ATTRIBUTED" decision (2026-07-29, owner-approved): with several clients
     // now able to pick into the SAME shared set, an anonymous boolean is no
@@ -679,7 +684,7 @@ export const assets = pgTable(
     // a photo and B later deselects it, this column goes back to `null`, NOT
     // "B" — same lockstep as `selectedAt`, which already goes back to `null`
     // on deselect. The alternative (keep B as the last actor even though their
-    // action UNDID the pick) would make `selectedBy` answer a different
+    // action UNDID the pick) would make `billedTo` answer a different
     // question — "who last touched this row" instead of "who picked this photo
     // right now" — and the UI has no way to tell those two apart without a
     // second flag; showing a name next to an unselected thumbnail would read
@@ -692,13 +697,13 @@ export const assets = pgTable(
     // modes if the referenced user disappears. `gallery_clients.userId`
     // restricts because deleting that row silently would strip a gallery of
     // its only remaining link to a person; there is no equivalent loss here —
-    // `isSelected`/`selectedAt` stay exactly as correct with `selectedBy` wiped
+    // `isSelected`/`selectedAt` stay exactly as correct with `billedTo` wiped
     // to `null` as with it populated. Restricting here instead would mean a
     // client who is removed from a gallery (or whose account is deleted)
     // blocks that indefinitely just because they once picked a photo — a
     // stale attribution has no business holding a person's own account
     // hostage.
-    selectedBy: text("selected_by").references(() => users.id, { onDelete: "set null" }),
+    billedTo: text("selected_by").references(() => users.id, { onDelete: "set null" }),
     // Epic #250 — WHEN the asset's current billed unit ARRIVED (the claim, or
     // the escalation that moved it). It orders the included photos in
     // `quota-attribution.ts` (S3, decision 6: attribution by arrival, never by
@@ -715,7 +720,7 @@ export const assets = pgTable(
     // (tasks #24, #66, #95, #114) would need re-auditing the moment "selected"
     // stopped being a plain true/false. This column only ever answers WHAT was
     // asked for, and is meaningless while `isSelected` is `false` — the same
-    // "meaningless until selected" relationship `selectedAt`/`selectedBy` above
+    // "meaningless until selected" relationship `selectedAt`/`billedTo` above
     // already have with it.
     //
     // `notNull().default("edited")` — there are assets in production, so a
@@ -746,7 +751,7 @@ export const assets = pgTable(
     // AND isSelected = false`, which is the shape it looks like it should have:
     // that predicate is ALSO true for a photo the client picked, the
     // photographer finished, and the client then DESELECTED. `finalKey` and
-    // `isEdited` are never cleared on deselect (only `selectedAt`/`selectedBy`
+    // `isEdited` are never cleared on deselect (only `selectedAt`/`billedTo`
     // are — see those columns above), so a derived rule would silently start
     // delivering discarded photos for free the moment this slice shipped. That
     // is a regression nobody asked for, and no amount of care at the read sites
@@ -754,7 +759,7 @@ export const assets = pgTable(
     // gets written down.
     //
     // Meaningless while `isSelected` is `true` — the same "meaningless until"
-    // relationship `selectionKind`/`selectedAt`/`selectedBy` above already have
+    // relationship `selectionKind`/`selectedAt`/`billedTo` above already have
     // with that boolean. Consequence worth stating plainly, because it is
     // reachable: if the photographer gifts a photo while the gallery is still
     // `proofing` and the client then PICKS it, `isSelected` wins — the photo
@@ -772,7 +777,7 @@ export const assets = pgTable(
     // Task #223 — WHICH PERSON a photographer-added extra (`isExtra` above)
     // belongs to, so the `by-person` tray has a row to put it in.
     //
-    // WHY THIS IS NOT `selectedBy`, which is the obvious place to put it: that
+    // WHY THIS IS NOT `billedTo`, which is the obvious place to put it: that
     // column answers "who picked this photo right now" (see its own comment
     // above), is kept in lockstep with `isSelected`, and is cleared to `null`
     // the instant a pick is undone. It is also what the `by-person` tray groups
@@ -799,7 +804,7 @@ export const assets = pgTable(
     // data: `pickerLabelFor` already renders a null attribution as the
     // unattributed label.
     //
-    // `onDelete: "set null"`, same reasoning as `selectedBy` above — a client
+    // `onDelete: "set null"`, same reasoning as `billedTo` above — a client
     // removed from the gallery must not be held hostage by a stale attribution,
     // and the delivery stays exactly as valid with this wiped to `null`.
     deliveredFor: text("delivered_for").references(() => users.id, { onDelete: "set null" }),
@@ -973,7 +978,7 @@ export const galleryClientsRelations = relations(galleryClients, ({ one }) => ({
 
 export const assetsRelations = relations(assets, ({ one }) => ({
   gallery: one(galleries, { fields: [assets.galleryId], references: [galleries.id] }),
-  selector: one(users, { fields: [assets.selectedBy], references: [users.id] }),
+  selector: one(users, { fields: [assets.billedTo], references: [users.id] }),
 }));
 
 export type User = typeof users.$inferSelect;

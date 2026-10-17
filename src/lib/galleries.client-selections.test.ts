@@ -31,11 +31,11 @@ const member = (galleryId: string, userId: string, o: Row = {}): Row => ({
   selectionSubmittedAt: null,
   ...o,
 });
-const asset = (id: string, galleryId: string, selectedBy: string | null): Row => ({
+const asset = (id: string, galleryId: string, billedTo: string | null): Row => ({
   id,
   galleryId,
-  isSelected: selectedBy !== null,
-  selectedBy,
+  isSelected: billedTo !== null,
+  billedTo,
 });
 
 beforeEach(async () => {

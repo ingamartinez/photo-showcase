@@ -676,7 +676,7 @@ export const POST = withApiSession(async function POST(
   // outlives nothing). It is written UNCONDITIONALLY, not only when true, so
   // a re-upload onto an asset the client selected in the meantime clears a
   // now-wrong `true` instead of leaving it stale — the "kept in lockstep,
-  // never left stale" discipline `selectedBy` already documents.
+  // never left stale" discipline `billedTo` already documents.
   try {
     await db
       .update(assets)

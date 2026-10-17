@@ -201,7 +201,7 @@ export const POST = withApiSession(async function POST(
       and(
         eq(assets.galleryId, gallery.id),
         eq(assets.isSelected, true),
-        eq(assets.selectedBy, session.user.id),
+        eq(assets.billedTo, session.user.id),
         // Task #244 — under rolling delivery a submit acts on the CART: own
         // picks not yet ordered. An all-requested cart is empty: same 400.
         ...(gallery.rollingDelivery ? [isNull(assets.requestedAt)] : []),
@@ -273,7 +273,7 @@ export const POST = withApiSession(async function POST(
             and(
               eq(assets.galleryId, gallery.id),
               eq(assets.isSelected, true),
-              eq(assets.selectedBy, session.user.id),
+              eq(assets.billedTo, session.user.id),
               isNull(assets.requestedAt),
             ),
           )

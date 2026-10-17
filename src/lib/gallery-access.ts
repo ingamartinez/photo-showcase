@@ -75,7 +75,7 @@ export async function isGalleryOwner(galleryId: string, session: Session): Promi
  * else. It grants no capability and blocks no write. `isGalleryOwner` above
  * already lets an admin act on any gallery unconditionally — task #66
  * (closed 2026-07-30, owner-approved) decided that fork deliberately in
- * favor of attribution (`assets.selectedBy`, task #94) over narrowing the
+ * favor of attribution (`assets.billedTo`, task #94) over narrowing the
  * toggle, and task #139's own correction note is explicit that re-narrowing
  * it here would relitigate a closed decision. Do not wire this into any
  * write path — see this function's own name: "previewing", not "acting as".

@@ -768,7 +768,7 @@ export async function getGalleryClientSelections(galleryId: string): Promise<{
   const picked = await db
     .select({
       id: assets.id,
-      selectedBy: assets.selectedBy,
+      billedTo: assets.billedTo,
       requestedAt: assets.requestedAt,
       isEdited: assets.isEdited,
       finalKey: assets.finalKey,
@@ -779,15 +779,15 @@ export async function getGalleryClientSelections(galleryId: string): Promise<{
   const pickOwnerByAssetId: Record<string, string> = {};
   const tally = new Map<string, { picks: number; requested: number; edited: number }>();
   for (const asset of picked) {
-    if (asset.selectedBy === null) continue;
-    pickOwnerByAssetId[asset.id] = asset.selectedBy;
-    const entry = tally.get(asset.selectedBy) ?? { picks: 0, requested: 0, edited: 0 };
+    if (asset.billedTo === null) continue;
+    pickOwnerByAssetId[asset.id] = asset.billedTo;
+    const entry = tally.get(asset.billedTo) ?? { picks: 0, requested: 0, edited: 0 };
     entry.picks += 1;
     if (asset.requestedAt != null) {
       entry.requested += 1;
       if (asset.isEdited && asset.finalKey) entry.edited += 1;
     }
-    tally.set(asset.selectedBy, entry);
+    tally.set(asset.billedTo, entry);
   }
 
   return {

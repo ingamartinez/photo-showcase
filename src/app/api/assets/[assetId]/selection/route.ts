@@ -4,7 +4,7 @@
 //
 // `is_selected` / `selected_at` / `selected_by` / `selection_kind` are the
 // only things this route writes (`selected_by`, task #94 — see schema.ts's
-// comment on `assets.selectedBy` for the attribution decision this lockstep
+// comment on `assets.billedTo` for the attribution decision this lockstep
 // write implements). `selected` (the count), `extras`, and `surchargeCop` are
 // never stored —
 // PLAN.md §3 and schema.ts's comment on `assets.isSelected` are explicit
@@ -34,14 +34,14 @@
 //     rule ("deselecting it and selecting it again returns it to `edited`"),
 //     enforced here rather than left to whatever the row happened to hold
 //     before. Deselecting also resets it to `edited`, for the same reason
-//     `selectedBy` already goes back to `null` on deselect: the column is
+//     `billedTo` already goes back to `null` on deselect: the column is
 //     meaningless while `isSelected` is `false` (schema.ts's own comment on
 //     `assets.selectionKind`), so there is nothing to preserve.
 //   - `selected` absent, `selectionKind` present: a TYPE-ONLY change. Refused
 //     with 409 unless the asset is ALREADY selected — the type has no
 //     meaning otherwise, and accepting it silently would let a client set a
 //     type on a photo nobody picked. Does not touch `isSelected`/
-//     `selectedAt`/`selectedBy` at all.
+//     `selectedAt`/`billedTo` at all.
 //
 // Authorization has TWO gates, not one — a lesson learned from task #63's
 // review of the neighboring proof route, and re-derived here rather than
@@ -236,7 +236,7 @@ export const PATCH = withApiSession(async function PATCH(
   //      the admin) and may not change anything any more.
   //   2. `pick_locked` — the asset is CURRENTLY picked by a DIFFERENT client
   //      who is locked. This covers every write that touches the asset —
-  //      deselect, re-select (which would take over `selectedBy`) and a
+  //      deselect, re-select (which would take over `billedTo`) and a
   //      type-only change — so without it B could silently undo or re-type the
   //      selection A already submitted, and with it the surcharge A was
   //      quoted. Only ACTIVE memberships count (`getClientLock` filters
@@ -256,11 +256,8 @@ export const PATCH = withApiSession(async function PATCH(
   // The ownership predicate is hoisted so both gates read it ONCE — see
   // `foreignPickerId` below.
   const foreignPickerId =
-    !isAdmin &&
-    asset.isSelected &&
-    asset.selectedBy !== null &&
-    asset.selectedBy !== session.user.id
-      ? asset.selectedBy
+    !isAdmin && asset.isSelected && asset.billedTo !== null && asset.billedTo !== session.user.id
+      ? asset.billedTo
       : null;
   // Resolved inside the block below (only a non-admin can have a foreign pick)
   // and reused by the `pick_not_yours` gate after `already_requested`. `null`
@@ -295,7 +292,7 @@ export const PATCH = withApiSession(async function PATCH(
   // Task #249 — A PICK BELONGS TO THE PERSON WHO MADE IT. Placed ABOVE the body
   // destructure on purpose: it reads only `asset`, `session` and the membership
   // lookup above, so `selected: false` (remove), `selected: true` (takeover —
-  // which would rewrite `selectedBy`) and a `selectionKind`-only change are all
+  // which would rewrite `billedTo`) and a `selectionKind`-only change are all
   // covered by ONE check no future branch can forget. It also precedes every
   // write and the notify below, so a refusal changes nothing and pings nobody.
   //
@@ -375,11 +372,11 @@ export const PATCH = withApiSession(async function PATCH(
     isSelected = selected;
     const selectedAt = isSelected ? new Date() : null;
     selectedAtIso = selectedAt ? selectedAt.toISOString() : null;
-    // `selectedBy` is kept in lockstep with `isSelected` right here — the
+    // `billedTo` is kept in lockstep with `isSelected` right here — the
     // acting session's own user id on select, `null` again on deselect — see
-    // schema.ts's comment on `assets.selectedBy` for why deselect clears it
+    // schema.ts's comment on `assets.billedTo` for why deselect clears it
     // rather than keeping the last actor.
-    const selectedBy = isSelected ? session.user.id : null;
+    const billedTo = isSelected ? session.user.id : null;
     // Task #206 — criterion 2: a fresh select always (re)starts `edited`,
     // even if this same request also carries a `selectionKind` (an atomic
     // "select AND mark original" from one control would still land here,
@@ -400,7 +397,7 @@ export const PATCH = withApiSession(async function PATCH(
       .set({
         isSelected,
         selectedAt,
-        selectedBy,
+        billedTo,
         selectionKind: nextSelectionKind,
         requestedAt: isSelected && asset.isSelected ? asset.requestedAt : null,
       })
@@ -425,15 +422,15 @@ export const PATCH = withApiSession(async function PATCH(
     // an ADMIN, for the picker themselves, or when the picker is unprotected
     // (removed / no membership row / `selected_by IS NULL`) — the
     // `pick_not_yours` gate above refuses every other non-admin caller. So
-    // `asset.selectedBy` here is still NOT necessarily this session's own id,
+    // `asset.billedTo` here is still NOT necessarily this session's own id,
     // and the acting session's own name must not be attributed to a
     // DIFFERENT picker's id — that would mislabel the original picker in
     // this response's own `pickedBy`, which the acting session's tray applies
     // to its local state immediately (see use-shared-selection.ts's
     // `setSelectionKind`). A real lookup, not a guess.
-    if (asset.selectedBy === null) {
+    if (asset.billedTo === null) {
       pickedBy = null;
-    } else if (asset.selectedBy === session.user.id) {
+    } else if (asset.billedTo === session.user.id) {
       pickedBy = {
         id: session.user.id,
         label: session.user.name ?? session.user.email ?? session.user.id,
@@ -444,8 +441,8 @@ export const PATCH = withApiSession(async function PATCH(
       // attribution" outcome `gallery-selection.ts` already gives it. The
       // lookup itself lives in `pickerLabel` so the `pick_not_yours` refusal
       // above resolves the name through the identical rule.
-      const label = await pickerLabel(asset.selectedBy);
-      pickedBy = label === null ? null : { id: asset.selectedBy, label };
+      const label = await pickerLabel(asset.billedTo);
+      pickedBy = label === null ? null : { id: asset.billedTo, label };
     }
 
     const written = await db
@@ -512,7 +509,7 @@ export const PATCH = withApiSession(async function PATCH(
   // `pickerLabelFor`), so this label is only ever actually READ by another
   // session, after the next poll re-reads it from the database anyway.
   //
-  // `null` on deselect, in lockstep with `selectedBy` — schema.ts's own rule.
+  // `null` on deselect, in lockstep with `billedTo` — schema.ts's own rule.
   return NextResponse.json({
     asset: {
       id: asset.id,

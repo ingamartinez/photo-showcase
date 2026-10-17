@@ -373,7 +373,7 @@ describe("removeGalleryClient — never touches asset attribution", () => {
 
     // The fake db's own `rowsFor`/`tableShapeFor` throw on any table other
     // than `galleries`/`galleryClients` — if `removeGalleryClient` ever
-    // touched `assets` (e.g. to clear `selectedBy`), this call would throw
+    // touched `assets` (e.g. to clear `billedTo`), this call would throw
     // instead of resolving cleanly.
     await expect(
       removeGalleryClient(

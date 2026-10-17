@@ -417,7 +417,7 @@ describe("PATCH /api/assets/[assetId]/selection — persistence and quota recomp
   });
 
   // Task #94's "shared selection, ATTRIBUTED" decision — schema.ts's comment
-  // on `assets.selectedBy` requires this route to keep it in lockstep with
+  // on `assets.billedTo` requires this route to keep it in lockstep with
   // `isSelected`, in BOTH directions. Unattributed selections made in
   // production can never be attributed retroactively, so this is the
   // headline regression this test exists to catch.
@@ -429,7 +429,7 @@ describe("PATCH /api/assets/[assetId]/selection — persistence and quota recomp
     const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
 
     expect(response.status).toBe(200);
-    expect(db.__rows.assets[0]?.selectedBy).toBe("client-a");
+    expect(db.__rows.assets[0]?.billedTo).toBe("client-a");
   });
 
   it("clears selected_by back to null on deselect, even though a different actor selected it", async () => {
@@ -438,14 +438,14 @@ describe("PATCH /api/assets/[assetId]/selection — persistence and quota recomp
     db.__rows.assets[0] = assetRow({
       isSelected: true,
       selectedAt: new Date("2026-07-10"),
-      selectedBy: "client-b",
+      billedTo: "client-b",
     });
     const { PATCH } = await import("./route");
 
     const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
 
     expect(response.status).toBe(200);
-    expect(db.__rows.assets[0]?.selectedBy).toBeNull();
+    expect(db.__rows.assets[0]?.billedTo).toBeNull();
   });
 
   // Task #95: the collaborative tray moves a photo the instant the SERVER
@@ -483,7 +483,7 @@ describe("PATCH /api/assets/[assetId]/selection — persistence and quota recomp
   it("reports a null picker on deselect, in lockstep with the column it just cleared", async () => {
     authMock.mockResolvedValue(clientASession());
     const db = await seededDb();
-    db.__rows.assets[0] = assetRow({ isSelected: true, selectedBy: "client-b" });
+    db.__rows.assets[0] = assetRow({ isSelected: true, billedTo: "client-b" });
     const { PATCH } = await import("./route");
 
     const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
@@ -632,7 +632,7 @@ describe("PATCH /api/assets/[assetId]/selection — setting the type (task #206)
     db.__rows.assets[0] = assetRow({
       isSelected: true,
       selectedAt,
-      selectedBy: "client-a",
+      billedTo: "client-a",
       selectionKind: "edited",
     });
     const { PATCH } = await import("./route");
@@ -641,7 +641,7 @@ describe("PATCH /api/assets/[assetId]/selection — setting the type (task #206)
 
     expect(db.__rows.assets[0]?.isSelected).toBe(true);
     expect(db.__rows.assets[0]?.selectedAt).toBe(selectedAt);
-    expect(db.__rows.assets[0]?.selectedBy).toBe("client-a");
+    expect(db.__rows.assets[0]?.billedTo).toBe("client-a");
   });
 
   // Criterion 2, second half — deselecting and re-selecting returns to
@@ -819,7 +819,7 @@ describe("PATCH /api/assets/[assetId]/selection — setting the type (task #206)
       expires: "2099-01-01T00:00:00.000Z",
     });
     const db = await seededDb();
-    db.__rows.assets[0] = assetRow({ isSelected: true, selectedBy: "client-a" });
+    db.__rows.assets[0] = assetRow({ isSelected: true, billedTo: "client-a" });
     // Round-2 review finding: this row MUST be seeded for the assertion below
     // to mean anything — an unseeded `users` table makes the lookup return
     // nothing no matter what the route does with its result, which is
@@ -852,7 +852,7 @@ describe("PATCH /api/assets/[assetId]/selection — setting the type (task #206)
     });
     const db = await seededDb();
     db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
-    db.__rows.assets[0] = assetRow({ isSelected: true, selectedBy: "deleted-user" });
+    db.__rows.assets[0] = assetRow({ isSelected: true, billedTo: "deleted-user" });
     // A DECOY row, deliberately NOT matching "deleted-user" — round-3 review
     // finding: without this, `db.__rows.users` stays empty (only ever pushed
     // to by the PREVIOUS test), and an unseeded table can't distinguish "the
@@ -988,13 +988,13 @@ describe("PATCH /api/assets/[assetId]/selection — rolling delivery order freez
       assetRow({
         id: ASSET_1_ID,
         isSelected: true,
-        selectedBy: "client-a",
+        billedTo: "client-a",
         requestedAt: REQUESTED_AT,
       }),
       assetRow({
         id: ASSET_2_ID,
         isSelected: true,
-        selectedBy: "client-a",
+        billedTo: "client-a",
         requestedAt: null,
         sortOrder: 1,
       }),
@@ -1013,7 +1013,7 @@ describe("PATCH /api/assets/[assetId]/selection — rolling delivery order freez
     await expect(response.json()).resolves.toEqual({ error: "already_requested" });
     expect(db.__rows.assets[0]).toMatchObject({
       isSelected: true,
-      selectedBy: "client-a",
+      billedTo: "client-a",
       requestedAt: REQUESTED_AT,
     });
     expect(notifySelectionChangedMock).not.toHaveBeenCalled();
@@ -1028,7 +1028,7 @@ describe("PATCH /api/assets/[assetId]/selection — rolling delivery order freez
 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({ error: "already_requested" });
-    expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, billedTo: "client-a" });
   });
 
   it("refuses a kind change on an ordered pick, for the picker and for another client", async () => {
@@ -1162,7 +1162,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
       assetRow({
         id: ASSET_1_ID,
         isSelected: true,
-        selectedBy: "client-a",
+        billedTo: "client-a",
         selectedAt: new Date("2026-10-15T09:00:00.000Z"),
       }),
       assetRow({ id: ASSET_2_ID, sortOrder: 1 }),
@@ -1181,7 +1181,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
     await expect(response.json()).resolves.toEqual({ error: "pick_locked" });
     expect(db.__rows.assets[0]).toMatchObject({
       isSelected: true,
-      selectedBy: "client-a",
+      billedTo: "client-a",
       selectionKind: "edited",
     });
     expect(notifySelectionChangedMock).not.toHaveBeenCalled();
@@ -1202,7 +1202,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
     expect(db.__rows.assets[0]).toMatchObject({ selectionKind: "edited" });
   });
 
-  it("refuses B re-selecting A's locked pick (which would take over selectedBy) with 409 pick_locked", async () => {
+  it("refuses B re-selecting A's locked pick (which would take over billedTo) with 409 pick_locked", async () => {
     const db = await groupGallery({ aLocked: true });
     authMock.mockResolvedValue(clientBSession());
     const { PATCH } = await import("./route");
@@ -1211,7 +1211,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({ error: "pick_locked" });
-    expect(db.__rows.assets[0]).toMatchObject({ selectedBy: "client-a" });
+    expect(db.__rows.assets[0]).toMatchObject({ billedTo: "client-a" });
   });
 
   it("refuses the LOCKED A toggling anything, even an unpicked photo, with 409 client_selection_locked", async () => {
@@ -1238,7 +1238,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
     const response = await PATCH(requestFor(ASSET_2_ID, true), paramsFor(ASSET_2_ID));
 
     expect(response.status).toBe(200);
-    expect(db.__rows.assets[1]).toMatchObject({ isSelected: true, selectedBy: "client-b" });
+    expect(db.__rows.assets[1]).toMatchObject({ isSelected: true, billedTo: "client-b" });
   });
 
   it("REFUSES B deselecting A's open pick with 409 pick_not_yours, naming A (task #249)", async () => {
@@ -1258,7 +1258,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
     });
     expect(db.__rows.assets[0]).toMatchObject({
       isSelected: true,
-      selectedBy: "client-a",
+      billedTo: "client-a",
       selectionKind: "edited",
     });
     expect(notifySelectionChangedMock).not.toHaveBeenCalled();
@@ -1278,7 +1278,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
 
     const deselect = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
     expect(deselect.status).toBe(200);
-    expect(db.__rows.assets[0]).toMatchObject({ isSelected: false, selectedBy: null });
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: false, billedTo: null });
   });
 
   it("does not let a REMOVED client's old lock freeze their picks: B may deselect them", async () => {
@@ -1315,7 +1315,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
     authMock.mockResolvedValue(clientBSession());
     const byB = await PATCH(requestFor(ASSET_2_ID, true), paramsFor(ASSET_2_ID));
     expect(byB.status).toBe(200);
-    expect(db.__rows.assets[1]).toMatchObject({ isSelected: true, selectedBy: "client-b" });
+    expect(db.__rows.assets[1]).toMatchObject({ isSelected: true, billedTo: "client-b" });
 
     // A is locked only in the OTHER gallery. B acting on A's pick HERE must be
     // refused as `pick_not_yours`, not `pick_locked`: a picker-lock lookup that
@@ -1328,14 +1328,14 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
       error: "pick_not_yours",
       pickedByName: "Ana Pérez",
     });
-    expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, billedTo: "client-a" });
 
     // A is locked only in the OTHER gallery: may still pick a free asset here
     // — the caller lock is gallery-scoped for A too.
     authMock.mockResolvedValue(clientASession());
     const byA = await PATCH(requestFor(ASSET_3_ID, true), paramsFor(ASSET_3_ID));
     expect(byA.status).toBe(200);
-    expect(db.__rows.assets[2]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
+    expect(db.__rows.assets[2]).toMatchObject({ isSelected: true, billedTo: "client-a" });
   });
 
   it("still refuses B when A is locked HERE and open in another gallery", async () => {
@@ -1402,7 +1402,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
       expect(notifySelectionChangedMock).not.toHaveBeenCalled();
     });
 
-    it("refuses re-selecting another active member's pick — no takeover of selectedBy", async () => {
+    it("refuses re-selecting another active member's pick — no takeover of billedTo", async () => {
       const db = await ownedGallery();
       authMock.mockResolvedValue(clientBSession());
       const { PATCH } = await import("./route");
@@ -1414,7 +1414,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
         error: "pick_not_yours",
         pickedByName: "Ana Pérez",
       });
-      expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
+      expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, billedTo: "client-a" });
       expect(db.__rows.assets[0]?.selectedAt).toEqual(new Date("2026-10-15T09:00:00.000Z"));
     });
 
@@ -1434,7 +1434,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
         pickedByName: "Ana Pérez",
       });
       expect(db.__rows.assets[0]).toMatchObject({
-        selectedBy: "client-a",
+        billedTo: "client-a",
         selectionKind: "edited",
       });
     });
@@ -1466,7 +1466,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
       db.__rows.assets[1] = assetRow({
         id: ASSET_2_ID,
         isSelected: true,
-        selectedBy: "client-b",
+        billedTo: "client-b",
         selectedAt: new Date("2026-10-15T09:30:00.000Z"),
         sortOrder: 1,
       });
@@ -1476,11 +1476,11 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
 
       const own = await PATCH(requestFor(ASSET_2_ID, false), paramsFor(ASSET_2_ID));
       expect(own.status).toBe(200);
-      expect(db.__rows.assets[1]).toMatchObject({ isSelected: false, selectedBy: null });
+      expect(db.__rows.assets[1]).toMatchObject({ isSelected: false, billedTo: null });
 
       const free = await PATCH(requestFor(ASSET_3_ID, true), paramsFor(ASSET_3_ID));
       expect(free.status).toBe(200);
-      expect(db.__rows.assets[2]).toMatchObject({ isSelected: true, selectedBy: "client-b" });
+      expect(db.__rows.assets[2]).toMatchObject({ isSelected: true, billedTo: "client-b" });
     });
 
     // The admin keeps full control of OPEN picks too, not just locked ones
@@ -1499,7 +1499,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
 
       const deselect = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
       expect(deselect.status).toBe(200);
-      expect(db.__rows.assets[0]).toMatchObject({ isSelected: false, selectedBy: null });
+      expect(db.__rows.assets[0]).toMatchObject({ isSelected: false, billedTo: null });
     });
 
     // The owner's own exception, isolated from the lock: nobody locked A here,
@@ -1512,7 +1512,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
       const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
 
       expect(response.status).toBe(200);
-      expect(db.__rows.assets[0]).toMatchObject({ isSelected: false, selectedBy: null });
+      expect(db.__rows.assets[0]).toMatchObject({ isSelected: false, billedTo: null });
     });
 
     // `selected_by IS NULL` with `is_selected = true` — legacy rows, or a user
@@ -1523,7 +1523,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
         assetRow({
           id: ASSET_1_ID,
           isSelected: true,
-          selectedBy: null,
+          billedTo: null,
           selectedAt: new Date("2026-10-15T09:00:00.000Z"),
         });
       db.__rows.assets[0] = orphan();
@@ -1555,7 +1555,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
 
       expect(response.status).toBe(409);
       await expect(response.json()).resolves.toEqual({ error: "client_selection_locked" });
-      expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
+      expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, billedTo: "client-a" });
     });
 
     it("names the picker by their email when they have no name", async () => {
@@ -1611,7 +1611,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
       });
       expect(db.__rows.assets[0]).toMatchObject({
         isSelected: true,
-        selectedBy: "client-a",
+        billedTo: "client-a",
         requestedAt: null,
       });
       expect(notifySelectionChangedMock).not.toHaveBeenCalled();

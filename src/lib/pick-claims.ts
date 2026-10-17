@@ -153,6 +153,15 @@ export async function claimCart(
     }
 
     if (outcome.type === "escalated") {
+      // This CAS is the one that CAN be lost in practice, and it fails closed.
+      // `final/route.ts:682` writes `assets.final_key` WITHOUT taking the
+      // gallery lock, and a rolling gallery finishes proofs while it is still
+      // `proofing`. So an upload can commit between step 2's read and this
+      // UPDATE: the `final_key IS NULL` predicate then matches nothing, the
+      // throw rolls the whole submit back as a 500, and a retry resolves to
+      // `escalation_blocked` — never billing an edited unit over a photo that
+      // already has a final. (The claim CAS above is a different matter: every
+      // other claimer of an unclaimed asset holds the gallery lock.)
       const written = await tx
         .update(assets)
         .set({ selectionKind: "edited", billedTo: userId, billedAt: arrival })

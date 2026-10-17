@@ -9,11 +9,13 @@ import {
   derivePickStatus,
   gatePickEdit,
   latestBilledAt,
+  reresolveClaim,
   submitPick,
   type AssetClaim,
   type PickEdit,
   type PickStatus,
   type SubmitOutcome,
+  type SubmittedPick,
 } from "@/lib/pick-resolution";
 import type { SelectionKind } from "@/lib/selection-snapshot";
 
@@ -467,5 +469,136 @@ describe("pick-resolution purity", () => {
       .split("\n")
       .filter((line) => /^\s*import\b|\bimport\s*\(|\brequire\s*\(/.test(line));
     expect(importLines).toEqual(['import type { SelectionKind } from "@/lib/selection-snapshot";']);
+  });
+});
+
+// Epic #250, task #260 (S5) — the per-asset rule for an ADMIN change to
+// somebody's submitted picks. Every row of the plan's §1.1 table.
+describe("reresolveClaim", () => {
+  const claim = (overrides: Partial<Extract<AssetClaim, { claimed: true }>> = {}): AssetClaim => ({
+    claimed: true,
+    kind: "edited",
+    billedTo: "A",
+    billedAt: t(1),
+    ...overrides,
+  });
+  const pick = (userId: string, kind: SelectionKind, at = t(3)): SubmittedPick => ({
+    userId,
+    kind,
+    submittedAt: at,
+  });
+  const arrival = t(9);
+
+  it("returns an unclaimed asset with no submitted pick untouched", () => {
+    expect(reresolveClaim({ claimed: false }, [], { hasFinal: false, arrival })).toEqual({
+      claimed: false,
+    });
+  });
+
+  it("THROWS on an unclaimed asset that still has a submitted pick — the derivePickStatus contradiction", () => {
+    expect(() =>
+      reresolveClaim({ claimed: false }, [pick("B", "edited")], { hasFinal: false, arrival }),
+    ).toThrow(/submitted pick on an unclaimed asset/);
+  });
+
+  it("never invents or removes a legacy unit (billedTo null)", () => {
+    const legacy = claim({ billedTo: null, kind: "original" });
+    expect(reresolveClaim(legacy, [pick("B", "edited")], { hasFinal: false, arrival })).toEqual(
+      legacy,
+    );
+  });
+
+  it("unclaims the asset once no submitted pick remains", () => {
+    expect(reresolveClaim(claim(), [], { hasFinal: false, arrival })).toEqual({ claimed: false });
+  });
+
+  it("keeps the holder and billedAt when their own pick is still compatible", () => {
+    expect(
+      reresolveClaim(claim(), [pick("A", "edited"), pick("B", "original")], {
+        hasFinal: false,
+        arrival,
+      }),
+    ).toEqual(claim());
+  });
+
+  it("resolves the kind to edited when any remaining pick is edited (decision 3)", () => {
+    const result = reresolveClaim(
+      claim({ kind: "original" }),
+      [pick("B", "original"), pick("C", "edited")],
+      {
+        hasFinal: false,
+        arrival,
+      },
+    );
+    expect(result).toEqual({ claimed: true, kind: "edited", billedTo: "C", billedAt: arrival });
+  });
+
+  it("TRANSFERS the unit keeping billedAt when the holder's pick is gone and the kind does not move", () => {
+    const result = reresolveClaim(claim({ billedAt: t(2) }), [pick("B", "edited", t(5))], {
+      hasFinal: false,
+      arrival,
+    });
+    expect(result).toEqual({ claimed: true, kind: "edited", billedTo: "B", billedAt: t(2) });
+  });
+
+  it("transfers an original unit to the earliest ORIGINAL picker, not to an earlier edited one", () => {
+    // Mixed picks with no holder compatibility: the resolved kind is edited,
+    // so the unit must go to an edited picker even though B asked first.
+    const result = reresolveClaim(
+      claim({ billedTo: "gone" }),
+      [pick("B", "original", t(1)), pick("C", "edited", t(2))],
+      { hasFinal: false, arrival },
+    );
+    expect(result).toMatchObject({ billedTo: "C", kind: "edited", billedAt: t(1) });
+  });
+
+  it("RE-ARRIVES on a raise: billedAt becomes the plan's arrival (decision 6)", () => {
+    const result = reresolveClaim(
+      claim({ kind: "original", billedAt: t(1) }),
+      [pick("B", "edited")],
+      {
+        hasFinal: false,
+        arrival,
+      },
+    );
+    expect(result).toEqual({ claimed: true, kind: "edited", billedTo: "B", billedAt: arrival });
+  });
+
+  it("breaks an identical submittedAt tie by userId, deterministically", () => {
+    const result = reresolveClaim(
+      claim({ billedTo: "gone" }),
+      [pick("z", "edited", t(4)), pick("a", "edited", t(4))],
+      { hasFinal: false, arrival },
+    );
+    expect(result).toMatchObject({ billedTo: "a" });
+  });
+
+  it("freezes the kind in BOTH directions while a final exists (decision 15)", () => {
+    // No raise over a file.
+    expect(
+      reresolveClaim(claim({ kind: "original" }), [pick("A", "original"), pick("B", "edited")], {
+        hasFinal: true,
+        arrival,
+      }),
+    ).toEqual({ claimed: true, kind: "original", billedTo: "A", billedAt: t(1) });
+    // No lowering either: the final was produced against `edited`.
+    expect(
+      reresolveClaim(claim({ kind: "edited" }), [pick("A", "edited"), pick("B", "original")], {
+        hasFinal: true,
+        arrival,
+      }),
+    ).toEqual({ claimed: true, kind: "edited", billedTo: "A", billedAt: t(1) });
+  });
+
+  it("still transfers the unit when the holder left and a final froze the kind", () => {
+    const result = reresolveClaim(
+      claim({ billedTo: "gone", kind: "original" }),
+      [pick("B", "edited")],
+      {
+        hasFinal: true,
+        arrival,
+      },
+    );
+    expect(result).toEqual({ claimed: true, kind: "original", billedTo: "B", billedAt: t(1) });
   });
 });

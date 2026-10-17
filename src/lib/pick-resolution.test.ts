@@ -4,6 +4,7 @@ import type { GalleryQuotaSnapshot } from "@/lib/quota";
 import { attributeQuota, shareFor, type ClaimedUnit } from "@/lib/quota-attribution";
 import {
   arrivalAfter,
+  claimFromAsset,
   compareCartOrder,
   derivePickStatus,
   gatePickEdit,
@@ -49,6 +50,38 @@ const unit = (
   kind: SelectionKind,
   billedAt: Date | null,
 ): ClaimedUnit => ({ assetId, billedTo, kind, billedAt });
+
+describe("claimFromAsset", () => {
+  it("maps an unclaimed row to { claimed: false }, ignoring its other columns", () => {
+    expect(
+      claimFromAsset({
+        isSelected: false,
+        selectionKind: "original",
+        billedTo: "A",
+        billedAt: t(1),
+      }),
+    ).toEqual({ claimed: false });
+  });
+
+  it("maps a claimed row to the four resolved fields, preserving nulls", () => {
+    expect(
+      claimFromAsset({
+        isSelected: true,
+        selectionKind: "original",
+        billedTo: "A",
+        billedAt: t(1),
+      }),
+    ).toEqual({ claimed: true, kind: "original", billedTo: "A", billedAt: t(1) });
+    expect(
+      claimFromAsset({
+        isSelected: true,
+        selectionKind: "edited",
+        billedTo: null,
+        billedAt: null,
+      }),
+    ).toEqual({ claimed: true, kind: "edited", billedTo: null, billedAt: null });
+  });
+});
 
 describe("derivePickStatus", () => {
   it("cart: no submit, unclaimed", () => {

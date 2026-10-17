@@ -406,11 +406,16 @@ describe("ProofGrid — per-person lock (epic #239, task #241)", () => {
       vi.useFakeTimers();
     });
 
-    /** Answers the PATCH with `refusal` and the snapshot GET with `after`. */
-    function refusingFetch(refusal: string, after: ReturnType<typeof snapshotBody>) {
+    /** Answers the PATCH with `refusal` (a bare error code, or a full body
+     * for a refusal whose copy reads from it) and the snapshot GET with `after`. */
+    function refusingFetch(
+      refusal: string | Record<string, unknown>,
+      after: ReturnType<typeof snapshotBody>,
+    ) {
+      const body = typeof refusal === "string" ? { error: refusal } : refusal;
       return vi.fn((url: string, init?: { method?: string }) => {
         if (init?.method === "PATCH") {
-          return Promise.resolve(jsonResponse(409, { error: refusal }));
+          return Promise.resolve(jsonResponse(409, body));
         }
         return Promise.resolve(jsonResponse(200, after));
       });
@@ -474,6 +479,76 @@ describe("ProofGrid — per-person lock (epic #239, task #241)", () => {
 
       expect(screen.getByText("No se pudo actualizar la selección.")).toBeDefined();
       expect(fetchMock).toHaveBeenCalledTimes(1);
+    });
+
+    // Task #249 — `pick_not_yours` is the one refusal whose sentence comes from
+    // the 409's own body (`pickedByName`) instead of the static LOCK_REFUSALS
+    // map. These tests exist because the bridge's client half shipped with no
+    // coverage at all: garbling the copy, deleting the branch, or rendering a
+    // literal `null` on screen all survived the whole component suite.
+    describe("pick_not_yours (task #249)", () => {
+      it("names the pick's owner in the visible sentence", async () => {
+        const fetchMock = refusingFetch(
+          { error: "pick_not_yours", pickedByName: CARLA.label },
+          snapshotBody(),
+        );
+        vi.stubGlobal("fetch", fetchMock);
+
+        renderGrid();
+        await click(tileButton(3));
+
+        expect(
+          screen.getByText("Esa foto la eligió Carla Gil, así que no podés quitarla."),
+        ).toBeDefined();
+        expect(screen.queryByText(/No se pudo actualizar/)).toBeNull();
+        // The refusal is a lock refusal, so the snapshot refresh still happens.
+        expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
+      });
+
+      it("falls back to 'otra persona' when the owner's label is null, never rendering `null`", async () => {
+        vi.stubGlobal(
+          "fetch",
+          refusingFetch({ error: "pick_not_yours", pickedByName: null }, snapshotBody()),
+        );
+
+        renderGrid();
+        await click(tileButton(3));
+
+        expect(
+          screen.getByText("Esa foto la eligió otra persona, así que no podés quitarla."),
+        ).toBeDefined();
+        const rendered = document.body.textContent ?? "";
+        expect(rendered).not.toContain("null");
+        expect(rendered).not.toContain("undefined");
+      });
+
+      it("falls back to 'otra persona' when `pickedByName` is absent altogether", async () => {
+        vi.stubGlobal("fetch", refusingFetch({ error: "pick_not_yours" }, snapshotBody()));
+
+        renderGrid();
+        await click(tileButton(3));
+
+        expect(
+          screen.getByText("Esa foto la eligió otra persona, así que no podés quitarla."),
+        ).toBeDefined();
+        const rendered = document.body.textContent ?? "";
+        expect(rendered).not.toContain("null");
+        expect(rendered).not.toContain("undefined");
+      });
+
+      it("still maps the other refusals to their own copy (the new branch does not swallow the map)", async () => {
+        vi.stubGlobal("fetch", refusingFetch("pick_locked", snapshotBody()));
+
+        renderGrid();
+        await click(tileButton(3));
+
+        expect(
+          screen.getByText(
+            "Esa foto es de alguien que ya envió su selección, así que no se puede cambiar.",
+          ),
+        ).toBeDefined();
+        expect(screen.queryByText(/la eligió/)).toBeNull();
+      });
     });
   });
 });

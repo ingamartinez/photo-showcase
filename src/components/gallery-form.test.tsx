@@ -33,15 +33,34 @@ afterEach(() => {
   createGalleryMock.mockReset();
 });
 
+/**
+ * Picks clients through the shared `ClientPicker` (task #247) and closes it.
+ * The Escape is not ceremony: while the modal popover is open the rest of the
+ * page is `aria-hidden` and the body is pointer-events-locked, so nothing
+ * outside the list is queryable or clickable — exactly like the real flow.
+ */
+async function pickClients(
+  user: ReturnType<typeof userEvent.setup>,
+  label: string,
+  names: string[],
+) {
+  await user.click(screen.getByLabelText(label));
+  for (const name of names) {
+    await user.click(screen.getByRole("option", { name }));
+  }
+  await user.keyboard("{Escape}");
+}
+
 describe("GalleryForm", () => {
-  it("renders clients (multi-select), package, title and session-date fields", () => {
+  it("renders the client picker, package, title and session-date fields", () => {
     render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
 
-    // Task #94: a gallery can have several clients now — a
-    // `<select multiple>`. Task #100 made it optional, and the label says so.
-    const clientsSelect = screen.getByLabelText("Clientes (opcional)");
-    expect(clientsSelect).toBeDefined();
-    expect(clientsSelect).toHaveProperty("multiple", true);
+    // Task #94: a gallery can have several clients now. Task #100 made the
+    // picker optional, and the label says so. Task #247 replaced the
+    // `<select multiple>` with the shared searchable `ClientPicker`, whose
+    // trigger is a button carrying this label.
+    const clientsPicker = screen.getByLabelText("Clientes (opcional)");
+    expect(clientsPicker.tagName).toBe("BUTTON");
     expect(screen.getByLabelText("Paquete")).toBeDefined();
     expect(screen.getByLabelText("Título")).toBeDefined();
     expect(screen.getByLabelText("Fecha de la sesión")).toBeDefined();
@@ -54,7 +73,9 @@ describe("GalleryForm", () => {
   it("does NOT require the client select, and says what leaving it empty means", () => {
     render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
 
-    expect(screen.getByLabelText("Clientes (opcional)")).toHaveProperty("required", false);
+    // A `<button>` has no `required` property at all, so the thing to assert
+    // is that nothing claims the control is required.
+    expect(screen.getByLabelText("Clientes (opcional)").getAttribute("aria-required")).toBeNull();
     // An optional field with no explanation reads as a bug — the copy has to
     // name the consequence (no publishing), in Spanish.
     expect(screen.getByText(/Puedes dejarlo vacío y agregar el cliente después/)).toBeDefined();
@@ -84,10 +105,13 @@ describe("GalleryForm", () => {
     expect(screen.getByRole("button", { name: "Crear galería" })).toHaveProperty("disabled", false);
   });
 
-  it("falls back to the client's email when they have no name", () => {
+  it("falls back to the client's email when they have no name", async () => {
+    const user = userEvent.setup();
     render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
 
+    await user.click(screen.getByLabelText("Clientes (opcional)"));
     expect(screen.getByRole("option", { name: "beto@example.com" })).toBeDefined();
+    await user.keyboard("{Escape}");
   });
 
   it("submits every SELECTED client (several), plus package, title and session date, through the action", async () => {
@@ -95,9 +119,10 @@ describe("GalleryForm", () => {
     const user = userEvent.setup();
     render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
 
-    // Task #94: selecting BOTH options on the multi-select — the action
-    // must receive both, not just the first.
-    await user.selectOptions(screen.getByLabelText("Clientes (opcional)"), ["u1", "u2"]);
+    // Task #94: selecting BOTH clients in ONE open session — the action must
+    // receive both, not just the first. Task #247 moved the picking into the
+    // shared `ClientPicker`; the submission is unchanged.
+    await pickClients(user, "Clientes (opcional)", ["Ana Pérez", "beto@example.com"]);
     await user.selectOptions(screen.getByLabelText("Paquete"), "1");
     await user.type(screen.getByLabelText("Título"), "Boda Ana y Beto");
     await user.type(screen.getByLabelText("Fecha de la sesión"), "2026-08-01");
@@ -119,7 +144,7 @@ describe("GalleryForm", () => {
     const user = userEvent.setup();
     render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
 
-    await user.selectOptions(screen.getByLabelText("Clientes (opcional)"), "u1");
+    await pickClients(user, "Clientes (opcional)", ["Ana Pérez"]);
     await user.selectOptions(screen.getByLabelText("Paquete"), "1");
     await user.type(screen.getByLabelText("Título"), "Boda");
     await user.type(screen.getByLabelText("Fecha de la sesión"), "2026-08-01");
@@ -127,6 +152,40 @@ describe("GalleryForm", () => {
 
     await screen.findByRole("alert");
     expect(screen.getByText("Ese paquete ya no está disponible.")).toBeDefined();
+  });
+
+  // Task #247's trap, end to end through React's REAL post-submit reset rather
+  // than through a synthetic `form.reset()`: the picker holds React state,
+  // which `HTMLFormElement.reset()` cannot see, so without its own listener it
+  // would be the one field still claiming a selection after a rejected submit
+  // blanked every other field.
+  it("blanks the client picker on a rejected submit, like every other uncontrolled field", async () => {
+    createGalleryMock.mockResolvedValue({
+      status: "error",
+      message: "Ese paquete ya no está disponible.",
+    });
+    const user = userEvent.setup();
+    const { container } = render(<GalleryForm clients={CLIENTS} packages={PACKAGES} />);
+
+    await pickClients(user, "Clientes (opcional)", ["Ana Pérez"]);
+    expect(container.querySelectorAll('input[name="clientIds"]')).toHaveLength(1);
+
+    await user.selectOptions(screen.getByLabelText("Paquete"), "1");
+    await user.type(screen.getByLabelText("Título"), "Boda");
+    await user.type(screen.getByLabelText("Fecha de la sesión"), "2026-08-01");
+    await user.click(screen.getByRole("button", { name: "Crear galería" }));
+
+    await screen.findByRole("alert");
+    expect(container.querySelectorAll('input[name="clientIds"]')).toHaveLength(0);
+    // The empty-state copy is back on the trigger, AND the site's own error id
+    // still contributes to the description — the picker merges
+    // `aria-describedby` rather than replacing it.
+    expect(
+      screen.getByRole("button", {
+        name: "Clientes (opcional)",
+        description: /Elegir clientes[\s\S]*Ese paquete ya no está disponible\./,
+      }),
+    ).toBeDefined();
   });
 
   it("disables the submit button when there are no active packages", () => {

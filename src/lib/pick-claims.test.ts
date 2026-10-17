@@ -271,9 +271,44 @@ describe("claimCart", () => {
 
     expect(result.counts).toEqual({ claimed: 1, escalated: 1, joined: 0, escalationBlocked: 0 });
     expect(result.stamped).toBe(2);
-    // The stamp is the FIRST write and there is exactly one of it; the claims
-    // that follow can only be the rows it returned.
+    // The stamp is the FIRST write and there is exactly one of it. This is a
+    // claim about WRITE ORDER only — where the claimed rows came from is
+    // C15's business, not this assertion's.
     expect(writes).toEqual(["picks", "assets", "assets"]);
+  });
+
+  it("C15 — the claims come only from the rows the stamp RETURNED: a delete committed just before the stamp leaves that asset unclaimed", async () => {
+    // Stamp-first is necessary but not sufficient. Taking the cart from a
+    // pre-stamp SELECT and then stamping keeps C13's write order
+    // (`picks, assets, assets`) and still bills a ghost unit: a client PATCH
+    // delete that commits between that SELECT and the stamp is excluded from
+    // the stamp and claimed anyway — the S2 §6.1 unit with no pick behind it,
+    // which nobody can remove. So A's pick on "y" is spliced out of the pick
+    // store just before the stamp runs: the delete that committed first.
+    const ctx = setup([assetRow("x"), assetRow("y")], [pickRow("x", A), pickRow("y", A)]);
+    const realUpdate = ctx.fake.update.bind(ctx.fake);
+    ctx.fake.update = ((table: unknown) => {
+      if (table === assetPicks) {
+        const index = ctx.pickStore.findIndex((pick) => pick.assetId === "y" && pick.userId === A);
+        if (index >= 0) ctx.pickStore.splice(index, 1);
+      }
+      return realUpdate(table);
+    }) as typeof ctx.fake.update;
+
+    const result = await claimCart(ctx.tx, ctx.gallery, A, t(5));
+
+    expect(result.stamped).toBe(1);
+    // The pick that survived the delete is still claimed: the call is not
+    // vacuous, it claimed exactly the row the stamp returned.
+    expect(ctx.assetStore.find((row) => row.id === "x")).toMatchObject({
+      isSelected: true,
+      billedTo: A,
+    });
+    // "y" lost its pick and must not be billed for it.
+    expect(ctx.assetStore.find((row) => row.id === "y")).toMatchObject({
+      isSelected: false,
+      billedTo: null,
+    });
   });
 
   it("C14 — the stamp is scoped to the locked gallery: another gallery's cart is untouched", async () => {

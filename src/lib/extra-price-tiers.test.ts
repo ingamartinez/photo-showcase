@@ -49,6 +49,27 @@ describe("validateExtraPriceTiers", () => {
     expect(validateExtraPriceTiers(tiers([1, 15_000], [3, 8_000])).ok).toBe(false);
   });
 
+  // Epic #250 D12: a HIGHER unit at a HIGHER count lets a later claim raise
+  // another client's price. The old monotonic-total rule accepted both of
+  // these; the unit price must be non-increasing.
+  it("REJECTS the epic's own 1→5000, 3→8000: unit price rises", () => {
+    const result = validateExtraPriceTiers(tiers([1, 5_000], [3, 8_000]));
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.message).toContain("8000");
+      expect(result.message).toContain("5000");
+    }
+  });
+
+  it("rejects a unit price that rises only in a later tier", () => {
+    // 5 x 14.000 = 70.000 >= 4 x 13.000 = 52.000, so the total rule accepts it.
+    expect(validateExtraPriceTiers(tiers([1, 15_000], [3, 13_000], [5, 14_000])).ok).toBe(false);
+  });
+
+  it("accepts an equal unit price: non-increasing, not strictly decreasing", () => {
+    expect(validateExtraPriceTiers(tiers([1, 5_000], [2, 5_000])).ok).toBe(true);
+  });
+
   it("accepts a single flat-looking tier starting at 1", () => {
     expect(validateExtraPriceTiers(tiers([1, 5_000])).ok).toBe(true);
   });

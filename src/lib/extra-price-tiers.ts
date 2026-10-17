@@ -31,11 +31,20 @@ function isNonNegativeInt(value: unknown): value is number {
 /**
  * Shared by `createGallery` and `updateGalleryTerms`. Rules: integers >= 0, at
  * least one tier, the first starting at 1 extra, `minExtras` strictly
- * increasing, and a MONOTONIC TOTAL: for each tier i > 0,
+ * increasing, a NON-INCREASING UNIT PRICE (`price_i <= price_(i-1)`, equal is
+ * allowed), and a MONOTONIC TOTAL: for each tier i > 0,
  * `minExtras_i * price_i >= (minExtras_i - 1) * price_(i-1)` — i.e. adding one
  * photo can never lower what the client owes. With volume pricing the total
  * drops at a boundary whenever the new unit price is low enough (15/13/11/9
  * makes 9 extras cost 99.000 but 10 cost 90.000).
+ *
+ * The unit-price rule is epic #250's D12: with volume pricing a HIGHER unit at
+ * a HIGHER count lets another client's later claim raise your price, which
+ * breaks the epic's decision 7 (no one's number rises because another client
+ * acted). Census #256 found 0 production galleries with such a scale, so no
+ * data is migrated. The validator runs only on create and `updateGalleryTerms`;
+ * `computeQuota` never validates, so a stored scale is not re-checked at read
+ * time.
  */
 export function validateExtraPriceTiers(input: unknown): ValidateTiersResult {
   if (!Array.isArray(input) || input.length === 0) {
@@ -63,6 +72,12 @@ export function validateExtraPriceTiers(input: unknown): ValidateTiersResult {
       return {
         ok: false,
         message: "Las escalas tienen que ir de menor a mayor cantidad de fotos, sin repetirse.",
+      };
+    }
+    if (cur.priceCop > prev.priceCop) {
+      return {
+        ok: false,
+        message: `La escala de ${cur.minExtras} fotos extra (${cur.priceCop} c/u) no puede costar más por foto que la anterior (${prev.priceCop} c/u). El precio por foto tiene que bajar o mantenerse.`,
       };
     }
     if (cur.minExtras * cur.priceCop < (cur.minExtras - 1) * prev.priceCop) {

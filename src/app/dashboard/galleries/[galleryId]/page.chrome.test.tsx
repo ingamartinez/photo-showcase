@@ -876,9 +876,13 @@ describe("GalleryDetailPage — attaching and removing clients (task #97)", () =
     const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
     render(element);
 
+    // Task #247 replaced the attach form's `<select multiple>` with the shared
+    // `ClientPicker`, so the options only exist once the list is opened.
+    await userEvent.setup().click(screen.getByLabelText("Agregar clientes"));
+
     // Beto (not yet attached) is offered; Ana (already active) is not —
     // her name still appears once, as the gallery's own client line, but
-    // never as a second, selectable <option>.
+    // never as a second, selectable option.
     expect(screen.getByRole("option", { name: "Beto Ruiz" })).toBeDefined();
     expect(screen.queryByRole("option", { name: "Ana Pérez" })).toBeNull();
   });

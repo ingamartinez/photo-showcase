@@ -27,16 +27,44 @@ afterEach(() => {
   attachGalleryClientsMock.mockReset();
 });
 
+/**
+ * Picks clients through the shared `ClientPicker` (task #247) and closes it.
+ * The Escape is not ceremony: while the modal popover is open the rest of the
+ * page is `aria-hidden` and the body is pointer-events-locked, so nothing
+ * outside the list is queryable or clickable — exactly like the real flow.
+ */
+async function pickClients(
+  user: ReturnType<typeof userEvent.setup>,
+  label: string,
+  names: string[],
+) {
+  await user.click(screen.getByLabelText(label));
+  for (const name of names) {
+    await user.click(screen.getByRole("option", { name }));
+  }
+  await user.keyboard("{Escape}");
+}
+
 describe("AttachGalleryClientsForm", () => {
-  it("renders a multi-select of eligible clients plus the gallery id as a hidden field", () => {
+  it("renders the shared client picker of eligible clients plus the gallery id as a hidden field", async () => {
+    const user = userEvent.setup();
     render(<AttachGalleryClientsForm galleryId={GALLERY_ID} eligibleClients={ELIGIBLE_CLIENTS} />);
 
-    const select = screen.getByLabelText("Agregar clientes");
-    expect(select).toHaveProperty("multiple", true);
+    // Task #247: the `<select multiple>` became the shared `ClientPicker`, whose
+    // trigger is a button carrying this form's own label.
+    const trigger = screen.getByLabelText("Agregar clientes");
+    expect(trigger.tagName).toBe("BUTTON");
+    expect(screen.getByLabelText<HTMLInputElement>("Agregar clientes").id).toBe(
+      "attach-client-ids",
+    );
+    expect(screen.getByDisplayValue(GALLERY_ID)).toBeDefined();
+
+    await user.click(trigger);
     expect(screen.getByRole("option", { name: "Ana Pérez" })).toBeDefined();
     // Falls back to email when a client has no name — same convention as
     // gallery-form.tsx's own picker.
     expect(screen.getByRole("option", { name: "beto@example.com" })).toBeDefined();
+    await user.keyboard("{Escape}");
   });
 
   it("shows a message instead of the picker when there are no eligible clients", () => {
@@ -56,7 +84,7 @@ describe("AttachGalleryClientsForm", () => {
     const user = userEvent.setup();
     render(<AttachGalleryClientsForm galleryId={GALLERY_ID} eligibleClients={ELIGIBLE_CLIENTS} />);
 
-    await user.selectOptions(screen.getByLabelText("Agregar clientes"), ["u1", "u2"]);
+    await pickClients(user, "Agregar clientes", ["Ana Pérez", "beto@example.com"]);
     await user.click(screen.getByRole("button", { name: "Agregar" }));
 
     await screen.findByText("Cliente agregado.");
@@ -76,7 +104,7 @@ describe("AttachGalleryClientsForm", () => {
     const user = userEvent.setup();
     render(<AttachGalleryClientsForm galleryId={GALLERY_ID} eligibleClients={ELIGIBLE_CLIENTS} />);
 
-    await user.selectOptions(screen.getByLabelText("Agregar clientes"), "u1");
+    await pickClients(user, "Agregar clientes", ["Ana Pérez"]);
     await user.click(screen.getByRole("button", { name: "Agregar" }));
 
     await screen.findByRole("alert");
@@ -92,7 +120,7 @@ describe("AttachGalleryClientsForm", () => {
     const user = userEvent.setup();
     render(<AttachGalleryClientsForm galleryId={GALLERY_ID} eligibleClients={ELIGIBLE_CLIENTS} />);
 
-    await user.selectOptions(screen.getByLabelText("Agregar clientes"), "u2");
+    await pickClients(user, "Agregar clientes", ["beto@example.com"]);
     await user.click(screen.getByRole("button", { name: "Agregar" }));
 
     const alert = await screen.findByRole("alert");

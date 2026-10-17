@@ -145,4 +145,35 @@ describe("DashboardGalleryCreateDialog", () => {
     expect(within(dialog).getByText("Ese paquete ya no está disponible.")).toBeDefined();
     expect(screen.getByRole("status").textContent).toBe("");
   });
+
+  // Task #247. The picker is a portaled, MODAL popover inside a Radix Dialog,
+  // so two dismissable layers and two focus scopes are alive at once. That only
+  // exists here — the other two call sites are plain pages — and it is the one
+  // place a wrong portal/`modal` choice shows up as a behavioural bug: an Esc
+  // that tears down the dialog (and the photographer's typing with it), or a
+  // list clipped by `DialogContent`'s `overflow-y-auto`.
+  it("closes only the client picker on Escape, leaving the dialog open", async () => {
+    const user = userEvent.setup();
+    render(<DashboardGalleryCreateDialog clients={CLIENTS} packages={PACKAGES} />);
+
+    await user.click(screen.getByRole("button", { name: "Nueva galería" }));
+    const dialog = await screen.findByRole("dialog");
+    const trigger = within(dialog).getByLabelText("Clientes (opcional)");
+
+    await user.click(trigger);
+    // The list is portalled out of the dialog (that is what keeps it out of
+    // DialogContent's scroll container), so it is NOT inside `dialog`.
+    expect(screen.getByRole("listbox")).toBeDefined();
+    expect(within(dialog).queryByRole("listbox")).toBeNull();
+
+    await user.keyboard("{Escape}");
+
+    expect(screen.queryByRole("listbox")).toBeNull();
+    expect(screen.getByRole("dialog")).toBe(dialog);
+    expect(document.activeElement).toBe(trigger);
+
+    // ...and only then does a second Escape dismiss the dialog itself.
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
 });

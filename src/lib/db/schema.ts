@@ -15,6 +15,8 @@ import {
   type AnyPgColumn,
   boolean,
   date,
+  foreignKey,
+  index,
   integer,
   pgEnum,
   pgTable,
@@ -640,162 +642,227 @@ export const galleryClients = pgTable(
 
 // One row per photo. Carries both representations of the same asset: the proof
 // (always present) and the final (only after the photo is selected and edited).
-export const assets = pgTable("assets", {
-  id: uuid("id").primaryKey().defaultRandom(),
-  galleryId: uuid("gallery_id")
-    .notNull()
-    .references(() => galleries.id, { onDelete: "cascade" }),
-  originalFilename: text("original_filename").notNull(),
-  // R2 object keys, private. Served to clients via short-lived presigned URLs.
-  proofKey: text("proof_key").notNull(),
-  finalKey: text("final_key"),
-  // Proof dimensions after downscaling — the grid needs them to reserve space.
-  proofWidth: integer("proof_width").notNull(),
-  proofHeight: integer("proof_height").notNull(),
-  isSelected: boolean("is_selected").notNull().default(false),
-  selectedAt: timestamp("selected_at", { withTimezone: true }),
-  // Task #244 — ROLLING DELIVERY "order" stamp. A selected asset with
-  // `requestedAt IS NULL` is still in its picker's CART (freely removable);
-  // submitting stamps it, which freezes it for every non-admin client
-  // (`already_requested`, PATCH selection route) and makes it the
-  // photographer's work. Only ever written in galleries with
-  // `rolling_delivery` on. Kept in lockstep with `isSelected`: null whenever
-  // the asset is not selected (every deselect path clears it).
-  requestedAt: timestamp("requested_at", { withTimezone: true }),
-  // WHO last set `isSelected`/`selectedAt` — task #94's "shared selection,
-  // ATTRIBUTED" decision (2026-07-29, owner-approved): with several clients
-  // now able to pick into the SAME shared set, an anonymous boolean is no
-  // longer enough — the picker needs to show who chose each photo. This
-  // stays nullable and is ALWAYS kept in lockstep with `isSelected`: set to
-  // the acting session's user id the instant `isSelected` flips to `true`,
-  // and cleared back to `null` the instant it flips to `false` (see the
-  // PATCH /api/assets/[assetId]/selection route) — never left stale.
-  //
-  // DESELECTION, decided explicitly rather than left implicit: if A selects
-  // a photo and B later deselects it, this column goes back to `null`, NOT
-  // "B" — same lockstep as `selectedAt`, which already goes back to `null`
-  // on deselect. The alternative (keep B as the last actor even though their
-  // action UNDID the pick) would make `selectedBy` answer a different
-  // question — "who last touched this row" instead of "who picked this photo
-  // right now" — and the UI has no way to tell those two apart without a
-  // second flag; showing a name next to an unselected thumbnail would read
-  // as an active pick that isn't real. A true "who did what, in order" audit
-  // would need a separate append-only event table, not a single column —
-  // out of scope for this slice (kanban #94's own "Not in this slice").
-  //
-  // `onDelete: "set null"`, deliberately NOT "restrict" like
-  // `gallery_clients.userId` above — different columns, different failure
-  // modes if the referenced user disappears. `gallery_clients.userId`
-  // restricts because deleting that row silently would strip a gallery of
-  // its only remaining link to a person; there is no equivalent loss here —
-  // `isSelected`/`selectedAt` stay exactly as correct with `selectedBy` wiped
-  // to `null` as with it populated. Restricting here instead would mean a
-  // client who is removed from a gallery (or whose account is deleted)
-  // blocks that indefinitely just because they once picked a photo — a
-  // stale attribution has no business holding a person's own account
-  // hostage.
-  selectedBy: text("selected_by").references(() => users.id, { onDelete: "set null" }),
-  // Task #205 — WHAT the client asked for this pick to become: `edited`
-  // (default, today's only behavior) or `original` (delivered as shot, no
-  // edit — see `packages.originalPhotoPriceCop`'s own comment). Deliberately
-  // NOT merged with `isSelected` into a three-state enum ("not selected" /
-  // "selected, edited" / "selected, original") — `isSelected` already answers
-  // WHETHER this asset is picked, and every existing reader of that boolean
-  // (tasks #24, #66, #95, #114) would need re-auditing the moment "selected"
-  // stopped being a plain true/false. This column only ever answers WHAT was
-  // asked for, and is meaningless while `isSelected` is `false` — the same
-  // "meaningless until selected" relationship `selectedAt`/`selectedBy` above
-  // already have with it.
-  //
-  // `notNull().default("edited")` — there are assets in production, so a
-  // migrated existing row must keep meaning exactly what it already meant.
-  // Task #205 shipped the column with every existing/new row still `edited`
-  // (domain + admin surfaces only, nothing wrote `original` yet). Task #206
-  // is the client control that lets a pick actually BECOME `original` — see
-  // `PATCH /api/assets/[assetId]/selection`'s own header comment for the
-  // write path and its state gate.
-  //
-  // ONE MORE THING WORTH WRITING DOWN, because it is easy to reach for the
-  // wrong mental model: this app NEVER STORES an "original" file distinct
-  // from the edited one (`src/app/api/galleries/[galleryId]/proofs/route.ts`,
-  // "Never stored, never referenced again once this function returns" —
-  // PLAN.md's own "originals are never stored" rule). "Original" here is a
-  // COMMERCIAL LABEL on what the client requested, not a second set of bytes
-  // this app can serve. The photographer delivers an original pick by
-  // uploading it as that asset's `finalKey`, exactly the same mechanism used
-  // for an edited pick today — this column changes what it COSTS, never how
-  // it is DELIVERED.
-  selectionKind: selectionKind("selection_kind").notNull().default("edited"),
-  // Task #223 — the photographer DELIBERATELY delivered this photo even
-  // though the client never picked it: a gift, a shot they liked better than
-  // anything in the selection. Set by `POST /api/assets/[assetId]/final` when
-  // it accepts an upload for an asset with `isSelected: false`.
-  //
-  // WHY THIS IS A STORED FLAG rather than derived from `finalKey IS NOT NULL
-  // AND isSelected = false`, which is the shape it looks like it should have:
-  // that predicate is ALSO true for a photo the client picked, the
-  // photographer finished, and the client then DESELECTED. `finalKey` and
-  // `isEdited` are never cleared on deselect (only `selectedAt`/`selectedBy`
-  // are — see those columns above), so a derived rule would silently start
-  // delivering discarded photos for free the moment this slice shipped. That
-  // is a regression nobody asked for, and no amount of care at the read sites
-  // can recover intent that was never recorded. An extra is a DECISION, so it
-  // gets written down.
-  //
-  // Meaningless while `isSelected` is `true` — the same "meaningless until"
-  // relationship `selectionKind`/`selectedAt`/`selectedBy` above already have
-  // with that boolean. Consequence worth stating plainly, because it is
-  // reachable: if the photographer gifts a photo while the gallery is still
-  // `proofing` and the client then PICKS it, `isSelected` wins — the photo
-  // becomes an ordinary pick and counts against the package like any other.
-  // The client asked for it; charging for it is the honest outcome, and the
-  // alternative (a pick that is silently free because of an earlier gift)
-  // would make the quota unexplainable to the person paying it.
-  //
-  // There is deliberately NO "clear this on delete" rule, because there is no
-  // operation to hang one on: this app has no "delete just the final" path —
-  // `DELETE /api/assets/[assetId]` removes the whole row (and its R2 objects)
-  // — so a stranded `true` on a final-less asset is unreachable rather than
-  // merely unlikely. Verified against the route, not assumed.
-  isExtra: boolean("is_extra").notNull().default(false),
-  // Task #223 — WHICH PERSON a photographer-added extra (`isExtra` above)
-  // belongs to, so the `by-person` tray has a row to put it in.
-  //
-  // WHY THIS IS NOT `selectedBy`, which is the obvious place to put it: that
-  // column answers "who picked this photo right now" (see its own comment
-  // above), is kept in lockstep with `isSelected`, and is cleared to `null`
-  // the instant a pick is undone. It is also what the `by-person` tray groups
-  // on. Writing the photographer's choice into it would make a photo NOBODY
-  // picked render as somebody's active pick, and there would be no way for
-  // the tray to tell the two apart. Two different questions, two columns.
-  //
-  // WHY NOT `isSelected` FOR THE DELIVERY ITSELF, the other tempting shortcut:
-  // flipping `isSelected` on an extra would make every existing delivery path
-  // work unchanged — and would BILL THE CLIENT for it. `computeQuota`
-  // (src/lib/quota.ts) derives `selectedEdited` from this exact boolean and
-  // charges `extraPhotoPriceCopSnapshot` per photo over the package's
-  // included count. An extra is free by construction, so `isSelected` stays
-  // `false` and the client-facing grid asks "is it delivered?" instead.
-  //
-  // Meaningless while `isExtra` is `false` — the same "meaningless until"
-  // relationship `selectionKind`/`selectedAt` above already have with
-  // `isSelected`, and the reason no read site consults this column without
-  // checking that flag first.
-  //
-  // Only ever SET when the gallery's tray is `by-person`; in `flat` mode
-  // there are no person rows for an extra to land in, so the admin surface
-  // does not offer the choice. Staying `null` there is correct, not missing
-  // data: `pickerLabelFor` already renders a null attribution as the
-  // unattributed label.
-  //
-  // `onDelete: "set null"`, same reasoning as `selectedBy` above — a client
-  // removed from the gallery must not be held hostage by a stale attribution,
-  // and the delivery stays exactly as valid with this wiped to `null`.
-  deliveredFor: text("delivered_for").references(() => users.id, { onDelete: "set null" }),
-  isEdited: boolean("is_edited").notNull().default(false),
-  sortOrder: integer("sort_order").notNull().default(0),
-  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-});
+export const assets = pgTable(
+  "assets",
+  {
+    id: uuid("id").primaryKey().defaultRandom(),
+    galleryId: uuid("gallery_id")
+      .notNull()
+      .references(() => galleries.id, { onDelete: "cascade" }),
+    originalFilename: text("original_filename").notNull(),
+    // R2 object keys, private. Served to clients via short-lived presigned URLs.
+    proofKey: text("proof_key").notNull(),
+    finalKey: text("final_key"),
+    // Proof dimensions after downscaling — the grid needs them to reserve space.
+    proofWidth: integer("proof_width").notNull(),
+    proofHeight: integer("proof_height").notNull(),
+    isSelected: boolean("is_selected").notNull().default(false),
+    selectedAt: timestamp("selected_at", { withTimezone: true }),
+    // Task #244 — ROLLING DELIVERY "order" stamp. A selected asset with
+    // `requestedAt IS NULL` is still in its picker's CART (freely removable);
+    // submitting stamps it, which freezes it for every non-admin client
+    // (`already_requested`, PATCH selection route) and makes it the
+    // photographer's work. Only ever written in galleries with
+    // `rolling_delivery` on. Kept in lockstep with `isSelected`: null whenever
+    // the asset is not selected (every deselect path clears it).
+    requestedAt: timestamp("requested_at", { withTimezone: true }),
+    // WHO last set `isSelected`/`selectedAt` — task #94's "shared selection,
+    // ATTRIBUTED" decision (2026-07-29, owner-approved): with several clients
+    // now able to pick into the SAME shared set, an anonymous boolean is no
+    // longer enough — the picker needs to show who chose each photo. This
+    // stays nullable and is ALWAYS kept in lockstep with `isSelected`: set to
+    // the acting session's user id the instant `isSelected` flips to `true`,
+    // and cleared back to `null` the instant it flips to `false` (see the
+    // PATCH /api/assets/[assetId]/selection route) — never left stale.
+    //
+    // DESELECTION, decided explicitly rather than left implicit: if A selects
+    // a photo and B later deselects it, this column goes back to `null`, NOT
+    // "B" — same lockstep as `selectedAt`, which already goes back to `null`
+    // on deselect. The alternative (keep B as the last actor even though their
+    // action UNDID the pick) would make `selectedBy` answer a different
+    // question — "who last touched this row" instead of "who picked this photo
+    // right now" — and the UI has no way to tell those two apart without a
+    // second flag; showing a name next to an unselected thumbnail would read
+    // as an active pick that isn't real. A true "who did what, in order" audit
+    // would need a separate append-only event table, not a single column —
+    // out of scope for this slice (kanban #94's own "Not in this slice").
+    //
+    // `onDelete: "set null"`, deliberately NOT "restrict" like
+    // `gallery_clients.userId` above — different columns, different failure
+    // modes if the referenced user disappears. `gallery_clients.userId`
+    // restricts because deleting that row silently would strip a gallery of
+    // its only remaining link to a person; there is no equivalent loss here —
+    // `isSelected`/`selectedAt` stay exactly as correct with `selectedBy` wiped
+    // to `null` as with it populated. Restricting here instead would mean a
+    // client who is removed from a gallery (or whose account is deleted)
+    // blocks that indefinitely just because they once picked a photo — a
+    // stale attribution has no business holding a person's own account
+    // hostage.
+    selectedBy: text("selected_by").references(() => users.id, { onDelete: "set null" }),
+    // Epic #250 — WHEN the asset's current billed unit ARRIVED (the claim, or
+    // the escalation that moved it). It orders the included photos in
+    // `quota-attribution.ts` (S3, decision 6: attribution by arrival, never by
+    // pick). Null whenever `isSelected` is false, i.e. the photo is unclaimed
+    // (a cart) or was never picked at all. Backfilled from
+    // `coalesce(requested_at, selected_at)` by task #257.
+    billedAt: timestamp("billed_at", { withTimezone: true }),
+    // Task #205 — WHAT the client asked for this pick to become: `edited`
+    // (default, today's only behavior) or `original` (delivered as shot, no
+    // edit — see `packages.originalPhotoPriceCop`'s own comment). Deliberately
+    // NOT merged with `isSelected` into a three-state enum ("not selected" /
+    // "selected, edited" / "selected, original") — `isSelected` already answers
+    // WHETHER this asset is picked, and every existing reader of that boolean
+    // (tasks #24, #66, #95, #114) would need re-auditing the moment "selected"
+    // stopped being a plain true/false. This column only ever answers WHAT was
+    // asked for, and is meaningless while `isSelected` is `false` — the same
+    // "meaningless until selected" relationship `selectedAt`/`selectedBy` above
+    // already have with it.
+    //
+    // `notNull().default("edited")` — there are assets in production, so a
+    // migrated existing row must keep meaning exactly what it already meant.
+    // Task #205 shipped the column with every existing/new row still `edited`
+    // (domain + admin surfaces only, nothing wrote `original` yet). Task #206
+    // is the client control that lets a pick actually BECOME `original` — see
+    // `PATCH /api/assets/[assetId]/selection`'s own header comment for the
+    // write path and its state gate.
+    //
+    // ONE MORE THING WORTH WRITING DOWN, because it is easy to reach for the
+    // wrong mental model: this app NEVER STORES an "original" file distinct
+    // from the edited one (`src/app/api/galleries/[galleryId]/proofs/route.ts`,
+    // "Never stored, never referenced again once this function returns" —
+    // PLAN.md's own "originals are never stored" rule). "Original" here is a
+    // COMMERCIAL LABEL on what the client requested, not a second set of bytes
+    // this app can serve. The photographer delivers an original pick by
+    // uploading it as that asset's `finalKey`, exactly the same mechanism used
+    // for an edited pick today — this column changes what it COSTS, never how
+    // it is DELIVERED.
+    selectionKind: selectionKind("selection_kind").notNull().default("edited"),
+    // Task #223 — the photographer DELIBERATELY delivered this photo even
+    // though the client never picked it: a gift, a shot they liked better than
+    // anything in the selection. Set by `POST /api/assets/[assetId]/final` when
+    // it accepts an upload for an asset with `isSelected: false`.
+    //
+    // WHY THIS IS A STORED FLAG rather than derived from `finalKey IS NOT NULL
+    // AND isSelected = false`, which is the shape it looks like it should have:
+    // that predicate is ALSO true for a photo the client picked, the
+    // photographer finished, and the client then DESELECTED. `finalKey` and
+    // `isEdited` are never cleared on deselect (only `selectedAt`/`selectedBy`
+    // are — see those columns above), so a derived rule would silently start
+    // delivering discarded photos for free the moment this slice shipped. That
+    // is a regression nobody asked for, and no amount of care at the read sites
+    // can recover intent that was never recorded. An extra is a DECISION, so it
+    // gets written down.
+    //
+    // Meaningless while `isSelected` is `true` — the same "meaningless until"
+    // relationship `selectionKind`/`selectedAt`/`selectedBy` above already have
+    // with that boolean. Consequence worth stating plainly, because it is
+    // reachable: if the photographer gifts a photo while the gallery is still
+    // `proofing` and the client then PICKS it, `isSelected` wins — the photo
+    // becomes an ordinary pick and counts against the package like any other.
+    // The client asked for it; charging for it is the honest outcome, and the
+    // alternative (a pick that is silently free because of an earlier gift)
+    // would make the quota unexplainable to the person paying it.
+    //
+    // There is deliberately NO "clear this on delete" rule, because there is no
+    // operation to hang one on: this app has no "delete just the final" path —
+    // `DELETE /api/assets/[assetId]` removes the whole row (and its R2 objects)
+    // — so a stranded `true` on a final-less asset is unreachable rather than
+    // merely unlikely. Verified against the route, not assumed.
+    isExtra: boolean("is_extra").notNull().default(false),
+    // Task #223 — WHICH PERSON a photographer-added extra (`isExtra` above)
+    // belongs to, so the `by-person` tray has a row to put it in.
+    //
+    // WHY THIS IS NOT `selectedBy`, which is the obvious place to put it: that
+    // column answers "who picked this photo right now" (see its own comment
+    // above), is kept in lockstep with `isSelected`, and is cleared to `null`
+    // the instant a pick is undone. It is also what the `by-person` tray groups
+    // on. Writing the photographer's choice into it would make a photo NOBODY
+    // picked render as somebody's active pick, and there would be no way for
+    // the tray to tell the two apart. Two different questions, two columns.
+    //
+    // WHY NOT `isSelected` FOR THE DELIVERY ITSELF, the other tempting shortcut:
+    // flipping `isSelected` on an extra would make every existing delivery path
+    // work unchanged — and would BILL THE CLIENT for it. `computeQuota`
+    // (src/lib/quota.ts) derives `selectedEdited` from this exact boolean and
+    // charges `extraPhotoPriceCopSnapshot` per photo over the package's
+    // included count. An extra is free by construction, so `isSelected` stays
+    // `false` and the client-facing grid asks "is it delivered?" instead.
+    //
+    // Meaningless while `isExtra` is `false` — the same "meaningless until"
+    // relationship `selectionKind`/`selectedAt` above already have with
+    // `isSelected`, and the reason no read site consults this column without
+    // checking that flag first.
+    //
+    // Only ever SET when the gallery's tray is `by-person`; in `flat` mode
+    // there are no person rows for an extra to land in, so the admin surface
+    // does not offer the choice. Staying `null` there is correct, not missing
+    // data: `pickerLabelFor` already renders a null attribution as the
+    // unattributed label.
+    //
+    // `onDelete: "set null"`, same reasoning as `selectedBy` above — a client
+    // removed from the gallery must not be held hostage by a stale attribution,
+    // and the delivery stays exactly as valid with this wiped to `null`.
+    deliveredFor: text("delivered_for").references(() => users.id, { onDelete: "set null" }),
+    isEdited: boolean("is_edited").notNull().default(false),
+    sortOrder: integer("sort_order").notNull().default(0),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  // Epic #250, task #257 — `id` is already the PK, so this index adds no
+  // uniqueness of its own. It exists ONLY so `asset_picks` can hold a
+  // composite `(asset_id, gallery_id)` foreign key back to this table,
+  // which proves a pick's `gallery_id` is its asset's gallery. Postgres
+  // accepts a unique INDEX (not just a unique CONSTRAINT) as an FK target.
+  (t) => [uniqueIndex("assets_id_gallery_id_idx").on(t.id, t.galleryId)],
+);
+
+// Epic #250, task #257 — WHO WANTS WHAT. One row per (person, photo) request:
+// choosing is asking, not owning (epic #250's founder decision 1). Several
+// people may pick the same photo; removing your own pick can never touch
+// anyone else's. `assets` still carries the RESOLVED, single-unit truth of
+// money and delivery; this table is the identity/attribution source of truth.
+//
+// A pick is a member's intent while `submitted_at` is null (their cart).
+// Submitting stamps it, but a submitted pick is not necessarily a claim:
+// several members may join the same photo, and the claim can be re-resolved
+// (S5/S6). Slices S3+ derive the gallery tray, counters and surcharge from
+// these rows; `fake-db.ts` (S3) is what consumes it in tests.
+export const assetPicks = pgTable(
+  "asset_picks",
+  {
+    assetId: uuid("asset_id").notNull(),
+    // Denormalized on purpose: every read is per gallery, and the test double
+    // does not join (fake-db.ts:3-6). The composite FK below keeps it honest.
+    galleryId: uuid("gallery_id").notNull(),
+    userId: text("user_id").notNull(),
+    kind: selectionKind("kind").notNull().default("edited"),
+    pickedAt: timestamp("picked_at", { withTimezone: true }).notNull(),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }),
+  },
+  (t) => [
+    // One pick per (person, photo); a double tap is idempotent.
+    primaryKey({ columns: [t.assetId, t.userId] }),
+    // Composite FKs, so column-level `.references()` cannot express them.
+    // Explicit names: the auto-generated name for a composite FK
+    // (`asset_picks_asset_id_gallery_id_assets_id_gallery_id_fk`) is
+    // unreadable, and this name is what a client-facing 23503 prints.
+    foreignKey({
+      name: "asset_picks_asset_fk",
+      columns: [t.assetId, t.galleryId],
+      foreignColumns: [assets.id, assets.galleryId],
+    }).onDelete("cascade"),
+    // Every picker is or was a member. Membership rows are never hard-deleted
+    // (removal is soft, task #97), so CASCADE here only ever fires on a
+    // manual gallery delete -- which is also why both cascade paths are set:
+    // a gallery delete must never depend on RI trigger order.
+    foreignKey({
+      name: "asset_picks_membership_fk",
+      columns: [t.galleryId, t.userId],
+      foreignColumns: [galleryClients.galleryId, galleryClients.userId],
+    }).onDelete("cascade"),
+    // Serves "my cart" (epic). The PK serves per-asset lookups.
+    index("asset_picks_gallery_user_idx").on(t.galleryId, t.userId),
+  ],
+);
 
 // ---------------------------------------------------------------------------
 // Flash galleries (epic #232, slice #233): photos GIVEN AWAY as finals, with no
@@ -914,6 +981,7 @@ export type Package = typeof packages.$inferSelect;
 export type Gallery = typeof galleries.$inferSelect;
 export type GalleryClient = typeof galleryClients.$inferSelect;
 export type Asset = typeof assets.$inferSelect;
+export type AssetPick = typeof assetPicks.$inferSelect;
 export type FlashGallery = typeof flashGalleries.$inferSelect;
 export type FlashGalleryClient = typeof flashGalleryClients.$inferSelect;
 export type FlashAsset = typeof flashAssets.$inferSelect;

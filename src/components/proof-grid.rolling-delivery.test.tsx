@@ -156,7 +156,7 @@ describe("ProofGrid — rolling delivery (#244)", () => {
 
     // Ana has one por enviar (a3); Beto's a4 does not count for her.
     expect(screen.getByRole("button", { name: "Enviar 1 foto" })).toBeTruthy();
-    expect(screen.getByText(/Último envío:/)).toBeTruthy();
+    expect(screen.getAllByText(/Último envío:/).length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
   });
 
@@ -188,7 +188,7 @@ describe("ProofGrid — rolling delivery (#244)", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Enviar 1 foto" }));
 
-    await waitFor(() => expect(screen.getByText(/Último envío:/)).toBeTruthy());
+    await waitFor(() => expect(screen.getAllByText(/Último envío:/).length).toBeGreaterThan(0));
     // a3 is now ordered (frozen); the unpicked a6 and Beto's por-enviar a4 are
     // still open; nothing shows the #239 locked state.
     expect(tileButton(3).disabled).toBe(true);
@@ -254,6 +254,59 @@ describe("ProofGrid — rolling delivery (#244)", () => {
     expect(screen.queryByRole("link", { name: /Descargar todo/ })).toBeNull();
     expect(screen.queryByText("Editada")).toBeNull();
     expect(screen.queryByText(/editada ya disponible/)).toBeNull();
+  });
+
+  // The owner's repro: a pick whose final is readable but that never got a
+  // `requested_at` (it was submitted under the classic flow) read "Por enviar".
+  it("a pick with a readable final and NO requestedAt reads Editada, on the tile and in the tray (Editada > Pedida > Por enviar)", () => {
+    renderGrid({
+      initialPicks: PICKS.map((p) => (p.assetId === "a1" ? { ...p, requestedAt: null } : p)),
+    });
+    const grid = screen.getAllByRole("list").at(-1)!;
+    const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+
+    expect(within(grid).getAllByText("Editada")).toHaveLength(1);
+    expect(within(grid).getAllByText("Por enviar")).toHaveLength(2);
+    expect(within(tray).getAllByText("Editada")).toHaveLength(1);
+    const headings = Array.from(tray.querySelectorAll("p")).map((p) => p.textContent?.trim());
+    // a1 moved out of "Por enviar" (a3, a4 remain) into "Pedidas" (a1, a2, a5).
+    expect(headings).toContain("Por enviar (2)");
+    expect(headings).toContain("Pedidas (3)");
+  });
+
+  // A member migrated by updateRollingDelivery: unlocked, submitted_at kept.
+  // Even a STALE snapshot that still carries their old client-submitted lock
+  // must not bring back the classic "enviada/cerrada" copy.
+  it("a client-submitted member never sees the classic enviada/cerrada copy, even with a stale viewerLock", () => {
+    const stale = {
+      lockedAt: "2026-10-10T10:00:00.000Z",
+      submittedAt: "2026-10-10T10:00:00.000Z",
+    };
+    renderGrid({
+      initialViewerLock: stale,
+      initialLockedPickerIds: [ANA.id],
+      initialSubmittedPickerIds: [ANA.id],
+      initialViewerSubmittedAt: stale.submittedAt,
+    });
+    const text = document.body.textContent ?? "";
+
+    expect(text).not.toMatch(/ya fue enviada|quedó cerrada|cerrada|Enviaste tu selección/i);
+    expect(text).not.toContain("¿Qué pasa ahora?");
+    expect(text).toMatch(/Último envío/);
+    expect(text).toMatch(/seguir eligiendo/);
+    expect(tileButton(3).disabled).toBe(false);
+    expect(screen.getByRole("button", { name: "Enviar 1 foto" })).toBeTruthy();
+  });
+
+  it("an ADMIN-locked member under the flag still gets the photographer-locked copy", () => {
+    renderGrid({
+      initialViewerLock: { lockedAt: "2026-10-11T10:00:00.000Z", submittedAt: null },
+      initialLockedPickerIds: [ANA.id],
+    });
+    const text = document.body.textContent ?? "";
+
+    expect(text).toMatch(/Tu fotógrafo cerró tu selección/);
+    expect(tileButton(3).disabled).toBe(true);
   });
 
   it("flag OFF: no order labels, no download in proofing, locked-submit copy untouched", () => {

@@ -269,6 +269,7 @@ export function SelectionTray({
   isGalleryLocked = isLocked,
   rollingDelivery = false,
   readableAssetIds,
+  lastSubmittedAt = null,
   onOpenAsset,
   onImageError,
 }: {
@@ -331,6 +332,8 @@ export function SelectionTray({
   /** Task #244 — asset ids whose final the viewer can already open. A UI
    * hint only (the routes re-check); decides "Pedida" vs "Editada". */
   readableAssetIds?: ReadonlySet<string>;
+  /** Task #244 — the viewer's own last send, for the rolling header copy. */
+  lastSubmittedAt?: string | null;
   onOpenAsset: (assetId: string) => void;
   /** `<ProofGrid>`'s own `refreshUrl` — the SAME one-shot re-sign the grid
    * tiles and the lightbox already use, sharing the same `refreshedAssetIds`
@@ -546,6 +549,15 @@ export function SelectionTray({
                 ? "Tu fotógrafo cerró tu selección. Los demás todavía están eligiendo."
                 : "Tu selección ya fue enviada. Los demás todavía están eligiendo."}
           </p>
+        ) : rollingDelivery ? (
+          // Task #244 — never the classic "enviada/cerrada" copy: a send here
+          // is an order and the person keeps choosing.
+          <p className={`text-fg-mute mb-2 text-xs ${hasPicks ? "" : "max-lg:hidden"}`}>
+            {lastSubmittedAt
+              ? `Último envío: ${new Date(lastSubmittedAt).toLocaleDateString("es-CO")}. `
+              : ""}
+            Puedes seguir eligiendo y enviar más fotos cuando quieras.
+          </p>
         ) : (
           <p className={`text-fg-mute mb-2 text-xs ${hasPicks ? "" : "max-lg:hidden"}`}>
             Se actualiza sola con lo que elijan los demás.
@@ -571,8 +583,16 @@ export function SelectionTray({
             style={{ maxHeight: PRE_MEASURE_MAX_HEIGHT_PX }}
           >
             {[
-              { key: "unsent", label: "Por enviar", items: picks.filter((p) => !p.requestedAt) },
-              { key: "requested", label: "Pedidas", items: picks.filter((p) => !!p.requestedAt) },
+              {
+                key: "unsent",
+                label: "Por enviar",
+                items: picks.filter((p) => !p.requestedAt && !readableAssetIds?.has(p.assetId)),
+              },
+              {
+                key: "requested",
+                label: "Pedidas",
+                items: picks.filter((p) => !!p.requestedAt || !!readableAssetIds?.has(p.assetId)),
+              },
             ]
               .filter((group) => group.items.length > 0)
               .map((group) => (
@@ -593,10 +613,10 @@ export function SelectionTray({
                         onError={() => onImageError(pick.assetId)}
                         showType={showType}
                         statusLabel={
-                          group.key === "unsent"
-                            ? "Por enviar"
-                            : readableAssetIds?.has(pick.assetId)
-                              ? "Editada"
+                          readableAssetIds?.has(pick.assetId)
+                            ? "Editada"
+                            : group.key === "unsent"
+                              ? "Por enviar"
                               : "Pedida"
                         }
                       />

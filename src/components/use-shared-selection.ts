@@ -170,6 +170,26 @@ async function lockRefusalMessage(response: Response): Promise<string | null> {
   return (body?.error && LOCK_REFUSALS[body.error]) || null;
 }
 
+/** Task #244 — under rolling delivery a CLIENT-SUBMITTED lock (submitted_at
+ * set) is a classic-flow leftover, not a lock: submitting there is an order,
+ * and turning the flag on migrates such members (updateRollingDelivery). The
+ * client must never render the classic "enviada/cerrada" state for one, even
+ * from a stale snapshot. An ADMIN lock (submitted_at null) is a real lock. */
+function effectiveViewerLock(lock: ViewerLock | null, rolling: boolean): ViewerLock | null {
+  return rolling && lock !== null && lock.submittedAt !== null ? null : lock;
+}
+
+/** Same reasoning for the group: under rolling delivery only ADMIN-locked
+ * pickers are frozen, so client-submitted ids are dropped from both lists. */
+function effectivePickerIds(
+  locked: string[],
+  submitted: string[],
+  rolling: boolean,
+): { locked: string[]; submitted: string[] } {
+  if (!rolling) return { locked, submitted };
+  return { locked: locked.filter((id) => !submitted.includes(id)), submitted: [] };
+}
+
 export function useSharedSelection({
   galleryId,
   initialAssets,
@@ -293,11 +313,20 @@ export function useSharedSelection({
   // even though the gallery is still `proofing` for the others. Never derive
   // "viewer submitted" from `galleries.selectionSubmittedAt`: reopening does
   // not clear it, `viewerLock` is the truth.
-  const [viewerLock, setViewerLock] = useState<ViewerLock | null>(initialViewerLock);
-  const [lockedPickerIds, setLockedPickerIds] = useState<string[]>(initialLockedPickerIds);
+  const [viewerLock, setViewerLock] = useState<ViewerLock | null>(
+    effectiveViewerLock(initialViewerLock, rollingDelivery),
+  );
+  const initialPickerIds = effectivePickerIds(
+    initialLockedPickerIds,
+    initialSubmittedPickerIds,
+    rollingDelivery,
+  );
+  const [lockedPickerIds, setLockedPickerIds] = useState<string[]>(initialPickerIds.locked);
   // The subset of `lockedPickerIds` who submitted themselves (the rest were
   // closed by the photographer).
-  const [submittedPickerIds, setSubmittedPickerIds] = useState<string[]>(initialSubmittedPickerIds);
+  const [submittedPickerIds, setSubmittedPickerIds] = useState<string[]>(
+    initialPickerIds.submitted,
+  );
   const [viewerSubmittedAt, setViewerSubmittedAt] = useState<string | null>(
     initialViewerSubmittedAt,
   );
@@ -427,42 +456,50 @@ export function useSharedSelection({
   // flight — see `requestRefresh`.
   const pendingRefreshRef = useRef(false);
 
-  const applySnapshot = useCallback((snapshot: SelectionSnapshot, issuedAtClock: number) => {
-    // Condition 1 — see the section comment above.
-    if (pendingIdsRef.current.size > 0) return;
-    // Condition 2.
-    if (issuedAtClock <= lastLocalWriteClockRef.current) return;
+  const applySnapshot = useCallback(
+    (snapshot: SelectionSnapshot, issuedAtClock: number) => {
+      // Condition 1 — see the section comment above.
+      if (pendingIdsRef.current.size > 0) return;
+      // Condition 2.
+      if (issuedAtClock <= lastLocalWriteClockRef.current) return;
 
-    setStatus(snapshot.status);
-    const nextViewerLock = snapshot.viewerLock ?? null;
-    isLockedRef.current = SUBMITTED_STATUSES.has(snapshot.status) || nextViewerLock !== null;
-    setViewerLock(nextViewerLock);
-    setLockedPickerIds(snapshot.lockedPickerIds ?? []);
-    setSubmittedPickerIds(snapshot.submittedPickerIds ?? []);
-    setSubmittedAt(snapshot.submittedAt);
-    setViewerSubmittedAt(snapshot.viewerSubmittedAt ?? null);
-    setPicks(snapshot.picks);
+      setStatus(snapshot.status);
+      const nextViewerLock = effectiveViewerLock(snapshot.viewerLock ?? null, rollingDelivery);
+      isLockedRef.current = SUBMITTED_STATUSES.has(snapshot.status) || nextViewerLock !== null;
+      setViewerLock(nextViewerLock);
+      const pickerIds = effectivePickerIds(
+        snapshot.lockedPickerIds ?? [],
+        snapshot.submittedPickerIds ?? [],
+        rollingDelivery,
+      );
+      setLockedPickerIds(pickerIds.locked);
+      setSubmittedPickerIds(pickerIds.submitted);
+      setSubmittedAt(snapshot.submittedAt);
+      setViewerSubmittedAt(snapshot.viewerSubmittedAt ?? null);
+      setPicks(snapshot.picks);
 
-    const pickedAssetIds = new Set(snapshot.picks.map((pick) => pick.assetId));
-    // Rebuilt from the keys THIS HOOK knows about, not from the
-    // snapshot's own list: an asset the photographer uploaded after this page
-    // was server-rendered exists in the snapshot but has no tile here and no
-    // presigned URL, so inventing a key for it would put a permanently broken
-    // entry in `selectionById`. The tray renders such a pick as a labelled
-    // placeholder instead (see <SelectionTray>), which is the honest outcome
-    // until the client next loads the page.
-    setSelectionById((prev) => {
-      const next: Record<string, boolean> = {};
-      for (const assetId of Object.keys(prev)) next[assetId] = pickedAssetIds.has(assetId);
-      return next;
-    });
+      const pickedAssetIds = new Set(snapshot.picks.map((pick) => pick.assetId));
+      // Rebuilt from the keys THIS HOOK knows about, not from the
+      // snapshot's own list: an asset the photographer uploaded after this page
+      // was server-rendered exists in the snapshot but has no tile here and no
+      // presigned URL, so inventing a key for it would put a permanently broken
+      // entry in `selectionById`. The tray renders such a pick as a labelled
+      // placeholder instead (see <SelectionTray>), which is the honest outcome
+      // until the client next loads the page.
+      setSelectionById((prev) => {
+        const next: Record<string, boolean> = {};
+        for (const assetId of Object.keys(prev)) next[assetId] = pickedAssetIds.has(assetId);
+        return next;
+      });
 
-    // Same counter the toggles use, so a toggle issued AFTER this snapshot
-    // still overwrites its quota when it lands, and one issued before does
-    // not.
-    appliedQuotaSequenceRef.current = issuedAtClock;
-    setQuota(snapshot.quota);
-  }, []);
+      // Same counter the toggles use, so a toggle issued AFTER this snapshot
+      // still overwrites its quota when it lands, and one issued before does
+      // not.
+      appliedQuotaSequenceRef.current = issuedAtClock;
+      setQuota(snapshot.quota);
+    },
+    [rollingDelivery],
+  );
 
   // Holds the LATEST `poll` — see the comment on its own assignment below for
   // why `poll`'s `finally` block re-triggers itself through this ref rather

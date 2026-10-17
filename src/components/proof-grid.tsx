@@ -586,14 +586,15 @@ export function ProofGrid({
         isLocked={isLocked || frozenAssetIds.has(asset.id)}
         showDownload={showsFinals && asset.hasFinal}
         orderLabel={
-          rollingDelivery && !isDelivered && asset.isSelected
-            ? requestedAssetIds.has(asset.id)
-              ? showsFinals && asset.hasFinal
-                ? "Editada"
-                : "Pedida"
-              : "Por enviar"
-            : rollingDelivery && showsFinals && asset.hasFinal
-              ? "Editada"
+          // Precedence everywhere: Editada (final readable) > Pedida
+          // (requested) > Por enviar. A readable final wins even without a
+          // `requested_at` stamp.
+          rollingDelivery && showsFinals && asset.hasFinal
+            ? "Editada"
+            : rollingDelivery && !isDelivered && asset.isSelected
+              ? requestedAssetIds.has(asset.id)
+                ? "Pedida"
+                : "Por enviar"
               : null
         }
         onError={() => void refreshUrl(asset.id)}
@@ -631,6 +632,7 @@ export function ProofGrid({
           lockedByAdmin={lockedByAdmin}
           rollingDelivery={rollingDelivery}
           readableAssetIds={readableAssetIds}
+          lastSubmittedAt={viewerSubmittedAt}
           isStale={isStale}
           allowsOriginalSelection={allowsOriginalSelection}
           onOpenAsset={openAssetInLightbox}

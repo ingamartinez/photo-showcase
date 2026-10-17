@@ -2508,7 +2508,8 @@ const updateRollingDeliverySchema = z.object({
 });
 
 /**
- * Flips `galleries.rolling_delivery`. Turning it OFF hides finals from clients
+ * Flips `galleries.rolling_delivery`. Turning it ON also migrates members who
+ * submitted under the classic flow (see the transaction below). Turning it OFF hides finals from clients
  * again on the next load (the read gate is `canReadFinalDeliverable`) but
  * deliberately does not touch `assets.requested_at`: the photographer's queue
  * of ordered photos must survive a toggle, and the freeze that reads it is
@@ -2541,10 +2542,66 @@ export async function updateRollingDelivery(
     return { status: "error", message: "La galería no existe." };
   }
 
-  await db
-    .update(galleries)
-    .set({ rollingDelivery: parsed.data.rollingDelivery })
-    .where(eq(galleries.id, gallery.id));
+  // Turning it OFF changes no data (see the header). Turning it ON must also
+  // MIGRATE the members who already submitted under the classic (#239) flow,
+  // in the SAME transaction as the flag flip: a member left "locked + no
+  // requested_at" would sit in a hybrid state (locked, yet every pick reads
+  // "Por enviar"). A gallery-row lock first, like every writer of these
+  // columns, so the settle below reads a consistent membership set.
+  await db.transaction(async (tx) => {
+    await lockGalleryRow(tx, gallery.id);
+    await tx
+      .update(galleries)
+      .set({ rollingDelivery: parsed.data.rollingDelivery })
+      .where(eq(galleries.id, gallery.id));
+    if (!parsed.data.rollingDelivery) return;
+
+    // ONLY client-submitted members: locked AND submitted. An admin-locked
+    // member (submitted NULL) stays locked — that is the photographer's call.
+    const members = await tx
+      .select({
+        userId: galleryClients.userId,
+        submittedAt: galleryClients.selectionSubmittedAt,
+        lockedAt: galleryClients.selectionLockedAt,
+      })
+      .from(galleryClients)
+      .where(and(eq(galleryClients.galleryId, gallery.id), isNull(galleryClients.removedAt)));
+    for (const member of members) {
+      if (member.submittedAt === null || member.lockedAt === null) continue;
+      // Their order is their old submission: stamp THEIR OWN unrequested
+      // picks with THEIR submit time (the `selected_by` scope keeps everyone
+      // else's picks out), then unlock them, keeping `selection_submitted_at`.
+      await tx
+        .update(assets)
+        .set({ requestedAt: member.submittedAt })
+        .where(
+          and(
+            eq(assets.galleryId, gallery.id),
+            eq(assets.isSelected, true),
+            eq(assets.selectedBy, member.userId),
+            isNull(assets.requestedAt),
+          ),
+        );
+      await tx
+        .update(galleryClients)
+        .set({ selectionLockedAt: null })
+        .where(
+          and(
+            eq(galleryClients.galleryId, gallery.id),
+            eq(galleryClients.userId, member.userId),
+            isNull(galleryClients.removedAt),
+          ),
+        );
+    }
+    // `selected` only because everyone had submitted -> back to `proofing`,
+    // through the existing settle logic (never hand-rolled here).
+    await settleGalleryLockStatus(tx, gallery.id);
+  });
+
+  if (parsed.data.rollingDelivery) {
+    // Open client tabs must drop the "enviada/cerrada" state without a reload.
+    void notifySelectionChanged(gallery.id).catch(() => {});
+  }
 
   revalidatePath(`/dashboard/galleries/${gallery.id}`);
   revalidatePath("/dashboard/galleries");

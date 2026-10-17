@@ -1,14 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "next-auth";
 
-// `import "server-only"` (transitively, via src/lib/auth-guards.ts) only
-// resolves inside a real Next.js bundle — see src/lib/auth-guards.test.ts,
-// same stub as every sibling actions.*.test.ts in this directory.
+// Task #244 — `updateRollingDelivery`: the flag flip AND the migration of
+// members who submitted under the classic (#239) flow, against the strict
+// in-memory db double (it throws on any condition shape it does not model).
 vi.mock("server-only", () => ({}));
 
-// `@/auth` is mocked wholesale, same as every sibling suite: `auth()` (via
-// requireAdmin()) and `signIn()` (never called by this action, but still
-// imported at module scope by actions.ts for its sibling actions).
 const authMock = vi.fn();
 const signInMock = vi.fn();
 vi.mock("@/auth", () => ({
@@ -16,170 +13,64 @@ vi.mock("@/auth", () => ({
   signIn: (...args: unknown[]) => signInMock(...args),
 }));
 
-// The real "next-auth" package's root index eagerly imports `./lib/env.js`
-// (which imports `next/server`) at module scope, unresolvable under Vitest —
-// mocked wholesale, same fix as every sibling actions.*.test.ts.
 vi.mock("next-auth", () => ({
   AuthError: class AuthError extends Error {},
 }));
 
-// `revalidatePath` throws outside a real Next.js request — stubbed so the
-// action's own logic, not Next's internals, is what this suite exercises.
 const revalidatePathMock = vi.fn();
 vi.mock("next/cache", () => ({
   revalidatePath: (...args: unknown[]) => revalidatePathMock(...args),
 }));
 
-// `@/lib/selection-events` is imported at module scope by actions.ts (for
-// `unlockSelection`'s own notification, not this action) — mocked so
-// importing the module never triggers a real Postgres NOTIFY.
+const notifySelectionChangedMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/selection-events", () => ({
-  notifySelectionChanged: vi.fn().mockResolvedValue(undefined),
+  notifySelectionChanged: (...args: [string]) => notifySelectionChangedMock(...args),
 }));
 
-// A minimal, genuinely-behaving double for `@/lib/db` — same shape
-// actions.terms.test.ts already established for this exact action shape
-// (a plain `eq()` UPDATE, no CAS guard, no state gate to race against).
-type Row = Record<string, unknown>;
-
-type LeafCondition = { dbColumnName: string; op: "eq"; value: unknown };
-
-function parseLeaf(node: unknown): LeafCondition | undefined {
-  const chunks = (node as { queryChunks?: unknown[] } | null)?.queryChunks;
-  if (!chunks) return undefined;
-  let dbColumnName: string | undefined;
-  let value: unknown;
-  let hasValue = false;
-  for (const chunk of chunks) {
-    if (chunk && typeof chunk === "object") {
-      if ("name" in chunk && "table" in chunk) dbColumnName = (chunk as { name: string }).name;
-      if ("value" in chunk && "encoder" in chunk) {
-        value = (chunk as { value: unknown }).value;
-        hasValue = true;
-      }
-    }
-  }
-  if (!dbColumnName || !hasValue) return undefined;
-  return { dbColumnName, op: "eq", value };
-}
-
-function eqConditions(condition: unknown): LeafCondition[] {
-  const leaf = parseLeaf(condition);
-  if (leaf) return [leaf];
-  throw new Error("eqConditions: expected a plain eq() condition");
-}
-
-function jsKeyFor(table: Record<string, unknown>, dbColumnName: string): string {
-  const found = Object.entries(table).find(
-    ([, col]) => col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
-  );
-  if (!found) throw new Error(`jsKeyFor: no column named ${dbColumnName} on this table`);
-  return found[0];
-}
-
-function matchesRow(row: Row, table: Record<string, unknown>, condition: unknown): boolean {
-  return eqConditions(condition).every((c) => {
-    const jsKey = jsKeyFor(table, c.dbColumnName);
-    return row[jsKey] === c.value;
-  });
-}
-
-function project(row: Row, columns: Record<string, unknown> | undefined): Row {
-  if (!columns) return { ...row };
-  const projected: Row = {};
-  for (const key of Object.keys(columns)) projected[key] = row[key];
-  return projected;
-}
-
 vi.mock("@/lib/db", async () => {
-  const { galleries } = await import("@/lib/db/schema");
-
-  const galleryRows: Row[] = [];
-
+  const { assets, galleries, galleryClients, users } = await import("@/lib/db/schema");
+  const { createFakeDb } = await import("@/test-support/fake-db");
+  const fake = createFakeDb([galleries, galleryClients, assets, users]);
   return {
-    db: {
-      select: (columns?: Record<string, unknown>) => ({
-        from: (table: unknown) => ({
-          where: (condition: unknown) => {
-            if (table !== galleries) throw new Error("fake db: unsupported table in select()");
-            const rows = galleryRows
-              .filter((row) =>
-                matchesRow(row, galleries as unknown as Record<string, unknown>, condition),
-              )
-              .map((row) => project(row, columns));
-            const resultPromise = Promise.resolve(rows);
-            return {
-              limit: async (n: number) => rows.slice(0, n),
-              then: resultPromise.then.bind(resultPromise),
-              catch: resultPromise.catch.bind(resultPromise),
-            };
-          },
-        }),
-      }),
-      update: (table: unknown) => ({
-        set: (patch: Row) => ({
-          where: (condition: unknown) => {
-            if (table !== galleries) throw new Error("fake db: unsupported table in update()");
-            const matches = galleryRows.filter((row) =>
-              matchesRow(row, galleries as unknown as Record<string, unknown>, condition),
-            );
-            for (const row of matches) Object.assign(row, patch);
-            return Promise.resolve(matches.map((row) => ({ ...row })));
-          },
-        }),
-      }),
-      // Test-only escape hatch, not part of the real `db` shape.
-      __rows: { galleries: galleryRows },
-    },
+    db: Object.assign(fake, {
+      __rows: {
+        galleries: fake.__tables.get(galleries)!,
+        galleryClients: fake.__tables.get(galleryClients)!,
+        assets: fake.__tables.get(assets)!,
+        users: fake.__tables.get(users)!,
+      },
+    }),
   };
 });
 
-async function seededDb() {
-  const { db } = (await import("@/lib/db")) as unknown as {
-    db: { __rows: { galleries: Row[] } };
-  };
-  return db;
+type Row = Record<string, unknown>;
+type Rows = { galleries: Row[]; galleryClients: Row[]; assets: Row[]; users: Row[] };
+
+async function rows(): Promise<Rows> {
+  const { db } = (await import("@/lib/db")) as unknown as { db: { __rows: Rows } };
+  return db.__rows;
 }
 
-function adminSession(email = "photographer@example.com"): Session {
-  return {
-    user: { id: "admin-1", role: "admin", email },
+const adminSession = (): Session =>
+  ({
+    user: { id: "admin-1", role: "admin", email: "photographer@example.com" },
     expires: "2099-01-01T00:00:00.000Z",
-  } as Session;
-}
-
-function clientSession(): Session {
-  return {
-    user: { id: "client-1", role: "client", email: "someone@example.com" },
+  }) as Session;
+const clientSession = (): Session =>
+  ({
+    user: { id: "client-x", role: "client", email: "someone@example.com" },
     expires: "2099-01-01T00:00:00.000Z",
-  } as Session;
-}
+  }) as Session;
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
-
-function galleryRow(overrides: Row = {}): Row {
-  return {
-    id: GALLERY_ID,
-    packageId: 1,
-    title: "Boda Ana y Beto",
-    sessionDate: "2026-08-01",
-    status: "draft",
-    publicSlug: "abc123",
-    includedPhotosSnapshot: 13,
-    extraPhotoPriceCopSnapshot: 5_000,
-    termsOverridden: false,
-    rollingDelivery: false,
-    createdAt: new Date("2026-07-01"),
-    selectionSubmittedAt: null,
-    deliveredAt: null,
-    unlockedAt: null,
-    unlockedByEmail: null,
-    unlockReason: null,
-    termsUpdatedAt: null,
-    termsUpdatedByEmail: null,
-    ...overrides,
-  };
-}
+const OTHER_GALLERY_ID = "22222222-2222-4222-8222-222222222222";
+const SUBMITTER = "client-submitted";
+const ADMIN_LOCKED = "client-adminlocked";
+const OPEN = "client-open";
+const REMOVED = "client-removed";
+const SUBMITTED_AT = new Date("2026-10-10T10:00:00Z");
+const ADMIN_LOCKED_AT = new Date("2026-10-11T10:00:00Z");
+const EARLIER_ORDER = new Date("2026-10-05T10:00:00Z");
 
 function formDataWith(fields: Record<string, string | undefined>) {
   const data = new FormData();
@@ -188,113 +79,252 @@ function formDataWith(fields: Record<string, string | undefined>) {
   }
   return data;
 }
+const toggle = (value: string, galleryId = GALLERY_ID) =>
+  formDataWith({ galleryId, rollingDelivery: value });
+
+function member(userId: string, overrides: Row = {}, galleryId = GALLERY_ID): Row {
+  return {
+    galleryId,
+    userId,
+    removedAt: null,
+    selectionLockedAt: null,
+    selectionSubmittedAt: null,
+    ...overrides,
+  };
+}
+
+function pick(id: string, selectedBy: string | null, overrides: Row = {}): Row {
+  return {
+    id,
+    galleryId: GALLERY_ID,
+    isSelected: selectedBy !== null,
+    selectedBy,
+    requestedAt: null,
+    ...overrides,
+  };
+}
+
+async function seed(status = "proofing") {
+  const r = await rows();
+  for (const list of Object.values(r)) list.length = 0;
+  r.galleries.push(
+    {
+      id: GALLERY_ID,
+      status,
+      publicSlug: "abc123",
+      rollingDelivery: false,
+      selectionSubmittedAt: null,
+    },
+    {
+      id: OTHER_GALLERY_ID,
+      status: "proofing",
+      publicSlug: "other",
+      rollingDelivery: false,
+      selectionSubmittedAt: null,
+    },
+  );
+  r.galleryClients.push(
+    // Submitted under #239: locked AND submitted.
+    member(SUBMITTER, { selectionLockedAt: SUBMITTED_AT, selectionSubmittedAt: SUBMITTED_AT }),
+    // Locked by the photographer: locked, never submitted.
+    member(ADMIN_LOCKED, { selectionLockedAt: ADMIN_LOCKED_AT }),
+    member(OPEN),
+    // A removed member who had submitted: not an active member, never touched.
+    member(REMOVED, {
+      selectionLockedAt: SUBMITTED_AT,
+      selectionSubmittedAt: SUBMITTED_AT,
+      removedAt: new Date("2026-10-12"),
+    }),
+    // The SAME user in ANOTHER gallery, also submitted: must never move.
+    member(
+      SUBMITTER,
+      { selectionLockedAt: SUBMITTED_AT, selectionSubmittedAt: SUBMITTED_AT },
+      OTHER_GALLERY_ID,
+    ),
+  );
+  // DISJOINT picks per member (a uniform fixture cannot tell whose picks got
+  // stamped).
+  r.assets.push(
+    pick("s1", SUBMITTER),
+    pick("s2", SUBMITTER),
+    pick("s3", SUBMITTER, { requestedAt: EARLIER_ORDER }),
+    pick("l1", ADMIN_LOCKED),
+    pick("o1", OPEN),
+    pick("r1", REMOVED),
+    pick("free", null),
+    pick("x1", SUBMITTER, { galleryId: OTHER_GALLERY_ID }),
+  );
+}
+
+const byId = async (id: string) => (await rows()).assets.find((a) => a.id === id)!;
+const membership = async (userId: string, galleryId = GALLERY_ID) =>
+  (await rows()).galleryClients.find((m) => m.userId === userId && m.galleryId === galleryId)!;
 
 beforeEach(async () => {
   authMock.mockReset();
   signInMock.mockReset();
   revalidatePathMock.mockReset();
+  notifySelectionChangedMock.mockReset();
+  notifySelectionChangedMock.mockResolvedValue(undefined);
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
-
-  const db = await seededDb();
-  db.__rows.galleries.length = 0;
-  db.__rows.galleries.push(galleryRow());
+  await seed();
 });
 
 describe("updateRollingDelivery authorization", () => {
   it("refuses a signed-in CLIENT with a 403, without writing anything", async () => {
     authMock.mockResolvedValue(clientSession());
     const { updateRollingDelivery } = await import("./actions");
+    const before = JSON.stringify(await rows());
 
-    await expect(
-      updateRollingDelivery(
-        { status: "idle" },
-        formDataWith({ galleryId: GALLERY_ID, rollingDelivery: "true" }),
-      ),
-    ).rejects.toMatchObject({ digest: "NEXT_HTTP_ERROR_FALLBACK;403" });
+    await expect(updateRollingDelivery({ status: "idle" }, toggle("true"))).rejects.toMatchObject({
+      digest: "NEXT_HTTP_ERROR_FALLBACK;403",
+    });
 
-    const db = await seededDb();
-    expect(db.__rows.galleries[0]).toMatchObject({ rollingDelivery: false });
+    expect(JSON.stringify(await rows())).toBe(before);
   });
 
   it("redirects to /login when there is no session at all", async () => {
     authMock.mockResolvedValue(null);
     const { updateRollingDelivery } = await import("./actions");
 
-    await expect(
-      updateRollingDelivery(
-        { status: "idle" },
-        formDataWith({ galleryId: GALLERY_ID, rollingDelivery: "true" }),
-      ),
-    ).rejects.toMatchObject({ digest: "NEXT_REDIRECT;replace;/login;307;" });
+    await expect(updateRollingDelivery({ status: "idle" }, toggle("true"))).rejects.toMatchObject({
+      digest: "NEXT_REDIRECT;replace;/login;307;",
+    });
   });
 });
 
 describe("updateRollingDelivery validation", () => {
-  beforeEach(() => {
-    authMock.mockResolvedValue(adminSession());
-  });
+  beforeEach(() => authMock.mockResolvedValue(adminSession()));
 
   it.each(["yes", "1", "", "TRUE"])("rejects %j as the flag value", async (value) => {
     const { updateRollingDelivery } = await import("./actions");
-    const db = await seededDb();
 
-    const result = await updateRollingDelivery(
-      { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, rollingDelivery: value }),
-    );
+    const result = await updateRollingDelivery({ status: "idle" }, toggle(value));
 
     expect(result.status).toBe("error");
-    expect(db.__rows.galleries[0]).toMatchObject({ rollingDelivery: false });
+    expect((await rows()).galleries[0]).toMatchObject({ rollingDelivery: false });
   });
 
   it("rejects a gallery id that does not exist", async () => {
-    const db = await seededDb();
-    db.__rows.galleries.length = 0;
+    const r = await rows();
+    r.galleries.length = 0;
     const { updateRollingDelivery } = await import("./actions");
 
-    const result = await updateRollingDelivery(
-      { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, rollingDelivery: "true" }),
-    );
+    const result = await updateRollingDelivery({ status: "idle" }, toggle("true"));
 
     expect(result).toEqual({ status: "error", message: "La galería no existe." });
   });
 });
 
 describe("updateRollingDelivery success", () => {
-  beforeEach(() => {
-    authMock.mockResolvedValue(adminSession());
-  });
+  beforeEach(() => authMock.mockResolvedValue(adminSession()));
 
   it.each(["draft", "proofing", "selected", "delivered", "archived"])(
     "persists the flag on a %s gallery (changeable at any status) and revalidates both surfaces",
     async (status) => {
-      const db = await seededDb();
-      db.__rows.galleries[0]!.status = status;
+      await seed(status);
       const { updateRollingDelivery } = await import("./actions");
 
-      const result = await updateRollingDelivery(
-        { status: "idle" },
-        formDataWith({ galleryId: GALLERY_ID, rollingDelivery: "true" }),
-      );
+      const result = await updateRollingDelivery({ status: "idle" }, toggle("true"));
 
       expect(result).toEqual({ status: "updated" });
-      expect(db.__rows.galleries[0]).toMatchObject({ rollingDelivery: true });
+      expect((await rows()).galleries[0]).toMatchObject({ rollingDelivery: true });
       expect(revalidatePathMock).toHaveBeenCalledWith(`/dashboard/galleries/${GALLERY_ID}`);
       expect(revalidatePathMock).toHaveBeenCalledWith("/galleries/abc123");
     },
   );
+});
 
-  it("turns it back off", async () => {
-    const db = await seededDb();
-    db.__rows.galleries[0]!.rollingDelivery = true;
+describe("updateRollingDelivery — migrating classic submissions when turned ON", () => {
+  beforeEach(() => authMock.mockResolvedValue(adminSession()));
+
+  it("stamps the submitted member's OWN unrequested picks with THEIR submitted_at and unlocks them, keeping submitted_at", async () => {
     const { updateRollingDelivery } = await import("./actions");
 
-    await updateRollingDelivery(
-      { status: "idle" },
-      formDataWith({ galleryId: GALLERY_ID, rollingDelivery: "false" }),
-    );
+    await updateRollingDelivery({ status: "idle" }, toggle("true"));
 
-    expect(db.__rows.galleries[0]).toMatchObject({ rollingDelivery: false });
+    expect((await byId("s1")).requestedAt).toBe(SUBMITTED_AT);
+    expect((await byId("s2")).requestedAt).toBe(SUBMITTED_AT);
+    // An earlier order keeps its ORIGINAL stamp.
+    expect((await byId("s3")).requestedAt).toBe(EARLIER_ORDER);
+    expect(await membership(SUBMITTER)).toMatchObject({
+      selectionLockedAt: null,
+      selectionSubmittedAt: SUBMITTED_AT,
+    });
+    expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_ID);
+  });
+
+  it("leaves the admin-locked member, the open member, the removed member and everyone else's picks untouched", async () => {
+    const { updateRollingDelivery } = await import("./actions");
+
+    await updateRollingDelivery({ status: "idle" }, toggle("true"));
+
+    // Admin-locked: still locked (the photographer's call), never submitted.
+    expect(await membership(ADMIN_LOCKED)).toMatchObject({
+      selectionLockedAt: ADMIN_LOCKED_AT,
+      selectionSubmittedAt: null,
+    });
+    expect(await membership(OPEN)).toMatchObject({
+      selectionLockedAt: null,
+      selectionSubmittedAt: null,
+    });
+    // Removed: not an active member.
+    expect(await membership(REMOVED)).toMatchObject({ selectionLockedAt: SUBMITTED_AT });
+    for (const id of ["l1", "o1", "r1", "free"]) expect((await byId(id)).requestedAt).toBeNull();
+    // The same user in ANOTHER gallery: nothing moves.
+    expect(await membership(SUBMITTER, OTHER_GALLERY_ID)).toMatchObject({
+      selectionLockedAt: SUBMITTED_AT,
+    });
+    expect((await byId("x1")).requestedAt).toBeNull();
+    expect((await rows()).galleries[1]).toMatchObject({ rollingDelivery: false });
+  });
+
+  it("returns a gallery that was 'selected' only because everyone submitted back to 'proofing'", async () => {
+    await seed("selected");
+    const r = await rows();
+    // Everyone ACTIVE submitted: close the open and admin-locked members too.
+    for (const m of r.galleryClients) {
+      if (m.galleryId === GALLERY_ID && m.removedAt === null) {
+        m.selectionLockedAt = SUBMITTED_AT;
+        m.selectionSubmittedAt = SUBMITTED_AT;
+      }
+    }
+    const { updateRollingDelivery } = await import("./actions");
+
+    await updateRollingDelivery({ status: "idle" }, toggle("true"));
+
+    expect(r.galleries[0]).toMatchObject({ status: "proofing", rollingDelivery: true });
+    expect(
+      r.galleryClients.filter((m) => m.galleryId === GALLERY_ID && m.removedAt === null),
+    ).toSatisfy((list: Row[]) => list.every((m) => m.selectionLockedAt === null));
+  });
+
+  it("a 'selected' gallery whose members are all ADMIN-locked stays 'selected'", async () => {
+    await seed("selected");
+    const r = await rows();
+    for (const m of r.galleryClients) {
+      if (m.galleryId === GALLERY_ID && m.removedAt === null) {
+        m.selectionLockedAt = ADMIN_LOCKED_AT;
+        m.selectionSubmittedAt = null;
+      }
+    }
+    const { updateRollingDelivery } = await import("./actions");
+
+    await updateRollingDelivery({ status: "idle" }, toggle("true"));
+
+    expect(r.galleries[0]).toMatchObject({ status: "selected" });
+  });
+
+  it("turning the flag OFF changes no data beyond the flag itself", async () => {
+    const r = await rows();
+    r.galleries[0]!.rollingDelivery = true;
+    const before = JSON.stringify({ ...r, galleries: undefined });
+    const { updateRollingDelivery } = await import("./actions");
+
+    await updateRollingDelivery({ status: "idle" }, toggle("false"));
+
+    expect(r.galleries[0]).toMatchObject({ rollingDelivery: false, status: "proofing" });
+    expect(JSON.stringify({ ...r, galleries: undefined })).toBe(before);
+    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
   });
 });

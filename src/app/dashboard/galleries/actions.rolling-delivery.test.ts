@@ -125,20 +125,29 @@ async function seed(status = "proofing") {
   );
   r.galleryClients.push(
     // Submitted under #239: locked AND submitted.
-    member(SUBMITTER, { selectionLockedAt: SUBMITTED_AT, selectionSubmittedAt: SUBMITTED_AT }),
+    member(SUBMITTER, {
+      selectionLockedAt: SUBMITTED_AT,
+      selectionSubmittedAt: SUBMITTED_AT,
+      selectionLockedBy: "client",
+    }),
     // Locked by the photographer: locked, never submitted.
-    member(ADMIN_LOCKED, { selectionLockedAt: ADMIN_LOCKED_AT }),
+    member(ADMIN_LOCKED, { selectionLockedAt: ADMIN_LOCKED_AT, selectionLockedBy: "admin" }),
     member(OPEN),
     // A removed member who had submitted: not an active member, never touched.
     member(REMOVED, {
       selectionLockedAt: SUBMITTED_AT,
       selectionSubmittedAt: SUBMITTED_AT,
+      selectionLockedBy: "client",
       removedAt: new Date("2026-10-12"),
     }),
     // The SAME user in ANOTHER gallery, also submitted: must never move.
     member(
       SUBMITTER,
-      { selectionLockedAt: SUBMITTED_AT, selectionSubmittedAt: SUBMITTED_AT },
+      {
+        selectionLockedAt: SUBMITTED_AT,
+        selectionSubmittedAt: SUBMITTED_AT,
+        selectionLockedBy: "client",
+      },
       OTHER_GALLERY_ID,
     ),
   );
@@ -250,6 +259,7 @@ describe("updateRollingDelivery — migrating classic submissions when turned ON
     expect(await membership(SUBMITTER)).toMatchObject({
       selectionLockedAt: null,
       selectionSubmittedAt: SUBMITTED_AT,
+      selectionLockedBy: null,
     });
     expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_ID);
   });
@@ -287,6 +297,7 @@ describe("updateRollingDelivery — migrating classic submissions when turned ON
       if (m.galleryId === GALLERY_ID && m.removedAt === null) {
         m.selectionLockedAt = SUBMITTED_AT;
         m.selectionSubmittedAt = SUBMITTED_AT;
+        m.selectionLockedBy = "client";
       }
     }
     const { updateRollingDelivery } = await import("./actions");
@@ -306,6 +317,7 @@ describe("updateRollingDelivery — migrating classic submissions when turned ON
       if (m.galleryId === GALLERY_ID && m.removedAt === null) {
         m.selectionLockedAt = ADMIN_LOCKED_AT;
         m.selectionSubmittedAt = null;
+        m.selectionLockedBy = "admin";
       }
     }
     const { updateRollingDelivery } = await import("./actions");
@@ -327,4 +339,81 @@ describe("updateRollingDelivery — migrating classic submissions when turned ON
     expect(JSON.stringify({ ...r, galleries: undefined })).toBe(before);
     expect(notifySelectionChangedMock).not.toHaveBeenCalled();
   });
+});
+
+// Task #244 (review 3) — the lock SOURCE is explicit, and the migration is a
+// one-time false -> true transition.
+describe("updateRollingDelivery — lock source and one-time transition", () => {
+  beforeEach(() => authMock.mockResolvedValue(adminSession()));
+
+  const ORDERED_AT = new Date("2026-10-12T09:00:00Z");
+  const LOCKED_LATER_AT = new Date("2026-10-13T09:00:00Z");
+
+  // A member who ORDERED under the flag (submitted_at set) and was LATER
+  // locked by the photographer: both columns set, like a classic submit.
+  async function seedOrderedThenAdminLocked() {
+    const r = await rows();
+    r.galleries[0]!.rollingDelivery = true;
+    const mine = r.galleryClients.find((m) => m.userId === OPEN && m.galleryId === GALLERY_ID)!;
+    mine.selectionSubmittedAt = ORDERED_AT;
+    mine.selectionLockedAt = LOCKED_LATER_AT;
+    mine.selectionLockedBy = "admin";
+    (await byId("o1")).requestedAt = ORDERED_AT;
+  }
+
+  it("toggling OFF then ON keeps a member who ordered and was then locked by the photographer LOCKED, and stamps nothing", async () => {
+    await seedOrderedThenAdminLocked();
+    const { updateRollingDelivery } = await import("./actions");
+
+    await updateRollingDelivery({ status: "idle" }, toggle("false"));
+    await updateRollingDelivery({ status: "idle" }, toggle("true"));
+
+    expect(await membership(OPEN)).toMatchObject({
+      selectionLockedAt: LOCKED_LATER_AT,
+      selectionSubmittedAt: ORDERED_AT,
+      selectionLockedBy: "admin",
+    });
+    expect((await byId("o1")).requestedAt).toBe(ORDERED_AT);
+  });
+
+  it("turning the flag OFF leaves EVERY member and asset row unchanged (locked, submitted, ordered, admin-locked)", async () => {
+    await seedOrderedThenAdminLocked();
+    const r = await rows();
+    r.galleries[0]!.status = "selected";
+    (await byId("s1")).requestedAt = ORDERED_AT;
+    const before = JSON.stringify({ ...r, galleries: undefined });
+    const { updateRollingDelivery } = await import("./actions");
+
+    await updateRollingDelivery({ status: "idle" }, toggle("false"));
+
+    expect(JSON.stringify({ ...r, galleries: undefined })).toBe(before);
+    expect(r.galleries[0]).toMatchObject({ rollingDelivery: false, status: "selected" });
+  });
+
+  it("re-sending true on a gallery whose flag is ALREADY on (a stale tab) changes nothing", async () => {
+    const r = await rows();
+    r.galleries[0]!.rollingDelivery = true;
+    const before = JSON.stringify({ ...r, galleries: undefined });
+    const { updateRollingDelivery } = await import("./actions");
+
+    await updateRollingDelivery({ status: "idle" }, toggle("true"));
+
+    expect(JSON.stringify({ ...r, galleries: undefined })).toBe(before);
+    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
+  });
+
+  it.each(["draft", "delivered", "archived"])(
+    "enabling on a %s gallery sets the flag but migrates nobody",
+    async (status) => {
+      await seed(status);
+      const r = await rows();
+      const before = JSON.stringify({ ...r, galleries: undefined });
+      const { updateRollingDelivery } = await import("./actions");
+
+      await updateRollingDelivery({ status: "idle" }, toggle("true"));
+
+      expect(r.galleries[0]).toMatchObject({ rollingDelivery: true });
+      expect(JSON.stringify({ ...r, galleries: undefined })).toBe(before);
+    },
+  );
 });

@@ -935,7 +935,11 @@ describe("POST /api/galleries/[galleryId]/submit-selection — rolling delivery 
     const response = await POST(requestFor(), paramsFor(GALLERY_ID));
 
     expect(response.status).toBe(200);
-    expect(db.__rows.galleryClients[0]).toMatchObject({ selectionLockedAt: expect.any(Date) });
+    expect(db.__rows.galleryClients[0]).toMatchObject({
+      selectionLockedAt: expect.any(Date),
+      // Task #244: the classic submit records WHO locked.
+      selectionLockedBy: "client",
+    });
     expect(db.__rows.assets.every((r) => !r.requestedAt)).toBe(true);
   });
 });

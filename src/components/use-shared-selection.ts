@@ -176,7 +176,8 @@ async function lockRefusalMessage(response: Response): Promise<string | null> {
  * client must never render the classic "enviada/cerrada" state for one, even
  * from a stale snapshot. An ADMIN lock (submitted_at null) is a real lock. */
 function effectiveViewerLock(lock: ViewerLock | null, rolling: boolean): ViewerLock | null {
-  return rolling && lock !== null && lock.submittedAt !== null ? null : lock;
+  // `lockedBy` is computed by the server; never guessed from `submittedAt`.
+  return rolling && lock !== null && lock.lockedBy === "client" ? null : lock;
 }
 
 /** Same reasoning for the group: under rolling delivery only ADMIN-locked

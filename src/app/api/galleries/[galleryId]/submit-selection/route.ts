@@ -292,7 +292,7 @@ export const POST = withApiSession(async function POST(
       // pre-check above still sends exactly one email.
       const locked = await tx
         .update(galleryClients)
-        .set({ selectionLockedAt: now, selectionSubmittedAt: now })
+        .set({ selectionLockedAt: now, selectionSubmittedAt: now, selectionLockedBy: "client" })
         .where(
           and(
             eq(galleryClients.galleryId, gallery.id),

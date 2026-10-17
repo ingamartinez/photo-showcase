@@ -1130,7 +1130,7 @@ export async function unlockSelection(
     if (flipped.length > 0) {
       await tx
         .update(galleryClients)
-        .set({ selectionLockedAt: null, selectionSubmittedAt: null })
+        .set({ selectionLockedAt: null, selectionSubmittedAt: null, selectionLockedBy: null })
         .where(eq(galleryClients.galleryId, gallery.id));
     }
     return flipped;
@@ -1738,7 +1738,12 @@ export async function attachGalleryClients(
       if (removedIds.length > 0) {
         await tx
           .update(galleryClients)
-          .set({ removedAt: null, selectionLockedAt: null, selectionSubmittedAt: null })
+          .set({
+            removedAt: null,
+            selectionLockedAt: null,
+            selectionSubmittedAt: null,
+            selectionLockedBy: null,
+          })
           .where(
             and(
               eq(galleryClients.galleryId, gallery.id),
@@ -2289,7 +2294,9 @@ export async function lockGalleryClientSelection(
     if (ctx.lockedAt !== null) return "La selección de esa persona ya está bloqueada.";
     await tx
       .update(galleryClients)
-      .set({ selectionLockedAt: new Date() })
+      // Task #244: say WHO locked. An order under rolling delivery also sets
+      // `selection_submitted_at`, so the lock source cannot be inferred.
+      .set({ selectionLockedAt: new Date(), selectionLockedBy: "admin" })
       .where(
         and(
           eq(galleryClients.galleryId, ctx.gallery.id),
@@ -2316,7 +2323,7 @@ export async function unlockGalleryClientSelection(
     if (ctx.lockedAt === null) return "La selección de esa persona no está bloqueada.";
     await tx
       .update(galleryClients)
-      .set({ selectionLockedAt: null, selectionSubmittedAt: null })
+      .set({ selectionLockedAt: null, selectionSubmittedAt: null, selectionLockedBy: null })
       .where(
         and(
           eq(galleryClients.galleryId, ctx.gallery.id),
@@ -2388,7 +2395,7 @@ export async function removeGalleryClientPicks(
     removed = deselected.length;
     await tx
       .update(galleryClients)
-      .set({ selectionLockedAt: null, selectionSubmittedAt: null })
+      .set({ selectionLockedAt: null, selectionSubmittedAt: null, selectionLockedBy: null })
       .where(
         and(
           eq(galleryClients.galleryId, ctx.gallery.id),
@@ -2548,13 +2555,20 @@ export async function updateRollingDelivery(
   // requested_at" would sit in a hybrid state (locked, yet every pick reads
   // "Por enviar"). A gallery-row lock first, like every writer of these
   // columns, so the settle below reads a consistent membership set.
-  await db.transaction(async (tx) => {
-    await lockGalleryRow(tx, gallery.id);
+  const migrated = await db.transaction(async (tx) => {
+    const fresh = await lockGalleryRow(tx, gallery.id);
     await tx
       .update(galleries)
       .set({ rollingDelivery: parsed.data.rollingDelivery })
       .where(eq(galleries.id, gallery.id));
-    if (!parsed.data.rollingDelivery) return;
+    // The migration is a ONE-TIME transition: it runs only on a real
+    // false -> true change of the STORED flag (read under the gallery lock,
+    // so a stale tab re-sending `true`, or a repeated toggle, can never
+    // re-run it), and only while picking is live. Turning the flag OFF, or
+    // setting it to the value it already has, touches no member or asset.
+    const isRealEnable = fresh !== null && !fresh.rollingDelivery && parsed.data.rollingDelivery;
+    if (!isRealEnable) return false;
+    if (fresh.status !== "proofing" && fresh.status !== "selected") return false;
 
     // ONLY client-submitted members: locked AND submitted. An admin-locked
     // member (submitted NULL) stays locked — that is the photographer's call.
@@ -2563,11 +2577,16 @@ export async function updateRollingDelivery(
         userId: galleryClients.userId,
         submittedAt: galleryClients.selectionSubmittedAt,
         lockedAt: galleryClients.selectionLockedAt,
+        lockedBy: galleryClients.selectionLockedBy,
       })
       .from(galleryClients)
       .where(and(eq(galleryClients.galleryId, gallery.id), isNull(galleryClients.removedAt)));
     for (const member of members) {
-      if (member.submittedAt === null || member.lockedAt === null) continue;
+      // The lock SOURCE is explicit (`selection_locked_by`), never inferred
+      // from the timestamps: a member who ordered and was later locked by the
+      // photographer has both set, exactly like a classic submit.
+      if (member.lockedBy !== "client" || member.lockedAt === null) continue;
+      if (member.submittedAt === null) continue;
       // Their order is their old submission: stamp THEIR OWN unrequested
       // picks with THEIR submit time (the `selected_by` scope keeps everyone
       // else's picks out), then unlock them, keeping `selection_submitted_at`.
@@ -2584,7 +2603,7 @@ export async function updateRollingDelivery(
         );
       await tx
         .update(galleryClients)
-        .set({ selectionLockedAt: null })
+        .set({ selectionLockedAt: null, selectionLockedBy: null })
         .where(
           and(
             eq(galleryClients.galleryId, gallery.id),
@@ -2596,9 +2615,10 @@ export async function updateRollingDelivery(
     // `selected` only because everyone had submitted -> back to `proofing`,
     // through the existing settle logic (never hand-rolled here).
     await settleGalleryLockStatus(tx, gallery.id);
+    return true;
   });
 
-  if (parsed.data.rollingDelivery) {
+  if (migrated) {
     // Open client tabs must drop the "enviada/cerrada" state without a reload.
     void notifySelectionChanged(gallery.id).catch(() => {});
   }

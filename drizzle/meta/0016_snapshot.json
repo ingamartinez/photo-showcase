@@ -1,5 +1,5 @@
 {
-  "id": "01e32a2b-0b18-4156-8578-d97c549326e1",
+  "id": "472b9d9c-24ce-4860-9f93-22c649e63602",
   "prevId": "b2605da7-9ba4-43c3-b928-ffe451027ba5",
   "version": "7",
   "dialect": "postgresql",
@@ -687,6 +687,12 @@
         "selection_submitted_at": {
           "name": "selection_submitted_at",
           "type": "timestamp with time zone",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "selection_locked_by": {
+          "name": "selection_locked_by",
+          "type": "text",
           "primaryKey": false,
           "notNull": false
         }

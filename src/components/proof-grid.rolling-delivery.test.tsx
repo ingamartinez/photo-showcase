@@ -281,6 +281,7 @@ describe("ProofGrid — rolling delivery (#244)", () => {
     const stale = {
       lockedAt: "2026-10-10T10:00:00.000Z",
       submittedAt: "2026-10-10T10:00:00.000Z",
+      lockedBy: "client" as const,
     };
     renderGrid({
       initialViewerLock: stale,
@@ -298,9 +299,34 @@ describe("ProofGrid — rolling delivery (#244)", () => {
     expect(screen.getByRole("button", { name: "Enviar 1 foto" })).toBeTruthy();
   });
 
+  // Review 3: a member who ORDERED (submitted_at set) and was LATER locked by
+  // the photographer has the same two timestamps as a classic submit. The
+  // server says who locked (`lockedBy`); the client must not guess.
+  it("a member who ordered and was then locked by the photographer keeps the photographer-locked copy and frozen tiles", () => {
+    renderGrid({
+      initialViewerLock: {
+        lockedAt: "2026-10-13T10:00:00.000Z",
+        submittedAt: "2026-10-12T10:00:00.000Z",
+        lockedBy: "admin",
+      },
+      initialLockedPickerIds: [ANA.id],
+      initialSubmittedPickerIds: [],
+      initialViewerSubmittedAt: "2026-10-12T10:00:00.000Z",
+    });
+    const text = document.body.textContent ?? "";
+
+    expect(text).toMatch(/Tu fotógrafo cerró tu selección/);
+    expect([1, 2, 3, 4, 5, 6].filter((n) => tileButton(n).disabled)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(screen.queryByRole("button", { name: /Enviar \d+ foto/ })).toBeNull();
+  });
+
   it("an ADMIN-locked member under the flag still gets the photographer-locked copy", () => {
     renderGrid({
-      initialViewerLock: { lockedAt: "2026-10-11T10:00:00.000Z", submittedAt: null },
+      initialViewerLock: {
+        lockedAt: "2026-10-11T10:00:00.000Z",
+        submittedAt: null,
+        lockedBy: "admin",
+      },
       initialLockedPickerIds: [ANA.id],
     });
     const text = document.body.textContent ?? "";

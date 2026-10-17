@@ -458,6 +458,7 @@ describe("GET /api/galleries/[galleryId]/selection — per-client lock snapshot 
       removedAt: null,
       selectionLockedAt: LOCKED_AT,
       selectionSubmittedAt: LOCKED_AT,
+      selectionLockedBy: "client",
     });
     authMock.mockResolvedValue(clientASession());
     const { GET } = await import("./route");
@@ -532,6 +533,7 @@ describe("GET /api/galleries/[galleryId]/selection — per-client lock snapshot 
     const row = db.__rows.galleryClients.find((r) => r.userId === "client-a")!;
     row.selectionLockedAt = LOCKED_AT;
     row.selectionSubmittedAt = LOCKED_AT;
+    row.selectionLockedBy = "client";
     authMock.mockResolvedValue(clientASession());
     const { GET } = await import("./route");
 
@@ -541,6 +543,7 @@ describe("GET /api/galleries/[galleryId]/selection — per-client lock snapshot 
     expect(body.viewerLock).toEqual({
       lockedAt: LOCKED_AT.toISOString(),
       submittedAt: LOCKED_AT.toISOString(),
+      lockedBy: "client",
     });
     expect(body.lockedPickerIds).toEqual(["client-a"]);
     expect(body.submittedPickerIds).toEqual(["client-a"]);

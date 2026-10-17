@@ -518,7 +518,11 @@ export function ProofGrid({
       ),
     [initialAssets, finalsOpen],
   );
-  const lockedByAdmin = viewerLock !== null && viewerLock.submittedAt === null;
+  const lockedByAdmin =
+    viewerLock !== null &&
+    (viewerLock.lockedBy !== undefined
+      ? viewerLock.lockedBy === "admin"
+      : viewerLock.submittedAt === null);
   // The date the VIEWER sees as "enviada": their own time, not the gallery's
   // closing time (which is the LAST person's).
   const ownSubmittedAt = viewerLock ? viewerLock.submittedAt : submittedAt;

@@ -625,6 +625,15 @@ export const galleryClients = pgTable(
     // `removedAt IS NULL` — a removed client's lock state is history.
     selectionLockedAt: timestamp("selection_locked_at", { withTimezone: true }),
     selectionSubmittedAt: timestamp("selection_submitted_at", { withTimezone: true }),
+    // Task #244 — WHO set `selectionLockedAt`, stored explicitly instead of
+    // inferred from the two timestamps: under rolling delivery every order
+    // sets `selectionSubmittedAt`, so "locked + submitted" no longer means
+    // "the client locked themselves" (a member can order and LATER be locked
+    // by the photographer). `'client'` = the classic (#239) submit,
+    // `'admin'` = the photographer's lock. Always cleared together with
+    // `selectionLockedAt`; null while open. The rolling-delivery toggle
+    // migration and the client snapshot both key off `'client'`.
+    selectionLockedBy: text("selection_locked_by", { enum: ["client", "admin"] }),
   },
   (t) => [primaryKey({ columns: [t.galleryId, t.userId] })],
 );

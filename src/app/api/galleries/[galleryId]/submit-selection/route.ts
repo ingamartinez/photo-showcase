@@ -18,15 +18,14 @@
 // gallery's `id` here — already passed to `<ProofGrid>` by the page that
 // renders it — needs no new lookup and introduces no new identifier.
 //
-// REOPEN POLICY (task #25, now per person): once a client is locked they can
-// never toggle or resubmit — see the PATCH /api/assets/[assetId]/selection
-// route, which refuses a locked caller (`client_selection_locked`) and refuses
-// anyone undoing a locked client's pick (`pick_locked`). Only an ADMIN can
-// reopen, from the dashboard — a deliberate, asymmetric human escape hatch.
-// The submitted selection is the evidence a real payment conversation
-// (extras, surcharge — settled outside the app, PLAN.md §3) gets built on, so
-// it must freeze; "the client changed their mind" is a phone call, not a
-// client-facing "undo" button.
+// REOPEN POLICY (task #25, now per person, epic #250 S4): once a client has
+// SUBMITTED a pick it can never toggle, retype or remove it — the PATCH
+// /api/assets/[assetId]/selection route answers `already_requested` for the
+// caller's own submitted pick. Only an ADMIN can reopen, from the dashboard — a
+// deliberate, asymmetric human escape hatch. The submitted selection is the
+// evidence a real payment conversation (extras, surcharge — settled outside the
+// app, PLAN.md §3) gets built on, so it must freeze; "the client changed their
+// mind" is a phone call, not a client-facing "undo" button.
 //
 // ADMIN CALLERS ARE REFUSED (409 `admin_cannot_submit`). An admin has no
 // `gallery_clients` row, so there is no membership to lock; locking people on
@@ -36,7 +35,7 @@ import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { assets, galleries, galleryClients, users } from "@/lib/db/schema";
+import { assets, assetPicks, galleries, galleryClients, users } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
 import { isGalleryVisibleToClient } from "@/lib/galleries";
@@ -44,6 +43,7 @@ import { isGalleryOwner } from "@/lib/gallery-access";
 import { authEnv, resendEnv } from "@/lib/env";
 import { sendSubmissionNotificationEmail } from "@/lib/admin-notification-email";
 import { getClientLock, lockGalleryRow, settleGalleryLockStatus } from "@/lib/gallery-client-locks";
+import { claimCart } from "@/lib/pick-claims";
 import { computeQuota, type QuotaResult } from "@/lib/quota";
 import { notifySelectionChanged } from "@/lib/selection-events";
 
@@ -186,25 +186,24 @@ export const POST = withApiSession(async function POST(
   }
 
   // Submitting an EMPTY selection is refused (task #25's own acceptance
-  // criterion) — and "empty" is about the CALLER's own picks
-  // (`selected_by = caller`): in a group gallery, someone else's picks must
-  // not let a client who chose nothing lock themselves out. The quota the
-  // response reports stays gallery-wide (epic #239: quota is NOT per person).
-  // Checked BEFORE the transaction, off a fresh read; a client deselecting
-  // their last photo in another tab inside that window is the same accepted,
-  // tiny race the proofs route's `sort_order` assignment tolerates.
+  // criterion), and "empty" is about the CALLER's own CART, not the caller's
+  // claimed units: in a group gallery, someone else's picks must not let a
+  // client who chose nothing lock themselves out. Since epic #250 a pick is a
+  // row of `asset_picks` with `submitted_at IS NULL`, and a DEGRADED pick (on
+  // an asset someone else already claimed) still counts — an all-degraded
+  // cart is submittable (decision 19). Checked BEFORE the transaction, off a
+  // fresh read; a client removing their last pick in another tab inside that
+  // window is the same accepted, tiny race the proofs route's `sort_order`
+  // assignment tolerates.
   const preSubmitQuota = await currentQuota(gallery);
   const ownPicks = await db
-    .select({ id: assets.id })
-    .from(assets)
+    .select({ assetId: assetPicks.assetId })
+    .from(assetPicks)
     .where(
       and(
-        eq(assets.galleryId, gallery.id),
-        eq(assets.isSelected, true),
-        eq(assets.billedTo, session.user.id),
-        // Task #244 — under rolling delivery a submit acts on the CART: own
-        // picks not yet ordered. An all-requested cart is empty: same 400.
-        ...(gallery.rollingDelivery ? [isNull(assets.requestedAt)] : []),
+        eq(assetPicks.galleryId, gallery.id),
+        eq(assetPicks.userId, session.user.id),
+        isNull(assetPicks.submittedAt),
       ),
     );
   if (ownPicks.length === 0) {
@@ -220,7 +219,6 @@ export const POST = withApiSession(async function POST(
   // committed, and `settleGalleryLockStatus`'s compare-and-swap on `status`
   // guarantees exactly ONE `proofing -> selected` transition (kanban #61's
   // stance: guard the UPDATE itself with a `WHERE`, never reorder around it).
-  const now = new Date();
   let outcome;
   try {
     outcome = await runSubmitTransaction();
@@ -236,21 +234,22 @@ export const POST = withApiSession(async function POST(
         return { kind: "not_proofing" as const, gallery: fresh ?? gallery };
       }
 
-      // Task #244 — ROLLING DELIVERY: submitting places an ORDER, not a lock.
-      // The membership update runs FIRST: it matches only an ACTIVE, unlocked
-      // client (`isNull(lockedAt)` keeps an admin-locked or removed client out;
-      // the pre-check above already answered those idempotently), and when it
-      // matches nothing we return BEFORE any asset is written. Drizzle commits
-      // a normally-returning callback, so returning after the stamps would have
-      // committed them. THEN ONE conditional UPDATE stamps `requested_at` on
-      // exactly THIS client's cart (the `selected_by` predicate keeps other
-      // people's cart picks untouched, `requested_at IS NULL` keeps earlier
-      // orders' original stamps). If the cart emptied meanwhile (another tab)
-      // the callback THROWS, rolling back the timestamp refresh too.
-      // `selection_locked_at` stays NULL (the client keeps picking and may
-      // submit again) and `settleGalleryLockStatus` never runs, so the gallery
-      // never auto-moves to `selected` from client submits.
+      // `now` is taken AFTER the gallery lock, never before it. Arrival order
+      // decides the included slots (decision 6), so a timestamp sampled
+      // before the lock could order two submits backwards. It is returned so
+      // the response and the membership stamps all share it.
+      const now = new Date();
+
+      // The membership CAS, unchanged per mode. It runs FIRST and returns
+      // `lost_race` BEFORE any pick is claimed when it matches nothing, so a
+      // double-click that raced past the pre-check above still sends exactly
+      // one email. Drizzle commits a normally-returning callback, so a return
+      // after the stamps would have committed them.
       if (fresh.rollingDelivery) {
+        // Task #244 — ROLLING DELIVERY: submitting places an ORDER, not a
+        // lock. `selection_locked_at` stays NULL (the client keeps picking
+        // and may submit again) and `settleGalleryLockStatus` never runs, so
+        // the gallery never auto-moves to `selected` from client submits.
         const refreshed = await tx
           .update(galleryClients)
           .set({ selectionSubmittedAt: now })
@@ -266,30 +265,11 @@ export const POST = withApiSession(async function POST(
         if (refreshed.length === 0) {
           return { kind: "lost_race" as const, gallery: fresh };
         }
-        const stamped = await tx
-          .update(assets)
-          .set({ requestedAt: now })
-          .where(
-            and(
-              eq(assets.galleryId, gallery.id),
-              eq(assets.isSelected, true),
-              eq(assets.billedTo, session.user.id),
-              isNull(assets.requestedAt),
-            ),
-          )
-          .returning({ id: assets.id });
-        if (stamped.length === 0) throw new EmptyCartError();
-        return {
-          kind: "submitted" as const,
-          gallery: fresh,
-          transition: null,
-          requestedCount: stamped.length,
-        };
+        const result = await claimCart(tx, fresh, session.user.id, now);
+        if (result.stamped === 0) throw new EmptyCartError();
+        return { kind: "submitted" as const, gallery: fresh, transition: null, result, now };
       }
 
-      // CAS on the membership: only the call that flips `selection_locked_at`
-      // from NULL gets a row back, so a double-click that raced past the
-      // pre-check above still sends exactly one email.
       const locked = await tx
         .update(galleryClients)
         .set({ selectionLockedAt: now, selectionSubmittedAt: now, selectionLockedBy: "client" })
@@ -306,8 +286,10 @@ export const POST = withApiSession(async function POST(
         return { kind: "lost_race" as const, gallery: fresh };
       }
 
+      const result = await claimCart(tx, fresh, session.user.id, now);
+      if (result.stamped === 0) throw new EmptyCartError();
       const transition = await settleGalleryLockStatus(tx, gallery.id);
-      return { kind: "submitted" as const, gallery: fresh, transition };
+      return { kind: "submitted" as const, gallery: fresh, transition, result, now };
     });
   }
 
@@ -453,8 +435,13 @@ export const POST = withApiSession(async function POST(
       galleryTitle: gallery.title,
       galleryUrl: new URL(`/dashboard/galleries/${gallery.id}`, AUTH_URL).toString(),
       quota,
-      // Task #244: only the rolling-delivery order carries a count.
-      ...("requestedCount" in outcome ? { requestedCount: outcome.requestedCount } : {}),
+      // Task #244 / epic #250 — only a rolling-delivery order carries a
+      // count, and it is the photographer's NEW work: claims plus escalations
+      // (`newUnits`). Joined picks add none, so an all-joined submit sends the
+      // email without the "Pidió N…" line rather than a misleading "0".
+      ...(submittedGallery.rollingDelivery && outcome.result.newUnits > 0
+        ? { requestedCount: outcome.result.newUnits }
+        : {}),
     });
   } catch {
     // Swallowed on purpose — see the comment above this try block. The
@@ -472,13 +459,18 @@ export const POST = withApiSession(async function POST(
   return NextResponse.json({
     status: "submitted",
     quota,
-    // The CALLER's own submission time (their `selectionSubmittedAt`).
-    submittedAt: now.toISOString(),
+    // The CALLER's own submission time (their `selectionSubmittedAt`),
+    // sampled AFTER the gallery lock.
+    submittedAt: outcome.now.toISOString(),
     // Whether this submission was the one that closed the gallery.
     gallerySelected,
+    // Epic #250 — one count per `submitPick` outcome for this call. S7's
+    // client tray reads it; the fake db cannot prove the claims landed, the
+    // route tests assert the `assets`/`asset_picks` rows directly.
+    pickOutcomes: outcome.result.counts,
     // Task #244 — how many photos THIS call actually stamped (rolling
     // delivery only). The client marks picks as ordered only when this is
     // positive; the idempotent 200 above carries no such field.
-    ...("requestedCount" in outcome ? { requestedCount: outcome.requestedCount } : {}),
+    ...(submittedGallery.rollingDelivery ? { requestedCount: outcome.result.stamped } : {}),
   });
 });

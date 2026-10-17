@@ -227,6 +227,81 @@ describe("claimCart", () => {
     await expect(claimCart(ctx.tx, ctx.gallery, A, t(5))).rejects.toThrow(/claim CAS lost/);
   });
 
+  it("C11b — a CAS loss on the ESCALATION throws: a final landing mid-claim fails closed", async () => {
+    // This one is REACHABLE in production, unlike the plan's "unreachable for
+    // every known writer": `final/route.ts` writes `assets.final_key` without
+    // taking the gallery lock, and a rolling gallery finishes proofs while it
+    // is still `proofing`. So an upload can commit between step 2's read and
+    // this UPDATE. The throw rolls the whole submit back (a 500, fail-closed)
+    // and the retry resolves to `escalation_blocked` instead of billing an
+    // edited unit over a photo that already has a final.
+    const ctx = setup([assetRow("x", claim({ selectionKind: "original" }))], [pickRow("x", B)]);
+    const row = ctx.assetStore[0]!;
+    // Read as "no final", then the final lands between the read and the write.
+    let reads = 0;
+    Object.defineProperty(row, "finalKey", {
+      configurable: true,
+      get: () => (reads++ === 0 ? null : "final/x.jpg"),
+      set: () => {},
+    });
+
+    await expect(claimCart(ctx.tx, ctx.gallery, B, t(5))).rejects.toThrow(/claim CAS lost/);
+  });
+
+  it("C13 — the cart is STAMPED first: the first write of the call is asset_picks, before any assets claim", async () => {
+    // One claim on a free asset and one escalation on A's original: TWO
+    // `assets` writes, so "the stamp came first" is a claim about an order
+    // with somewhere for it to hide. Claim-then-stamp — the order the task
+    // body still prescribes, retracted in the plan §6.1 because PATCH takes no
+    // gallery lock and a committed delete in that window leaves a claimed,
+    // billed unit with no pick behind it (the S2 §6.1 ghost unit) — reverses
+    // the first two entries and goes RED here.
+    const ctx = setup(
+      [assetRow("x"), assetRow("y", claim({ selectionKind: "original" }))],
+      [pickRow("x", B), pickRow("y", B)],
+    );
+    const writes: string[] = [];
+    const realUpdate = ctx.fake.update.bind(ctx.fake);
+    ctx.fake.update = ((table: unknown) => {
+      writes.push(table === assetPicks ? "picks" : table === assets ? "assets" : "other");
+      return realUpdate(table);
+    }) as typeof ctx.fake.update;
+
+    const result = await claimCart(ctx.tx, ctx.gallery, B, t(5));
+
+    expect(result.counts).toEqual({ claimed: 1, escalated: 1, joined: 0, escalationBlocked: 0 });
+    expect(result.stamped).toBe(2);
+    // The stamp is the FIRST write and there is exactly one of it; the claims
+    // that follow can only be the rows it returned.
+    expect(writes).toEqual(["picks", "assets", "assets"]);
+  });
+
+  it("C14 — the stamp is scoped to the locked gallery: another gallery's cart is untouched", async () => {
+    // The same person can hold carts in two galleries. Without the
+    // `gallery_id` filter the stamp takes the other gallery's pick too, and
+    // step 2's `assets` read (which IS gallery-scoped) cannot resolve it — the
+    // "unknown asset" throw, i.e. it fails closed as a 500, not silently.
+    const OTHER = "22222222-2222-4222-8222-222222222222";
+    const ctx = setup(
+      [assetRow("x"), assetRow("z", { galleryId: OTHER })],
+      [pickRow("x", A), pickRow("z", A, { galleryId: OTHER })],
+    );
+
+    const result = await claimCart(ctx.tx, ctx.gallery, A, t(5));
+
+    expect(result.stamped).toBe(1);
+    expect(ctx.pickStore.find((pick) => pick.assetId === "x")!.submittedAt).toEqual(t(5));
+    expect(ctx.pickStore.find((pick) => pick.assetId === "z")!.submittedAt).toBeNull();
+    expect(ctx.assetStore.find((row) => row.id === "x")).toMatchObject({
+      isSelected: true,
+      billedTo: A,
+    });
+    expect(ctx.assetStore.find((row) => row.id === "z")).toMatchObject({
+      isSelected: false,
+      billedTo: null,
+    });
+  });
+
   it("C12 — an empty cart stamps nothing, returns arrival: null and writes no asset", async () => {
     const ctx = setup([assetRow("x")], [pickRow("x", A, { submittedAt: t(0) })]);
     const before = structuredClone(ctx.assetStore);

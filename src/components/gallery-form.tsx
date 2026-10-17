@@ -108,7 +108,7 @@ export function GalleryForm({
             opens a searchable list and a click toggles a client, so picking
             several needs no modifier key.
 
-            Task #100 dropped this select's `required`: the shoot happens
+            Task #100 dropped this picker's `required`: the shoot happens
             before the paperwork, and the photographer must be able to set the
             session up and upload proofs before the client record exists. An
             unexplained optional field reads as a bug, so the note below says

@@ -130,6 +130,22 @@ describe("DashboardGalleryCreateDialog", () => {
   // rather than off the state object: a rejected submit must leave the dialog
   // open with the photographer's typing intact, and must not announce a
   // success that did not happen.
+  it("stays open and announces nothing when the action reports an error", async () => {
+    createGalleryMock.mockResolvedValue({
+      status: "error",
+      message: "Ese paquete ya no está disponible.",
+    });
+    const user = userEvent.setup();
+    render(<DashboardGalleryCreateDialog clients={CLIENTS} packages={PACKAGES} />);
+
+    await createOne(user);
+
+    const dialog = await screen.findByRole("dialog");
+    expect(await within(dialog).findByRole("alert")).toBeDefined();
+    expect(within(dialog).getByText("Ese paquete ya no está disponible.")).toBeDefined();
+    expect(screen.getByRole("status").textContent).toBe("");
+  });
+
   // Task #247. The picker is a portaled, MODAL popover inside a Radix Dialog,
   // so two dismissable layers and two focus scopes are alive at once. That only
   // exists here — the other two call sites are plain pages — and it is the one
@@ -159,21 +175,5 @@ describe("DashboardGalleryCreateDialog", () => {
     // ...and only then does a second Escape dismiss the dialog itself.
     await user.keyboard("{Escape}");
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
-  });
-
-  it("stays open and announces nothing when the action reports an error", async () => {
-    createGalleryMock.mockResolvedValue({
-      status: "error",
-      message: "Ese paquete ya no está disponible.",
-    });
-    const user = userEvent.setup();
-    render(<DashboardGalleryCreateDialog clients={CLIENTS} packages={PACKAGES} />);
-
-    await createOne(user);
-
-    const dialog = await screen.findByRole("dialog");
-    expect(await within(dialog).findByRole("alert")).toBeDefined();
-    expect(within(dialog).getByText("Ese paquete ya no está disponible.")).toBeDefined();
-    expect(screen.getByRole("status").textContent).toBe("");
   });
 });

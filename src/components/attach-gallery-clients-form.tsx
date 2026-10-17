@@ -39,10 +39,11 @@ export function AttachGalleryClientsForm({
     <form action={formAction} className="flex flex-col gap-2">
       <input type="hidden" name="galleryId" value={galleryId} />
       {/* Shared `ClientPicker`, same as gallery-form.tsx and
-          flash-clients-panel.tsx. It renders its own label (epic #125's "no
-          `.label` eyebrow under /dashboard" rule lives inside it) and the
-          hidden `clientIds` inputs `attachGalleryClients` reads with
-          `getAll`, so nothing about the submission changed with task #247. */}
+          flash-clients-panel.tsx. It renders its own label — plain text, no
+          `.label` eyebrow, per epic #125's done-when, documented in that
+          file's header — and the hidden `clientIds` inputs
+          `attachGalleryClients` reads with `getAll`, so nothing about the
+          submission changed with task #247. */}
       <ClientPicker
         id="attach-client-ids"
         name="clientIds"

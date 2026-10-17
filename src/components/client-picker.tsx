@@ -39,6 +39,13 @@
 // replaces, without the parent having to know it exists. (`HTMLButtonElement
 // .form` resolves that form for us; no context, no prop.)
 //
+// WHY THE LABEL IS PLAIN TEXT
+// Every call site used to spell out the label, and each one carried task
+// #133's note: `.label` (globals.css's mono, uppercase, 0.22em-tracked eyebrow)
+// does not survive under /dashboard — epic #125's own done-when — so the label
+// is plain `text-fg-mute text-xs tracking-wide uppercase`. That rule now lives
+// here, once, because this file is the only place that label is rendered.
+//
 // Task #135's token rule still applies: this file is not named `dashboard-*`
 // and does not live under `src/app/dashboard/**`, so task #175's ESLint rule
 // correctly refuses `app-*` utilities here even though it only ever renders
@@ -293,9 +300,19 @@ export function ClientPicker({
                     // click would steal it and the arrow keys would stop.
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={() => toggle(client.id)}
+                    // NOT `bg-muted`: `--muted` and `--popover` are the same
+                    // `--bg-2` (globals.css), so an active or hovered row was
+                    // painted in the exact colour of the popover it sits on and
+                    // nothing changed on screen — a keyboard user pressing
+                    // ArrowDown saw no target before Enter toggled it (WCAG
+                    // 2.4.7). This wash is the mock's own answer to "hover on an
+                    // element that is already raised"
+                    // (design/system/dashboard.html:393, `.client-item__more:hover`
+                    // over the raised `.client-item`), used for both states. No
+                    // brass, no new token.
                     className={cn(
                       rowClass,
-                      "hover:bg-muted data-[active=true]:bg-muted select-none",
+                      "select-none hover:bg-[rgba(236,234,242,0.07)] data-[active=true]:bg-[rgba(236,234,242,0.07)]",
                     )}
                   >
                     <CheckIcon

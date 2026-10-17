@@ -1192,6 +1192,17 @@ describe("PATCH — on behalf of a client (decision 12)", () => {
     expect(db.__rows.assetPicks).toEqual([]);
   });
 
+  it("O8b — a DRAFT gallery (admin-visible) is refused with gallery_not_submittable", async () => {
+    const db = await seedMembers();
+    db.__rows.galleries[0]!.status = "draft";
+
+    const result = await patchAsAdmin(ASSET_1_ID, { selected: true, actingClientId: CLIENT_C });
+
+    expect(result.status).toBe(409);
+    expect(result.body).toEqual({ error: "gallery_not_submittable" });
+    expect(db.__rows.assetPicks).toEqual([]);
+  });
+
   it("O9 — originals_not_allowed still applies to the admin", async () => {
     const db = await seedMembers();
     db.__rows.galleries[0]!.allowsOriginalSelection = false;

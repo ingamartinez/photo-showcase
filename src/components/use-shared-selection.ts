@@ -149,10 +149,14 @@ export type SharedSelectionAsset = {
   isSelected: boolean;
 };
 
-// Epic #239 — the PATCH selection route's lock refusals. All three mean "the
+// Epic #239 — the PATCH selection route's lock refusals. All four mean "the
 // board changed under you" (somebody just submitted, or an admin locked a
 // person), so the right response is a calm sentence AND a snapshot refresh so
 // the controls catch up — not the generic "no se pudo actualizar" red flag.
+//
+// Task #249's `pick_not_yours` is deliberately NOT an entry here: its sentence
+// names the pick's owner, so it is built by `foreignPickRefusal` below from the
+// 409's body instead of being a static string.
 const LOCK_REFUSALS: Record<string, string> = {
   client_selection_locked: "Tu selección ya está cerrada, así que no se puede cambiar.",
   pick_locked: "Esa foto es de alguien que ya envió su selección, así que no se puede cambiar.",
@@ -162,11 +166,36 @@ const LOCK_REFUSALS: Record<string, string> = {
   already_requested: "Esta foto ya fue pedida; para quitarla escríbele a tu fotógrafo.",
 };
 
+/** Task #249 — the sentence for a pick that belongs to somebody else. Owner's
+ * copy, verbatim. The name comes from the SERVER (`pickedByName` on the 409,
+ * under the app-wide `name ?? email` rule), never from the snapshot, so a stale
+ * render or a pick that changed hands between render and click still names the
+ * right person.
+ *
+ * The `trim()` guard is the ONE place that turns `""` / whitespace / `null` /
+ * `undefined` into the anonymous sentence — a missing label must never render
+ * as `null` or `undefined` on screen. */
+export function foreignPickRefusal(name: string | null): string {
+  const label = name?.trim();
+  return label
+    ? `Esa foto la eligió ${label}, así que no podés quitarla.`
+    : "Esa foto la eligió otra persona, así que no podés quitarla.";
+}
+
 /** The calm message for a 409 lock refusal, or `null` for any other failure.
  * Reads the body defensively: a non-JSON error is simply "not a lock refusal". */
 async function lockRefusalMessage(response: Response): Promise<string | null> {
   if (response.status !== 409) return null;
-  const body = (await response.json().catch(() => null)) as { error?: string } | null;
+  const body = (await response.json().catch(() => null)) as {
+    error?: string;
+    pickedByName?: unknown;
+  } | null;
+  // Task #249 — the only refusal whose copy depends on the body. A non-string
+  // `pickedByName` (absent, null, a number) reads as "no name", never as a
+  // rendered surprise.
+  if (body?.error === "pick_not_yours") {
+    return foreignPickRefusal(typeof body.pickedByName === "string" ? body.pickedByName : null);
+  }
   return (body?.error && LOCK_REFUSALS[body.error]) || null;
 }
 
@@ -854,10 +883,11 @@ export function useSharedSelection({
         // `pickedBy` too — not just `selectionKind` — for the SAME reason
         // `toggleSelection` above writes back every field its own response
         // carries rather than assuming the pick's existing local copy is still
-        // right: the route's own `pickedBy` is a REAL lookup (a type change can
-        // be made by any client attached to the gallery, not only the one who
-        // originally picked the photo — task #94/#95's shared-selection model),
-        // and this is the one place that lookup's result is actually consumed.
+        // right: the route's own `pickedBy` is a REAL lookup (since task #249 a
+        // type change is only reachable by an admin, by the picker, or on an
+        // unprotected pick — the route refuses everyone else — so the recorded
+        // picker can still differ from this session), and this is the one place
+        // that lookup's result is actually consumed.
         setPicks((prev) =>
           prev.map((pick) =>
             pick.assetId === body.asset.id

@@ -9,6 +9,7 @@ import {
   type TierRow,
 } from "@/components/extra-price-tiers-editor";
 import type { ClientForPicker } from "@/lib/clients";
+import { ClientPicker } from "@/components/client-picker";
 import type { PackageForPicker } from "@/lib/packages";
 
 const initialState: CreateGalleryState = { status: "idle" };
@@ -84,11 +85,14 @@ export function GalleryForm({
   // there). `createGallery` does have errors a photographer corrects and
   // resubmits — a whitespace-only title, an invalid or withdrawn package, an
   // unknown client id — so the papercut exists here too. It is simply not
-  // fixed yet, and no task has asked for it: restoring `<select multiple>`
-  // and `<select>` state costs materially more than the three text inputs
-  // ClientForm has, because `defaultValue` on a multi-select is an array of
-  // option values rather than one string. Worth its own slice, not a silent
-  // ride-along on #50.
+  // fixed yet, and no task has asked for it: restoring `<select>` state costs
+  // more than the three text inputs ClientForm has. Task #247 added the
+  // clients half of that cost to the problem rather than removing it — the
+  // `ClientPicker` holds React state and clears it on the form's `reset`
+  // event (src/components/client-picker.tsx), so it blanks together with every
+  // other uncontrolled field. Restoring it after a rejected submit would mean
+  // skipping that clear for error results, which is still not done. Worth its
+  // own slice, not a silent ride-along on #50.
   return (
     // Task #131: the card chrome (`border p-6`) and the "Nueva galería"
     // eyebrow both moved OUT of here — the dialog that now wraps this form
@@ -99,7 +103,10 @@ export function GalleryForm({
       <div className="flex flex-col gap-2">
         {/* Task #94: a gallery can belong to several clients at once — a
             couple's own separate logins, a family, two businesses sharing a
-            shoot. Hold Cmd/Ctrl (or Shift for a range) to pick more than one.
+            shoot. Task #247 replaced the Cmd/Ctrl-click `<select multiple>`
+            with `ClientPicker` (src/components/client-picker.tsx): the trigger
+            opens a searchable list and a click toggles a client, so picking
+            several needs no modifier key.
 
             Task #100 dropped this select's `required`: the shoot happens
             before the paperwork, and the photographer must be able to set the
@@ -136,24 +143,18 @@ export function GalleryForm({
           </>
         ) : (
           <>
-            <label htmlFor="clientIds" className="text-fg-mute text-xs tracking-wide uppercase">
-              Clientes (opcional)
-            </label>
-            <select
+            {/* Task #247: the shared picker renders the label itself, so this
+                branch no longer spells out a `<label htmlFor>`. It still owns
+                the control that id points at — the association the paragraph
+                above describes is unchanged. */}
+            <ClientPicker
               id="clientIds"
               name="clientIds"
-              multiple
-              size={Math.min(6, Math.max(3, clients.length))}
+              label="Clientes (opcional)"
+              clients={clients}
               aria-invalid={state.status === "error"}
               aria-describedby={state.status === "error" ? "gallery-form-error" : undefined}
-              className={inputClass}
-            >
-              {clients.map((client) => (
-                <option key={client.id} value={client.id}>
-                  {client.name ?? client.email}
-                </option>
-              ))}
-            </select>
+            />
             <p className="text-fg-dim text-sm leading-relaxed">
               Puedes dejarlo vacío y agregar el cliente después — sin cliente no vas a poder
               publicar la galería.

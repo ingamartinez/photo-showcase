@@ -1,8 +1,8 @@
 "use client";
 
 // Client assignment for a flash gallery (task #233): the active clients with a
-// remove button each, and the multi-select picker of the clients still
-// available — the same picker shape as `AttachGalleryClientsForm`, pointed at
+// remove button each, and the shared `ClientPicker` (task #247) for the clients
+// still available — the same control as `AttachGalleryClientsForm`, pointed at
 // the flash actions. Hiding is UX; both actions re-validate server-side.
 import { useActionState, useTransition } from "react";
 import { useRouter } from "next/navigation";
@@ -12,11 +12,9 @@ import {
   type AttachFlashClientsState,
 } from "@/app/dashboard/flash/actions";
 import type { ClientForPicker } from "@/lib/clients";
+import { ClientPicker } from "@/components/client-picker";
 
 const initialState: AttachFlashClientsState = { status: "idle" };
-
-const inputClass =
-  "border-line-2 focus-visible:border-accent text-fg text-sm rounded-[5px] border bg-transparent px-4 py-3 transition-colors outline-none";
 
 export function FlashClientsPanel({
   flashGalleryId,
@@ -66,27 +64,14 @@ export function FlashClientsPanel({
       ) : (
         <form action={formAction} className="flex flex-col gap-2">
           <input type="hidden" name="flashGalleryId" value={flashGalleryId} />
-          <label
-            htmlFor="flash-attach-client-ids"
-            className="text-fg-mute text-xs tracking-wide uppercase"
-          >
-            Agregar clientes
-          </label>
-          <select
+          <ClientPicker
             id="flash-attach-client-ids"
             name="clientIds"
-            multiple
-            size={Math.min(6, Math.max(3, eligibleClients.length))}
+            label="Agregar clientes"
+            clients={eligibleClients}
             aria-invalid={state.status === "error"}
             aria-describedby={state.status === "error" ? "flash-attach-error" : undefined}
-            className={inputClass}
-          >
-            {eligibleClients.map((client) => (
-              <option key={client.id} value={client.id}>
-                {client.name ?? client.email}
-              </option>
-            ))}
-          </select>
+          />
           <button
             type="submit"
             disabled={pending}

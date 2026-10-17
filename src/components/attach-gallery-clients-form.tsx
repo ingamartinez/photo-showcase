@@ -14,18 +14,9 @@ import {
   type AttachGalleryClientsState,
 } from "@/app/dashboard/galleries/actions";
 import type { ClientForPicker } from "@/lib/clients";
+import { ClientPicker } from "@/components/client-picker";
 
 const initialState: AttachGalleryClientsState = { status: "idle" };
-
-// Task #135 sweep: `text-[15px]` was an ad-hoc one-off (the "each screen
-// invents its own scale" defect globals.css's app-surface comment names
-// directly). `text-sm` (14px) instead, matching `--app-text-base`'s own
-// value rather than the token itself: this file is not named `dashboard-*`
-// and does not live under `src/app/dashboard/**`, so task #175's ESLint
-// rule correctly refuses `app-*` utilities here even though the component
-// only ever renders inside that scope.
-const inputClass =
-  "border-line-2 focus-visible:border-accent text-fg placeholder:text-fg-mute text-sm rounded-[5px] border bg-transparent px-4 py-3 transition-colors outline-none";
 
 export function AttachGalleryClientsForm({
   galleryId,
@@ -47,30 +38,19 @@ export function AttachGalleryClientsForm({
   return (
     <form action={formAction} className="flex flex-col gap-2">
       <input type="hidden" name="galleryId" value={galleryId} />
-      {/* Task #133: no `.label` (globals.css's mono, uppercase,
-          0.22em-tracked eyebrow style) survives under /dashboard — epic
-          #125's own done-when. Plain text instead. */}
-      <label htmlFor="attach-client-ids" className="text-fg-mute text-xs tracking-wide uppercase">
-        Agregar clientes
-      </label>
-      {/* Same `multiple` picker as gallery-form.tsx's own client select —
-          see that component's comment on why `getAll`, not `get`, is what
-          the action reads on the other end. */}
-      <select
+      {/* Shared `ClientPicker`, same as gallery-form.tsx and
+          flash-clients-panel.tsx. It renders its own label (epic #125's "no
+          `.label` eyebrow under /dashboard" rule lives inside it) and the
+          hidden `clientIds` inputs `attachGalleryClients` reads with
+          `getAll`, so nothing about the submission changed with task #247. */}
+      <ClientPicker
         id="attach-client-ids"
         name="clientIds"
-        multiple
-        size={Math.min(6, Math.max(3, eligibleClients.length))}
+        label="Agregar clientes"
+        clients={eligibleClients}
         aria-invalid={state.status === "error"}
         aria-describedby={state.status === "error" ? "attach-clients-error" : undefined}
-        className={inputClass}
-      >
-        {eligibleClients.map((client) => (
-          <option key={client.id} value={client.id}>
-            {client.name ?? client.email}
-          </option>
-        ))}
-      </select>
+      />
 
       {/* Task #135 sweep: this used to be the marketing CTA — uppercase,
           0.1em-tracked, 13px. The mock's own plain `.btn`
@@ -78,8 +58,10 @@ export function AttachGalleryClientsForm({
           button label; its only states are a border and an `--app-raised`
           hover wash, never brass (epic #125's rule that brass is a fill,
           never a hover/focus wash). Brand tokens (`bg-bg-2`), not `app-*` —
-          see `inputClass`'s own comment above for why this file cannot name
-          the token, and `bg-bg-2` is `--app-raised`'s own value anyway. */}
+          this file is not named `dashboard-*`, so task #175's ESLint rule
+          refuses those utilities here even though the component only ever
+          renders inside that scope (see client-picker.tsx's header, same
+          constraint), and `bg-bg-2` is `--app-raised`'s own value anyway. */}
       <button
         type="submit"
         disabled={pending}

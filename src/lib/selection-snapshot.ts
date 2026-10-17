@@ -75,6 +75,11 @@ export type SelectionPick = {
    * `SelectionPick[]` IS picked by construction, so this is never optional
    * here. */
   selectionKind: SelectionKind;
+  /** Task #244 — rolling delivery only: when this pick was ORDERED (the
+   * client pressed "Enviar"), ISO 8601. `null`/absent = still "por enviar"
+   * (the internal "cart"), freely removable by its picker. Optional so older
+   * snapshots and test doubles read as "not ordered". */
+  requestedAt?: string | null;
 };
 
 /** Epic #239 — the per-client selection lock, as the browser sees it. Dates
@@ -86,6 +91,11 @@ export type ViewerLock = {
   /** When the viewer pressed "Enviar selección" themselves — `null` when an
    * admin locked them instead. */
   submittedAt: string | null;
+  /** Task #244 — WHO locked the viewer, computed on the SERVER from
+   * `gallery_clients.selection_locked_by`. The client never infers it from
+   * `submittedAt` (a member can order and later be locked by the
+   * photographer). Optional for older snapshots and test doubles. */
+  lockedBy?: "client" | "admin" | null;
 };
 
 export type SelectionLockSnapshot = {
@@ -99,6 +109,11 @@ export type SelectionLockSnapshot = {
    * themselves. The rest of the locked ones were closed by the photographer
    * (`selectionSubmittedAt` is null), which the tray words differently. */
   submittedPickerIds: string[];
+  /** Task #244 — the viewer's own LAST submit time (ISO), whether or not it
+   * locked them. Under rolling delivery a submit never locks, so
+   * `viewerLock.submittedAt` is always absent there and this is the only
+   * place "Último envío" can come from. `null` before any submit. */
+  viewerSubmittedAt?: string | null;
 };
 
 /** Copy shown when a pick carries no attribution at all — see

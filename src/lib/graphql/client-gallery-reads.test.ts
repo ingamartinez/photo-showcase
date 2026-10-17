@@ -53,6 +53,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     termsOverridden: false,
     selectionTrayMode: "flat",
     allowsOriginalSelection: false,
+    rollingDelivery: false,
     assets: [
       {
         id: "a1",
@@ -167,6 +168,7 @@ describe("readClientGalleryBySlug", () => {
       // Task #214 — the switch itself, exposed as a plain boolean (no wire
       // enum to convert back, unlike `selectionTrayMode` above).
       allowsOriginalSelection: false,
+      rollingDelivery: false,
       package: { name: "Estándar" },
       assets: [
         {
@@ -206,6 +208,7 @@ describe("readClientGalleryBySlug", () => {
       "includedPhotosSnapshot",
       "originalPhotoPriceCopSnapshot",
       "package",
+      "rollingDelivery",
       "selectionSubmittedAt",
       "selectionTrayMode",
       "sessionDate",

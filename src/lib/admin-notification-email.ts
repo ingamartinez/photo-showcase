@@ -28,7 +28,15 @@ export type SubmissionNotificationParams = {
    * counter renders — never re-derived here. What the photographer reads is
    * guaranteed to be exactly what the client saw before submitting. */
   quota: QuotaResult;
+  /** Task #244 — rolling delivery only: how many photos THIS submit added to
+   * the photographer's work (the client's cart, just ordered). Absent for the
+   * classic whole-selection submit, whose email is unchanged. */
+  requestedCount?: number;
 };
+
+function orderedLine(count: number): string {
+  return `Pidió ${count} foto${count === 1 ? "" : "s"} nueva${count === 1 ? "" : "s"} para editar.`;
+}
 
 function clientLabel(params: SubmissionNotificationParams): string {
   return params.clientName?.trim() || params.clientEmail;
@@ -40,6 +48,9 @@ export function submissionNotificationEmailHtml(params: SubmissionNotificationPa
     "<p>Hola,</p>",
     `<p><strong>${clientLabel(params)}</strong> (${params.clientEmail}) envió su selección para ` +
       `<strong>${params.galleryTitle}</strong>.</p>`,
+    ...(params.requestedCount !== undefined
+      ? [`<p>${orderedLine(params.requestedCount)}</p>`]
+      : []),
     "<ul>",
     `<li>Incluidas: ${quota.includedPhotosSnapshot}</li>`,
     `<li>Seleccionadas: ${quota.selected}</li>`,
@@ -63,6 +74,7 @@ export function submissionNotificationEmailText(params: SubmissionNotificationPa
   const { quota } = params;
   return [
     `${clientLabel(params)} (${params.clientEmail}) envió su selección para ${params.galleryTitle}.`,
+    ...(params.requestedCount !== undefined ? ["", orderedLine(params.requestedCount)] : []),
     "",
     `Incluidas: ${quota.includedPhotosSnapshot}`,
     `Seleccionadas: ${quota.selected}`,

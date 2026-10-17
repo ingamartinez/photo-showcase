@@ -413,6 +413,9 @@ export type GalleryDetailAsset = {
   // (src/app/api/assets/[assetId]/final/route.ts), never this raw key.
   finalKey: string | null;
   isEdited: boolean;
+  // Task #244 — rolling delivery: when the client ordered this pick (null =
+  // not ordered / not selected). The admin queue is requested AND no final.
+  requestedAt?: Date | null;
   // Task #210 — added so the admin detail page can split `selectedCount`
   // into edited/original the SAME way `use-shared-selection.ts`'s own
   // `initialPicks` split does: filter this ONE already-fetched array,
@@ -472,6 +475,8 @@ export type GalleryDetail = {
   // that existed before this column did, which is what restores this app's
   // pre-#206 behavior for all of them (see `proof-tile.tsx`'s own gate).
   allowsOriginalSelection: boolean;
+  // Task #244 — opt-in rolling delivery; see `galleries.rolling_delivery`.
+  rollingDelivery: boolean;
   assets: GalleryDetailAsset[];
   // `Date | null`, not optional (task #25's own review): `findGalleryDetail`
   // below populates this UNCONDITIONALLY off the row's own column, so an
@@ -551,6 +556,7 @@ const galleryDetailWith = {
       sortOrder: true,
       finalKey: true,
       isEdited: true,
+      requestedAt: true,
       // Task #210 — see `GalleryDetailAsset.selectionKind`'s own comment
       // above for why this joined the projection.
       selectionKind: true,
@@ -603,6 +609,7 @@ function toGalleryDetail(row: RawGalleryDetailRow): GalleryDetail {
     termsOverridden: row.termsOverridden,
     selectionTrayMode: row.selectionTrayMode,
     allowsOriginalSelection: row.allowsOriginalSelection,
+    rollingDelivery: row.rollingDelivery,
     assets: row.assets,
     selectionSubmittedAt: row.selectionSubmittedAt,
   };
@@ -731,6 +738,12 @@ export type GalleryClientSelection = {
   submittedAt: Date | null;
   /** `assets.selected_by = userId` within THIS gallery. */
   pickCount: number;
+  /** Task #244 (rolling delivery) — of those picks: ORDERED (`requested_at`
+   * set), ordered AND with an uploaded final ("editadas"), and still not sent
+   * ("por enviar"). Always derived here, never stored. */
+  requestedCount: number;
+  editedCount: number;
+  unsentCount: number;
 };
 
 /** Epic #239 (slice #242) — per ACTIVE client on one gallery: the per-client
@@ -753,20 +766,41 @@ export async function getGalleryClientSelections(galleryId: string): Promise<{
     .where(and(eq(galleryClients.galleryId, galleryId), isNull(galleryClients.removedAt)));
 
   const picked = await db
-    .select({ id: assets.id, selectedBy: assets.selectedBy })
+    .select({
+      id: assets.id,
+      selectedBy: assets.selectedBy,
+      requestedAt: assets.requestedAt,
+      isEdited: assets.isEdited,
+      finalKey: assets.finalKey,
+    })
     .from(assets)
     .where(and(eq(assets.galleryId, galleryId), eq(assets.isSelected, true)));
 
   const pickOwnerByAssetId: Record<string, string> = {};
-  const counts = new Map<string, number>();
+  const tally = new Map<string, { picks: number; requested: number; edited: number }>();
   for (const asset of picked) {
     if (asset.selectedBy === null) continue;
     pickOwnerByAssetId[asset.id] = asset.selectedBy;
-    counts.set(asset.selectedBy, (counts.get(asset.selectedBy) ?? 0) + 1);
+    const entry = tally.get(asset.selectedBy) ?? { picks: 0, requested: 0, edited: 0 };
+    entry.picks += 1;
+    if (asset.requestedAt != null) {
+      entry.requested += 1;
+      if (asset.isEdited && asset.finalKey) entry.edited += 1;
+    }
+    tally.set(asset.selectedBy, entry);
   }
 
   return {
-    clients: members.map((member) => ({ ...member, pickCount: counts.get(member.userId) ?? 0 })),
+    clients: members.map((member) => {
+      const entry = tally.get(member.userId) ?? { picks: 0, requested: 0, edited: 0 };
+      return {
+        ...member,
+        pickCount: entry.picks,
+        requestedCount: entry.requested,
+        editedCount: entry.edited,
+        unsentCount: entry.picks - entry.requested,
+      };
+    }),
     pickOwnerByAssetId,
   };
 }

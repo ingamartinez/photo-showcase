@@ -50,6 +50,7 @@ const GALLERY_A_ID = "11111111-1111-4111-8111-111111111111";
 const GALLERY_B_ID = "22222222-2222-4222-8222-222222222222";
 const ASSET_1_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
 const ASSET_2_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
+const ASSET_3_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
 
 function clientASession(): Session {
   return {
@@ -108,6 +109,7 @@ function assetRow(overrides: Partial<Row> = {}): Row {
     proofHeight: 1067,
     isSelected: false,
     selectedAt: null,
+    requestedAt: null,
     // Task #206 — the domain's own default; the tests exercising a type
     // change override this explicitly.
     selectionKind: "edited",
@@ -954,6 +956,167 @@ describe("PATCH /api/assets/[assetId]/selection — allowsOriginalSelection is O
 
     expect(response.status).toBe(200);
     expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
+  });
+});
+
+// Task #244 — with rolling delivery on, a pick the client already ORDERED
+// (`requestedAt` set) is frozen for EVERY non-admin client. Fixture: ASSET_1 is
+// ordered (client-a's), ASSET_2 is client-a's pick still in the cart; client-b
+// is a different active client, on purpose.
+describe("PATCH /api/assets/[assetId]/selection — rolling delivery order freeze (#244)", () => {
+  const REQUESTED_AT = new Date("2026-10-16T10:00:00.000Z");
+
+  async function rollingGallery(rollingDelivery: boolean) {
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ rollingDelivery }));
+    db.__rows.galleryClients.length = 0;
+    for (const userId of ["client-a", "client-b"]) {
+      db.__rows.galleryClients.push({
+        galleryId: GALLERY_A_ID,
+        userId,
+        removedAt: null,
+        selectionLockedAt: null,
+        selectionSubmittedAt: null,
+      });
+    }
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(
+      assetRow({
+        id: ASSET_1_ID,
+        isSelected: true,
+        selectedBy: "client-a",
+        requestedAt: REQUESTED_AT,
+      }),
+      assetRow({
+        id: ASSET_2_ID,
+        isSelected: true,
+        selectedBy: "client-a",
+        requestedAt: null,
+        sortOrder: 1,
+      }),
+    );
+    return db;
+  }
+
+  it("refuses the PICKER deselecting an ordered pick: 409 already_requested, row untouched", async () => {
+    const db = await rollingGallery(true);
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "already_requested" });
+    expect(db.__rows.assets[0]).toMatchObject({
+      isSelected: true,
+      selectedBy: "client-a",
+      requestedAt: REQUESTED_AT,
+    });
+    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
+  });
+
+  it("refuses ANOTHER client deselecting it too (the freeze is not tied to the picker)", async () => {
+    const db = await rollingGallery(true);
+    authMock.mockResolvedValue(clientBSession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "already_requested" });
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
+  });
+
+  it("refuses a kind change on an ordered pick, for the picker and for another client", async () => {
+    const db = await rollingGallery(true);
+    const { PATCH } = await import("./route");
+    for (const session of [clientASession(), clientBSession()]) {
+      authMock.mockResolvedValue(session);
+      const response = await PATCH(
+        requestBody(ASSET_1_ID, { selectionKind: "original" }),
+        paramsFor(ASSET_1_ID),
+      );
+      expect(response.status).toBe(409);
+      await expect(response.json()).resolves.toEqual({ error: "already_requested" });
+    }
+    expect(db.__rows.assets[0]).toMatchObject({ selectionKind: "edited" });
+  });
+
+  it("still lets the client deselect a pick that is only in the cart (not ordered yet)", async () => {
+    const db = await rollingGallery(true);
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    const removed = await PATCH(requestFor(ASSET_2_ID, false), paramsFor(ASSET_2_ID));
+
+    expect(removed.status).toBe(200);
+    expect(db.__rows.assets[1]).toMatchObject({ isSelected: false, requestedAt: null });
+  });
+
+  it("a fresh pick starts in the cart: requestedAt stays null", async () => {
+    const db = await rollingGallery(true);
+    db.__rows.assets.push(assetRow({ id: ASSET_3_ID, sortOrder: 2 }));
+    authMock.mockResolvedValue(clientBSession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_3_ID, true), paramsFor(ASSET_3_ID));
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assets[2]).toMatchObject({ isSelected: true, requestedAt: null });
+  });
+
+  it("an order landing between the freeze check and the write makes the UPDATE match nothing: 409, row untouched", async () => {
+    const db = await rollingGallery(true);
+    // Not ordered on the route's FIRST read of the row (the freeze check),
+    // ordered on every read after it: the order lands "in between".
+    const row = db.__rows.assets[1]!;
+    let reads = 0;
+    Object.defineProperty(row, "requestedAt", {
+      configurable: true,
+      get: () => (reads++ === 0 ? null : REQUESTED_AT),
+      set: () => {},
+    });
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    const deselect = await PATCH(requestFor(ASSET_2_ID, false), paramsFor(ASSET_2_ID));
+
+    expect(deselect.status).toBe(409);
+    await expect(deselect.json()).resolves.toEqual({ error: "already_requested" });
+    expect(row.isSelected).toBe(true);
+    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
+
+    reads = 0;
+    const retype = await PATCH(
+      requestBody(ASSET_2_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_2_ID),
+    );
+    expect(retype.status).toBe(409);
+    await expect(retype.json()).resolves.toEqual({ error: "already_requested" });
+    expect(row.selectionKind).toBe("edited");
+  });
+
+  it("the admin is not bound: removing an ordered pick works and clears requestedAt", async () => {
+    const db = await rollingGallery(true);
+    authMock.mockResolvedValue(adminSession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: false, requestedAt: null });
+  });
+
+  it("flag OFF: an ordered-looking row does not freeze anything (today's behavior)", async () => {
+    const db = await rollingGallery(false);
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: false });
   });
 });
 

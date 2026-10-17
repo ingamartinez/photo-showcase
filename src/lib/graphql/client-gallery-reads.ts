@@ -133,6 +133,7 @@ const CLIENT_GALLERY_DETAIL_DOCUMENT = graphql(`
       originalPhotoPriceCopSnapshot
       selectionTrayMode
       allowsOriginalSelection
+      rollingDelivery
       package {
         name
       }

@@ -163,6 +163,8 @@ vi.mock("@/app/dashboard/galleries/actions", () => ({
   resendGalleryAccessEmail: (...args: unknown[]) => resendGalleryAccessEmailMock(...args),
   updateGalleryTerms: (...args: unknown[]) => updateGalleryTermsMock(...args),
   updateSelectionTrayMode: (...args: unknown[]) => updateSelectionTrayModeMock(...args),
+  // Task #244 — <RollingDeliveryControl> imports this too.
+  updateRollingDelivery: vi.fn(),
   updateAllowsOriginalSelection: (...args: unknown[]) => updateAllowsOriginalSelectionMock(...args),
   lockGalleryClientSelection: vi.fn(),
   unlockGalleryClientSelection: vi.fn(),
@@ -188,6 +190,7 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
     termsOverridden: false,
     selectionTrayMode: "flat",
     allowsOriginalSelection: false,
+    rollingDelivery: false,
     assets: [],
     selectionSubmittedAt: null,
     ...overrides,

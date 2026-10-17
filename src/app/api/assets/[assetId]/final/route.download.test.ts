@@ -241,6 +241,11 @@ async function seedGalleryAndAsset(overrides: {
   isEdited: boolean;
   galleryStatus: string;
   clientId?: string;
+  // Task #244 — the gallery's opt-in rolling-delivery flag.
+  rollingDelivery?: boolean;
+  // Task #244 — additional gallery_clients rows, to prove the read is not
+  // limited to the picker. `removedAt` set = a soft-removed client.
+  otherClients?: { userId: string; removedAt?: Date }[];
   // TASK #218: lets a test seed the final with a SPECIFIC fixture (e.g. one
   // carrying a location-leak marker) instead of the plain default. Defaults
   // to `makeLargeSourceFixture()` when omitted.
@@ -268,7 +273,17 @@ async function seedGalleryAndAsset(overrides: {
     id: GALLERY_ID,
     title: "Boda Ana y Beto",
     status: overrides.galleryStatus,
+    rollingDelivery: overrides.rollingDelivery ?? false,
   });
+  for (const other of overrides.otherClients ?? []) {
+    db.__rows.galleryClients.push({
+      galleryId: GALLERY_ID,
+      userId: other.userId,
+      // This file's hand-rolled fake reads `isNull(removedAt)` as
+      // `removedAt === undefined`, so an ACTIVE row must omit the key.
+      ...(other.removedAt ? { removedAt: other.removedAt } : {}),
+    });
+  }
   // Task #94: ownership is now a `gallery_clients` row, not a `clientId`
   // column on the gallery itself.
   db.__rows.galleryClients.push({
@@ -413,6 +428,78 @@ describe("GET .../final vs GET .../proof — real bytes, real dimensions (task #
     );
 
     expect(response.status).toBe(404);
+  });
+});
+
+// Task #244 — rolling delivery, through the REAL ownership check and the REAL
+// shared gate. The picker is client-a; the reader in the positive case is a
+// DIFFERENT active client, because the owner's decision is that everyone in
+// the gallery sees everyone's finals.
+describe("GET /api/assets/[assetId]/final — rolling delivery (#244)", () => {
+  async function getFinal() {
+    const { GET: handler } = await import("./route");
+    return handler(
+      new NextRequest(`http://localhost/api/assets/${ASSET_ID}/final`),
+      paramsFor(ASSET_ID),
+    );
+  }
+
+  it.each(["proofing", "selected"])(
+    "flag ON, %s: a DIFFERENT active client than the picker reads the final",
+    async (galleryStatus) => {
+      await seedGalleryAndAsset({
+        isSelected: true,
+        isEdited: true,
+        galleryStatus,
+        rollingDelivery: true,
+        otherClients: [{ userId: "client-b" }],
+      });
+      authMock.mockResolvedValue(clientBSession());
+
+      const response = await getFinal();
+
+      expect(response.status).toBe(200);
+    },
+  );
+
+  it.each(["proofing", "selected"])(
+    "flag OFF, %s: the final stays closed to the client (regression)",
+    async (galleryStatus) => {
+      await seedGalleryAndAsset({
+        isSelected: true,
+        isEdited: true,
+        galleryStatus,
+        rollingDelivery: false,
+      });
+      authMock.mockResolvedValue(clientASession());
+
+      expect((await getFinal()).status).toBe(404);
+    },
+  );
+
+  it.each(["draft", "archived"])("flag ON, %s: still closed to a client", async (galleryStatus) => {
+    await seedGalleryAndAsset({
+      isSelected: true,
+      isEdited: true,
+      galleryStatus,
+      rollingDelivery: true,
+    });
+    authMock.mockResolvedValue(clientASession());
+
+    expect((await getFinal()).status).toBe(404);
+  });
+
+  it("flag ON: a REMOVED client (removed_at set) cannot read it", async () => {
+    await seedGalleryAndAsset({
+      isSelected: true,
+      isEdited: true,
+      galleryStatus: "proofing",
+      rollingDelivery: true,
+      otherClients: [{ userId: "client-b", removedAt: new Date("2026-10-01") }],
+    });
+    authMock.mockResolvedValue(clientBSession());
+
+    expect((await getFinal()).status).toBe(403);
   });
 });
 

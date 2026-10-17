@@ -53,6 +53,9 @@ export type SubmitSelectionOutcome = {
    * gallery itself moved to `selected`. `false` while others are still
    * choosing. */
   gallerySelected: boolean;
+  /** Task #244 — rolling delivery: how many photos this call actually
+   * stamped as ordered. Absent on the idempotent `already_submitted` 200. */
+  requestedCount?: number;
 };
 
 function confirmationMessage(
@@ -124,6 +127,9 @@ export function SubmitSelectionPanel({
   lockedByAdmin = false,
   ownPickCount = quota.selected,
   isAdminPreview = false,
+  rollingDelivery = false,
+  unsentCount = 0,
+  lastSubmittedAt = null,
 }: {
   galleryId: string;
   quota: QuotaResult;
@@ -154,6 +160,13 @@ export function SubmitSelectionPanel({
   /** Epic #239 — the photographer previewing the client page. The submit
    * route refuses admins (`admin_cannot_submit`), so no button is offered. */
   isAdminPreview?: boolean;
+  /** Task #244 — rolling delivery: the submit places an ORDER for the photos
+   * still "por enviar" and never locks. The button then counts those photos
+   * (`unsentCount`) instead of the whole selection, and the panel shows the
+   * last time this person sent (`lastSubmittedAt`). */
+  rollingDelivery?: boolean;
+  unsentCount?: number;
+  lastSubmittedAt?: string | null;
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -194,7 +207,11 @@ export function SubmitSelectionPanel({
 
   async function handleSubmit() {
     if (pending) return;
-    if (!window.confirm(confirmationMessage(quota, ownPickCount, allowsOriginalSelection))) return;
+    const confirmation = rollingDelivery
+      ? `¿Enviar ${unsentCount} foto${unsentCount === 1 ? "" : "s"} a tu fotógrafo para que las edite? ` +
+        "Una vez enviadas no las puedes quitar por tu cuenta."
+      : confirmationMessage(quota, ownPickCount, allowsOriginalSelection);
+    if (!window.confirm(confirmation)) return;
 
     setPending(true);
     setError(null);
@@ -220,6 +237,7 @@ export function SubmitSelectionPanel({
         quota: QuotaResult;
         submittedAt: string | null;
         gallerySelected?: boolean;
+        requestedCount?: number;
       };
       onSubmitted({
         quota: body.quota,
@@ -227,6 +245,7 @@ export function SubmitSelectionPanel({
         // A response from before epic #239 has no such field: that gallery-wide
         // lock is what "submitted" meant then.
         gallerySelected: body.gallerySelected ?? true,
+        requestedCount: body.requestedCount,
       });
     } catch {
       setError("No se pudo conectar.");
@@ -252,11 +271,20 @@ export function SubmitSelectionPanel({
       <button
         type="button"
         onClick={() => void handleSubmit()}
-        disabled={pending || ownPickCount === 0}
+        disabled={pending || (rollingDelivery ? unsentCount === 0 : ownPickCount === 0)}
         className="border-accent bg-accent hover:border-accent-2 hover:bg-accent-2 text-ink inline-flex min-h-11 items-center justify-center rounded-[3px] border px-3 text-sm font-semibold tracking-[0.02em] whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-12 lg:px-5"
       >
-        {pending ? "Enviando…" : "Enviar selección"}
+        {pending
+          ? "Enviando…"
+          : rollingDelivery
+            ? `Enviar ${unsentCount} foto${unsentCount === 1 ? "" : "s"}`
+            : "Enviar selección"}
       </button>
+      {rollingDelivery && lastSubmittedAt && (
+        <p className="text-fg-mute text-xs" role="status">
+          Último envío: {new Date(lastSubmittedAt).toLocaleDateString("es-CO")}
+        </p>
+      )}
       {error && (
         <p role="alert" className="text-danger text-sm">
           {error}

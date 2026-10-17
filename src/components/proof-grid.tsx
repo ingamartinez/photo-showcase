@@ -219,6 +219,9 @@ export function ProofGrid({
   initialLockedPickerIds = [],
   initialSubmittedPickerIds = [],
   isAdminPreview = false,
+  rollingDelivery = false,
+  finalsOpen = initialStatus === "delivered",
+  initialViewerSubmittedAt = null,
 }: {
   // Task #25's submit route is keyed on this — see that route's own header
   // comment for why the internal id, not the page's `publicSlug`, is the
@@ -244,6 +247,20 @@ export function ProofGrid({
   // Epic #239 — the photographer previewing this page. The submit route
   // refuses admins, so no working submit button is rendered for them.
   isAdminPreview?: boolean;
+  // Task #244 — opt-in rolling delivery (`galleries.rolling_delivery`): edited
+  // finals show as soon as they are readable (even while `proofing`/
+  // `selected`), picks split into "Por enviar" and "Pedidas", and "Enviar"
+  // places an order instead of locking the viewer. `false` = every other
+  // gallery, unchanged.
+  rollingDelivery?: boolean;
+  // Task #244 — whether this viewer may see finals at all: the PAGE's
+  // `areFinalsOpenToClient` result (src/lib/final-access.ts), passed down so
+  // this component never carries its own copy of the rule. Defaults to
+  // "delivered", the pre-#244 meaning. An admin previewing a `draft` gallery
+  // with the flag on gets `false` here: no finals UI.
+  finalsOpen?: boolean;
+  // Task #244 — the viewer's own last submit time, for "Último envío".
+  initialViewerSubmittedAt?: string | null;
   // The signed-in user's own id, so the tray can render their own picks as
   // "Vos" rather than their own name (see `pickerLabelFor`). Nothing is
   // authorized by this value — it is a display detail; every route this
@@ -323,6 +340,7 @@ export function ProofGrid({
     lockedPickerIds,
     submittedPickerIds,
     submittedAt,
+    viewerSubmittedAt,
     pendingIds,
     toggleError,
     isStale,
@@ -343,6 +361,8 @@ export function ProofGrid({
     extraPhotoPriceCopSnapshot,
     extraPhotoPriceTiersSnapshot,
     originalPhotoPriceCopSnapshot,
+    rollingDelivery,
+    initialViewerSubmittedAt,
   });
 
   // Task #28: a gallery only ever reaches `delivered` once (PLAN.md §2's
@@ -369,6 +389,10 @@ export function ProofGrid({
   // unconditionally — i.e. before the `initialAssets.length === 0` early
   // return further down, not after it.
   const isDelivered = initialStatus === "delivered";
+  // Task #244 — finals are readable on this page either because the gallery is
+  // delivered or because it has rolling delivery on (the server only presigns
+  // `displayUrl`/sets `hasFinal` accordingly). A UI hint; the routes re-check.
+  const showsFinals = finalsOpen;
 
   // Task #222 — every asset's CURRENT `isSelected`, resolved the SAME way
   // each grid tile already resolved it inline before this slice
@@ -470,7 +494,35 @@ export function ProofGrid({
     () => picks.filter((pick) => pick.pickedBy?.id === viewerId).length,
     [picks, viewerId],
   );
-  const lockedByAdmin = viewerLock !== null && viewerLock.submittedAt === null;
+  // Task #244 — rolling delivery. Internally "the cart", user-facing "por
+  // enviar" (picks not yet sent) vs "pedidas" (sent: frozen for clients).
+  // `requestedAssetIds` also joins the locked set for tiles and the lightbox,
+  // so an ordered pick offers no remove control.
+  const requestedAssetIds = useMemo(
+    () =>
+      new Set(rollingDelivery ? picks.filter((p) => !!p.requestedAt).map((p) => p.assetId) : []),
+    [picks, rollingDelivery],
+  );
+  const frozenAssetIds = useMemo(
+    () => new Set([...lockedAssetIds, ...requestedAssetIds]),
+    [lockedAssetIds, requestedAssetIds],
+  );
+  const unsentCount = useMemo(
+    () => picks.filter((pick) => pick.pickedBy?.id === viewerId && !pick.requestedAt).length,
+    [picks, viewerId],
+  );
+  const readableAssetIds = useMemo(
+    () =>
+      new Set(
+        finalsOpen ? initialAssets.filter((asset) => asset.hasFinal).map((asset) => asset.id) : [],
+      ),
+    [initialAssets, finalsOpen],
+  );
+  const lockedByAdmin =
+    viewerLock !== null &&
+    (viewerLock.lockedBy !== undefined
+      ? viewerLock.lockedBy === "admin"
+      : viewerLock.submittedAt === null);
   // The date the VIEWER sees as "enviada": their own time, not the gallery's
   // closing time (which is the LAST person's).
   const ownSubmittedAt = viewerLock ? viewerLock.submittedAt : submittedAt;
@@ -518,7 +570,7 @@ export function ProofGrid({
   // (client.html:941's own "15 fotos editadas..."). The route re-derives its
   // own set from the database on every request regardless of what this
   // renders — this is a UI hint only, same disclaimer as `hasFinal`'s own.
-  const finalAssetCount = isDelivered ? initialAssets.filter((asset) => asset.hasFinal).length : 0;
+  const finalAssetCount = showsFinals ? initialAssets.filter((asset) => asset.hasFinal).length : 0;
 
   // Task #222 — the one place that builds a tile, used by all three grids
   // below (the flat one and this slice's own two). Pairs `group` with
@@ -535,8 +587,20 @@ export function ProofGrid({
         src={urls[asset.id] ?? asset.proofUrl}
         isSelected={asset.isSelected}
         isPending={pendingIds.has(asset.id)}
-        isLocked={isLocked || lockedAssetIds.has(asset.id)}
-        showDownload={isDelivered && asset.hasFinal}
+        isLocked={isLocked || frozenAssetIds.has(asset.id)}
+        showDownload={showsFinals && asset.hasFinal}
+        orderLabel={
+          // Precedence everywhere: Editada (final readable) > Pedida
+          // (requested) > Por enviar. A readable final wins even without a
+          // `requested_at` stamp.
+          rollingDelivery && showsFinals && asset.hasFinal
+            ? "Editada"
+            : rollingDelivery && !isDelivered && asset.isSelected
+              ? requestedAssetIds.has(asset.id)
+                ? "Pedida"
+                : "Por enviar"
+              : null
+        }
         onError={() => void refreshUrl(asset.id)}
         onOpen={() => setLightbox({ group, index })}
         onToggleSelection={() => void toggleSelection(asset.id, !asset.isSelected)}
@@ -570,6 +634,9 @@ export function ProofGrid({
           lockedPickerIds={lockedPickerIds}
           submittedPickerIds={submittedPickerIds}
           lockedByAdmin={lockedByAdmin}
+          rollingDelivery={rollingDelivery}
+          readableAssetIds={readableAssetIds}
+          lastSubmittedAt={viewerSubmittedAt}
           isStale={isStale}
           allowsOriginalSelection={allowsOriginalSelection}
           onOpenAsset={openAssetInLightbox}
@@ -581,6 +648,22 @@ export function ProofGrid({
       )}
 
       {isDelivered && <DeliveredNote galleryId={galleryId} finalAssetCount={finalAssetCount} />}
+
+      {/* Task #244 — rolling delivery before `delivered`: the editadas that are
+          already readable, with the zip of exactly those. Nothing here while
+          no final exists yet. */}
+      {rollingDelivery && showsFinals && !isDelivered && finalAssetCount > 0 && (
+        <div className="mb-6">
+          <p className="text-fg-dim text-sm">
+            {finalAssetCount} foto{finalAssetCount === 1 ? "" : "s"} editada
+            {finalAssetCount === 1 ? "" : "s"} ya disponible{finalAssetCount === 1 ? "" : "s"}, en
+            alta resolución y sin marca de agua.
+          </p>
+          <div className="mt-3">
+            <DownloadAllButton galleryId={galleryId} assetCount={finalAssetCount} />
+          </div>
+        </div>
+      )}
 
       {/* Task #148: `selected` gets its own voice instead of reading as a
           wall of disabled controls — <SelectionCounter> stays visible here
@@ -743,6 +826,9 @@ export function ProofGrid({
                 submittedAt={ownSubmittedAt}
                 onSubmitted={handleSubmitted}
                 allowsOriginalSelection={allowsOriginalSelection}
+                rollingDelivery={rollingDelivery}
+                unsentCount={unsentCount}
+                lastSubmittedAt={viewerSubmittedAt}
               />
             </div>
           </div>
@@ -768,6 +854,9 @@ export function ProofGrid({
             submittedAt={ownSubmittedAt}
             onSubmitted={handleSubmitted}
             allowsOriginalSelection={allowsOriginalSelection}
+            rollingDelivery={rollingDelivery}
+            unsentCount={unsentCount}
+            lastSubmittedAt={viewerSubmittedAt}
           />
         </div>
       )}
@@ -807,8 +896,8 @@ export function ProofGrid({
           onToggleSelection={(assetId, nextSelected) => void toggleSelection(assetId, nextSelected)}
           pendingAssetIds={pendingIds}
           isLocked={isLocked}
-          lockedAssetIds={lockedAssetIds}
-          isDelivered={isDelivered}
+          lockedAssetIds={frozenAssetIds}
+          isDelivered={showsFinals}
           selectionKindById={selectionKindById}
           onSetSelectionKind={(assetId, kind) => void setSelectionKind(assetId, kind)}
           allowsOriginalSelection={allowsOriginalSelection}

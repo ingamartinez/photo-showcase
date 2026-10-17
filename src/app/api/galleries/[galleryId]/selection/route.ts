@@ -232,5 +232,8 @@ export const GET = withApiSession(async function GET(
     viewerLock: lockSnapshot.viewerLock,
     lockedPickerIds: lockSnapshot.lockedPickerIds,
     submittedPickerIds: lockSnapshot.submittedPickerIds,
+    // Task #244 — "Último envío" under rolling delivery (a submit there never
+    // locks, so `viewerLock` cannot carry it).
+    viewerSubmittedAt: lockSnapshot.viewerSubmittedAt ?? null,
   });
 });

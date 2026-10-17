@@ -58,6 +58,8 @@ export const GalleryType = builder.objectRef<GalleryDetail>("Gallery").implement
     // task). A plain `exposeBoolean` off `GalleryDetail.allowsOriginalSelection`
     // (src/lib/galleries.ts), never derived here.
     allowsOriginalSelection: t.exposeBoolean("allowsOriginalSelection"),
+    // Task #244 — opt-in rolling delivery (finals readable before `delivered`).
+    rollingDelivery: t.exposeBoolean("rollingDelivery"),
     assets: t.field({ type: [AssetType], resolve: (gallery) => gallery.assets }),
   }),
 });

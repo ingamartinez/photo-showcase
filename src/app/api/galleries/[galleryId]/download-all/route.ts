@@ -58,7 +58,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets, galleries } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
-import { canReadFinalDeliverable } from "@/lib/final-access";
+import { areFinalsOpenToClient, canReadFinalDeliverable } from "@/lib/final-access";
 import { isGalleryOwner } from "@/lib/gallery-access";
 import { notifyAdminOfMissingFinal } from "@/lib/missing-final-notification-email";
 import { getObjectSize, getObjectStream } from "@/lib/r2";
@@ -207,7 +207,10 @@ export const GET = withApiSession(async function GET(
   // comment for the full reasoning): the photographer can zip-preview their
   // own uploads before delivering, a client can never reach a final before
   // the gallery is actually delivered.
-  if (!isAdmin && gallery.status !== "delivered") {
+  // Task #244: `areFinalsOpenToClient` also lets `proofing`/`selected` through
+  // when the gallery has rolling delivery on (the per-asset gate below then
+  // keeps only finals that exist); `draft`/`archived` stay closed.
+  if (!isAdmin && !areFinalsOpenToClient(gallery)) {
     return errorResponse("gallery_not_delivered", 404);
   }
 

@@ -132,6 +132,7 @@ function assetRow(overrides: Row = {}): Row {
     originalFilename: "IMG_0001.JPG",
     proofKey: `galleries/${GALLERY_ID}/proofs/${ASSET_1_ID}.webp`,
     finalKey: null,
+    requestedAt: null,
     proofWidth: 1600,
     proofHeight: 1067,
     isSelected: false,
@@ -768,6 +769,178 @@ describe("POST /api/galleries/[galleryId]/submit-selection — per-client lock (
     const firstUpdate = db.__log.findIndex((entry) => entry.startsWith("update:"));
     expect(db.__log.indexOf("for:update")).toBeGreaterThanOrEqual(0);
     expect(db.__log.indexOf("for:update")).toBeLessThan(firstUpdate);
+  });
+});
+
+// Task #244 — with rolling delivery on, submitting places an ORDER: it stamps
+// `requested_at` on THIS client's cart and never locks. The flag-off behavior
+// is pinned by the epic #239 suite above, which this block does not touch.
+describe("POST /api/galleries/[galleryId]/submit-selection — rolling delivery orders (#244)", () => {
+  const A1 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01";
+  const A2 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02";
+  const A3 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa03";
+  const B1 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaab1";
+
+  // A owns three cart picks, B owns ONE different cart pick: the submitter's
+  // cart and the other person's cart are different sets on purpose.
+  async function rollingGallery() {
+    const db = await seededDb();
+    db.__rows.galleries[0]!.rollingDelivery = true;
+    db.__rows.assets.length = 0;
+    db.__rows.users.push({
+      id: CLIENT_B,
+      name: "Beto Ruiz",
+      email: "beto@example.com",
+      role: "client",
+    });
+    db.__rows.galleryClients.push(membership(CLIENT_B));
+    db.__rows.assets.push(
+      assetRow({ id: A1, isSelected: true, selectedBy: CLIENT_ID, sortOrder: 0 }),
+      assetRow({ id: A2, isSelected: true, selectedBy: CLIENT_ID, sortOrder: 1 }),
+      assetRow({ id: A3, isSelected: true, selectedBy: CLIENT_ID, sortOrder: 2 }),
+      assetRow({ id: B1, isSelected: true, selectedBy: CLIENT_B, sortOrder: 3 }),
+    );
+    return db;
+  }
+
+  function sessionOf(userId: string, name: string): Session {
+    return {
+      user: { id: userId, role: "client", name, email: `${userId}@example.com` },
+      expires: "2099-01-01T00:00:00.000Z",
+    } as Session;
+  }
+
+  const stampOf = (db: Awaited<ReturnType<typeof seededDb>>, id: string) =>
+    db.__rows.assets.find((r) => r.id === id)!.requestedAt;
+
+  it("A submits: ONLY A's three cart picks are stamped, B's pick is untouched, nobody is locked, the gallery stays proofing", async () => {
+    const db = await rollingGallery();
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      status: "submitted",
+      gallerySelected: false,
+      requestedCount: 3,
+    });
+    for (const id of [A1, A2, A3]) expect(stampOf(db, id)).toBeInstanceOf(Date);
+    expect(stampOf(db, B1)).toBeNull();
+    expect(db.__rows.galleryClients.find((r) => r.userId === CLIENT_ID)).toMatchObject({
+      selectionLockedAt: null,
+      selectionSubmittedAt: expect.any(Date),
+    });
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+    expect(sendSubmissionNotificationEmailMock).toHaveBeenCalledTimes(1);
+    expect(sendSubmissionNotificationEmailMock).toHaveBeenCalledWith(
+      expect.objectContaining({ requestedCount: 3 }),
+    );
+    expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_ID);
+  });
+
+  it("a second order stamps only the NEW cart pick and keeps the first order's original stamps", async () => {
+    const db = await rollingGallery();
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
+    const { POST } = await import("./route");
+    await POST(requestFor(), paramsFor(GALLERY_ID));
+    const firstStamp = stampOf(db, A1) as Date;
+    // Move the stored stamps into the past so "kept" vs "overwritten" is
+    // observable, then add two cart picks and drop one of them.
+    const past = new Date(firstStamp.getTime() - 3_600_000);
+    for (const id of [A1, A2, A3]) db.__rows.assets.find((r) => r.id === id)!.requestedAt = past;
+    db.__rows.assets.push(
+      assetRow({ id: "n1", isSelected: true, selectedBy: CLIENT_ID, sortOrder: 4 }),
+      assetRow({ id: "n2", isSelected: false, selectedBy: null, sortOrder: 5 }),
+    );
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(200);
+    expect(stampOf(db, "n1")).toBeInstanceOf(Date);
+    expect(stampOf(db, "n2")).toBeNull();
+    for (const id of [A1, A2, A3]) expect(stampOf(db, id)).toBe(past);
+    expect(sendSubmissionNotificationEmailMock).toHaveBeenLastCalledWith(
+      expect.objectContaining({ requestedCount: 1 }),
+    );
+    expect(
+      db.__rows.galleryClients.find((r) => r.userId === CLIENT_ID)!.selectionLockedAt,
+    ).toBeNull();
+  });
+
+  it("submitting with an empty cart (everything already ordered) is 400 empty_selection and writes nothing", async () => {
+    const db = await rollingGallery();
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
+    const { POST } = await import("./route");
+    await POST(requestFor(), paramsFor(GALLERY_ID));
+    sendSubmissionNotificationEmailMock.mockClear();
+    const stampsBefore = [A1, A2, A3].map((id) => stampOf(db, id));
+    const submittedBefore = db.__rows.galleryClients.find(
+      (r) => r.userId === CLIENT_ID,
+    )!.selectionSubmittedAt;
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "empty_selection" });
+    expect(sendSubmissionNotificationEmailMock).not.toHaveBeenCalled();
+    expect([A1, A2, A3].map((id) => stampOf(db, id))).toEqual(stampsBefore);
+    expect(db.__rows.galleryClients.find((r) => r.userId === CLIENT_ID)!.selectionSubmittedAt).toBe(
+      submittedBefore,
+    );
+  });
+
+  it("never auto-moves the gallery to selected, even once EVERY client has ordered", async () => {
+    const db = await rollingGallery();
+    const { POST } = await import("./route");
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
+    await POST(requestFor(), paramsFor(GALLERY_ID));
+    authMock.mockResolvedValue(sessionOf(CLIENT_B, "Beto Ruiz"));
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    await expect(response.json()).resolves.toMatchObject({ gallerySelected: false });
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+    expect(db.__rows.galleryClients.every((r) => r.selectionLockedAt === null)).toBe(true);
+    expect(stampOf(db, B1)).toBeInstanceOf(Date);
+  });
+
+  it("an admin lock landing between the pre-check and the transaction stamps NOTHING and sends no email", async () => {
+    const db = await rollingGallery();
+    const membershipRow = db.__rows.galleryClients.find((r) => r.userId === CLIENT_ID)!;
+    // Open on the route's FIRST read (the pre-check), locked on every read
+    // after it: the lock lands "mid-transaction".
+    let reads = 0;
+    Object.defineProperty(membershipRow, "selectionLockedAt", {
+      configurable: true,
+      get: () => (reads++ === 0 ? null : new Date("2026-10-16T11:00:00.000Z")),
+      set: () => {},
+    });
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
+    const { POST } = await import("./route");
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    await expect(response.json()).resolves.toMatchObject({ status: "already_submitted" });
+    for (const id of [A1, A2, A3, B1]) expect(stampOf(db, id)).toBeNull();
+    expect(sendSubmissionNotificationEmailMock).not.toHaveBeenCalled();
+  });
+
+  it("flag OFF: submit locks as in #239 and never writes requestedAt", async () => {
+    const db = await seededDb();
+    const { POST } = await import("./route");
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.galleryClients[0]).toMatchObject({
+      selectionLockedAt: expect.any(Date),
+      // Task #244: the classic submit records WHO locked.
+      selectionLockedBy: "client",
+    });
+    expect(db.__rows.assets.every((r) => !r.requestedAt)).toBe(true);
   });
 });
 

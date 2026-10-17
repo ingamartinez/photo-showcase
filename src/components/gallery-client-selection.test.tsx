@@ -76,6 +76,26 @@ describe("per-client selection — state line (inline)", () => {
     expect(screen.getByText("0 fotos elegidas · Bloqueado por vos")).toBeDefined();
   });
 
+  // Task #244 — rolling delivery's row: "pedidas X · editadas Y · por enviar Z".
+  // The owner's rule: the word "carrito" never reaches the UI.
+  it("rolling delivery shows pedidas / editadas / por enviar and never says carrito", () => {
+    renderRow({
+      state: "open",
+      pickCount: 6,
+      submittedOn: null,
+      order: { requested: 4, edited: 1, unsent: 2 },
+    });
+
+    expect(screen.getByText("pedidas 4 · editadas 1 · por enviar 2 · Eligiendo")).toBeDefined();
+    expect(document.body.textContent ?? "").not.toMatch(/carrito/i);
+  });
+
+  it("without rolling delivery the row keeps the plain pick count", () => {
+    renderRow(OPEN);
+
+    expect(screen.queryByText(/pedidas/)).toBeNull();
+  });
+
   it("is not rendered without a selection", () => {
     renderRow(undefined);
     expect(screen.queryByText(/Eligiendo/)).toBeNull();

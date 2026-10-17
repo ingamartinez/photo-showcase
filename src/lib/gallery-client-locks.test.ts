@@ -36,7 +36,12 @@ function member(userId: string, overrides: Record<string, unknown> = {}) {
   };
 }
 
-const locked = { selectionLockedAt: LOCKED_AT, selectionSubmittedAt: LOCKED_AT };
+const locked = {
+  selectionLockedAt: LOCKED_AT,
+  selectionSubmittedAt: LOCKED_AT,
+  selectionLockedBy: "client",
+};
+const adminLocked = { selectionLockedAt: LOCKED_AT, selectionLockedBy: "admin" };
 
 function settle() {
   return settleGalleryLockStatus(db as unknown as DbTransaction, GALLERY_ID);
@@ -80,30 +85,49 @@ describe("getSelectionLockSnapshot", () => {
       viewerLock: null,
       lockedPickerIds: ["b"],
       submittedPickerIds: ["b"],
+      viewerSubmittedAt: null,
     });
   });
 
   it("exposes the viewer's own lock as ISO strings, and lists them among the locked pickers", async () => {
-    clientRows().push(member("a", { selectionLockedAt: LOCKED_AT }), member("b"));
+    clientRows().push(member("a", adminLocked), member("b"));
 
     await expect(getSelectionLockSnapshot(GALLERY_ID, "a")).resolves.toEqual({
-      viewerLock: { lockedAt: LOCKED_AT.toISOString(), submittedAt: null },
+      viewerLock: { lockedAt: LOCKED_AT.toISOString(), submittedAt: null, lockedBy: "admin" },
       lockedPickerIds: ["a"],
       submittedPickerIds: [],
+      viewerSubmittedAt: null,
     });
   });
 
   it("splits submitted from photographer-locked pickers, and omits open ones from both", async () => {
-    clientRows().push(
-      member("a"),
-      member("sub", locked),
-      member("adm", { selectionLockedAt: LOCKED_AT }),
-    );
+    clientRows().push(member("a"), member("sub", locked), member("adm", adminLocked));
 
     const snapshot = await getSelectionLockSnapshot(GALLERY_ID, "a");
 
     expect(snapshot.lockedPickerIds).toEqual(["sub", "adm"]);
     expect(snapshot.submittedPickerIds).toEqual(["sub"]);
+  });
+
+  // Task #244 — the lock source is READ from `selection_locked_by`, never
+  // inferred from the timestamps: this member ordered (submitted_at set) and
+  // was LATER locked by the photographer, so both columns are set — the same
+  // shape as a classic submit.
+  it("tells a photographer lock after an order apart from a client submit", async () => {
+    clientRows().push(
+      member("a", {
+        selectionLockedAt: LOCKED_AT,
+        selectionSubmittedAt: new Date("2026-10-14T10:00:00.000Z"),
+        selectionLockedBy: "admin",
+      }),
+      member("b", locked),
+    );
+
+    const snapshot = await getSelectionLockSnapshot(GALLERY_ID, "a");
+
+    expect(snapshot.viewerLock?.lockedBy).toBe("admin");
+    expect(snapshot.lockedPickerIds).toEqual(["a", "b"]);
+    expect(snapshot.submittedPickerIds).toEqual(["b"]);
   });
 
   it("never reports a removed client as a locked or submitted picker", async () => {
@@ -124,7 +148,20 @@ describe("getSelectionLockSnapshot", () => {
       viewerLock: null,
       lockedPickerIds: ["a"],
       submittedPickerIds: ["a"],
+      viewerSubmittedAt: null,
     });
+  });
+
+  it("exposes the viewer's own submit time even when they are NOT locked (rolling delivery, task #244)", async () => {
+    clientRows().push(
+      member("a", { selectionSubmittedAt: LOCKED_AT }),
+      member("b", { selectionSubmittedAt: new Date("2026-01-01") }),
+    );
+
+    const snapshot = await getSelectionLockSnapshot(GALLERY_ID, "a");
+
+    expect(snapshot.viewerLock).toBeNull();
+    expect(snapshot.viewerSubmittedAt).toBe(LOCKED_AT.toISOString());
   });
 });
 
@@ -244,6 +281,7 @@ describe("gallery scoping — the same users in another gallery with the opposit
       viewerLock: null,
       lockedPickerIds: [],
       submittedPickerIds: [],
+      viewerSubmittedAt: null,
     });
   });
 

@@ -57,6 +57,9 @@ export async function getGallerySelection(galleryId: string): Promise<SelectionP
       // function already returns; see selection-snapshot.ts's own comment on
       // `SelectionPick.selectionKind`.
       selectionKind: assets.selectionKind,
+      // Task #244 — the order stamp; travels the same channel as every other
+      // pick fact.
+      requestedAt: assets.requestedAt,
     })
     .from(assets)
     .where(and(eq(assets.galleryId, galleryId), eq(assets.isSelected, true)))
@@ -86,5 +89,6 @@ export async function getGallerySelection(galleryId: string): Promise<SelectionP
     // attribution" outcome as a null column.
     pickedBy: row.selectedBy ? (pickersById.get(row.selectedBy) ?? null) : null,
     selectionKind: row.selectionKind,
+    requestedAt: row.requestedAt ? row.requestedAt.toISOString() : null,
   }));
 }

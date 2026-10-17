@@ -77,7 +77,7 @@
 // pattern exists to prevent.
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
-import { eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets, users } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
@@ -235,7 +235,28 @@ export const PATCH = withApiSession(async function PATCH(
     }
   }
 
+  // Task #244 — ROLLING DELIVERY ORDER FREEZE. With the flag on, submitting
+  // never locks a client (so the per-client gates above stay open); it stamps
+  // `requested_at` on the cart instead. THIS is the gate that makes an
+  // ordered pick permanent for clients: deselect, re-take-over and kind
+  // change are refused for ANY non-admin client (not only the picker),
+  // whether or not the final exists yet. Removing an ordered pick goes
+  // through the photographer. Admin is unaffected; flag off = nothing here.
+  if (!isAdmin && gallery.rollingDelivery && asset.isSelected && asset.requestedAt !== null) {
+    return errorResponse("already_requested", 409);
+  }
+
   const { selected, selectionKind } = bodyResult.data;
+
+  // Task #244 — the freeze check above reads the asset, this write must not
+  // race it: for a non-admin under rolling delivery the UPDATE itself carries
+  // `requested_at IS NULL`, so an order landing between the read and the
+  // write makes it match nothing (-> 409 `already_requested`) instead of
+  // undoing an ordered pick. Admin and flag-off writes keep the plain id match.
+  const clientWriteWhere =
+    !isAdmin && gallery.rollingDelivery
+      ? and(eq(assets.id, asset.id), isNull(assets.requestedAt))
+      : eq(assets.id, asset.id);
 
   // Task #214 — THE SERVER GATE, independent of anything the client's own
   // UI hides. Refuses ANY write that would set `selectionKind` to
@@ -284,10 +305,21 @@ export const PATCH = withApiSession(async function PATCH(
       ? { id: session.user.id, label: session.user.name ?? session.user.email ?? session.user.id }
       : null;
 
-    await db
+    const written = await db
       .update(assets)
-      .set({ isSelected, selectedAt, selectedBy, selectionKind: nextSelectionKind })
-      .where(eq(assets.id, asset.id));
+      // Task #244 lockstep: a fresh pick starts in the cart and a deselect
+      // (admin only, once ordered) clears the order; only an admin
+      // re-select of an already-ordered pick keeps its original stamp.
+      .set({
+        isSelected,
+        selectedAt,
+        selectedBy,
+        selectionKind: nextSelectionKind,
+        requestedAt: isSelected && asset.isSelected ? asset.requestedAt : null,
+      })
+      .where(clientWriteWhere)
+      .returning({ id: assets.id });
+    if (written.length === 0) return errorResponse("already_requested", 409);
   } else {
     // Type-only change (task #206): `bodySchema`'s own `.refine` guarantees
     // `selectionKind` is defined whenever `selected` is not.
@@ -329,10 +361,12 @@ export const PATCH = withApiSession(async function PATCH(
       pickedBy = picker ? { id: asset.selectedBy, label: picker.name ?? picker.email } : null;
     }
 
-    await db
+    const written = await db
       .update(assets)
       .set({ selectionKind: nextSelectionKind })
-      .where(eq(assets.id, asset.id));
+      .where(clientWriteWhere)
+      .returning({ id: assets.id });
+    if (written.length === 0) return errorResponse("already_requested", 409);
   }
 
   // Task #114 — push the shared selection to every OTHER open session,
@@ -399,6 +433,12 @@ export const PATCH = withApiSession(async function PATCH(
       selectedAt: selectedAtIso,
       pickedBy,
       selectionKind: nextSelectionKind,
+      // Task #244 — the same value the write above left in the column.
+      requestedAt:
+        (selected !== undefined && !(isSelected && asset.isSelected)
+          ? null
+          : asset.requestedAt
+        )?.toISOString() ?? null,
     },
     quota,
   });

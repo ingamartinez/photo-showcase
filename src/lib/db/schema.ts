@@ -500,6 +500,14 @@ export const galleries = pgTable(
     //      comment for the full reasoning, including why turning the switch ON
     //      does not notify (it never touches `assets` at all).
     allowsOriginalSelection: boolean("allows_original_selection").notNull().default(false),
+    // Task #244 — opt-in "rolling delivery". When true, a client of a
+    // `proofing`/`selected` gallery can read every uploaded final the moment
+    // it exists, instead of waiting for the whole gallery to be `delivered`
+    // (src/lib/final-access.ts's `canReadFinalDeliverable` is the ONE place
+    // that reads it). Default false: without it, every existing gallery would
+    // expose finals the photographer uploads while still editing. Not a
+    // commercial term: billing (`computeQuota`) is unaffected.
+    rollingDelivery: boolean("rolling_delivery").notNull().default(false),
   },
   (t) => [uniqueIndex("galleries_public_slug_idx").on(t.publicSlug)],
 );
@@ -617,6 +625,15 @@ export const galleryClients = pgTable(
     // `removedAt IS NULL` — a removed client's lock state is history.
     selectionLockedAt: timestamp("selection_locked_at", { withTimezone: true }),
     selectionSubmittedAt: timestamp("selection_submitted_at", { withTimezone: true }),
+    // Task #244 — WHO set `selectionLockedAt`, stored explicitly instead of
+    // inferred from the two timestamps: under rolling delivery every order
+    // sets `selectionSubmittedAt`, so "locked + submitted" no longer means
+    // "the client locked themselves" (a member can order and LATER be locked
+    // by the photographer). `'client'` = the classic (#239) submit,
+    // `'admin'` = the photographer's lock. Always cleared together with
+    // `selectionLockedAt`; null while open. The rolling-delivery toggle
+    // migration and the client snapshot both key off `'client'`.
+    selectionLockedBy: text("selection_locked_by", { enum: ["client", "admin"] }),
   },
   (t) => [primaryKey({ columns: [t.galleryId, t.userId] })],
 );
@@ -637,6 +654,14 @@ export const assets = pgTable("assets", {
   proofHeight: integer("proof_height").notNull(),
   isSelected: boolean("is_selected").notNull().default(false),
   selectedAt: timestamp("selected_at", { withTimezone: true }),
+  // Task #244 — ROLLING DELIVERY "order" stamp. A selected asset with
+  // `requestedAt IS NULL` is still in its picker's CART (freely removable);
+  // submitting stamps it, which freezes it for every non-admin client
+  // (`already_requested`, PATCH selection route) and makes it the
+  // photographer's work. Only ever written in galleries with
+  // `rolling_delivery` on. Kept in lockstep with `isSelected`: null whenever
+  // the asset is not selected (every deselect path clears it).
+  requestedAt: timestamp("requested_at", { withTimezone: true }),
   // WHO last set `isSelected`/`selectedAt` — task #94's "shared selection,
   // ATTRIBUTED" decision (2026-07-29, owner-approved): with several clients
   // now able to pick into the SAME shared set, an anonymous boolean is no

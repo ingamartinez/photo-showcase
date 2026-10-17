@@ -289,6 +289,21 @@ describe("lockGalleryClientSelection", () => {
     expect(revalidatePathMock).toHaveBeenCalledWith(`/dashboard/galleries/${G1}`);
   });
 
+  // Task #244 — the lock SOURCE is written explicitly. A member who ordered
+  // (submitted_at set, locked_at null under rolling delivery) and is then
+  // locked by the photographer must read 'admin', not look like a client submit.
+  it("records WHO locked: 'admin', even for a member who already has a submitted_at", async () => {
+    const r = await rows();
+    const mine = r.galleryClients.find((m) => m.galleryId === G1 && m.userId === A)!;
+    mine.selectionSubmittedAt = T0;
+    const { lockGalleryClientSelection } = await import("./actions");
+
+    await lockGalleryClientSelection({ status: "idle" }, form(A));
+
+    expect(mine).toMatchObject({ selectionSubmittedAt: T0, selectionLockedBy: "admin" });
+    expect(mine.selectionLockedAt).toBeInstanceOf(Date);
+  });
+
   it("locking the LAST open client moves the gallery to selected", async () => {
     const r = await rows();
     for (const id of [A, B]) {
@@ -352,6 +367,22 @@ describe("unlockGalleryClientSelection", () => {
       },
     );
   }
+
+  it("clears selection_locked_by together with the lock", async () => {
+    const r = await rows();
+    lockedA(r, true);
+    const mine = r.galleryClients.find((m) => m.galleryId === G1 && m.userId === A)!;
+    mine.selectionLockedBy = "admin";
+    const { unlockGalleryClientSelection } = await import("./actions");
+
+    await unlockGalleryClientSelection({ status: "idle" }, form(A));
+
+    expect(mine).toMatchObject({
+      selectionLockedAt: null,
+      selectionSubmittedAt: null,
+      selectionLockedBy: null,
+    });
+  });
 
   it("clears BOTH columns of that client only and emails THAT client", async () => {
     const r = await rows();
@@ -492,6 +523,18 @@ describe("removeGalleryClientPicks", () => {
     expect(byId("x-a")).toMatchObject({ isSelected: true, selectedBy: A });
     expect(byId("x-b")).toMatchObject({ isSelected: true, selectedBy: B });
     expect(byId("free")).toMatchObject({ isSelected: false, selectedBy: null });
+  });
+
+  it("clears requestedAt on the removed picks (task #244 lockstep) and leaves other people's orders alone", async () => {
+    const r = await rows();
+    const ORDERED = new Date("2026-10-16T09:00:00.000Z");
+    for (const id of ["a1", "b1"]) r.assets.find((a) => a.id === id)!.requestedAt = ORDERED;
+    const { removeGalleryClientPicks } = await import("./actions");
+
+    await removeGalleryClientPicks({ status: "idle" }, form(A));
+
+    expect(r.assets.find((a) => a.id === "a1")!.requestedAt).toBeNull();
+    expect(r.assets.find((a) => a.id === "b1")!.requestedAt).toBe(ORDERED);
   });
 
   it("clears both lock columns of that client only (other client and other gallery keep theirs)", async () => {

@@ -69,22 +69,29 @@ export async function getSelectionLockSnapshot(
       userId: galleryClients.userId,
       lockedAt: galleryClients.selectionLockedAt,
       submittedAt: galleryClients.selectionSubmittedAt,
+      lockedBy: galleryClients.selectionLockedBy,
     })
     .from(galleryClients)
     .where(and(eq(galleryClients.galleryId, galleryId), isNull(galleryClients.removedAt)));
 
   const locked = members.filter((member) => member.lockedAt !== null);
   const own = locked.find((member) => member.userId === viewerId);
+  const ownMembership = members.find((member) => member.userId === viewerId);
   return {
+    viewerSubmittedAt: ownMembership?.submittedAt ? ownMembership.submittedAt.toISOString() : null,
     viewerLock: own
       ? {
           lockedAt: own.lockedAt!.toISOString(),
           submittedAt: own.submittedAt ? own.submittedAt.toISOString() : null,
+          lockedBy: own.lockedBy,
         }
       : null,
     lockedPickerIds: locked.map((member) => member.userId),
+    // Task #244: "submitted" = locked BY THE CLIENT (`selection_locked_by`),
+    // not "has a submit timestamp" — under rolling delivery an order sets the
+    // timestamp without locking, and a photographer lock can follow it.
     submittedPickerIds: locked
-      .filter((member) => member.submittedAt !== null)
+      .filter((member) => member.lockedBy === "client")
       .map((member) => member.userId),
   };
 }

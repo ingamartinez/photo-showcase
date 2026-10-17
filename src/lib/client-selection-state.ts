@@ -41,9 +41,14 @@ export function clientSelectionStateLabel(
   return "Bloqueado por vos";
 }
 
+/** Task #244 — rolling delivery's per-person tally. Only present on galleries
+ * with the flag on. Internally "cart", user-facing "por enviar". */
+export type ClientOrderTally = { requested: number; edited: number; unsent: number };
+
 export type ClientSelectionView = {
   state: ClientSelectionState;
   pickCount: number;
+  order?: ClientOrderTally;
   /** "dd/mm/yyyy"; only set for `submitted`. */
   submittedOn: string | null;
 };
@@ -53,14 +58,22 @@ export function toClientSelectionView(input: {
   lockedAt: Date | null;
   submittedAt: Date | null;
   pickCount: number;
+  order?: ClientOrderTally;
 }): ClientSelectionView {
   const state = clientSelectionState(input);
   return {
     state,
     pickCount: input.pickCount,
+    ...(input.order ? { order: input.order } : {}),
     submittedOn:
       state === "submitted" && input.submittedAt ? formatSubmittedOn(input.submittedAt) : null,
   };
+}
+
+/** "pedidas X · editadas Y · por enviar Z" — the rolling-delivery row. The
+ * word "carrito" must never reach the UI (owner decision, task #244). */
+export function clientOrderTallyLabel(order: ClientOrderTally): string {
+  return `pedidas ${order.requested} · editadas ${order.edited} · por enviar ${order.unsent}`;
 }
 
 export function clientPickCountLabel(count: number): string {

@@ -288,6 +288,7 @@ describe("getGallerySelection", () => {
     expect(Object.keys(picks[0]!).sort()).toEqual([
       "assetId",
       "pickedBy",
+      "requestedAt",
       "selectedAt",
       "selectionKind",
     ]);
@@ -295,6 +296,22 @@ describe("getGallerySelection", () => {
 
   // Task #206 — the type travels the SAME query this function already ran;
   // no second read, no second shape.
+  it("reports each pick's requestedAt (task #244): ISO for an ordered pick, null for one still por enviar", async () => {
+    const db = await seededDb();
+    db.__rows.assets.push(
+      assetRow({ id: "ordered", requestedAt: new Date("2026-10-16T09:00:00.000Z") }),
+      assetRow({ id: "cart", requestedAt: null }),
+    );
+    const { getGallerySelection } = await import("@/lib/gallery-selection");
+
+    const picks = await getGallerySelection(GALLERY_A);
+
+    expect(picks.find((pick) => pick.assetId === "ordered")?.requestedAt).toBe(
+      "2026-10-16T09:00:00.000Z",
+    );
+    expect(picks.find((pick) => pick.assetId === "cart")?.requestedAt).toBeNull();
+  });
+
   it("reports each pick's selectionKind straight off the row", async () => {
     const db = await seededDb();
     db.__rows.assets.push(

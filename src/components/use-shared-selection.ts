@@ -116,6 +116,8 @@ type SelectionResponse = {
     // came from a select/deselect (which resets it to `edited`) or a
     // type-only change.
     selectionKind: SelectionKind;
+    // Task #244 — the order stamp the route left on the row.
+    requestedAt?: string | null;
   };
   quota: QuotaResult;
 };
@@ -134,6 +136,8 @@ type SelectionSnapshot = {
   viewerLock?: ViewerLock | null;
   lockedPickerIds?: string[];
   submittedPickerIds?: string[];
+  // Task #244 — the viewer's own last submit, locked or not.
+  viewerSubmittedAt?: string | null;
 };
 
 /** The two fields of `ProofAsset` (src/components/proof-grid.tsx) this hook
@@ -153,6 +157,9 @@ const LOCK_REFUSALS: Record<string, string> = {
   client_selection_locked: "Tu selección ya está cerrada, así que no se puede cambiar.",
   pick_locked: "Esa foto es de alguien que ya envió su selección, así que no se puede cambiar.",
   gallery_locked: "La selección ya fue enviada, así que no se puede cambiar.",
+  // Task #244 — rolling delivery: an ordered ("pedida") pick is permanent for
+  // the client. Owner-approved copy.
+  already_requested: "Esta foto ya fue pedida; para quitarla escríbele a tu fotógrafo.",
 };
 
 /** The calm message for a 409 lock refusal, or `null` for any other failure.
@@ -161,6 +168,27 @@ async function lockRefusalMessage(response: Response): Promise<string | null> {
   if (response.status !== 409) return null;
   const body = (await response.json().catch(() => null)) as { error?: string } | null;
   return (body?.error && LOCK_REFUSALS[body.error]) || null;
+}
+
+/** Task #244 — under rolling delivery a CLIENT-SUBMITTED lock (submitted_at
+ * set) is a classic-flow leftover, not a lock: submitting there is an order,
+ * and turning the flag on migrates such members (updateRollingDelivery). The
+ * client must never render the classic "enviada/cerrada" state for one, even
+ * from a stale snapshot. An ADMIN lock (submitted_at null) is a real lock. */
+function effectiveViewerLock(lock: ViewerLock | null, rolling: boolean): ViewerLock | null {
+  // `lockedBy` is computed by the server; never guessed from `submittedAt`.
+  return rolling && lock !== null && lock.lockedBy === "client" ? null : lock;
+}
+
+/** Same reasoning for the group: under rolling delivery only ADMIN-locked
+ * pickers are frozen, so client-submitted ids are dropped from both lists. */
+function effectivePickerIds(
+  locked: string[],
+  submitted: string[],
+  rolling: boolean,
+): { locked: string[]; submitted: string[] } {
+  if (!rolling) return { locked, submitted };
+  return { locked: locked.filter((id) => !submitted.includes(id)), submitted: [] };
 }
 
 export function useSharedSelection({
@@ -177,6 +205,8 @@ export function useSharedSelection({
   initialViewerLock = null,
   initialLockedPickerIds = [],
   initialSubmittedPickerIds = [],
+  rollingDelivery = false,
+  initialViewerSubmittedAt = null,
 }: {
   galleryId: string;
   initialAssets: SharedSelectionAsset[];
@@ -207,6 +237,11 @@ export function useSharedSelection({
   initialViewerLock?: ViewerLock | null;
   initialLockedPickerIds?: string[];
   initialSubmittedPickerIds?: string[];
+  // Task #244 — rolling delivery: a submit places an ORDER (stamps
+  // `requestedAt` on the viewer's "por enviar" picks) instead of locking the
+  // viewer. `initialViewerSubmittedAt` seeds "Último envío".
+  rollingDelivery?: boolean;
+  initialViewerSubmittedAt?: string | null;
 }) {
   // `is_selected` per asset. Seeded from the initial server-rendered paint,
   // then only ever overwritten by a toggle response's own `asset.isSelected`
@@ -279,11 +314,23 @@ export function useSharedSelection({
   // even though the gallery is still `proofing` for the others. Never derive
   // "viewer submitted" from `galleries.selectionSubmittedAt`: reopening does
   // not clear it, `viewerLock` is the truth.
-  const [viewerLock, setViewerLock] = useState<ViewerLock | null>(initialViewerLock);
-  const [lockedPickerIds, setLockedPickerIds] = useState<string[]>(initialLockedPickerIds);
+  const [viewerLock, setViewerLock] = useState<ViewerLock | null>(
+    effectiveViewerLock(initialViewerLock, rollingDelivery),
+  );
+  const initialPickerIds = effectivePickerIds(
+    initialLockedPickerIds,
+    initialSubmittedPickerIds,
+    rollingDelivery,
+  );
+  const [lockedPickerIds, setLockedPickerIds] = useState<string[]>(initialPickerIds.locked);
   // The subset of `lockedPickerIds` who submitted themselves (the rest were
   // closed by the photographer).
-  const [submittedPickerIds, setSubmittedPickerIds] = useState<string[]>(initialSubmittedPickerIds);
+  const [submittedPickerIds, setSubmittedPickerIds] = useState<string[]>(
+    initialPickerIds.submitted,
+  );
+  const [viewerSubmittedAt, setViewerSubmittedAt] = useState<string | null>(
+    initialViewerSubmittedAt,
+  );
   const isGalleryLocked = SUBMITTED_STATUSES.has(status);
   const isViewerLocked = viewerLock !== null;
   // What every control gates on: either lock freezes THIS viewer's controls.
@@ -410,41 +457,50 @@ export function useSharedSelection({
   // flight — see `requestRefresh`.
   const pendingRefreshRef = useRef(false);
 
-  const applySnapshot = useCallback((snapshot: SelectionSnapshot, issuedAtClock: number) => {
-    // Condition 1 — see the section comment above.
-    if (pendingIdsRef.current.size > 0) return;
-    // Condition 2.
-    if (issuedAtClock <= lastLocalWriteClockRef.current) return;
+  const applySnapshot = useCallback(
+    (snapshot: SelectionSnapshot, issuedAtClock: number) => {
+      // Condition 1 — see the section comment above.
+      if (pendingIdsRef.current.size > 0) return;
+      // Condition 2.
+      if (issuedAtClock <= lastLocalWriteClockRef.current) return;
 
-    setStatus(snapshot.status);
-    const nextViewerLock = snapshot.viewerLock ?? null;
-    isLockedRef.current = SUBMITTED_STATUSES.has(snapshot.status) || nextViewerLock !== null;
-    setViewerLock(nextViewerLock);
-    setLockedPickerIds(snapshot.lockedPickerIds ?? []);
-    setSubmittedPickerIds(snapshot.submittedPickerIds ?? []);
-    setSubmittedAt(snapshot.submittedAt);
-    setPicks(snapshot.picks);
+      setStatus(snapshot.status);
+      const nextViewerLock = effectiveViewerLock(snapshot.viewerLock ?? null, rollingDelivery);
+      isLockedRef.current = SUBMITTED_STATUSES.has(snapshot.status) || nextViewerLock !== null;
+      setViewerLock(nextViewerLock);
+      const pickerIds = effectivePickerIds(
+        snapshot.lockedPickerIds ?? [],
+        snapshot.submittedPickerIds ?? [],
+        rollingDelivery,
+      );
+      setLockedPickerIds(pickerIds.locked);
+      setSubmittedPickerIds(pickerIds.submitted);
+      setSubmittedAt(snapshot.submittedAt);
+      setViewerSubmittedAt(snapshot.viewerSubmittedAt ?? null);
+      setPicks(snapshot.picks);
 
-    const pickedAssetIds = new Set(snapshot.picks.map((pick) => pick.assetId));
-    // Rebuilt from the keys THIS HOOK knows about, not from the
-    // snapshot's own list: an asset the photographer uploaded after this page
-    // was server-rendered exists in the snapshot but has no tile here and no
-    // presigned URL, so inventing a key for it would put a permanently broken
-    // entry in `selectionById`. The tray renders such a pick as a labelled
-    // placeholder instead (see <SelectionTray>), which is the honest outcome
-    // until the client next loads the page.
-    setSelectionById((prev) => {
-      const next: Record<string, boolean> = {};
-      for (const assetId of Object.keys(prev)) next[assetId] = pickedAssetIds.has(assetId);
-      return next;
-    });
+      const pickedAssetIds = new Set(snapshot.picks.map((pick) => pick.assetId));
+      // Rebuilt from the keys THIS HOOK knows about, not from the
+      // snapshot's own list: an asset the photographer uploaded after this page
+      // was server-rendered exists in the snapshot but has no tile here and no
+      // presigned URL, so inventing a key for it would put a permanently broken
+      // entry in `selectionById`. The tray renders such a pick as a labelled
+      // placeholder instead (see <SelectionTray>), which is the honest outcome
+      // until the client next loads the page.
+      setSelectionById((prev) => {
+        const next: Record<string, boolean> = {};
+        for (const assetId of Object.keys(prev)) next[assetId] = pickedAssetIds.has(assetId);
+        return next;
+      });
 
-    // Same counter the toggles use, so a toggle issued AFTER this snapshot
-    // still overwrites its quota when it lands, and one issued before does
-    // not.
-    appliedQuotaSequenceRef.current = issuedAtClock;
-    setQuota(snapshot.quota);
-  }, []);
+      // Same counter the toggles use, so a toggle issued AFTER this snapshot
+      // still overwrites its quota when it lands, and one issued before does
+      // not.
+      appliedQuotaSequenceRef.current = issuedAtClock;
+      setQuota(snapshot.quota);
+    },
+    [rollingDelivery],
+  );
 
   // Holds the LATEST `poll` — see the comment on its own assignment below for
   // why `poll`'s `finally` block re-triggers itself through this ref rather
@@ -719,6 +775,7 @@ export function useSharedSelection({
               selectedAt: body.asset.selectedAt,
               pickedBy: body.asset.pickedBy,
               selectionKind: body.asset.selectionKind,
+              requestedAt: body.asset.requestedAt ?? null,
             },
           ];
         });
@@ -848,6 +905,28 @@ export function useSharedSelection({
   // waiting for a poll. `outcome.submittedAt` is the caller's OWN time.
   const handleSubmitted = useCallback(
     (outcome: SubmitSelectionOutcome) => {
+      if (rollingDelivery) {
+        // Only an order that THIS call actually placed marks anything. The
+        // idempotent 200 (e.g. an admin-locked client: nothing was stamped)
+        // carries no `requestedCount`; the next snapshot tells the truth.
+        if (!outcome.requestedCount) return;
+        // Task #244: an ORDER, not a lock. The viewer's "por enviar" picks
+        // become "pedidas" right away (the server stamped exactly those) and
+        // the grid stays interactive: no `viewerLock`, no `isLockedRef`.
+        const orderedAt = outcome.submittedAt ?? new Date().toISOString();
+        setViewerSubmittedAt(orderedAt);
+        setPicks((prev) =>
+          prev.map((pick) =>
+            pick.pickedBy?.id === viewerId && !pick.requestedAt
+              ? { ...pick, requestedAt: orderedAt }
+              : pick,
+          ),
+        );
+        setQuota(outcome.quota);
+        lastLocalWriteClockRef.current = ++quotaSequenceRef.current;
+        appliedQuotaSequenceRef.current = quotaSequenceRef.current;
+        return;
+      }
       isLockedRef.current = true;
       if (outcome.gallerySelected) {
         setStatus("selected");
@@ -863,10 +942,11 @@ export function useSharedSelection({
       lastLocalWriteClockRef.current = ++quotaSequenceRef.current;
       appliedQuotaSequenceRef.current = quotaSequenceRef.current;
     },
-    [viewerId],
+    [viewerId, rollingDelivery],
   );
 
   return {
+    viewerSubmittedAt,
     selectionById,
     quota,
     picks,

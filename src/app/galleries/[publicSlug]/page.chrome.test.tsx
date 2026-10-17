@@ -1134,7 +1134,7 @@ describe("ClientGalleryPage chrome", () => {
       // Review finding on task #139: the banner's FIRST draft claimed a
       // toggle here "se guarda como si lo hubiera tocado el cliente" —
       // false, and the exact impersonation framing the task's own trap
-      // warns against. `selection/route.ts:163` writes `billedTo` as the
+      // warns against. `selection/route.ts:163` writes `selectedBy` as the
       // ACTING session's id (an admin's, here), never the client's — see
       // `gallery-access.ts`'s own header comment on `isGalleryOwner`'s
       // admin bypass and #94's attribution. This pins the corrected,

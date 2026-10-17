@@ -12,7 +12,7 @@ import Link from "next/link";
  * the client, they are looking at what the client looks at. The permission
  * model underneath is unchanged (task #66, closed 2026-07-30): a toggle an
  * admin taps on this page still writes to the real client's selection,
- * attributed to this admin session (`assets.billedTo`, task #94) — this
+ * attributed to this admin session (`assets.selectedBy`, task #94) — this
  * banner exists so that write is never a surprise.
  */
 export function ClientPreviewBanner({ dashboardHref }: { dashboardHref: string }) {

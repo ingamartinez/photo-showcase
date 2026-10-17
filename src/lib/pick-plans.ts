@@ -298,9 +298,13 @@ function assetsBetween(
   return out;
 }
 
-/** The rows after the plan, in memory. Used only to compute the preview, so
- * the delta can never be computed from a hand-maintained second copy. */
-function applyInMemory(rows: readonly AssetRow[], changes: readonly AssetChange[]): AssetRow[] {
+/** The rows after the plan, in memory — the preview's own view, and the exact
+ * mirror of what `applyAssetChanges` writes (a fresh claim stamps
+ * `selected_at`/`requested_at`; a transfer or re-kind never touches them). */
+export function applyPlanToRows(
+  rows: readonly AssetRow[],
+  changes: readonly AssetChange[],
+): AssetRow[] {
   return rows.map((row) => {
     const change = changes.find((candidate) => candidate.assetId === row.id);
     if (!change) return row;
@@ -321,6 +325,8 @@ function applyInMemory(rows: readonly AssetRow[], changes: readonly AssetChange[
       selectionKind: change.after.kind,
       billedTo: change.after.billedTo,
       billedAt: change.after.billedAt,
+      selectedAt: change.before.claimed ? row.selectedAt : change.after.billedAt,
+      requestedAt: change.before.claimed ? row.requestedAt : change.after.billedAt,
     };
   });
 }
@@ -384,7 +390,7 @@ export function attributionDelta(
 ): AttributionDelta {
   const delta = attributionDeltaBetween(
     rows,
-    applyInMemory(rows, plan.assetChanges),
+    applyPlanToRows(rows, plan.assetChanges),
     snapshot,
     labels,
   );

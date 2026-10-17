@@ -7,7 +7,7 @@ import { assetPicks, assets } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 import type { DbTransaction } from "@/lib/gallery-client-locks";
 import { createFakeDb } from "@/test-support/fake-db";
-import { claimCart } from "@/lib/pick-claims";
+import { applyAssetChanges, claimCart, reresolveAssets } from "@/lib/pick-claims";
 import { type ClaimedUnit } from "@/lib/quota-attribution";
 import type { GalleryQuotaSnapshot } from "@/lib/quota";
 
@@ -382,5 +382,113 @@ describe("claimCart", () => {
     expect(
       (backwards.assetStore.find((row) => row.id === "aaaa")!.billedAt as Date).getTime(),
     ).toBe(t(1).getTime() + 1);
+  });
+});
+
+// Epic #250 S5 (#260) — the additions the admin write path needs.
+describe("claimCart — the on-behalf restriction and the originals coercion", () => {
+  it("stamps and claims ONLY the requested asset, leaving the rest of the cart in the cart", async () => {
+    const ctx = setup([assetRow("x"), assetRow("y")], [pickRow("x", A), pickRow("y", A)]);
+
+    const result = await claimCart(ctx.tx, ctx.gallery, A, t(5), { assetId: "x" });
+
+    expect(result.stamped).toBe(1);
+    expect(ctx.assetStore.find((row) => row.id === "x")).toMatchObject({
+      isSelected: true,
+      billedTo: A,
+    });
+    expect(ctx.assetStore.find((row) => row.id === "y")).toMatchObject({
+      isSelected: false,
+      billedTo: null,
+    });
+    expect(ctx.pickStore.find((pick) => pick.assetId === "y")!.submittedAt).toBeNull();
+  });
+
+  it("coerces an original cart pick to edited when the LOCKED gallery disallows originals (hazard 6's race)", async () => {
+    // The PATCH gate reads the flag without the gallery lock, so a retype to
+    // `original` can land after an OFF commits. `claimCart` holds the locked
+    // row, so the coercion here is the money boundary.
+    const ctx = setup([assetRow("x")], [pickRow("x", A, { kind: "original" })]);
+    const gallery = { id: G, allowsOriginalSelection: false } as Gallery;
+
+    await claimCart(ctx.tx, gallery, A, t(5));
+
+    expect(ctx.assetStore[0]).toMatchObject({ selectionKind: "edited", billedTo: A });
+    expect(ctx.pickStore[0]).toMatchObject({ kind: "edited" });
+  });
+});
+
+describe("applyAssetChanges — CAS losses fail closed", () => {
+  it("throws when an unclaim's billedTo changed underneath the plan", async () => {
+    const ctx = setup([assetRow("x", claim())], []);
+    // The plan read `billedTo: A`; by the time the write runs the row says
+    // somebody else — a concurrent re-resolution committed first.
+    ctx.assetStore[0]!.billedTo = "someone-else";
+
+    await expect(
+      applyAssetChanges(
+        ctx.tx,
+        [
+          {
+            assetId: "x",
+            before: { claimed: true, kind: "edited", billedTo: A, billedAt: t(1) },
+            after: { claimed: false },
+            op: "unclaim",
+          },
+        ],
+        t(9),
+      ),
+    ).rejects.toThrow(/claim CAS lost/);
+  });
+
+  it("throws when a final lands between the plan's read and a kind change", async () => {
+    const ctx = setup([assetRow("x", claim({ selectionKind: "original" }))], []);
+    // The plan read `finalKey: null`; an upload committed before the write.
+    ctx.assetStore[0]!.finalKey = "final/x.jpg";
+
+    await expect(
+      applyAssetChanges(
+        ctx.tx,
+        [
+          {
+            assetId: "x",
+            before: { claimed: true, kind: "original", billedTo: A, billedAt: t(1) },
+            after: { claimed: true, kind: "edited", billedTo: A, billedAt: t(9) },
+            op: "rekind",
+          },
+        ],
+        t(9),
+      ),
+    ).rejects.toThrow(/claim CAS lost/);
+  });
+});
+
+describe("reresolveAssets — end to end", () => {
+  it("re-elects the remaining submitted picker after a delete, keeping the arrival", async () => {
+    // A's submitted pick is already gone (the caller deleted it); B's remains.
+    const ctx = setup(
+      [assetRow("x", claim({ billedAt: t(2) }))],
+      [pickRow("x", B, { submittedAt: t(3) })],
+    );
+
+    const plan = await reresolveAssets(ctx.tx, ctx.gallery, ["x"], t(9));
+
+    expect(plan.assetChanges).toHaveLength(1);
+    expect(plan.assetChanges[0]!.op).toBe("transfer");
+    expect(ctx.assetStore[0]).toMatchObject({ billedTo: B, billedAt: t(2) });
+  });
+
+  it("unclaims an asset whose last submitted pick is gone", async () => {
+    const ctx = setup([assetRow("x", claim())], []);
+
+    await reresolveAssets(ctx.tx, ctx.gallery, ["x"], t(9));
+
+    expect(ctx.assetStore[0]).toMatchObject({
+      isSelected: false,
+      billedTo: null,
+      billedAt: null,
+      selectedAt: null,
+      requestedAt: null,
+    });
   });
 });

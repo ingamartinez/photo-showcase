@@ -121,16 +121,19 @@ function matchesRow(row: Row, table: Record<string, unknown>, condition: unknown
 }
 
 vi.mock("@/lib/db", async () => {
-  const { galleries, galleryClients, users } = await import("@/lib/db/schema");
+  const { galleries, galleryClients, users, assetPicks } = await import("@/lib/db/schema");
 
   const galleryRows: Row[] = [];
   const userRows: Row[] = [];
   const galleryClientRows: Row[] = [];
+  // Epic #250: `settleGalleryLockStatus` reads the gallery's cart picks.
+  const assetPickRows: Row[] = [];
 
   function rowsFor(table: unknown): Row[] {
     if (table === galleries) return galleryRows;
     if (table === users) return userRows;
     if (table === galleryClients) return galleryClientRows;
+    if (table === assetPicks) return assetPickRows;
     throw new Error("fake db: unsupported table");
   }
 
@@ -138,6 +141,7 @@ vi.mock("@/lib/db", async () => {
     if (table === galleries) return galleries as unknown as Record<string, unknown>;
     if (table === users) return users as unknown as Record<string, unknown>;
     if (table === galleryClients) return galleryClients as unknown as Record<string, unknown>;
+    if (table === assetPicks) return assetPicks as unknown as Record<string, unknown>;
     throw new Error("fake db: unsupported table");
   }
 
@@ -250,7 +254,12 @@ vi.mock("@/lib/db", async () => {
         }),
       }),
       // Test-only escape hatches, not part of the real `db` shape.
-      __rows: { galleries: galleryRows, users: userRows, galleryClients: galleryClientRows },
+      __rows: {
+        galleries: galleryRows,
+        users: userRows,
+        galleryClients: galleryClientRows,
+        assetPicks: assetPickRows,
+      },
       __faults: faults,
     },
   };
@@ -260,7 +269,7 @@ vi.mock("@/lib/db", async () => {
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
     db: {
-      __rows: { galleries: Row[]; users: Row[]; galleryClients: Row[] };
+      __rows: { galleries: Row[]; users: Row[]; galleryClients: Row[]; assetPicks: Row[] };
       __faults: { failNextUpdate: boolean; failNextInsert: boolean };
     };
   };

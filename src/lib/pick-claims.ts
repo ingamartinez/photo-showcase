@@ -340,6 +340,8 @@ export type OnBehalfResult =
       pick: AssetPick | null;
       /** `claimCart`'s counts when a cart pick was claimed, otherwise null. */
       counts: CartClaimCounts | null;
+      /** What the operation did to the acting client's pick. */
+      pickOutcome: "claimed" | "reresolved" | "removed" | "none";
       delta: AttributionDelta;
     };
 
@@ -382,16 +384,19 @@ export async function actOnBehalf(
 
   let wrote = false;
   let counts: CartClaimCounts | null = null;
+  let pickOutcome: "claimed" | "reresolved" | "removed" | "none" = "none";
 
   async function claimOne(): Promise<void> {
     const claim = await claimCart(tx, gallery!, actingClientId, now, { assetId });
     counts = claim.counts;
     if (claim.stamped > 0) wrote = true;
+    pickOutcome = "claimed";
   }
 
   async function reresolveOne(): Promise<void> {
     const plan = await reresolveAssets(tx, gallery!, [assetId], now);
     if (plan.assetChanges.length > 0) wrote = true;
+    pickOutcome = "reresolved";
   }
 
   if (body.selected === false) {
@@ -399,6 +404,7 @@ export async function actOnBehalf(
       await tx.delete(assetPicks).where(pickWhere);
       wrote = true;
       if (existing.submittedAt !== null) await reresolveOne();
+      pickOutcome = "removed";
     }
   } else if (body.selected === true) {
     const desired: SelectionKind = body.selectionKind ?? "edited";
@@ -447,5 +453,5 @@ export async function actOnBehalf(
     quotaSnapshotOf(gallery),
   );
 
-  return { ok: true, wrote, transition, pick: pick ?? null, counts, delta };
+  return { ok: true, wrote, transition, pick: pick ?? null, counts, pickOutcome, delta };
 }

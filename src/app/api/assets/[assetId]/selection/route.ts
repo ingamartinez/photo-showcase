@@ -83,7 +83,7 @@ import { assets, users } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
 import { ASSET_MUTATION_BLOCKED_STATUSES, loadOwnedAsset } from "@/lib/asset-access";
 import { isGalleryVisibleToClient } from "@/lib/galleries";
-import { getClientLock } from "@/lib/gallery-client-locks";
+import { getClientLock, type ClientLock } from "@/lib/gallery-client-locks";
 import { computeQuota } from "@/lib/quota";
 import { notifySelectionChanged } from "@/lib/selection-events";
 
@@ -147,6 +147,26 @@ export const SELECTION_LOCKED_STATUSES = ASSET_MUTATION_BLOCKED_STATUSES;
 
 function errorResponse(error: string, status: number): NextResponse {
   return NextResponse.json({ error }, { status });
+}
+
+/** The label this app uses for a person, everywhere: `name ?? email`. One
+ * helper, one query shape, so the refusal body below and the `pickedBy`
+ * attribution in a successful response can never drift from each other — or
+ * from `gallery-selection.ts`'s own `name ?? email` rule.
+ *
+ * `null` means the `users` row itself is gone (the fake DB can produce this;
+ * real FKs make it a narrow window) — the honest "no attribution" outcome,
+ * never a guess. `users.email` is `notNull`, so an existing row always yields
+ * a non-null label. No `|| null` empty-string coercion: a degenerate empty or
+ * whitespace label is the client's problem to render, not a second, silently
+ * diverging rule here. */
+async function pickerLabel(userId: string): Promise<string | null> {
+  const [picker] = await db
+    .select({ name: users.name, email: users.email })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  return picker ? (picker.name ?? picker.email) : null;
 }
 
 // Unauthenticated -> 401 JSON, never a redirect (see auth-guards.ts).
@@ -217,19 +237,45 @@ export const PATCH = withApiSession(async function PATCH(
   //   2. `pick_locked` — the asset is CURRENTLY picked by a DIFFERENT client
   //      who is locked. This covers every write that touches the asset —
   //      deselect, re-select (which would take over `selectedBy`) and a
-  //      type-only change — because the shared board lets any client act on
-  //      any asset (task #94/#95), so without this B could silently undo or
-  //      re-type the selection A already submitted, and with it the surcharge
-  //      A was quoted. Only ACTIVE memberships count (`getClientLock` filters
+  //      type-only change — so without it B could silently undo or re-type the
+  //      selection A already submitted, and with it the surcharge A was
+  //      quoted. Only ACTIVE memberships count (`getClientLock` filters
   //      `removedAt IS NULL`): a removed client's picks stay editable.
+  //
+  // This partially reverses task #94/#95's "the shared board lets any client
+  // act on any asset". That was the design until 2026-10-17, when one client
+  // session in production silently erased 16 picks made by two other people
+  // across two galleries (nothing recorded who did it, and there was no gate
+  // to stop it). Since task #249 a non-admin may act only on their OWN pick, a
+  // free asset, or a pick whose picker no longer has an active membership
+  // here — enforced by the `pick_not_yours` gate below. `pick_locked` is kept
+  // as its own, more specific answer for the one case it already covers: the
+  // picker submitted (or was locked by the photographer) and the selection is
+  // settled, not merely owned by someone else.
+  //
+  // The ownership predicate is hoisted so both gates read it ONCE — see
+  // `foreignPickerId` below.
+  const foreignPickerId =
+    !isAdmin &&
+    asset.isSelected &&
+    asset.selectedBy !== null &&
+    asset.selectedBy !== session.user.id
+      ? asset.selectedBy
+      : null;
+  // Resolved inside the block below (only a non-admin can have a foreign pick)
+  // and reused by the `pick_not_yours` gate after `already_requested`. `null`
+  // means "this picker has no ACTIVE membership in this gallery" — which is
+  // exactly the unprotected case, not an error.
+  let pickerMembership: ClientLock | null = null;
+
   if (!isAdmin) {
     const ownLock = await getClientLock(db, gallery.id, session.user.id);
     if (ownLock?.lockedAt) {
       return errorResponse("client_selection_locked", 409);
     }
-    if (asset.isSelected && asset.selectedBy !== null && asset.selectedBy !== session.user.id) {
-      const pickerLock = await getClientLock(db, gallery.id, asset.selectedBy);
-      if (pickerLock?.lockedAt) {
+    if (foreignPickerId !== null) {
+      pickerMembership = await getClientLock(db, gallery.id, foreignPickerId);
+      if (pickerMembership?.lockedAt) {
         return errorResponse("pick_locked", 409);
       }
     }
@@ -244,6 +290,47 @@ export const PATCH = withApiSession(async function PATCH(
   // through the photographer. Admin is unaffected; flag off = nothing here.
   if (!isAdmin && gallery.rollingDelivery && asset.isSelected && asset.requestedAt !== null) {
     return errorResponse("already_requested", 409);
+  }
+
+  // Task #249 — A PICK BELONGS TO THE PERSON WHO MADE IT. Placed ABOVE the body
+  // destructure on purpose: it reads only `asset`, `session` and the membership
+  // lookup above, so `selected: false` (remove), `selected: true` (takeover —
+  // which would rewrite `selectedBy`) and a `selectionKind`-only change are all
+  // covered by ONE check no future branch can forget. It also precedes every
+  // write and the notify below, so a refusal changes nothing and pings nobody.
+  //
+  // It sits AFTER `already_requested` rather than next to `pick_locked`: an
+  // ordered pick is refused for everyone with that code (task #244), whoever
+  // asks, and that contract is asserted as-is.
+  //
+  // `pickerMembership !== null` is the whole active-membership test —
+  // `getClientLock` already filters `removedAt IS NULL` and is scoped to this
+  // gallery. Three cases stay deliberately UNPROTECTED, per the owner:
+  //   - the picker was soft-removed from this gallery (`removed_at` set);
+  //   - the picker has no `gallery_clients` row at all (never a member, or an
+  //     admin's own pick);
+  //   - `selected_by IS NULL` while `is_selected = true` — legacy rows, or a
+  //     user deleted under `onDelete: "set null"`. No owner to protect, so the
+  //     operation is allowed rather than invented into an error.
+  //
+  // The read-then-write window is accepted (the task says so): if A picks a
+  // free photo between this read and B's write, B's write wins exactly as two
+  // people picking one free photo always could. A compare-and-swap on
+  // `selected_by` cannot express "the picker is not an active member" without
+  // a subquery, and its zero-row result would be misreported as
+  // `already_requested` by the write below.
+  if (foreignPickerId !== null && pickerMembership !== null) {
+    // The addendum (owner, 2026-10-17): the refusal must NAME the owner on
+    // screen, so the body carries it, resolved here under the app-wide
+    // `name ?? email` rule. Written inline rather than through
+    // `errorResponse`, which stays a plain `{ error }` so `pick_locked`,
+    // `client_selection_locked`, `already_requested` and `gallery_locked` keep
+    // their exact existing body. Nothing else is exposed: no picker id, no
+    // lock state.
+    return NextResponse.json(
+      { error: "pick_not_yours", pickedByName: await pickerLabel(foreignPickerId) },
+      { status: 409 },
+    );
   }
 
   const { selected, selectionKind } = bodyResult.data;
@@ -333,10 +420,12 @@ export const PATCH = withApiSession(async function PATCH(
     nextSelectionKind = selectionKind!;
     isSelected = asset.isSelected;
     selectedAtIso = asset.selectedAt ? asset.selectedAt.toISOString() : null;
-    // Task #206 — a type-only change can be made by ANY client attached to
-    // the gallery, not only the one who originally picked the photo (the
-    // shared selection lets any of them act on any asset — task #94/#95).
-    // So `asset.selectedBy` here is NOT necessarily this session's own id,
+    // Task #206 — a type-only change need not be made by the client who
+    // originally picked the photo. Since task #249 that is only reachable for
+    // an ADMIN, for the picker themselves, or when the picker is unprotected
+    // (removed / no membership row / `selected_by IS NULL`) — the
+    // `pick_not_yours` gate above refuses every other non-admin caller. So
+    // `asset.selectedBy` here is still NOT necessarily this session's own id,
     // and the acting session's own name must not be attributed to a
     // DIFFERENT picker's id — that would mislabel the original picker in
     // this response's own `pickedBy`, which the acting session's tray applies
@@ -350,15 +439,13 @@ export const PATCH = withApiSession(async function PATCH(
         label: session.user.name ?? session.user.email ?? session.user.id,
       };
     } else {
-      const [picker] = await db
-        .select({ name: users.name, email: users.email })
-        .from(users)
-        .where(eq(users.id, asset.selectedBy))
-        .limit(1);
-      // `?? null`: `selected_by` pointing at a since-deleted user (`onDelete:
+      // `null`: `selected_by` pointing at a since-deleted user (`onDelete:
       // "set null"`) is a narrow window, not a bug — same honest "no
-      // attribution" outcome `gallery-selection.ts` already gives it.
-      pickedBy = picker ? { id: asset.selectedBy, label: picker.name ?? picker.email } : null;
+      // attribution" outcome `gallery-selection.ts` already gives it. The
+      // lookup itself lives in `pickerLabel` so the `pick_not_yours` refusal
+      // above resolves the name through the identical rule.
+      const label = await pickerLabel(asset.selectedBy);
+      pickedBy = label === null ? null : { id: asset.selectedBy, label };
     }
 
     const written = await db

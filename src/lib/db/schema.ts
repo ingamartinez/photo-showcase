@@ -806,12 +806,12 @@ export const assets = pgTable(
     isEdited: boolean("is_edited").notNull().default(false),
     sortOrder: integer("sort_order").notNull().default(0),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
-    // Epic #250, task #257 — `id` is already the PK, so this index adds no
-    // uniqueness of its own. It exists ONLY so `asset_picks` can hold a
-    // composite `(asset_id, gallery_id)` foreign key back to this table,
-    // which proves a pick's `gallery_id` is its asset's gallery. Postgres
-    // accepts a unique INDEX (not just a unique CONSTRAINT) as an FK target.
   },
+  // Epic #250, task #257 — `id` is already the PK, so this index adds no
+  // uniqueness of its own. It exists ONLY so `asset_picks` can hold a
+  // composite `(asset_id, gallery_id)` foreign key back to this table,
+  // which proves a pick's `gallery_id` is its asset's gallery. Postgres
+  // accepts a unique INDEX (not just a unique CONSTRAINT) as an FK target.
   (t) => [uniqueIndex("assets_id_gallery_id_idx").on(t.id, t.galleryId)],
 );
 
@@ -821,10 +821,11 @@ export const assets = pgTable(
 // anyone else's. `assets` still carries the RESOLVED, single-unit truth of
 // money and delivery; this table is the identity/attribution source of truth.
 //
-// A pick is a member's intent as long as `submitted_at` is null (their cart);
-// submitting stamps it and it becomes a claim. Slices S3+ derive the gallery
-// tray, counters and surcharge from these rows; `fake-db.ts` (S3) is what
-// consumes it in tests.
+// A pick is a member's intent while `submitted_at` is null (their cart).
+// Submitting stamps it, but a submitted pick is not necessarily a claim:
+// several members may join the same photo, and the claim can be re-resolved
+// (S5/S6). Slices S3+ derive the gallery tray, counters and surcharge from
+// these rows; `fake-db.ts` (S3) is what consumes it in tests.
 export const assetPicks = pgTable(
   "asset_picks",
   {

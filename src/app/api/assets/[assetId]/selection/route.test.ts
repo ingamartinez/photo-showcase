@@ -452,6 +452,67 @@ describe("PATCH /api/assets/[assetId]/selection — the caller's own pick only",
     expect(db.__rows.assets).toEqual(assetsBefore);
   });
 
+  // P4's two CART twins. P4 seeds A's pick as SUBMITTED, so the delete's own
+  // `submitted_at IS NULL` clause already protects it — the `user_id` half of
+  // `pickWhere` never decides that outcome. Carts are exactly where several
+  // people coexist on one photo, so these are the rows a regression to "delete
+  // every cart pick on the asset" would take down while P4 stayed green.
+  it("P4a — removing B's CART pick leaves A's CART pick on the same asset byte-identical", async () => {
+    authMock.mockResolvedValue(clientBSession());
+    const db = await seededDb();
+    db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
+    db.__rows.assets[0] = claimed();
+    db.__rows.assetPicks.push(pickRow(ASSET_1_ID, "client-a"), pickRow(ASSET_1_ID, "client-b"));
+    const assetsBefore = structuredClone(db.__rows.assets);
+    const aPickBefore = structuredClone(
+      db.__rows.assetPicks.find((pick) => pick.userId === "client-a"),
+    );
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assetPicks).toHaveLength(1);
+    expect(db.__rows.assetPicks[0]).toEqual(aPickBefore);
+    expect(db.__rows.assetPicks[0]).toMatchObject({ userId: "client-a", kind: "edited" });
+    expect(db.__rows.assets).toEqual(assetsBefore);
+  });
+
+  it("P4b — retyping B's CART pick (original->edited) leaves A's CART pick byte-identical", async () => {
+    authMock.mockResolvedValue(clientBSession());
+    const db = await seededDb();
+    db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
+    db.__rows.assets[0] = claimed();
+    // Both are CARTS of kind `original`. B's retype (original -> edited) is the
+    // one a degraded pick is allowed to make; A's row is the one a retype
+    // without the `user_id` predicate would rewrite too.
+    db.__rows.assetPicks.push(
+      pickRow(ASSET_1_ID, "client-a", { kind: "original" }),
+      pickRow(ASSET_1_ID, "client-b", { kind: "original" }),
+    );
+    const assetsBefore = structuredClone(db.__rows.assets);
+    const aPickBefore = structuredClone(
+      db.__rows.assetPicks.find((pick) => pick.userId === "client-a"),
+    );
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "edited" }),
+      paramsFor(ASSET_1_ID),
+    );
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assetPicks.find((pick) => pick.userId === "client-b")).toMatchObject({
+      kind: "edited",
+    });
+    // A's cart pick is untouched: still original, still A's.
+    expect(db.__rows.assetPicks.find((pick) => pick.userId === "client-a")).toEqual(aPickBefore);
+    expect(db.__rows.assetPicks.find((pick) => pick.userId === "client-a")).toMatchObject({
+      kind: "original",
+    });
+    expect(db.__rows.assets).toEqual(assetsBefore);
+  });
+
   it("P5 — a degraded pick can be removed", async () => {
     authMock.mockResolvedValue(clientBSession());
     const db = await seededDb();
@@ -722,15 +783,27 @@ describe("PATCH /api/assets/[assetId]/selection — decision 7 is structural", (
     },
   ];
 
+  /** Every `asset_picks` row the caller does NOT own. */
+  const otherPeoplePicks = (db: Awaited<ReturnType<typeof seededDb>>, caller: string) =>
+    db.__rows.assetPicks.filter((pick) => pick.userId !== caller);
+
   it.each(variants)(
-    "P13/P14 — $name leaves assets deep-equal and quota unchanged",
+    "P13/P14 — $name leaves assets deep-equal, other people's picks deep-equal and quota unchanged",
     async (variant) => {
       authMock.mockResolvedValue(clientASession());
       const db = await seededDb();
+      db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
       // The claimed sibling every variant shares.
       db.__rows.assets.push(claimed({ id: ASSET_2_ID, sortOrder: 1 }));
       variant.seed(db);
+      // A SECOND person's CART pick on the very asset the variant targets, of
+      // the KIND OPPOSITE to whatever this variant writes. A stray `user_id`
+      // predicate loses it (delete / retype of a cart), and `pickWhere` is the
+      // only thing standing between the caller and somebody else's cart.
+      const bystanderKind = variant.body.selectionKind === "original" ? "edited" : "original";
+      db.__rows.assetPicks.push(pickRow(variant.assetId, "client-b", { kind: bystanderKind }));
       const assetsBefore = structuredClone(db.__rows.assets);
+      const othersBefore = structuredClone(otherPeoplePicks(db, "client-a"));
       const { PATCH } = await import("./route");
 
       const response = await PATCH(
@@ -741,6 +814,11 @@ describe("PATCH /api/assets/[assetId]/selection — decision 7 is structural", (
 
       expect(response.status).toBe(200);
       expect(db.__rows.assets).toEqual(assetsBefore);
+      // Decision 7's other half, in the same breath: no row the caller does
+      // not own moved either. The stub above is still there, still that kind,
+      // still unsubmitted.
+      expect(otherPeoplePicks(db, "client-a")).toEqual(othersBefore);
+      expect(otherPeoplePicks(db, "client-a")).toHaveLength(1);
       // The quota is a pure function of the (unchanged) sibling rows: exactly
       // the one claimed ASSET_2.
       expect(body.quota).toMatchObject({

@@ -393,7 +393,7 @@ describe("GalleryDetailPage chrome", () => {
     expect(
       within(details)
         .getAllByRole("listitem")
-        .map((li) => li.textContent),
+        .map((li) => li.querySelector("[data-testid=photo-filename]")?.textContent),
     ).toEqual(["ANA_SUBMITTED.jpg", "BETO_LOCKED.jpg"]);
   });
 

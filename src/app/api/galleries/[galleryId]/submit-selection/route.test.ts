@@ -1095,14 +1095,21 @@ describe("POST /api/galleries/[galleryId]/submit-selection — now after the loc
     }) as typeof db.select;
 
     const { POST } = await import("./route");
-    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
-    const body = (await response.json()) as { submittedAt: string };
+    try {
+      const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+      const body = (await response.json()) as { submittedAt: string };
 
-    expect(body.submittedAt).toBe(T_LOCK.toISOString());
-    expect(db.__rows.galleryClients[0]!.selectionSubmittedAt).toEqual(T_LOCK);
-    expect(db.__rows.assetPicks[0]!.submittedAt).toEqual(T_LOCK);
-    const claimedAt = db.__rows.assets[0]!.billedAt as Date;
-    expect(claimedAt.getTime()).toBeGreaterThanOrEqual(T_LOCK.getTime());
+      expect(body.submittedAt).toBe(T_LOCK.toISOString());
+      expect(db.__rows.galleryClients[0]!.selectionSubmittedAt).toEqual(T_LOCK);
+      expect(db.__rows.assetPicks[0]!.submittedAt).toEqual(T_LOCK);
+      const claimedAt = db.__rows.assets[0]!.billedAt as Date;
+      expect(claimedAt.getTime()).toBeGreaterThanOrEqual(T_LOCK.getTime());
+    } finally {
+      // The double is shared by every test in this file: leaving the wrapper
+      // installed would run every later `.for()` call through
+      // `setSystemTime(T_LOCK)` and make the next failure point somewhere else.
+      db.select = realSelect;
+    }
   });
 });
 

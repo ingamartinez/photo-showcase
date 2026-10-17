@@ -43,15 +43,18 @@ const ITEMS = [
 async function open(user: ReturnType<typeof userEvent.setup>) {
   await user.click(screen.getByText(/^Fotos seleccionadas/));
 }
-const listed = () => screen.getAllByRole("listitem").map((li) => li.textContent);
+const listed = () =>
+  screen
+    .getAllByRole("listitem")
+    .map((li) => li.querySelector("[data-testid=photo-filename]")?.textContent);
 
 describe("SelectedPhotosList — rolling delivery work queue (#244)", () => {
-  it('"Solo pedidas sin editar" lists ordered photos with no final, never por-enviar ones', async () => {
+  it('"Pendientes de subir editada" lists ordered photos with no final, never por-enviar ones', async () => {
     const user = userEvent.setup();
     render(<SelectedPhotosList items={ITEMS} rollingDelivery people={PEOPLE} />);
     await open(user);
 
-    await user.click(screen.getByLabelText("Solo pedidas sin editar"));
+    await user.click(screen.getByLabelText("Pendientes de subir editada"));
 
     expect(listed()).toEqual(["A2.JPG", "B1.JPG"]);
   });
@@ -64,7 +67,7 @@ describe("SelectedPhotosList — rolling delivery work queue (#244)", () => {
     await user.selectOptions(screen.getByLabelText("Persona"), "beto");
     expect(listed()).toEqual(["B1.JPG", "B2.JPG"]);
 
-    await user.click(screen.getByLabelText("Solo pedidas sin editar"));
+    await user.click(screen.getByLabelText("Pendientes de subir editada"));
     expect(listed()).toEqual(["B1.JPG"]);
   });
 
@@ -73,7 +76,7 @@ describe("SelectedPhotosList — rolling delivery work queue (#244)", () => {
     render(<SelectedPhotosList items={ITEMS} people={PEOPLE} />);
     await open(user);
 
-    expect(screen.queryByLabelText("Solo pedidas sin editar")).toBeNull();
+    expect(screen.queryByLabelText("Pendientes de subir editada")).toBeNull();
     expect(listed()).toHaveLength(5);
   });
 });

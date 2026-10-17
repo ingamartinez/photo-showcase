@@ -51,6 +51,11 @@ export type SelectedPhotoListItem = {
   hasFinal?: boolean;
 };
 
+const KIND_LABELS: Record<SelectedPhotoListItem["selectionKind"], string> = {
+  edited: "Editada",
+  original: "Original",
+};
+
 const GROUP_LABELS: Record<SelectedPhotoListItem["selectionKind"], string> = {
   // Exactly the set that goes into Lightroom — the reason this task exists.
   edited: "Para editar",
@@ -90,6 +95,8 @@ export function SelectedPhotosList({
   if (allItems.length === 0) return null;
 
   const frozen = new Set(frozenPickerIds);
+  // Display-only attribution (#245): unknown or null pickers just show no name.
+  const labels = new Map(people.map((person) => [person.id, person.label]));
   const items = allItems
     .filter((item) => !onlyFrozen || (item.selectedBy != null && frozen.has(item.selectedBy)))
     .filter((item) => !rollingDelivery || personId === "" || item.selectedBy === personId)
@@ -154,22 +161,22 @@ export function SelectedPhotosList({
               checked={onlyPending}
               onChange={(event) => setOnlyPending(event.target.checked)}
             />
-            Solo pedidas sin editar
+            Pendientes de subir editada
           </label>
         </div>
       )}
       <div className="mt-4 flex flex-col gap-6">
         {isMixed ? (
           <>
-            <PhotoGroup label={GROUP_LABELS.edited} items={edited} />
-            <PhotoGroup label={GROUP_LABELS.original} items={original} />
+            <PhotoGroup label={GROUP_LABELS.edited} items={edited} labels={labels} />
+            <PhotoGroup label={GROUP_LABELS.original} items={original} labels={labels} />
           </>
         ) : (
           // Whichever of the two arrays is non-empty IS `items`, natural
           // sorted — re-sorting the already-filtered array rather than
           // reusing `edited`/`original` directly so this branch does not
           // depend on knowing which of the two happens to hold everything.
-          <PhotoGroup items={items.slice().sort(compareByFilenameNatural)} />
+          <PhotoGroup items={items.slice().sort(compareByFilenameNatural)} labels={labels} />
         )}
       </div>
     </details>
@@ -178,7 +185,15 @@ export function SelectedPhotosList({
 
 type CopyState = "idle" | "copied" | "error";
 
-function PhotoGroup({ label, items }: { label?: string; items: SelectedPhotoListItem[] }) {
+function PhotoGroup({
+  label,
+  items,
+  labels,
+}: {
+  label?: string;
+  items: SelectedPhotoListItem[];
+  labels: Map<string, string>;
+}) {
   const [copyState, setCopyState] = useState<CopyState>("idle");
 
   // `navigator.clipboard` can be missing entirely (non-secure context) — the
@@ -213,9 +228,18 @@ function PhotoGroup({ label, items }: { label?: string; items: SelectedPhotoList
         </button>
       </div>
       <ol className="text-fg list-decimal space-y-1 pl-5 font-mono text-xs">
-        {items.map((item) => (
-          <li key={item.id}>{item.originalFilename}</li>
-        ))}
+        {items.map((item) => {
+          const who = item.selectedBy != null ? labels.get(item.selectedBy) : undefined;
+          return (
+            <li key={item.id}>
+              <span data-testid="photo-filename">{item.originalFilename}</span>
+              <span data-testid="photo-attribution" className="text-fg-mute ml-2 font-sans">
+                {who ? `${who} · ` : ""}
+                {KIND_LABELS[item.selectionKind]}
+              </span>
+            </li>
+          );
+        })}
       </ol>
       {copyState === "copied" && (
         <p role="status" className="text-accent-2 mt-2 text-xs">

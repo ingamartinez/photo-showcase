@@ -47,7 +47,9 @@ describe("SelectedPhotosList — natural sort order (criterion 2)", () => {
     );
     await openDetails(user);
 
-    const items = screen.getAllByRole("listitem").map((el) => el.textContent);
+    const items = screen
+      .getAllByRole("listitem")
+      .map((el) => el.querySelector("[data-testid=photo-filename]")?.textContent);
     expect(items).toEqual(["IMG_1.JPG", "IMG_2.JPG", "IMG_10.JPG"]);
   });
 });
@@ -103,12 +105,12 @@ describe("SelectedPhotosList — mixed selectionKind (criterion 4, mixed branch)
     expect(
       within(groups[0])
         .getAllByRole("listitem")
-        .map((el) => el.textContent),
+        .map((el) => el.querySelector("[data-testid=photo-filename]")?.textContent),
     ).toEqual(["IMG_1.JPG", "IMG_2.JPG"]);
     expect(
       within(groups[1])
         .getAllByRole("listitem")
-        .map((el) => el.textContent),
+        .map((el) => el.querySelector("[data-testid=photo-filename]")?.textContent),
     ).toEqual(["IMG_3.JPG"]);
   });
 

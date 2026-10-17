@@ -28,7 +28,9 @@ describe("SelectedPhotosList per-person filter", () => {
 
     await user.click(screen.getByLabelText(LABEL));
 
-    const names = screen.getAllByRole("listitem").map((li) => li.textContent);
+    const names = screen
+      .getAllByRole("listitem")
+      .map((li) => li.querySelector("[data-testid=photo-filename]")?.textContent);
     expect(names).toEqual(["IMG_A1.jpg", "IMG_C1.jpg"]);
     expect(screen.getByText("Fotos seleccionadas (2)")).toBeDefined();
   });

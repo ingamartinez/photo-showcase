@@ -27,8 +27,8 @@ import type { SelectionKind } from "@/lib/selection-snapshot";
  * one of them owns the asset's billed unit (decision 4). */
 export type ClaimedUnit = {
   assetId: string;
-  /** `assets.selected_by` today (S5 renames the TS field to `billedTo`).
-   * `null` = a legacy unit; it lands in the "Sin registro" bucket. */
+  /** `assets.billedTo` (the DB column `selected_by`; the TS field was renamed
+   * in S4, #259). `null` = a legacy unit; it lands in the "Sin registro" bucket. */
   billedTo: string | null;
   /** `assets.selection_kind`, the RESOLVED kind. */
   kind: SelectionKind;

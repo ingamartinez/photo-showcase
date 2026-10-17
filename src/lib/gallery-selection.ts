@@ -1,6 +1,6 @@
 // The shared, ATTRIBUTED selection of one gallery — "which photos are picked
 // right now, and who picked each of them" (task #95, on top of task #94's
-// `assets.selectedBy` column).
+// `assets.billedTo` column, the epic #250 S4 rename of the TS field).
 //
 // ONE function, called from exactly two places, deliberately:
 //
@@ -52,7 +52,7 @@ export async function getGallerySelection(galleryId: string): Promise<SelectionP
     .select({
       assetId: assets.id,
       selectedAt: assets.selectedAt,
-      selectedBy: assets.selectedBy,
+      billedTo: assets.billedTo,
       // Task #206 — travels the same channel as every other pick fact this
       // function already returns; see selection-snapshot.ts's own comment on
       // `SelectionPick.selectionKind`.
@@ -68,7 +68,7 @@ export async function getGallerySelection(galleryId: string): Promise<SelectionP
     // it was just added by somebody.
     .orderBy(asc(assets.selectedAt));
 
-  const pickerIds = [...new Set(rows.map((row) => row.selectedBy).filter((id) => id !== null))];
+  const pickerIds = [...new Set(rows.map((row) => row.billedTo).filter((id) => id !== null))];
 
   const pickersById = new Map<string, SelectionPicker>();
   if (pickerIds.length > 0) {
@@ -87,7 +87,7 @@ export async function getGallerySelection(galleryId: string): Promise<SelectionP
     // `?? null`, not `!`: a `selected_by` pointing at a row that is no longer
     // in `users` would otherwise render as `undefined`. Same honest "no
     // attribution" outcome as a null column.
-    pickedBy: row.selectedBy ? (pickersById.get(row.selectedBy) ?? null) : null,
+    pickedBy: row.billedTo ? (pickersById.get(row.billedTo) ?? null) : null,
     selectionKind: row.selectionKind,
     requestedAt: row.requestedAt ? row.requestedAt.toISOString() : null,
   }));

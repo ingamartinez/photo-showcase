@@ -2030,10 +2030,10 @@ const removeGalleryClientSchema = z.object({
 /**
  * Sets `gallery_clients.removedAt` for exactly one (gallery, client) pair.
  *
- * Never touches `assets.selectedBy` — a removed client's picks stay
+ * Never touches `assets.billedTo` — a removed client's picks stay
  * attributed to them, the same "historical fact of who chose what"
  * reasoning task #94 already established for that column (schema.ts's own
- * comment on `selectedBy`). This action has no code path that reads or
+ * comment on `billedTo`). This action has no code path that reads or
  * writes `assets` at all.
  *
  * THE LAST-CLIENT GUARD, conditional on status (owner-decided after this
@@ -2385,12 +2385,12 @@ export async function removeGalleryClientPicks(
       .set({
         isSelected: false,
         selectedAt: null,
-        selectedBy: null,
+        billedTo: null,
         selectionKind: "edited",
         // Task #244: removing a pick also cancels its order.
         requestedAt: null,
       })
-      .where(and(eq(assets.galleryId, ctx.gallery.id), eq(assets.selectedBy, ctx.clientId)))
+      .where(and(eq(assets.galleryId, ctx.gallery.id), eq(assets.billedTo, ctx.clientId)))
       .returning({ id: assets.id });
     removed = deselected.length;
     await tx
@@ -2419,7 +2419,7 @@ export async function removeGalleryClientPicks(
 // ---------------------------------------------------------------------------
 // Update the selection tray's layout (task #204) — `flat` (today's only
 // behavior) or `by-person` (one row per picker). PRESENTATION ONLY: this
-// never reads or writes `assets.isSelected`/`selectedBy`, the frozen
+// never reads or writes `assets.isSelected`/`billedTo`, the frozen
 // `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot` terms, or anything
 // #200's audit trail already covers — a client's selection, and what they
 // owe for it, is identical before and after this action runs. That is also
@@ -2597,7 +2597,7 @@ export async function updateRollingDelivery(
           and(
             eq(assets.galleryId, gallery.id),
             eq(assets.isSelected, true),
-            eq(assets.selectedBy, member.userId),
+            eq(assets.billedTo, member.userId),
             isNull(assets.requestedAt),
           ),
         );
@@ -2635,7 +2635,7 @@ export async function updateRollingDelivery(
 //
 // The photographer's own request (2026-08-07): "si esta la opción de
 // agrupacion por persona yo escogería a que persona va asignada esas nuevas
-// fotos." An extra is a photo NOBODY picked, so it has no `selectedBy` and
+// fotos." An extra is a photo NOBODY picked, so it has no `billedTo` and
 // therefore no row to land in when the client's tray is grouped `by-person`.
 // This action is how that row gets chosen.
 //

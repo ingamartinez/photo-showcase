@@ -89,13 +89,13 @@ function member(galleryId: string, userId: string, overrides: Row = {}): Row {
   };
 }
 
-function asset(id: string, galleryId: string, selectedBy: string | null, kind = "edited"): Row {
+function asset(id: string, galleryId: string, billedTo: string | null, kind = "edited"): Row {
   return {
     id,
     galleryId,
-    isSelected: selectedBy !== null,
-    selectedBy,
-    selectedAt: selectedBy ? T0 : null,
+    isSelected: billedTo !== null,
+    billedTo,
+    selectedAt: billedTo ? T0 : null,
     selectionKind: kind,
   };
 }
@@ -513,16 +513,16 @@ describe("removeGalleryClientPicks", () => {
       expect(byId(id)).toMatchObject({
         isSelected: false,
         selectedAt: null,
-        selectedBy: null,
+        billedTo: null,
         selectionKind: "edited",
       });
     }
     // Another client's pick on the same gallery: untouched.
-    expect(byId("b1")).toMatchObject({ isSelected: true, selectedBy: B, selectedAt: T0 });
+    expect(byId("b1")).toMatchObject({ isSelected: true, billedTo: B, selectedAt: T0 });
     // The SAME users' picks on another gallery: untouched.
-    expect(byId("x-a")).toMatchObject({ isSelected: true, selectedBy: A });
-    expect(byId("x-b")).toMatchObject({ isSelected: true, selectedBy: B });
-    expect(byId("free")).toMatchObject({ isSelected: false, selectedBy: null });
+    expect(byId("x-a")).toMatchObject({ isSelected: true, billedTo: A });
+    expect(byId("x-b")).toMatchObject({ isSelected: true, billedTo: B });
+    expect(byId("free")).toMatchObject({ isSelected: false, billedTo: null });
   });
 
   it("clears requestedAt on the removed picks (task #244 lockstep) and leaves other people's orders alone", async () => {
@@ -595,7 +595,7 @@ describe("removeGalleryClientPicks", () => {
 
     await removeGalleryClientPicks({ status: "idle" }, form(A));
 
-    expect(r.assets.find((a) => a.id === "b1")).toMatchObject({ isSelected: true, selectedBy: B });
+    expect(r.assets.find((a) => a.id === "b1")).toMatchObject({ isSelected: true, billedTo: B });
   });
 
   it("with zero picks still succeeds and says 0 fotos", async () => {

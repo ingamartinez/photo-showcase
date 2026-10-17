@@ -750,7 +750,7 @@ describe("POST /api/assets/[assetId]/final — the core rule: selected assets on
     const [row] = db.__rows.assets;
     expect(row?.isSelected).toBe(false);
     expect(row?.selectedAt).toBeNull();
-    expect(row?.selectedBy ?? null).toBeNull();
+    expect(row?.billedTo ?? null).toBeNull();
   });
 
   // The other direction of the same lockstep: uploading onto an asset the

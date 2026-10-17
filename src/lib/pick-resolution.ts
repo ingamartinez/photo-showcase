@@ -39,6 +39,21 @@ export type SubmitOutcome =
   | { type: "joined"; claim: Claimed }
   | { type: "escalation_blocked"; reason: "final_exists"; claim: Claimed };
 
+export function claimFromAsset(row: {
+  isSelected: boolean;
+  selectionKind: SelectionKind;
+  billedTo: string | null;
+  billedAt: Date | null;
+}): AssetClaim {
+  if (!row.isSelected) return { claimed: false };
+  return {
+    claimed: true,
+    kind: row.selectionKind,
+    billedTo: row.billedTo,
+    billedAt: row.billedAt,
+  };
+}
+
 /**
  * The read-time pick state. Decision 8: a pick on a photo someone else already
  * claimed is DEGRADED — still visible with attribution, but it does not

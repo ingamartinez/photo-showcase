@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import type { Session } from "next-auth";
@@ -9,10 +10,6 @@ vi.mock("server-only", () => ({}));
 const authMock = vi.fn();
 vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 
-// Task #114: this route is one of the three write paths that must signal the
-// shared selection changed. Mocked (not the real `@/lib/db`-backed module)
-// because this suite's whole point is proving the DATABASE write, not the
-// pub/sub plumbing (see selection-events.test.ts for that).
 const notifySelectionChangedMock = vi.fn().mockResolvedValue(undefined);
 vi.mock("@/lib/selection-events", () => ({
   notifySelectionChanged: (...args: [string]) => notifySelectionChangedMock(...args),
@@ -21,14 +18,14 @@ vi.mock("@/lib/selection-events", () => ({
 // The shared in-memory double (src/test-support/fake-db.ts) — filters for real
 // off eq()/isNull()/and(), supports `transaction()` and `for("update")`.
 vi.mock("@/lib/db", async () => {
-  const { assets, galleries, galleryClients, users } = await import("@/lib/db/schema");
+  const { assets, assetPicks, galleries, galleryClients, users } = await import("@/lib/db/schema");
   const { createFakeDb } = await import("@/test-support/fake-db");
-  const fake = createFakeDb([assets, galleries, galleryClients, users]);
-  // Test-only escape hatch, not part of the real `db` shape.
+  const fake = createFakeDb([assets, assetPicks, galleries, galleryClients, users]);
   return {
     db: Object.assign(fake, {
       __rows: {
         assets: fake.__tables.get(assets)!,
+        assetPicks: fake.__tables.get(assetPicks)!,
         galleries: fake.__tables.get(galleries)!,
         galleryClients: fake.__tables.get(galleryClients)!,
         users: fake.__tables.get(users)!,
@@ -41,7 +38,15 @@ type Row = Record<string, unknown>;
 
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
-    db: { __rows: { assets: Row[]; galleries: Row[]; galleryClients: Row[]; users: Row[] } };
+    db: {
+      __rows: {
+        assets: Row[];
+        assetPicks: Row[];
+        galleries: Row[];
+        galleryClients: Row[];
+        users: Row[];
+      };
+    };
   };
   return db;
 }
@@ -50,7 +55,6 @@ const GALLERY_A_ID = "11111111-1111-4111-8111-111111111111";
 const GALLERY_B_ID = "22222222-2222-4222-8222-222222222222";
 const ASSET_1_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
 const ASSET_2_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
-const ASSET_3_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
 
 function clientASession(): Session {
   return {
@@ -84,13 +88,8 @@ function galleryRow(overrides: Partial<Row> = {}): Row {
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
     originalPhotoPriceCopSnapshot: 2_000,
-    // Task #214 — defaults ON: this file predates the switch and exercises
-    // `selectionKind: "original"` writes throughout as the domain's own
-    // established behavior. The "allowsOriginalSelection is OFF" describe
-    // block below overrides this explicitly, which is the ONLY thing that
-    // proves the server gate — see this route's own header comment on why a
-    // UI-only gate is not enough.
     allowsOriginalSelection: true,
+    rollingDelivery: false,
     createdAt: new Date("2026-07-01"),
     selectionSubmittedAt: null,
     deliveredAt: null,
@@ -110,12 +109,24 @@ function assetRow(overrides: Partial<Row> = {}): Row {
     isSelected: false,
     selectedAt: null,
     requestedAt: null,
-    // Task #206 — the domain's own default; the tests exercising a type
-    // change override this explicitly.
+    billedTo: null,
+    billedAt: null,
     selectionKind: "edited",
     isEdited: false,
     sortOrder: 0,
     createdAt: new Date("2026-07-02"),
+    ...overrides,
+  };
+}
+
+function pickRow(assetId: string, userId: string, overrides: Row = {}): Row {
+  return {
+    assetId,
+    galleryId: GALLERY_A_ID,
+    userId,
+    kind: "edited",
+    pickedAt: new Date("2026-07-02"),
+    submittedAt: null,
     ...overrides,
   };
 }
@@ -140,6 +151,14 @@ function paramsFor(assetId: string) {
   return { params: Promise.resolve({ assetId }) };
 }
 
+const claimed = (overrides: Row = {}): Row =>
+  assetRow({
+    isSelected: true,
+    billedTo: "client-a",
+    billedAt: new Date("2026-07-03"),
+    ...overrides,
+  });
+
 beforeEach(async () => {
   authMock.mockReset();
   notifySelectionChangedMock.mockReset();
@@ -149,12 +168,11 @@ beforeEach(async () => {
   const db = await seededDb();
   db.__rows.galleries.length = 0;
   db.__rows.assets.length = 0;
+  db.__rows.assetPicks.length = 0;
   db.__rows.galleryClients.length = 0;
   db.__rows.users.length = 0;
   db.__rows.galleries.push(galleryRow());
   db.__rows.assets.push(assetRow({ id: ASSET_1_ID, sortOrder: 0 }));
-  // Task #94: ownership is now a `gallery_clients` row, not a `clientId`
-  // column on the gallery itself.
   db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-a" });
 });
 
@@ -179,29 +197,36 @@ describe("PATCH /api/assets/[assetId]/selection — authorization", () => {
     await expect(response.json()).resolves.toEqual({ error: "forbidden" });
   });
 
-  it("lets the asset's own owning client toggle it", async () => {
+  it("lets the asset's own owning client insert their pick", async () => {
     authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
     const { PATCH } = await import("./route");
 
     const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
 
     expect(response.status).toBe(200);
+    expect(db.__rows.assetPicks).toHaveLength(1);
+    expect(db.__rows.assetPicks[0]).toMatchObject({
+      assetId: ASSET_1_ID,
+      userId: "client-a",
+      kind: "edited",
+      submittedAt: null,
+    });
   });
 
-  it("lets an admin toggle any asset regardless of which client owns the gallery", async () => {
+  it("refuses an ADMIN with 409 admin_cannot_pick, writing nothing", async () => {
     authMock.mockResolvedValue(adminSession());
     const db = await seededDb();
-    db.__rows.galleries.length = 0;
-    db.__rows.assets.length = 0;
-    db.__rows.galleryClients.length = 0;
-    db.__rows.galleries.push(galleryRow({ id: GALLERY_B_ID }));
-    db.__rows.galleryClients.push({ galleryId: GALLERY_B_ID, userId: "client-b" });
-    db.__rows.assets.push(assetRow({ galleryId: GALLERY_B_ID }));
+    const before = structuredClone(db.__rows.assets);
     const { PATCH } = await import("./route");
 
     const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
 
-    expect(response.status).toBe(200);
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "admin_cannot_pick" });
+    expect(db.__rows.assetPicks).toHaveLength(0);
+    expect(db.__rows.assets).toEqual(before);
+    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
   });
 });
 
@@ -231,6 +256,29 @@ describe("PATCH /api/assets/[assetId]/selection — validation and not-found", (
     await expect(response.json()).resolves.toEqual({ error: "invalid_body" });
   });
 
+  it("rejects a body with neither selected nor selectionKind", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestBody(ASSET_1_ID, {}), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_body" });
+  });
+
+  it("rejects an invalid selectionKind value", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "premium" }),
+      paramsFor(ASSET_1_ID),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_body" });
+  });
+
   it("returns 404 when the asset does not exist", async () => {
     authMock.mockResolvedValue(clientASession());
     const db = await seededDb();
@@ -245,13 +293,8 @@ describe("PATCH /api/assets/[assetId]/selection — validation and not-found", (
 });
 
 describe("PATCH /api/assets/[assetId]/selection — gallery status gate", () => {
-  // `selected`/`delivered` are still visible to a CLIENT (src/lib/galleries.ts's
-  // `CLIENT_VISIBLE_STATUSES`), so a client's request passes the visibility
-  // gate and reaches the lock gate, getting the honest 409 — not a 404 that
-  // would hide the reason from the caller who is otherwise allowed to know
-  // this gallery exists.
   it.each(["selected", "delivered"])(
-    "refuses a CLIENT with 409 when the gallery status is %s, without touching is_selected",
+    "refuses a CLIENT with 409 when the gallery status is %s",
     async (status) => {
       authMock.mockResolvedValue(clientASession());
       const db = await seededDb();
@@ -263,17 +306,11 @@ describe("PATCH /api/assets/[assetId]/selection — gallery status gate", () => 
 
       expect(response.status).toBe(409);
       await expect(response.json()).resolves.toEqual({ error: "gallery_locked" });
-      expect(db.__rows.assets[0]?.isSelected).toBe(false);
+      expect(db.__rows.assetPicks).toHaveLength(0);
     },
   );
 
-  // `archived` is NOT in `CLIENT_VISIBLE_STATUSES` at all (galleries.ts's own
-  // comment: an undefined future status fails closed rather than silently
-  // rendering) — so a client's request never reaches the lock gate; it's
-  // refused at the visibility gate first, with the same 404 `loadOwnedAsset`
-  // already uses for "doesn't exist", not a 409 that would confirm the
-  // gallery is real.
-  it("refuses a CLIENT with 404 (not 409) when the gallery status is archived, since archived isn't client-visible at all", async () => {
+  it("refuses a CLIENT with 404 (not 409) when the gallery status is archived", async () => {
     authMock.mockResolvedValue(clientASession());
     const db = await seededDb();
     db.__rows.galleries.length = 0;
@@ -284,13 +321,9 @@ describe("PATCH /api/assets/[assetId]/selection — gallery status gate", () => 
 
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({ error: "asset_not_found" });
-    expect(db.__rows.assets[0]?.isSelected).toBe(false);
+    expect(db.__rows.assetPicks).toHaveLength(0);
   });
 
-  // An ADMIN bypasses the visibility gate entirely (same as the proof route,
-  // task #63), so all three locked statuses reach the SAME lock gate a
-  // client's `selected`/`delivered` request does above — refused for
-  // everyone, admin included.
   it.each(["selected", "delivered", "archived"])(
     "refuses an ADMIN with 409 when the gallery status is %s — the lock applies to everyone",
     async (status) => {
@@ -304,30 +337,22 @@ describe("PATCH /api/assets/[assetId]/selection — gallery status gate", () => 
 
       expect(response.status).toBe(409);
       await expect(response.json()).resolves.toEqual({ error: "gallery_locked" });
-      expect(db.__rows.assets[0]?.isSelected).toBe(false);
+      expect(db.__rows.assetPicks).toHaveLength(0);
     },
   );
 
-  it("still allows the toggle for a CLIENT when the gallery status is proofing", async () => {
+  it("still lets a CLIENT insert when the gallery status is proofing", async () => {
     authMock.mockResolvedValue(clientASession());
     const db = await seededDb();
-    db.__rows.galleries.length = 0;
-    db.__rows.galleries.push(galleryRow({ status: "proofing" }));
     const { PATCH } = await import("./route");
 
     const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
 
     expect(response.status).toBe(200);
-    expect(db.__rows.assets[0]?.isSelected).toBe(true);
+    expect(db.__rows.assetPicks).toHaveLength(1);
   });
 
-  // The headline finding this test guards against: a `draft` gallery is
-  // "not yet visible to client" (PLAN.md §2) — a CLIENT must be refused here
-  // exactly as they are refused when trying to VIEW the gallery
-  // (src/app/galleries/[publicSlug]/page.tsx's own `notFound()` for draft),
-  // not merely left to fall through an admin-shaped lock set that has no
-  // opinion on draft at all.
-  it("refuses a CLIENT with 404 when the gallery status is draft — a draft gallery is not writable by them either", async () => {
+  it("refuses a CLIENT with 404 when the gallery status is draft", async () => {
     authMock.mockResolvedValue(clientASession());
     const db = await seededDb();
     db.__rows.galleries.length = 0;
@@ -338,340 +363,304 @@ describe("PATCH /api/assets/[assetId]/selection — gallery status gate", () => 
 
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({ error: "asset_not_found" });
-    expect(db.__rows.assets[0]?.isSelected).toBe(false);
   });
 
-  // An ADMIN legitimately works in `draft` (uploading/arranging proofs
-  // before publishing) — same bypass as the proof route.
-  it("still allows the toggle for an ADMIN when the gallery status is draft", async () => {
+  it("refuses an ADMIN with 409 admin_cannot_pick when the gallery status is draft", async () => {
     authMock.mockResolvedValue(adminSession());
     const db = await seededDb();
     db.__rows.galleries.length = 0;
-    // Admin bypasses ownership entirely (src/lib/gallery-access.ts) — no
-    // `gallery_clients` row is seeded for this gallery at all, on purpose.
-    db.__rows.galleryClients.length = 0;
     db.__rows.galleries.push(galleryRow({ status: "draft" }));
     const { PATCH } = await import("./route");
 
     const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
 
-    expect(response.status).toBe(200);
-    expect(db.__rows.assets[0]?.isSelected).toBe(true);
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "admin_cannot_pick" });
   });
 });
 
-describe("PATCH /api/assets/[assetId]/selection — persistence and quota recomputation", () => {
-  it("persists is_selected and selected_at on select", async () => {
+describe("PATCH /api/assets/[assetId]/selection — the caller's own pick only", () => {
+  it("P1 — an insert creates the cart pick, reports pick.status cart and leaves asset.isSelected false", async () => {
     authMock.mockResolvedValue(clientASession());
     const db = await seededDb();
     const { PATCH } = await import("./route");
 
     const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
-    const body = (await response.json()) as { asset: { isSelected: boolean; selectedAt: string } };
-
-    expect(body.asset.isSelected).toBe(true);
-    expect(body.asset.selectedAt).not.toBeNull();
-    expect(db.__rows.assets[0]?.isSelected).toBe(true);
-    expect(db.__rows.assets[0]?.selectedAt).toBeInstanceOf(Date);
-  });
-
-  // Task #114: every OTHER open session's tray converges off THIS signal —
-  // dropping this call silently degrades the whole product back to a 30s
-  // fallback poll with no test ever noticing, which is exactly the risk
-  // src/lib/selection-events.ts's own header comment names as the tradeoff
-  // of an application call over a database trigger.
-  it("signals the shared-selection change for this asset's OWN gallery, after the write", async () => {
-    authMock.mockResolvedValue(clientASession());
-    const { PATCH } = await import("./route");
-
-    await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
-
-    expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_A_ID);
-  });
-
-  it("still responds 200 even if the change signal itself fails", async () => {
-    // Fire-and-forget, by design (src/lib/selection-events.ts's own header
-    // comment) — the toggle already committed, and a NOTIFY failure must
-    // never turn a successful mutation into a failed response.
-    notifySelectionChangedMock.mockRejectedValue(new Error("notify boom"));
-    authMock.mockResolvedValue(clientASession());
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
-
-    expect(response.status).toBe(200);
-  });
-
-  it("clears selected_at on deselect", async () => {
-    authMock.mockResolvedValue(clientASession());
-    const db = await seededDb();
-    db.__rows.assets[0] = assetRow({ isSelected: true, selectedAt: new Date("2026-07-10") });
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-    const body = (await response.json()) as { asset: { isSelected: boolean; selectedAt: null } };
+    const body = (await response.json()) as {
+      asset: { isSelected: boolean };
+      pick: { kind: string; submittedAt: string | null; status: string };
+    };
 
     expect(body.asset.isSelected).toBe(false);
-    expect(body.asset.selectedAt).toBeNull();
-    expect(db.__rows.assets[0]?.selectedAt).toBeNull();
+    expect(body.pick).toMatchObject({ kind: "edited", submittedAt: null, status: "cart" });
+    expect(db.__rows.assetPicks[0]!.submittedAt).toBeNull();
   });
 
-  // Task #94's "shared selection, ATTRIBUTED" decision — schema.ts's comment
-  // on `assets.selectedBy` requires this route to keep it in lockstep with
-  // `isSelected`, in BOTH directions. Unattributed selections made in
-  // production can never be attributed retroactively, so this is the
-  // headline regression this test exists to catch.
-  it("stamps selected_by with the acting session's user id on select", async () => {
+  it("P2 — a double select leaves one row, returns 200 and notifies once", async () => {
     authMock.mockResolvedValue(clientASession());
     const db = await seededDb();
     const { PATCH } = await import("./route");
 
-    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
+    const first = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
+    const second = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
 
-    expect(response.status).toBe(200);
-    expect(db.__rows.assets[0]?.selectedBy).toBe("client-a");
+    expect(first.status).toBe(200);
+    expect(second.status).toBe(200);
+    expect(db.__rows.assetPicks).toHaveLength(1);
+    expect(notifySelectionChangedMock).toHaveBeenCalledTimes(1);
   });
 
-  it("clears selected_by back to null on deselect, even though a different actor selected it", async () => {
-    authMock.mockResolvedValue(clientASession());
+  it("P3 — B's insert on A's claimed asset degrades, and the legacy asset block names A", async () => {
+    authMock.mockResolvedValue(clientBSession());
     const db = await seededDb();
-    db.__rows.assets[0] = assetRow({
-      isSelected: true,
-      selectedAt: new Date("2026-07-10"),
-      selectedBy: "client-b",
-    });
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-
-    expect(response.status).toBe(200);
-    expect(db.__rows.assets[0]?.selectedBy).toBeNull();
-  });
-
-  // Task #95: the collaborative tray moves a photo the instant the SERVER
-  // confirms the pick, and it needs a name to put under it. Reported back by
-  // the route that just wrote the attribution rather than assembled on the
-  // client — same "never derive a fact the server can hand you" stance the
-  // `quota` field already follows.
-  it("reports back who it recorded as the picker, so the tray never has to guess", async () => {
-    authMock.mockResolvedValue({
-      user: { id: "client-a", role: "client", email: "a@example.com", name: "Ana Pérez" },
-      expires: "2099-01-01T00:00:00.000Z",
-    });
+    db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
+    db.__rows.users.push({ id: "client-a", name: "Ana Pérez", email: "a@example.com" });
+    db.__rows.assets[0] = claimed();
     const { PATCH } = await import("./route");
 
     const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
     const body = (await response.json()) as {
-      asset: { pickedBy: { id: string; label: string } | null };
+      asset: { isSelected: boolean; pickedBy: { id: string; label: string } | null };
+      pick: { status: string };
     };
 
+    expect(body.asset.isSelected).toBe(true);
     expect(body.asset.pickedBy).toEqual({ id: "client-a", label: "Ana Pérez" });
+    expect(body.pick.status).toBe("degraded");
+    expect(db.__rows.assetPicks).toHaveLength(1);
+    expect(db.__rows.assetPicks[0]).toMatchObject({ userId: "client-b", kind: "edited" });
   });
 
-  it("falls back to the email when the picker has no name, never to a blank label", async () => {
-    authMock.mockResolvedValue(clientASession());
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
-    const body = (await response.json()) as {
-      asset: { pickedBy: { id: string; label: string } | null };
-    };
-
-    expect(body.asset.pickedBy).toEqual({ id: "client-a", label: "a@example.com" });
-  });
-
-  it("reports a null picker on deselect, in lockstep with the column it just cleared", async () => {
-    authMock.mockResolvedValue(clientASession());
+  it("P4 — removing B's pick leaves A's pick byte-identical (the incident)", async () => {
+    authMock.mockResolvedValue(clientBSession());
     const db = await seededDb();
-    db.__rows.assets[0] = assetRow({ isSelected: true, selectedBy: "client-b" });
+    db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
+    db.__rows.assets[0] = claimed();
+    db.__rows.assetPicks.push(
+      pickRow(ASSET_1_ID, "client-a", { submittedAt: new Date("2026-07-03") }),
+      pickRow(ASSET_1_ID, "client-b"),
+    );
+    const assetsBefore = structuredClone(db.__rows.assets);
+    const aPickBefore = structuredClone(db.__rows.assetPicks[0]);
     const { PATCH } = await import("./route");
 
     const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-    const body = (await response.json()) as { asset: { pickedBy: unknown } };
 
-    expect(body.asset.pickedBy).toBeNull();
+    expect(response.status).toBe(200);
+    expect(db.__rows.assetPicks).toHaveLength(1);
+    expect(db.__rows.assetPicks[0]).toEqual(aPickBefore);
+    expect(db.__rows.assets).toEqual(assetsBefore);
   });
 
-  // The task's core acceptance criterion: the response's `quota` is a fresh
-  // server-side recomputation off the gallery's frozen snapshot, not
-  // anything the client could have supplied or incremented itself.
-  it("returns a quota recomputed from every sibling asset's is_selected flag, off the gallery's snapshot terms", async () => {
-    authMock.mockResolvedValue(clientASession());
+  // P4's two CART twins. P4 seeds A's pick as SUBMITTED, so the delete's own
+  // `submitted_at IS NULL` clause already protects it — the `user_id` half of
+  // `pickWhere` never decides that outcome. Carts are exactly where several
+  // people coexist on one photo, so these are the rows a regression to "delete
+  // every cart pick on the asset" would take down while P4 stayed green.
+  it("P4a — removing B's CART pick leaves A's CART pick on the same asset byte-identical", async () => {
+    authMock.mockResolvedValue(clientBSession());
     const db = await seededDb();
-    db.__rows.assets.push(assetRow({ id: ASSET_2_ID, isSelected: true, sortOrder: 1 }));
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
-    const body = (await response.json()) as {
-      quota: {
-        selected: number;
-        includedPhotosSnapshot: number;
-        extraPhotoPriceCopSnapshot: number;
-        extras: number;
-        surchargeCop: number;
-      };
-    };
-
-    // Both ASSET_1 (just selected) and ASSET_2 (already selected) count —
-    // 2 selected against a snapshot of 13 included means no extras yet.
-    expect(body.quota).toEqual({
-      selected: 2,
-      selectedEdited: 2,
-      selectedOriginal: 0,
-      includedPhotosSnapshot: 13,
-      extraPhotoPriceCopSnapshot: 5_000,
-      extraPhotoPriceTiersSnapshot: null,
-      extraUnitPriceCop: 5_000,
-      originalPhotoPriceCopSnapshot: 2_000,
-      extras: 0,
-      originals: 0,
-      extrasSurchargeCop: 0,
-      originalsSurchargeCop: 0,
-      surchargeCop: 0,
-    });
-  });
-
-  // Task #231 — the per-toggle response is recomputed off the row's own scale.
-  it("prices extras by the gallery's frozen volume scale after a toggle", async () => {
-    authMock.mockResolvedValue(clientASession());
-    const db = await seededDb();
-    db.__rows.galleries.length = 0;
-    db.__rows.galleries.push(
-      galleryRow({
-        includedPhotosSnapshot: 0,
-        extraPhotoPriceCopSnapshot: 15_000,
-        extraPhotoPriceTiersSnapshot: [
-          { minExtras: 1, priceCop: 15_000 },
-          { minExtras: 2, priceCop: 10_000 },
-        ],
-      }),
+    db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
+    db.__rows.assets[0] = claimed();
+    db.__rows.assetPicks.push(pickRow(ASSET_1_ID, "client-a"), pickRow(ASSET_1_ID, "client-b"));
+    const assetsBefore = structuredClone(db.__rows.assets);
+    const aPickBefore = structuredClone(
+      db.__rows.assetPicks.find((pick) => pick.userId === "client-a"),
     );
-    db.__rows.assets.push(assetRow({ id: ASSET_2_ID, isSelected: true, sortOrder: 1 }));
     const { PATCH } = await import("./route");
 
-    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
-    const body = (await response.json()) as {
-      quota: { extras: number; extraUnitPriceCop: number; surchargeCop: number };
-    };
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
 
-    expect(body.quota).toMatchObject({
-      extras: 2,
-      extraUnitPriceCop: 10_000,
-      surchargeCop: 20_000,
-    });
+    expect(response.status).toBe(200);
+    expect(db.__rows.assetPicks).toHaveLength(1);
+    expect(db.__rows.assetPicks[0]).toEqual(aPickBefore);
+    expect(db.__rows.assetPicks[0]).toMatchObject({ userId: "client-a", kind: "edited" });
+    expect(db.__rows.assets).toEqual(assetsBefore);
   });
 
-  it("reflects extras and surcharge once the count passes the snapshot's included quota", async () => {
-    authMock.mockResolvedValue(clientASession());
+  it("P4b — retyping B's CART pick (original->edited) leaves A's CART pick byte-identical", async () => {
+    authMock.mockResolvedValue(clientBSession());
     const db = await seededDb();
-    db.__rows.galleries.length = 0;
-    db.__rows.galleries.push(galleryRow({ includedPhotosSnapshot: 1 }));
-    db.__rows.assets.push(assetRow({ id: ASSET_2_ID, isSelected: true, sortOrder: 1 }));
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
-    const body = (await response.json()) as {
-      quota: { selected: number; extras: number; surchargeCop: number };
-    };
-
-    expect(body.quota).toEqual({
-      selected: 2,
-      selectedEdited: 2,
-      selectedOriginal: 0,
-      includedPhotosSnapshot: 1,
-      extraPhotoPriceCopSnapshot: 5_000,
-      extraPhotoPriceTiersSnapshot: null,
-      extraUnitPriceCop: 5_000,
-      originalPhotoPriceCopSnapshot: 2_000,
-      extras: 1,
-      originals: 0,
-      extrasSurchargeCop: 5_000,
-      originalsSurchargeCop: 0,
-      surchargeCop: 5_000,
-    });
-  });
-});
-
-describe("PATCH /api/assets/[assetId]/selection — setting the type (task #206)", () => {
-  // Criterion 1 — mark a picked photo `original`, then back to `edited`.
-  it("sets selection_kind on an already-selected asset without touching is_selected", async () => {
-    authMock.mockResolvedValue(clientASession());
-    const db = await seededDb();
-    db.__rows.assets[0] = assetRow({ isSelected: true, selectionKind: "edited" });
+    db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
+    db.__rows.assets[0] = claimed();
+    // Both are CARTS of kind `original`. B's retype (original -> edited) is the
+    // one a degraded pick is allowed to make; A's row is the one a retype
+    // without the `user_id` predicate would rewrite too.
+    db.__rows.assetPicks.push(
+      pickRow(ASSET_1_ID, "client-a", { kind: "original" }),
+      pickRow(ASSET_1_ID, "client-b", { kind: "original" }),
+    );
+    const assetsBefore = structuredClone(db.__rows.assets);
+    const aPickBefore = structuredClone(
+      db.__rows.assetPicks.find((pick) => pick.userId === "client-a"),
+    );
     const { PATCH } = await import("./route");
 
     const response = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "edited" }),
+      paramsFor(ASSET_1_ID),
+    );
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assetPicks.find((pick) => pick.userId === "client-b")).toMatchObject({
+      kind: "edited",
+    });
+    // A's cart pick is untouched: still original, still A's.
+    expect(db.__rows.assetPicks.find((pick) => pick.userId === "client-a")).toEqual(aPickBefore);
+    expect(db.__rows.assetPicks.find((pick) => pick.userId === "client-a")).toMatchObject({
+      kind: "original",
+    });
+    expect(db.__rows.assets).toEqual(assetsBefore);
+  });
+
+  it("P5 — a degraded pick can be removed", async () => {
+    authMock.mockResolvedValue(clientBSession());
+    const db = await seededDb();
+    db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
+    db.__rows.assets[0] = claimed();
+    db.__rows.assetPicks.push(pickRow(ASSET_1_ID, "client-b"));
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assetPicks).toHaveLength(0);
+  });
+
+  it("P6 — a cart retype works both ways, and a same-kind retype is a no-op without notify", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.assetPicks.push(pickRow(ASSET_1_ID, "client-a"));
+    const { PATCH } = await import("./route");
+
+    const toOriginal = await PATCH(
       requestBody(ASSET_1_ID, { selectionKind: "original" }),
       paramsFor(ASSET_1_ID),
     );
-    const body = (await response.json()) as {
-      asset: { isSelected: boolean; selectionKind: string };
-    };
+    expect(toOriginal.status).toBe(200);
+    expect(db.__rows.assetPicks[0]!.kind).toBe("original");
 
-    expect(response.status).toBe(200);
-    expect(body.asset.isSelected).toBe(true);
-    expect(body.asset.selectionKind).toBe("original");
-    expect(db.__rows.assets[0]?.selectionKind).toBe("original");
-    expect(db.__rows.assets[0]?.isSelected).toBe(true);
+    notifySelectionChangedMock.mockClear();
+    const sameKind = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+    expect(sameKind.status).toBe(200);
+    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
 
-    // And back — criterion 1's own round trip.
     const back = await PATCH(
       requestBody(ASSET_1_ID, { selectionKind: "edited" }),
       paramsFor(ASSET_1_ID),
     );
-    const backBody = (await back.json()) as { asset: { selectionKind: string } };
-    expect(backBody.asset.selectionKind).toBe("edited");
-    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
+    expect(back.status).toBe(200);
+    expect(db.__rows.assetPicks[0]!.kind).toBe("edited");
   });
 
-  // Criterion 2, first half — a type change is not a deselect.
-  it("never touches is_selected, selected_at or selected_by on a type-only change", async () => {
+  it("P7 — degraded original->edited is allowed; edited->original answers pick_degraded and leaves the row", async () => {
+    authMock.mockResolvedValue(clientBSession());
+    const db = await seededDb();
+    db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
+    db.__rows.assets[0] = claimed();
+    db.__rows.assetPicks.push(pickRow(ASSET_1_ID, "client-b", { kind: "original" }));
+    const { PATCH } = await import("./route");
+
+    const up = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "edited" }),
+      paramsFor(ASSET_1_ID),
+    );
+    expect(up.status).toBe(200);
+    expect(db.__rows.assetPicks[0]!.kind).toBe("edited");
+
+    const down = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+    expect(down.status).toBe(409);
+    await expect(down.json()).resolves.toEqual({ error: "pick_degraded" });
+    // The previous edit survives; the refused change wrote nothing.
+    expect(db.__rows.assetPicks[0]!.kind).toBe("edited");
+  });
+
+  it.each([
+    ["rolling on", true],
+    ["rolling off", false],
+  ])("P8 — a billed pick cannot be removed or retyped (%s)", async (_name, rolling) => {
     authMock.mockResolvedValue(clientASession());
     const db = await seededDb();
-    const selectedAt = new Date("2026-07-10T00:00:00.000Z");
-    db.__rows.assets[0] = assetRow({
-      isSelected: true,
-      selectedAt,
-      selectedBy: "client-a",
-      selectionKind: "edited",
+    db.__rows.galleries[0]!.rollingDelivery = rolling;
+    db.__rows.assets[0] = claimed();
+    db.__rows.assetPicks.push(pickRow(ASSET_1_ID, "client-a", { submittedAt: new Date() }));
+    const { PATCH } = await import("./route");
+
+    const remove = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+    expect(remove.status).toBe(409);
+    await expect(remove.json()).resolves.toEqual({ error: "already_requested" });
+
+    const retype = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+    expect(retype.status).toBe(409);
+    await expect(retype.json()).resolves.toEqual({ error: "already_requested" });
+    expect(db.__rows.assetPicks).toHaveLength(1);
+  });
+
+  it("P9 — a joined pick cannot be removed or retyped", async () => {
+    authMock.mockResolvedValue(clientBSession());
+    const db = await seededDb();
+    db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
+    db.__rows.assets[0] = claimed();
+    db.__rows.assetPicks.push(
+      pickRow(ASSET_1_ID, "client-b", { submittedAt: new Date(), kind: "original" }),
+    );
+    const { PATCH } = await import("./route");
+
+    const remove = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+    expect(remove.status).toBe(409);
+    await expect(remove.json()).resolves.toEqual({ error: "already_requested" });
+
+    const retype = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "edited" }),
+      paramsFor(ASSET_1_ID),
+    );
+    expect(retype.status).toBe(409);
+    await expect(retype.json()).resolves.toEqual({ error: "already_requested" });
+  });
+
+  it("P10 — the submitted_at CAS: a submit landing between the read and the write refuses remove and retype", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    // A CART pick (unclaimed asset): the edit gate passes, so the refusal
+    // observed is the `submitted_at IS NULL` CAS itself, not the gate.
+    db.__rows.assetPicks.push(pickRow(ASSET_1_ID, "client-a"));
+    const row = db.__rows.assetPicks[0]!;
+    let reads = 0;
+    Object.defineProperty(row, "submittedAt", {
+      configurable: true,
+      get: () => (reads++ === 0 ? null : new Date("2026-10-17T10:00:00.000Z")),
+      set: () => {},
     });
     const { PATCH } = await import("./route");
 
-    await PATCH(requestBody(ASSET_1_ID, { selectionKind: "original" }), paramsFor(ASSET_1_ID));
+    const removed = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+    expect(removed.status).toBe(409);
+    await expect(removed.json()).resolves.toEqual({ error: "already_requested" });
+    expect(db.__rows.assetPicks).toHaveLength(1);
+    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
 
-    expect(db.__rows.assets[0]?.isSelected).toBe(true);
-    expect(db.__rows.assets[0]?.selectedAt).toBe(selectedAt);
-    expect(db.__rows.assets[0]?.selectedBy).toBe("client-a");
+    reads = 0;
+    const retype = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+    expect(retype.status).toBe(409);
+    await expect(retype.json()).resolves.toEqual({ error: "already_requested" });
+    expect(db.__rows.assetPicks[0]!.kind).toBe("edited");
   });
 
-  // Criterion 2, second half — deselecting and re-selecting returns to
-  // `edited`, even though the asset was `original` a moment ago.
-  it("resets selection_kind to edited when the plain select control re-selects a photo that was marked original", async () => {
+  it("P11 — selectionKind-only with no own pick answers asset_not_selected", async () => {
     authMock.mockResolvedValue(clientASession());
     const db = await seededDb();
-    db.__rows.assets[0] = assetRow({ isSelected: true, selectionKind: "original" });
-    const { PATCH } = await import("./route");
-
-    // Deselect (the plain toggle, no `selectionKind` in the body).
-    await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
-
-    // Re-select.
-    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
-    const body = (await response.json()) as { asset: { selectionKind: string } };
-
-    expect(body.asset.selectionKind).toBe("edited");
-    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
-  });
-
-  // The trap named in the task body: a photo that is not selected has no
-  // type. Refused with 409, the same "authorized caller, wrong asset state"
-  // shape the lock gate above uses — not silently accepted, not a 404 (the
-  // asset is real and this client does own it).
-  it("refuses a type-only change on an asset that is not selected", async () => {
-    authMock.mockResolvedValue(clientASession());
-    const db = await seededDb();
-    db.__rows.assets[0] = assetRow({ isSelected: false, selectionKind: "edited" });
     const { PATCH } = await import("./route");
 
     const response = await PATCH(
@@ -681,235 +670,13 @@ describe("PATCH /api/assets/[assetId]/selection — setting the type (task #206)
 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({ error: "asset_not_selected" });
-    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
+    expect(db.__rows.assetPicks).toHaveLength(0);
   });
 
-  // The state gate applies to a type change exactly as it applies to a
-  // toggle — the task body's own named trap ("es fácil acordarse de gatear
-  // 'elegir' y olvidarse de gatear 'cambiar el tipo'"). At least two of the
-  // three locked statuses, per criterion 6.
-  it.each(["selected", "delivered"])(
-    "refuses a type-only change with 409 when the gallery status is %s, without touching selection_kind",
-    async (status) => {
-      authMock.mockResolvedValue(clientASession());
-      const db = await seededDb();
-      db.__rows.galleries.length = 0;
-      db.__rows.galleries.push(galleryRow({ status }));
-      db.__rows.assets[0] = assetRow({ isSelected: true, selectionKind: "edited" });
-      const { PATCH } = await import("./route");
-
-      const response = await PATCH(
-        requestBody(ASSET_1_ID, { selectionKind: "original" }),
-        paramsFor(ASSET_1_ID),
-      );
-
-      expect(response.status).toBe(409);
-      await expect(response.json()).resolves.toEqual({ error: "gallery_locked" });
-      expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
-    },
-  );
-
-  it("refuses a type-only change with 409 when the gallery status is archived, for an admin too — the lock applies to everyone", async () => {
-    authMock.mockResolvedValue(adminSession());
-    const db = await seededDb();
-    db.__rows.galleries.length = 0;
-    db.__rows.galleries.push(galleryRow({ status: "archived" }));
-    db.__rows.assets[0] = assetRow({ isSelected: true, selectionKind: "edited" });
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(
-      requestBody(ASSET_1_ID, { selectionKind: "original" }),
-      paramsFor(ASSET_1_ID),
-    );
-
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({ error: "gallery_locked" });
-    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
-  });
-
-  it("rejects a body with neither selected nor selectionKind", async () => {
-    authMock.mockResolvedValue(clientASession());
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestBody(ASSET_1_ID, {}), paramsFor(ASSET_1_ID));
-
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({ error: "invalid_body" });
-  });
-
-  it("rejects an invalid selectionKind value", async () => {
+  it("P17 — originals_not_allowed precedes the insert", async () => {
     authMock.mockResolvedValue(clientASession());
     const db = await seededDb();
-    db.__rows.assets[0] = assetRow({ isSelected: true });
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(
-      requestBody(ASSET_1_ID, { selectionKind: "premium" }),
-      paramsFor(ASSET_1_ID),
-    );
-
-    expect(response.status).toBe(400);
-    await expect(response.json()).resolves.toEqual({ error: "invalid_body" });
-  });
-
-  // The quota split: an original never draws from the included-photos quota,
-  // no matter how much room the quota has left. THE test that distinguishes
-  // a correct implementation from one that ignores the split — both terms
-  // non-zero, chosen so neither is a multiple of the other.
-  it("recomputes the quota split between edited and original picks after a type change", async () => {
-    authMock.mockResolvedValue(clientASession());
-    const db = await seededDb();
-    db.__rows.galleries.length = 0;
-    db.__rows.galleries.push(galleryRow({ includedPhotosSnapshot: 2 }));
-    // ASSET_1 is about to become `original`. Three more edited picks put the
-    // edited count at 3, one over the included 2.
-    db.__rows.assets[0] = assetRow({ isSelected: true, selectionKind: "edited" });
-    db.__rows.assets.push(
-      assetRow({ id: ASSET_2_ID, isSelected: true, selectionKind: "edited", sortOrder: 1 }),
-      assetRow({
-        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3",
-        isSelected: true,
-        selectionKind: "edited",
-        sortOrder: 2,
-      }),
-      assetRow({
-        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa4",
-        isSelected: true,
-        selectionKind: "edited",
-        sortOrder: 3,
-      }),
-    );
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(
-      requestBody(ASSET_1_ID, { selectionKind: "original" }),
-      paramsFor(ASSET_1_ID),
-    );
-    const body = (await response.json()) as {
-      quota: {
-        selectedEdited: number;
-        selectedOriginal: number;
-        extras: number;
-        originals: number;
-        surchargeCop: number;
-      };
-    };
-
-    // 3 edited (ASSET_2/3/4) -> 1 over the 2 included -> 5_000 edited surcharge.
-    // 1 original (ASSET_1) -> 2_000 more, additive, never drawing from the
-    // included quota that still has room.
-    expect(body.quota.selectedEdited).toBe(3);
-    expect(body.quota.selectedOriginal).toBe(1);
-    expect(body.quota.extras).toBe(1);
-    expect(body.quota.originals).toBe(1);
-    expect(body.quota.surchargeCop).toBe(5_000 + 2_000);
-  });
-
-  // The race this route's OWN attribution logic guards against: SOMEBODY
-  // OTHER than the picker changes the type of a photo client A picked. The
-  // response must name A, not mislabel the actor's own name onto A's id.
-  //
-  // Task #249 — the actor here is an ADMIN, not another client: since the
-  // `pick_not_yours` gate, a non-admin can only re-type a pick that is their
-  // own or unprotected, so the admin is now the only real path where actor and
-  // picker differ. The mislabelling risk this test guards is unchanged.
-  it("reports the ORIGINAL picker's own name, not the acting session's, on a type-only change made by someone else", async () => {
-    authMock.mockResolvedValue({
-      user: { id: "admin-1", role: "admin", email: "photographer@example.com", name: "Alejo" },
-      expires: "2099-01-01T00:00:00.000Z",
-    });
-    const db = await seededDb();
-    db.__rows.assets[0] = assetRow({ isSelected: true, selectedBy: "client-a" });
-    // Round-2 review finding: this row MUST be seeded for the assertion below
-    // to mean anything — an unseeded `users` table makes the lookup return
-    // nothing no matter what the route does with its result, which is
-    // exactly how `pickedBy = null` slipped through as a passing mutation
-    // the first time this test was written.
-    db.__rows.users.push({ id: "client-a", name: "Ana Pérez", email: "a@example.com" });
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(
-      requestBody(ASSET_1_ID, { selectionKind: "original" }),
-      paramsFor(ASSET_1_ID),
-    );
-    const body = (await response.json()) as { asset: { pickedBy: { id: string; label: string } } };
-
-    // The ORIGINAL picker's real name (from the seeded `users` row) — never
-    // "Alejo", the ACTING session's own name, which the route must not
-    // substitute for a different picker's id.
-    expect(body.asset.pickedBy).toEqual({ id: "client-a", label: "Ana Pérez" });
-  });
-
-  // The fallback this route's own comment names: `selected_by` pointing at a
-  // user row that no longer exists (`onDelete: "set null"`) is a narrow,
-  // reachable window, not a bug — same honest "no attribution" outcome
-  // `gallery-selection.ts` already gives it. Seeded users table, genuinely
-  // empty result — not an unseeded table standing in for "nothing to find".
-  it("reports no attribution when the original picker's user row no longer exists", async () => {
-    authMock.mockResolvedValue({
-      user: { id: "client-b", role: "client", email: "b@example.com", name: "Beto Ruiz" },
-      expires: "2099-01-01T00:00:00.000Z",
-    });
-    const db = await seededDb();
-    db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
-    db.__rows.assets[0] = assetRow({ isSelected: true, selectedBy: "deleted-user" });
-    // A DECOY row, deliberately NOT matching "deleted-user" — round-3 review
-    // finding: without this, `db.__rows.users` stays empty (only ever pushed
-    // to by the PREVIOUS test), and an unseeded table can't distinguish "the
-    // lookup ran and found nothing" from "the lookup never ran at all". This
-    // row proves the `users` table genuinely has rows in it and the query
-    // still, correctly, finds none matching this asset's `selected_by`.
-    db.__rows.users.push({ id: "client-a", name: "Ana Pérez", email: "a@example.com" });
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(
-      requestBody(ASSET_1_ID, { selectionKind: "original" }),
-      paramsFor(ASSET_1_ID),
-    );
-    const body = (await response.json()) as { asset: { pickedBy: unknown } };
-
-    expect(body.asset.pickedBy).toBeNull();
-  });
-});
-
-// Task #214 — THE MUTATION THAT MATTERS MOST FOR THIS TASK, per its own
-// kanban body: a gate that only lives in the UI (proof-tile.tsx hiding the
-// type buttons) is not a gate, because this route is reachable directly by
-// any client attached to the gallery regardless of what their own tab
-// currently renders. Every test below sets `allowsOriginalSelection: false`
-// on the gallery row explicitly — the default fixture above is `true`
-// specifically so these are the ONLY tests exercising the OFF gate, and a
-// regression that deleted the gate entirely would turn every one of these
-// red without touching anything else in this file.
-describe("PATCH /api/assets/[assetId]/selection — allowsOriginalSelection is OFF (task #214)", () => {
-  it("refuses a type-only change to original with 409, without touching selection_kind", async () => {
-    authMock.mockResolvedValue(clientASession());
-    const db = await seededDb();
-    db.__rows.galleries.length = 0;
-    db.__rows.galleries.push(galleryRow({ allowsOriginalSelection: false }));
-    db.__rows.assets[0] = assetRow({ isSelected: true, selectionKind: "edited" });
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(
-      requestBody(ASSET_1_ID, { selectionKind: "original" }),
-      paramsFor(ASSET_1_ID),
-    );
-
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({ error: "originals_not_allowed" });
-    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
-  });
-
-  // The OTHER shape this route's own header comment documents: an atomic
-  // "select AND mark original" in ONE request (`selected` and `selectionKind`
-  // both present). A gate that only covered the type-only branch above would
-  // leave this one reachable — the exact gap this test exists to close.
-  it("refuses an atomic select-and-mark-original combo with 409, without selecting the asset at all", async () => {
-    authMock.mockResolvedValue(clientASession());
-    const db = await seededDb();
-    db.__rows.galleries.length = 0;
-    db.__rows.galleries.push(galleryRow({ allowsOriginalSelection: false }));
-    db.__rows.assets[0] = assetRow({ isSelected: false, selectionKind: "edited" });
+    db.__rows.galleries[0]!.allowsOriginalSelection = false;
     const { PATCH } = await import("./route");
 
     const response = await PATCH(
@@ -919,445 +686,258 @@ describe("PATCH /api/assets/[assetId]/selection — allowsOriginalSelection is O
 
     expect(response.status).toBe(409);
     await expect(response.json()).resolves.toEqual({ error: "originals_not_allowed" });
-    expect(db.__rows.assets[0]?.isSelected).toBe(false);
-    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
+    expect(db.__rows.assetPicks).toHaveLength(0);
   });
 
-  // The plain select/deselect toggle (no `selectionKind` in the body at all)
-  // must be COMPLETELY unaffected by the switch — this gate only ever
-  // refuses a REQUESTED "original", never an ordinary pick.
-  it("still allows the ordinary select/deselect toggle, unaffected by the switch", async () => {
+  it("P18 — gate order: the caller lock precedes originals_not_allowed", async () => {
     authMock.mockResolvedValue(clientASession());
     const db = await seededDb();
-    db.__rows.galleries.length = 0;
-    db.__rows.galleries.push(galleryRow({ allowsOriginalSelection: false }));
-    db.__rows.assets[0] = assetRow({ isSelected: false, selectionKind: "edited" });
+    db.__rows.galleries[0]!.allowsOriginalSelection = false;
+    db.__rows.galleryClients[0]!.selectionLockedAt = new Date("2026-10-15");
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "client_selection_locked" });
+  });
+});
+
+describe("PATCH /api/assets/[assetId]/selection — decision 7 is structural", () => {
+  it("P12 — the route source writes no `assets` row", async () => {
+    const source = readFileSync(new URL("./route.ts", import.meta.url), "utf-8");
+    expect(source).not.toMatch(/\.(update|insert|delete)\(\s*assets\s*\)/);
+  });
+
+  // Every successful PATCH variant: each must leave `assets` byte-identical
+  // and the gallery-wide quota unchanged — decision 7 at the route. ASSET_1
+  // is free; ASSET_2 is claimed by client-a, so the baseline quota is
+  // always exactly one selected asset no matter which pick operation runs.
+  type Variant = {
+    name: string;
+    assetId: string;
+    seed: (db: Awaited<ReturnType<typeof seededDb>>) => void;
+    body: Record<string, unknown>;
+  };
+  const variants: Variant[] = [
+    {
+      name: "insert cart",
+      assetId: ASSET_1_ID,
+      seed: () => {},
+      body: { selected: true },
+    },
+    {
+      name: "double tap insert",
+      assetId: ASSET_1_ID,
+      seed: (db) => {
+        db.__rows.assetPicks.push(pickRow(ASSET_1_ID, "client-a"));
+      },
+      body: { selected: true },
+    },
+    {
+      name: "insert degraded",
+      assetId: ASSET_2_ID,
+      seed: () => {},
+      body: { selected: true },
+    },
+    {
+      name: "remove cart",
+      assetId: ASSET_1_ID,
+      seed: (db) => {
+        db.__rows.assetPicks.push(pickRow(ASSET_1_ID, "client-a"));
+      },
+      body: { selected: false },
+    },
+    {
+      name: "remove degraded",
+      assetId: ASSET_2_ID,
+      seed: (db) => {
+        db.__rows.assetPicks.push(pickRow(ASSET_2_ID, "client-a"));
+      },
+      body: { selected: false },
+    },
+    {
+      name: "retype cart",
+      assetId: ASSET_1_ID,
+      seed: (db) => {
+        db.__rows.assetPicks.push(pickRow(ASSET_1_ID, "client-a"));
+      },
+      body: { selectionKind: "original" },
+    },
+    {
+      name: "retype degraded original->edited",
+      assetId: ASSET_2_ID,
+      seed: (db) => {
+        db.__rows.assetPicks.push(pickRow(ASSET_2_ID, "client-a", { kind: "original" }));
+      },
+      body: { selectionKind: "edited" },
+    },
+    {
+      name: "no-op remove",
+      assetId: ASSET_1_ID,
+      seed: () => {},
+      body: { selected: false },
+    },
+  ];
+
+  /** Every `asset_picks` row the caller does NOT own. */
+  const otherPeoplePicks = (db: Awaited<ReturnType<typeof seededDb>>, caller: string) =>
+    db.__rows.assetPicks.filter((pick) => pick.userId !== caller);
+
+  it.each(variants)(
+    "P13/P14 — $name leaves assets deep-equal, other people's picks deep-equal and quota unchanged",
+    async (variant) => {
+      authMock.mockResolvedValue(clientASession());
+      const db = await seededDb();
+      db.__rows.galleryClients.push({ galleryId: GALLERY_A_ID, userId: "client-b" });
+      // The claimed sibling every variant shares.
+      db.__rows.assets.push(claimed({ id: ASSET_2_ID, sortOrder: 1 }));
+      variant.seed(db);
+      // A SECOND person's CART pick on the very asset the variant targets, of
+      // the KIND OPPOSITE to whatever this variant writes. A stray `user_id`
+      // predicate loses it (delete / retype of a cart), and `pickWhere` is the
+      // only thing standing between the caller and somebody else's cart.
+      const bystanderKind = variant.body.selectionKind === "original" ? "edited" : "original";
+      db.__rows.assetPicks.push(pickRow(variant.assetId, "client-b", { kind: bystanderKind }));
+      const assetsBefore = structuredClone(db.__rows.assets);
+      const othersBefore = structuredClone(otherPeoplePicks(db, "client-a"));
+      const { PATCH } = await import("./route");
+
+      const response = await PATCH(
+        requestBody(variant.assetId, variant.body),
+        paramsFor(variant.assetId),
+      );
+      const body = (await response.json()) as { quota: Record<string, unknown> };
+
+      expect(response.status).toBe(200);
+      expect(db.__rows.assets).toEqual(assetsBefore);
+      // Decision 7's other half, in the same breath: no row the caller does
+      // not own moved either. The stub above is still there, still that kind,
+      // still unsubmitted.
+      expect(otherPeoplePicks(db, "client-a")).toEqual(othersBefore);
+      expect(otherPeoplePicks(db, "client-a")).toHaveLength(1);
+      // The quota is a pure function of the (unchanged) sibling rows: exactly
+      // the one claimed ASSET_2.
+      expect(body.quota).toMatchObject({
+        selected: 1,
+        selectedEdited: 1,
+        selectedOriginal: 0,
+        extras: 0,
+        surchargeCop: 0,
+      });
+    },
+  );
+});
+
+describe("PATCH /api/assets/[assetId]/selection — allowsOriginalSelection is OFF (task #214)", () => {
+  it("refuses a type-only change to original with 409, without touching the pick", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.galleries[0]!.allowsOriginalSelection = false;
+    db.__rows.assetPicks.push(pickRow(ASSET_1_ID, "client-a"));
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+      paramsFor(ASSET_1_ID),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "originals_not_allowed" });
+    expect(db.__rows.assetPicks[0]!.kind).toBe("edited");
+  });
+
+  it("still allows the ordinary toggle, unaffected by the switch", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.galleries[0]!.allowsOriginalSelection = false;
     const { PATCH } = await import("./route");
 
     const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
 
     expect(response.status).toBe(200);
-    expect(db.__rows.assets[0]?.isSelected).toBe(true);
-    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
-  });
-
-  // An explicit `selectionKind: "edited"` request must still succeed while
-  // the switch is off — the gate refuses "original" specifically, not the
-  // whole `selectionKind` field.
-  it("still allows an explicit type-only change to edited, unaffected by the switch", async () => {
-    authMock.mockResolvedValue(clientASession());
-    const db = await seededDb();
-    db.__rows.galleries.length = 0;
-    db.__rows.galleries.push(galleryRow({ allowsOriginalSelection: false }));
-    db.__rows.assets[0] = assetRow({ isSelected: true, selectionKind: "edited" });
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(
-      requestBody(ASSET_1_ID, { selectionKind: "edited" }),
-      paramsFor(ASSET_1_ID),
-    );
-
-    expect(response.status).toBe(200);
-    expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
+    expect(db.__rows.assetPicks[0]!.kind).toBe("edited");
   });
 });
 
-// Task #244 — with rolling delivery on, a pick the client already ORDERED
-// (`requestedAt` set) is frozen for EVERY non-admin client. Fixture: ASSET_1 is
-// ordered (client-a's), ASSET_2 is client-a's pick still in the cart; client-b
-// is a different active client, on purpose.
-describe("PATCH /api/assets/[assetId]/selection — rolling delivery order freeze (#244)", () => {
-  const REQUESTED_AT = new Date("2026-10-16T10:00:00.000Z");
-
-  async function rollingGallery(rollingDelivery: boolean) {
-    const db = await seededDb();
-    db.__rows.galleries.length = 0;
-    db.__rows.galleries.push(galleryRow({ rollingDelivery }));
-    db.__rows.galleryClients.length = 0;
-    for (const userId of ["client-a", "client-b"]) {
-      db.__rows.galleryClients.push({
-        galleryId: GALLERY_A_ID,
-        userId,
-        removedAt: null,
-        selectionLockedAt: null,
-        selectionSubmittedAt: null,
-      });
-    }
-    db.__rows.assets.length = 0;
-    db.__rows.assets.push(
-      assetRow({
-        id: ASSET_1_ID,
-        isSelected: true,
-        selectedBy: "client-a",
-        requestedAt: REQUESTED_AT,
-      }),
-      assetRow({
-        id: ASSET_2_ID,
-        isSelected: true,
-        selectedBy: "client-a",
-        requestedAt: null,
-        sortOrder: 1,
-      }),
-    );
-    return db;
-  }
-
-  it("refuses the PICKER deselecting an ordered pick: 409 already_requested, row untouched", async () => {
-    const db = await rollingGallery(true);
-    authMock.mockResolvedValue(clientASession());
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({ error: "already_requested" });
-    expect(db.__rows.assets[0]).toMatchObject({
-      isSelected: true,
-      selectedBy: "client-a",
-      requestedAt: REQUESTED_AT,
-    });
-    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
-  });
-
-  it("refuses ANOTHER client deselecting it too (the freeze is not tied to the picker)", async () => {
-    const db = await rollingGallery(true);
-    authMock.mockResolvedValue(clientBSession());
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({ error: "already_requested" });
-    expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
-  });
-
-  it("refuses a kind change on an ordered pick, for the picker and for another client", async () => {
-    const db = await rollingGallery(true);
-    const { PATCH } = await import("./route");
-    for (const session of [clientASession(), clientBSession()]) {
-      authMock.mockResolvedValue(session);
-      const response = await PATCH(
-        requestBody(ASSET_1_ID, { selectionKind: "original" }),
-        paramsFor(ASSET_1_ID),
-      );
-      expect(response.status).toBe(409);
-      await expect(response.json()).resolves.toEqual({ error: "already_requested" });
-    }
-    expect(db.__rows.assets[0]).toMatchObject({ selectionKind: "edited" });
-  });
-
-  it("still lets the client deselect a pick that is only in the cart (not ordered yet)", async () => {
-    const db = await rollingGallery(true);
-    authMock.mockResolvedValue(clientASession());
-    const { PATCH } = await import("./route");
-
-    const removed = await PATCH(requestFor(ASSET_2_ID, false), paramsFor(ASSET_2_ID));
-
-    expect(removed.status).toBe(200);
-    expect(db.__rows.assets[1]).toMatchObject({ isSelected: false, requestedAt: null });
-  });
-
-  it("a fresh pick starts in the cart: requestedAt stays null", async () => {
-    const db = await rollingGallery(true);
-    db.__rows.assets.push(assetRow({ id: ASSET_3_ID, sortOrder: 2 }));
-    authMock.mockResolvedValue(clientBSession());
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestFor(ASSET_3_ID, true), paramsFor(ASSET_3_ID));
-
-    expect(response.status).toBe(200);
-    expect(db.__rows.assets[2]).toMatchObject({ isSelected: true, requestedAt: null });
-  });
-
-  it("an order landing between the freeze check and the write makes the UPDATE match nothing: 409, row untouched", async () => {
-    const db = await rollingGallery(true);
-    // Not ordered on the route's FIRST read of the row (the freeze check),
-    // ordered on every read after it: the order lands "in between".
-    const row = db.__rows.assets[1]!;
-    let reads = 0;
-    Object.defineProperty(row, "requestedAt", {
-      configurable: true,
-      get: () => (reads++ === 0 ? null : REQUESTED_AT),
-      set: () => {},
-    });
-    authMock.mockResolvedValue(clientASession());
-    const { PATCH } = await import("./route");
-
-    const deselect = await PATCH(requestFor(ASSET_2_ID, false), paramsFor(ASSET_2_ID));
-
-    expect(deselect.status).toBe(409);
-    await expect(deselect.json()).resolves.toEqual({ error: "already_requested" });
-    expect(row.isSelected).toBe(true);
-    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
-
-    reads = 0;
-    const retype = await PATCH(
-      requestBody(ASSET_2_ID, { selectionKind: "original" }),
-      paramsFor(ASSET_2_ID),
-    );
-    expect(retype.status).toBe(409);
-    await expect(retype.json()).resolves.toEqual({ error: "already_requested" });
-    expect(row.selectionKind).toBe("edited");
-  });
-
-  it("the admin is not bound: removing an ordered pick works and clears requestedAt", async () => {
-    const db = await rollingGallery(true);
-    authMock.mockResolvedValue(adminSession());
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-
-    expect(response.status).toBe(200);
-    expect(db.__rows.assets[0]).toMatchObject({ isSelected: false, requestedAt: null });
-  });
-
-  it("flag OFF: an ordered-looking row does not freeze anything (today's behavior)", async () => {
-    const db = await rollingGallery(false);
-    authMock.mockResolvedValue(clientASession());
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-
-    expect(response.status).toBe(200);
-    expect(db.__rows.assets[0]).toMatchObject({ isSelected: false });
-  });
-});
-
-// Task #58: proves this route's mutation lock is literally the SAME Set as
-// the DELETE/reorder routes' — not a separately maintained copy of the same
-// three strings, which is exactly the shape that drifted silently before.
-// `SELECTION_LOCKED_STATUSES` stays exported under its task-#73 name (the
-// unlock-action suite imports it by that name) but is now an alias for
-// `ASSET_MUTATION_BLOCKED_STATUSES`, checked here by reference (`toBe`, not
-// `toEqual`) so a future refactor that reintroduces a second `new Set([...])`
-// literal fails this assertion immediately.
-// Epic #239 — the lock is per PERSON. Fixture: client-a and client-b share
-// the gallery; ASSET_1 is picked by client-a (`edited`), ASSET_2 is unpicked.
-describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)", () => {
-  const LOCKED_AT = new Date("2026-10-15T10:00:00.000Z");
-
-  async function groupGallery(
-    options: { aLocked?: boolean; aRemoved?: boolean; bLocked?: boolean } = {},
-  ) {
+describe("PATCH /api/assets/[assetId]/selection — per-client lock and other people's picks", () => {
+  async function groupGallery(options: { aSubmitted?: boolean; bLocked?: boolean } = {}) {
     const db = await seededDb();
     db.__rows.galleryClients.length = 0;
     db.__rows.galleryClients.push(
       {
         galleryId: GALLERY_A_ID,
         userId: "client-a",
-        removedAt: options.aRemoved ? new Date("2026-09-01") : null,
-        selectionLockedAt: options.aLocked ? LOCKED_AT : null,
-        selectionSubmittedAt: options.aLocked ? LOCKED_AT : null,
+        removedAt: null,
+        selectionLockedAt: null,
+        selectionSubmittedAt: null,
       },
       {
         galleryId: GALLERY_A_ID,
         userId: "client-b",
         removedAt: null,
-        selectionLockedAt: options.bLocked ? LOCKED_AT : null,
-        selectionSubmittedAt: options.bLocked ? LOCKED_AT : null,
+        selectionLockedAt: options.bLocked ? new Date("2026-10-15") : null,
+        selectionSubmittedAt: options.bLocked ? new Date("2026-10-15") : null,
       },
     );
-    db.__rows.assets.length = 0;
-    db.__rows.assets.push(
-      assetRow({
-        id: ASSET_1_ID,
-        isSelected: true,
-        selectedBy: "client-a",
-        selectedAt: new Date("2026-10-15T09:00:00.000Z"),
+    db.__rows.assets[0] = claimed();
+    db.__rows.assetPicks.push(
+      pickRow(ASSET_1_ID, "client-a", {
+        submittedAt: options.aSubmitted ? new Date("2026-10-15") : null,
       }),
-      assetRow({ id: ASSET_2_ID, sortOrder: 1 }),
     );
+    db.__rows.assets.push(assetRow({ id: ASSET_2_ID, sortOrder: 1 }));
     return db;
   }
 
-  it("refuses B deselecting a pick of the LOCKED A with 409 pick_locked, leaving the pick intact", async () => {
-    const db = await groupGallery({ aLocked: true });
+  it("B acting on A's submitted photo touches only B's own row", async () => {
+    const db = await groupGallery({ aSubmitted: true });
     authMock.mockResolvedValue(clientBSession());
+    const aPickBefore = structuredClone(db.__rows.assetPicks[0]);
+    const assetsBefore = structuredClone(db.__rows.assets);
     const { PATCH } = await import("./route");
 
-    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+    // Remove: B has no pick, so it is a no-op 200.
+    const remove = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+    expect(remove.status).toBe(200);
+    expect(db.__rows.assetPicks[0]).toEqual(aPickBefore);
 
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({ error: "pick_locked" });
-    expect(db.__rows.assets[0]).toMatchObject({
-      isSelected: true,
-      selectedBy: "client-a",
-      selectionKind: "edited",
-    });
-    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
-  });
-
-  it("refuses B re-typing a pick of the LOCKED A (type-only change) with 409 pick_locked", async () => {
-    const db = await groupGallery({ aLocked: true });
-    authMock.mockResolvedValue(clientBSession());
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(
-      requestBody(ASSET_1_ID, { selectionKind: "original" }),
+    // Retype: B has no pick, so it is refused.
+    const retype = await PATCH(
+      requestBody(ASSET_1_ID, { selectionKind: "edited" }),
       paramsFor(ASSET_1_ID),
     );
+    expect(retype.status).toBe(409);
+    await expect(retype.json()).resolves.toEqual({ error: "asset_not_selected" });
 
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({ error: "pick_locked" });
-    expect(db.__rows.assets[0]).toMatchObject({ selectionKind: "edited" });
+    // Select: B inserts their own degraded pick.
+    const insert = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
+    expect(insert.status).toBe(200);
+    expect(db.__rows.assetPicks).toHaveLength(2);
+    expect(db.__rows.assetPicks[1]).toMatchObject({ userId: "client-b" });
+    expect(db.__rows.assets).toEqual(assetsBefore);
   });
 
-  it("refuses B re-selecting A's locked pick (which would take over selectedBy) with 409 pick_locked", async () => {
-    const db = await groupGallery({ aLocked: true });
+  it("refuses B with client_selection_locked when B is locked", async () => {
+    await groupGallery({ aSubmitted: true, bLocked: true });
     authMock.mockResolvedValue(clientBSession());
     const { PATCH } = await import("./route");
 
-    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
-
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({ error: "pick_locked" });
-    expect(db.__rows.assets[0]).toMatchObject({ selectedBy: "client-a" });
-  });
-
-  it("refuses the LOCKED A toggling anything, even an unpicked photo, with 409 client_selection_locked", async () => {
-    const db = await groupGallery({ aLocked: true });
-    authMock.mockResolvedValue(clientASession());
-    const { PATCH } = await import("./route");
-
-    const onOwnPick = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-    const onNewPhoto = await PATCH(requestFor(ASSET_2_ID, true), paramsFor(ASSET_2_ID));
-
-    for (const response of [onOwnPick, onNewPhoto]) {
+    for (const [assetId, body] of [
+      [ASSET_1_ID, { selected: true }],
+      [ASSET_2_ID, { selected: true }],
+    ] as const) {
+      const response = await PATCH(requestBody(assetId, body), paramsFor(assetId));
       expect(response.status).toBe(409);
       await expect(response.json()).resolves.toEqual({ error: "client_selection_locked" });
     }
-    expect(db.__rows.assets[0]).toMatchObject({ isSelected: true });
-    expect(db.__rows.assets[1]).toMatchObject({ isSelected: false });
-  });
-
-  it("lets the still-open B keep picking while A is locked", async () => {
-    const db = await groupGallery({ aLocked: true });
-    authMock.mockResolvedValue(clientBSession());
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestFor(ASSET_2_ID, true), paramsFor(ASSET_2_ID));
-
-    expect(response.status).toBe(200);
-    expect(db.__rows.assets[1]).toMatchObject({ isSelected: true, selectedBy: "client-b" });
-  });
-
-  it("REFUSES B deselecting A's open pick with 409 pick_not_yours, naming A (task #249)", async () => {
-    const db = await groupGallery();
-    // The picker's `users` row, so `pickedByName` is a real lookup rather than
-    // a lookup that could have found nothing either way.
-    db.__rows.users.push({ id: "client-a", name: "Ana Pérez", email: "a@example.com" });
-    authMock.mockResolvedValue(clientBSession());
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({
-      error: "pick_not_yours",
-      pickedByName: "Ana Pérez",
-    });
-    expect(db.__rows.assets[0]).toMatchObject({
-      isSelected: true,
-      selectedBy: "client-a",
-      selectionKind: "edited",
-    });
-    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
-  });
-
-  it("lets an ADMIN deselect and re-type the picks of a locked client (the photographer edits submitted picks)", async () => {
-    const db = await groupGallery({ aLocked: true });
-    authMock.mockResolvedValue(adminSession());
-    const { PATCH } = await import("./route");
-
-    const retype = await PATCH(
-      requestBody(ASSET_1_ID, { selectionKind: "original" }),
-      paramsFor(ASSET_1_ID),
-    );
-    expect(retype.status).toBe(200);
-    expect(db.__rows.assets[0]).toMatchObject({ selectionKind: "original" });
-
-    const deselect = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-    expect(deselect.status).toBe(200);
-    expect(db.__rows.assets[0]).toMatchObject({ isSelected: false, selectedBy: null });
-  });
-
-  it("does not let a REMOVED client's old lock freeze their picks: B may deselect them", async () => {
-    const db = await groupGallery({ aLocked: true, aRemoved: true });
-    authMock.mockResolvedValue(clientBSession());
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-
-    expect(response.status).toBe(200);
-    expect(db.__rows.assets[0]).toMatchObject({ isSelected: false });
-  });
-
-  // Gallery scoping: the SAME users also sit in a second gallery with the
-  // OPPOSITE lock state, listed first, so a lock lookup that forgets
-  // `galleryId` reads the wrong row.
-  it("ignores locks the same users hold in ANOTHER gallery (caller lock and picker lock alike)", async () => {
-    const db = await groupGallery();
-    db.__rows.users.push({ id: "client-a", name: "Ana Pérez", email: "a@example.com" });
-    db.__rows.assets.push(assetRow({ id: ASSET_3_ID, sortOrder: 2 }));
-    const LOCKED_ELSEWHERE = {
-      removedAt: null,
-      selectionLockedAt: LOCKED_AT,
-      selectionSubmittedAt: LOCKED_AT,
-    };
-    db.__rows.galleryClients.unshift(
-      { galleryId: GALLERY_B_ID, userId: "client-a", ...LOCKED_ELSEWHERE },
-      { galleryId: GALLERY_B_ID, userId: "client-b", ...LOCKED_ELSEWHERE },
-    );
-    const { PATCH } = await import("./route");
-
-    // B is locked only in the OTHER gallery: may still pick a free asset here
-    // — the CALLER lock is gallery-scoped.
-    authMock.mockResolvedValue(clientBSession());
-    const byB = await PATCH(requestFor(ASSET_2_ID, true), paramsFor(ASSET_2_ID));
-    expect(byB.status).toBe(200);
-    expect(db.__rows.assets[1]).toMatchObject({ isSelected: true, selectedBy: "client-b" });
-
-    // A is locked only in the OTHER gallery. B acting on A's pick HERE must be
-    // refused as `pick_not_yours`, not `pick_locked`: a picker-lock lookup that
-    // forgot `galleryId` would read the other gallery's row and answer with the
-    // wrong code. Strictly stronger than the pre-#249 assertion, which only
-    // checked that the write went through.
-    const byBAgain = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-    expect(byBAgain.status).toBe(409);
-    await expect(byBAgain.json()).resolves.toEqual({
-      error: "pick_not_yours",
-      pickedByName: "Ana Pérez",
-    });
-    expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
-
-    // A is locked only in the OTHER gallery: may still pick a free asset here
-    // — the caller lock is gallery-scoped for A too.
-    authMock.mockResolvedValue(clientASession());
-    const byA = await PATCH(requestFor(ASSET_3_ID, true), paramsFor(ASSET_3_ID));
-    expect(byA.status).toBe(200);
-    expect(db.__rows.assets[2]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
-  });
-
-  it("still refuses B when A is locked HERE and open in another gallery", async () => {
-    const db = await groupGallery({ aLocked: true });
-    db.__rows.galleryClients.unshift({
-      galleryId: GALLERY_B_ID,
-      userId: "client-a",
-      removedAt: null,
-      selectionLockedAt: null,
-      selectionSubmittedAt: null,
-    });
-    authMock.mockResolvedValue(clientBSession());
-    const { PATCH } = await import("./route");
-
-    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-
-    expect(response.status).toBe(409);
-    await expect(response.json()).resolves.toEqual({ error: "pick_locked" });
   });
 
   it("keeps the gallery-level gate for everyone: a selected gallery still refuses with gallery_locked", async () => {
-    const db = await groupGallery({ aLocked: true, bLocked: true });
+    const db = await groupGallery({ aSubmitted: true, bLocked: true });
     db.__rows.galleries[0]!.status = "selected";
     authMock.mockResolvedValue(adminSession());
     const { PATCH } = await import("./route");
@@ -1368,254 +948,36 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock (epic #239)"
     await expect(response.json()).resolves.toEqual({ error: "gallery_locked" });
   });
 
-  // Task #249 — the policy this slice changes: while the board is OPEN (nobody
-  // has submitted, so `pick_locked` never fires) a pick is still not public
-  // property. One refusal code, one sentence-naming body, three request shapes.
-  // Same fixture as above: ASSET_1 is client-a's open pick, ASSET_2 is free,
-  // client-a and client-b are both ACTIVE members of this gallery.
-  describe("pick ownership while open (#249)", () => {
-    /** `groupGallery()` plus the picker's `users` row — without it the
-     * `pickedByName` assertions below could pass on an empty table for the
-     * wrong reason (see the round-2/round-3 notes on the attribution tests). */
-    async function ownedGallery(options: { aRemoved?: boolean; bLocked?: boolean } = {}) {
-      const db = await groupGallery(options);
-      db.__rows.users.push({ id: "client-a", name: "Ana Pérez", email: "a@example.com" });
-      return db;
-    }
+  it("ignores locks the same users hold in ANOTHER gallery", async () => {
+    const db = await groupGallery();
+    const LOCKED_ELSEWHERE = {
+      removedAt: null,
+      selectionLockedAt: new Date("2026-10-15"),
+      selectionSubmittedAt: new Date("2026-10-15"),
+    };
+    db.__rows.galleryClients.unshift(
+      { galleryId: GALLERY_B_ID, userId: "client-a", ...LOCKED_ELSEWHERE },
+      { galleryId: GALLERY_B_ID, userId: "client-b", ...LOCKED_ELSEWHERE },
+    );
+    authMock.mockResolvedValue(clientBSession());
+    const { PATCH } = await import("./route");
 
-    it("refuses a type-only change on another active member's pick: 409 pick_not_yours", async () => {
-      const db = await ownedGallery();
-      authMock.mockResolvedValue(clientBSession());
-      const { PATCH } = await import("./route");
+    const response = await PATCH(requestFor(ASSET_2_ID, true), paramsFor(ASSET_2_ID));
 
-      const response = await PATCH(
-        requestBody(ASSET_1_ID, { selectionKind: "original" }),
-        paramsFor(ASSET_1_ID),
-      );
+    expect(response.status).toBe(200);
+    expect(db.__rows.assetPicks.some((p) => p.userId === "client-b")).toBe(true);
+  });
 
-      expect(response.status).toBe(409);
-      await expect(response.json()).resolves.toEqual({
-        error: "pick_not_yours",
-        pickedByName: "Ana Pérez",
-      });
-      expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
-      expect(notifySelectionChangedMock).not.toHaveBeenCalled();
-    });
+  it("refuses a REMOVED client's lock: its pick is still theirs, not protected by a stale lock", async () => {
+    const db = await groupGallery();
+    // client-a is removed and has no pick here; client-b picks freely.
+    db.__rows.galleryClients[0]!.removedAt = new Date("2026-09-01");
+    authMock.mockResolvedValue(clientBSession());
+    const { PATCH } = await import("./route");
 
-    it("refuses re-selecting another active member's pick — no takeover of selectedBy", async () => {
-      const db = await ownedGallery();
-      authMock.mockResolvedValue(clientBSession());
-      const { PATCH } = await import("./route");
+    const response = await PATCH(requestFor(ASSET_2_ID, true), paramsFor(ASSET_2_ID));
 
-      const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
-
-      expect(response.status).toBe(409);
-      await expect(response.json()).resolves.toEqual({
-        error: "pick_not_yours",
-        pickedByName: "Ana Pérez",
-      });
-      expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
-      expect(db.__rows.assets[0]?.selectedAt).toEqual(new Date("2026-10-15T09:00:00.000Z"));
-    });
-
-    it("refuses an atomic select-and-retype of another active member's pick", async () => {
-      const db = await ownedGallery();
-      authMock.mockResolvedValue(clientBSession());
-      const { PATCH } = await import("./route");
-
-      const response = await PATCH(
-        requestBody(ASSET_1_ID, { selected: true, selectionKind: "original" }),
-        paramsFor(ASSET_1_ID),
-      );
-
-      expect(response.status).toBe(409);
-      await expect(response.json()).resolves.toEqual({
-        error: "pick_not_yours",
-        pickedByName: "Ana Pérez",
-      });
-      expect(db.__rows.assets[0]).toMatchObject({
-        selectedBy: "client-a",
-        selectionKind: "edited",
-      });
-    });
-
-    // "Is this yours to touch" comes before "is this value allowed here": the
-    // refusal must name the ownership problem, not the gallery's type setting.
-    // Without this pin the two gates could be reordered silently.
-    it("wins over originals_not_allowed: an ownership refusal on a gallery that forbids original", async () => {
-      const db = await ownedGallery();
-      db.__rows.galleries[0]!.allowsOriginalSelection = false;
-      authMock.mockResolvedValue(clientBSession());
-      const { PATCH } = await import("./route");
-
-      const response = await PATCH(
-        requestBody(ASSET_1_ID, { selectionKind: "original" }),
-        paramsFor(ASSET_1_ID),
-      );
-
-      expect(response.status).toBe(409);
-      await expect(response.json()).resolves.toEqual({
-        error: "pick_not_yours",
-        pickedByName: "Ana Pérez",
-      });
-      expect(db.__rows.assets[0]?.selectionKind).toBe("edited");
-    });
-
-    it("still lets B remove B's own pick and pick a free asset", async () => {
-      const db = await ownedGallery();
-      db.__rows.assets[1] = assetRow({
-        id: ASSET_2_ID,
-        isSelected: true,
-        selectedBy: "client-b",
-        selectedAt: new Date("2026-10-15T09:30:00.000Z"),
-        sortOrder: 1,
-      });
-      db.__rows.assets.push(assetRow({ id: ASSET_3_ID, sortOrder: 2 }));
-      authMock.mockResolvedValue(clientBSession());
-      const { PATCH } = await import("./route");
-
-      const own = await PATCH(requestFor(ASSET_2_ID, false), paramsFor(ASSET_2_ID));
-      expect(own.status).toBe(200);
-      expect(db.__rows.assets[1]).toMatchObject({ isSelected: false, selectedBy: null });
-
-      const free = await PATCH(requestFor(ASSET_3_ID, true), paramsFor(ASSET_3_ID));
-      expect(free.status).toBe(200);
-      expect(db.__rows.assets[2]).toMatchObject({ isSelected: true, selectedBy: "client-b" });
-    });
-
-    // The admin keeps full control of OPEN picks too, not just locked ones
-    // (the epic's other admin test only covers a locked picker).
-    it("lets an ADMIN deselect and re-type another member's open pick", async () => {
-      const db = await ownedGallery();
-      authMock.mockResolvedValue(adminSession());
-      const { PATCH } = await import("./route");
-
-      const retype = await PATCH(
-        requestBody(ASSET_1_ID, { selectionKind: "original" }),
-        paramsFor(ASSET_1_ID),
-      );
-      expect(retype.status).toBe(200);
-      expect(db.__rows.assets[0]).toMatchObject({ selectionKind: "original" });
-
-      const deselect = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-      expect(deselect.status).toBe(200);
-      expect(db.__rows.assets[0]).toMatchObject({ isSelected: false, selectedBy: null });
-    });
-
-    // The owner's own exception, isolated from the lock: nobody locked A here,
-    // A is only soft-removed — so their pick is free to edit.
-    it("does not protect a pick whose picker was REMOVED from the gallery (not locked either)", async () => {
-      const db = await ownedGallery({ aRemoved: true });
-      authMock.mockResolvedValue(clientBSession());
-      const { PATCH } = await import("./route");
-
-      const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-
-      expect(response.status).toBe(200);
-      expect(db.__rows.assets[0]).toMatchObject({ isSelected: false, selectedBy: null });
-    });
-
-    // `selected_by IS NULL` with `is_selected = true` — legacy rows, or a user
-    // deleted under `onDelete: "set null"`. No owner to protect: allowed.
-    it("allows the operation when is_selected is true but selected_by is NULL", async () => {
-      const db = await groupGallery();
-      const orphan = () =>
-        assetRow({
-          id: ASSET_1_ID,
-          isSelected: true,
-          selectedBy: null,
-          selectedAt: new Date("2026-10-15T09:00:00.000Z"),
-        });
-      db.__rows.assets[0] = orphan();
-      authMock.mockResolvedValue(clientBSession());
-      const { PATCH } = await import("./route");
-
-      const deselect = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-      expect(deselect.status).toBe(200);
-      expect(db.__rows.assets[0]).toMatchObject({ isSelected: false });
-
-      db.__rows.assets[0] = orphan();
-      const retype = await PATCH(
-        requestBody(ASSET_1_ID, { selectionKind: "original" }),
-        paramsFor(ASSET_1_ID),
-      );
-      expect(retype.status).toBe(200);
-      expect(db.__rows.assets[0]).toMatchObject({ selectionKind: "original" });
-    });
-
-    // Caller lock is checked first, and its 409 must stay byte-identical — a
-    // leaked `pickedByName` here would change a contract the other tests
-    // (`toEqual({ error })`) exist to pin.
-    it("prefers the CALLER's own lock over pick_not_yours", async () => {
-      const db = await ownedGallery({ bLocked: true });
-      authMock.mockResolvedValue(clientBSession());
-      const { PATCH } = await import("./route");
-
-      const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-
-      expect(response.status).toBe(409);
-      await expect(response.json()).resolves.toEqual({ error: "client_selection_locked" });
-      expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, selectedBy: "client-a" });
-    });
-
-    it("names the picker by their email when they have no name", async () => {
-      const db = await groupGallery();
-      db.__rows.users.push({ id: "client-a", name: null, email: "ana@example.com" });
-      authMock.mockResolvedValue(clientBSession());
-      const { PATCH } = await import("./route");
-
-      const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-
-      expect(response.status).toBe(409);
-      await expect(response.json()).resolves.toEqual({
-        error: "pick_not_yours",
-        pickedByName: "ana@example.com",
-      });
-    });
-
-    // Only reachable through the fake DB (real FKs prevent it), but the body's
-    // type allows it, and the client must get an honest `null` — never an id,
-    // never an omitted key.
-    it("sends pickedByName: null when the picker is an active member with no users row", async () => {
-      const db = await groupGallery();
-      // A DECOY, so the table is provably non-empty and the query still finds
-      // no row matching `client-a`.
-      db.__rows.users.push({ id: "client-b", name: "Beto Ruiz", email: "b@example.com" });
-      authMock.mockResolvedValue(clientBSession());
-      const { PATCH } = await import("./route");
-
-      const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-
-      expect(response.status).toBe(409);
-      await expect(response.json()).resolves.toEqual({
-        error: "pick_not_yours",
-        pickedByName: null,
-      });
-    });
-
-    // Rolling delivery does not open a loophole: a pick still in the CART
-    // (`requestedAt` null, so `already_requested` cannot fire) is protected
-    // too, and `clientWriteWhere` is never reached.
-    it("protects another member's rolling-delivery cart pick as well", async () => {
-      const db = await ownedGallery();
-      db.__rows.galleries[0]!.rollingDelivery = true;
-      authMock.mockResolvedValue(clientBSession());
-      const { PATCH } = await import("./route");
-
-      const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
-
-      expect(response.status).toBe(409);
-      await expect(response.json()).resolves.toEqual({
-        error: "pick_not_yours",
-        pickedByName: "Ana Pérez",
-      });
-      expect(db.__rows.assets[0]).toMatchObject({
-        isSelected: true,
-        selectedBy: "client-a",
-        requestedAt: null,
-      });
-      expect(notifySelectionChangedMock).not.toHaveBeenCalled();
-    });
+    expect(response.status).toBe(200);
   });
 });
 

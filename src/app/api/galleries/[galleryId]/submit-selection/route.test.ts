@@ -566,8 +566,10 @@ describe("POST /api/galleries/[galleryId]/submit-selection — success", () => {
     const body = (await response.json()) as { gallerySelected: boolean; submittedAt: string };
     const db = await seededDb();
     expect(body.gallerySelected).toBe(true);
+    // Decision 10: a submit is an ORDER. It stamps the submit time and never
+    // sets the lock.
     expect(db.__rows.galleryClients[0]).toMatchObject({
-      selectionLockedAt: expect.any(Date),
+      selectionLockedAt: null,
       selectionSubmittedAt: expect.any(Date),
     });
     expect(body.submittedAt).toBe(
@@ -627,10 +629,12 @@ describe("POST /api/galleries/[galleryId]/submit-selection — per-client lock (
         .submittedAt,
     ).toBeNull();
     expect(db.__rows.galleryClients.find((r) => r.userId === CLIENT_ID)).toMatchObject({
-      selectionLockedAt: expect.any(Date),
+      selectionLockedAt: null,
+      selectionSubmittedAt: expect.any(Date),
     });
     expect(db.__rows.galleryClients.find((r) => r.userId === CLIENT_B)).toMatchObject({
       selectionLockedAt: null,
+      selectionSubmittedAt: null,
     });
     expect(sendSubmissionNotificationEmailMock).toHaveBeenCalledTimes(1);
     expect(sendSubmissionNotificationEmailMock).toHaveBeenCalledWith(
@@ -711,7 +715,7 @@ describe("POST /api/galleries/[galleryId]/submit-selection — per-client lock (
     expect(db.__rows.galleries[0]).toMatchObject({ status: "selected" });
   });
 
-  it("locks only THIS gallery's membership: the same client in another gallery stays untouched", async () => {
+  it("stamps only THIS gallery's membership: the same client in another gallery stays untouched", async () => {
     const db = await seededDb();
     const OTHER = "22222222-2222-4222-8222-222222222222";
     db.__rows.galleryClients.unshift(membership(CLIENT_ID, { galleryId: OTHER }));
@@ -726,7 +730,7 @@ describe("POST /api/galleries/[galleryId]/submit-selection — per-client lock (
     ).toMatchObject({ selectionLockedAt: null, selectionSubmittedAt: null });
     expect(
       db.__rows.galleryClients.find((r) => r.galleryId === GALLERY_ID && r.userId === CLIENT_ID),
-    ).toMatchObject({ selectionLockedAt: expect.any(Date) });
+    ).toMatchObject({ selectionSubmittedAt: expect.any(Date) });
   });
 
   it("reads the caller's lock in THIS gallery: being locked in another gallery does not make a first submit here idempotent", async () => {
@@ -803,9 +807,10 @@ describe("POST /api/galleries/[galleryId]/submit-selection — per-client lock (
   });
 });
 
-// Task #244 — with rolling delivery on, submitting places an ORDER: it stamps
-// `submitted_at` on THIS client's cart, claims the assets and never locks. The
-// flag-off behavior is pinned by the epic #239 suite above.
+// Task #244 / epic #250 decision 10 — submitting places an ORDER: it stamps
+// `submitted_at` on THIS client's cart, claims the assets and never locks.
+// Since decision 10 that is EVERY gallery, not only the flagged ones; the
+// epic #239 suite above pins the same outcome with the flag off.
 describe("POST /api/galleries/[galleryId]/submit-selection — rolling delivery orders (#244)", () => {
   const A1 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa01";
   const A2 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaa02";
@@ -931,7 +936,10 @@ describe("POST /api/galleries/[galleryId]/submit-selection — rolling delivery 
     );
   });
 
-  it("never auto-moves the gallery to selected, even once EVERY client has ordered (#260 owns decision 13)", async () => {
+  // Decision 13 replaces the pre-S5 rule outright: the gallery closes once
+  // every ACTIVE member is done (no cart AND submitted-or-locked), with the
+  // ORDER semantics that decision 10 made mandatory.
+  it("CLOSES the gallery once every active member has ordered (decision 13)", async () => {
     const db = await rollingGallery();
     const { POST } = await import("./route");
     authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
@@ -940,10 +948,35 @@ describe("POST /api/galleries/[galleryId]/submit-selection — rolling delivery 
 
     const response = await POST(requestFor(), paramsFor(GALLERY_ID));
 
-    await expect(response.json()).resolves.toMatchObject({ gallerySelected: false });
-    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
+    await expect(response.json()).resolves.toMatchObject({ gallerySelected: true });
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "selected" });
     expect(db.__rows.galleryClients.every((r) => r.selectionLockedAt === null)).toBe(true);
     expect(assetOf(db, B1)).toMatchObject({ isSelected: true, billedTo: CLIENT_B });
+  });
+
+  it("stays OPEN while another active member still has a cart", async () => {
+    const db = await rollingGallery();
+    const CLIENT_C = "client-c";
+    const C1 = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaac";
+    db.__rows.users.push({
+      id: CLIENT_C,
+      name: "Caro",
+      email: "caro@example.com",
+      role: "client",
+    });
+    db.__rows.galleryClients.push(membership(CLIENT_C));
+    db.__rows.assets.push(assetRow({ id: C1, sortOrder: 6 }));
+    db.__rows.assetPicks.push(pick(C1, CLIENT_C, { pickedAt: new Date("2026-07-02T00:04:00Z") }));
+    const { POST } = await import("./route");
+    authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
+    await POST(requestFor(), paramsFor(GALLERY_ID));
+    authMock.mockResolvedValue(sessionOf(CLIENT_B, "Beto Ruiz"));
+
+    const response = await POST(requestFor(), paramsFor(GALLERY_ID));
+
+    // A and B are done; C is not (unsubmitted cart), so the gallery stays open.
+    await expect(response.json()).resolves.toMatchObject({ gallerySelected: false });
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
   });
 
   it("an admin lock landing between the pre-check and the transaction stamps NOTHING and sends no email", async () => {
@@ -967,7 +1000,7 @@ describe("POST /api/galleries/[galleryId]/submit-selection — rolling delivery 
     expect(sendSubmissionNotificationEmailMock).not.toHaveBeenCalled();
   });
 
-  it("flag OFF: submit locks AND claims, stamping requestedAt in both modes", async () => {
+  it("flag OFF: submit never locks, claims and stamps requestedAt — the same order semantics", async () => {
     const db = await seededDb();
     const { POST } = await import("./route");
     authMock.mockResolvedValue(sessionOf(CLIENT_ID, "Ana Pérez"));
@@ -976,8 +1009,8 @@ describe("POST /api/galleries/[galleryId]/submit-selection — rolling delivery 
 
     expect(response.status).toBe(200);
     expect(db.__rows.galleryClients[0]).toMatchObject({
-      selectionLockedAt: expect.any(Date),
-      selectionLockedBy: "client",
+      selectionLockedAt: null,
+      selectionSubmittedAt: expect.any(Date),
     });
     expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, requestedAt: expect.any(Date) });
   });
@@ -1114,7 +1147,24 @@ describe("POST /api/galleries/[galleryId]/submit-selection — now after the loc
 });
 
 describe("POST /api/galleries/[galleryId]/submit-selection — double submission is idempotent", () => {
-  it("the second of two SEQUENTIAL submits short-circuits before ever reaching the UPDATE", async () => {
+  /** A second active member with their own cart, so a submit leaves the
+   * gallery `proofing` (decision 13's "someone is still not done"). */
+  async function withSecondMember() {
+    const db = await seededDb();
+    db.__rows.users.push({
+      id: CLIENT_B,
+      name: "Beto Ruiz",
+      email: "beto@example.com",
+      role: "client",
+    });
+    db.__rows.galleryClients.push(membership(CLIENT_B));
+    db.__rows.assets.push(assetRow({ id: ASSET_2_ID, sortOrder: 1 }));
+    db.__rows.assetPicks.push(pick(ASSET_2_ID, CLIENT_B));
+    return db;
+  }
+
+  it("the second of two SEQUENTIAL submits is 400 empty_selection — a submit no longer locks", async () => {
+    await withSecondMember();
     authMock.mockResolvedValue(clientSession());
     const { POST } = await import("./route");
 
@@ -1122,16 +1172,18 @@ describe("POST /api/galleries/[galleryId]/submit-selection — double submission
     const second = await POST(requestFor(), paramsFor(GALLERY_ID));
 
     expect(first.status).toBe(200);
-    expect(second.status).toBe(200);
     await expect(first.json()).resolves.toMatchObject({ status: "submitted" });
-    await expect(second.json()).resolves.toMatchObject({ status: "already_submitted" });
+    // The cart is empty now, and an empty cart is 400 (decision 19).
+    expect(second.status).toBe(400);
+    await expect(second.json()).resolves.toEqual({ error: "empty_selection" });
     expect(sendSubmissionNotificationEmailMock).toHaveBeenCalledTimes(1);
 
     const db = await seededDb();
-    expect(db.__rows.galleries[0]).toMatchObject({ status: "selected" });
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
   });
 
   it("sends exactly one notification when two submits race via Promise.all", async () => {
+    await withSecondMember();
     authMock.mockResolvedValue(clientSession());
     const { POST } = await import("./route");
 
@@ -1140,10 +1192,14 @@ describe("POST /api/galleries/[galleryId]/submit-selection — double submission
       POST(requestFor(), paramsFor(GALLERY_ID)),
     ]);
 
-    expect([first.status, second.status].sort()).toEqual([200, 200]);
+    // One wins the order, the other finds the cart already stamped and gets
+    // 400 empty_selection. Either way: exactly ONE email.
+    expect([first.status, second.status].sort()).toEqual([200, 400]);
     const bodies = await Promise.all([first.json(), second.json()]);
-    const statuses = bodies.map((body) => (body as { status: string }).status).sort();
-    expect(statuses).toEqual(["already_submitted", "submitted"]);
+    const errors = bodies.filter(
+      (body) => (body as { error?: string }).error === "empty_selection",
+    );
+    expect(errors).toHaveLength(1);
     expect(sendSubmissionNotificationEmailMock).toHaveBeenCalledTimes(1);
   });
 });
@@ -1163,7 +1219,17 @@ describe("POST /api/galleries/[galleryId]/submit-selection — notification fail
     expect(db.__rows.galleries[0]).toMatchObject({ status: "selected" });
   });
 
-  it("a later call after a failed notification is idempotent, not a retry of the notification", async () => {
+  it("a later call after a failed notification is a 400 empty_selection, not a retry of the notification", async () => {
+    const db = await seededDb();
+    db.__rows.users.push({
+      id: CLIENT_B,
+      name: "Beto Ruiz",
+      email: "beto@example.com",
+      role: "client",
+    });
+    db.__rows.galleryClients.push(membership(CLIENT_B));
+    db.__rows.assets.push(assetRow({ id: ASSET_2_ID, sortOrder: 1 }));
+    db.__rows.assetPicks.push(pick(ASSET_2_ID, CLIENT_B));
     authMock.mockResolvedValue(clientSession());
     sendSubmissionNotificationEmailMock.mockRejectedValueOnce(
       new Error("Resend error (500): boom"),
@@ -1176,8 +1242,8 @@ describe("POST /api/galleries/[galleryId]/submit-selection — notification fail
 
     const second = await POST(requestFor(), paramsFor(GALLERY_ID));
 
-    expect(second.status).toBe(200);
-    await expect(second.json()).resolves.toMatchObject({ status: "already_submitted" });
+    expect(second.status).toBe(400);
+    await expect(second.json()).resolves.toEqual({ error: "empty_selection" });
     expect(sendSubmissionNotificationEmailMock).toHaveBeenCalledTimes(1);
   });
 });

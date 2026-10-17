@@ -55,7 +55,6 @@ const GALLERY_A_ID = "11111111-1111-4111-8111-111111111111";
 const GALLERY_B_ID = "22222222-2222-4222-8222-222222222222";
 const ASSET_1_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
 const ASSET_2_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa2";
-const ASSET_3_ID = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa3";
 
 function clientASession(): Session {
   return {
@@ -845,7 +844,7 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock and other pe
   });
 
   it("refuses B with client_selection_locked when B is locked", async () => {
-    const db = await groupGallery({ aSubmitted: true, bLocked: true });
+    await groupGallery({ aSubmitted: true, bLocked: true });
     authMock.mockResolvedValue(clientBSession());
     const { PATCH } = await import("./route");
 

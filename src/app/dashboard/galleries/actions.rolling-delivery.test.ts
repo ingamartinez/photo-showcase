@@ -390,6 +390,18 @@ describe("updateRollingDelivery — lock source and one-time transition", () => 
     expect(r.galleries[0]).toMatchObject({ rollingDelivery: false, status: "selected" });
   });
 
+  it("sending false on a gallery whose flag is already OFF (a stale tab) migrates nobody", async () => {
+    const r = await rows();
+    expect(r.galleries[0]).toMatchObject({ rollingDelivery: false });
+    const before = JSON.stringify({ ...r, galleries: undefined });
+    const { updateRollingDelivery } = await import("./actions");
+
+    await updateRollingDelivery({ status: "idle" }, toggle("false"));
+
+    expect(JSON.stringify({ ...r, galleries: undefined })).toBe(before);
+    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
+  });
+
   it("re-sending true on a gallery whose flag is ALREADY on (a stale tab) changes nothing", async () => {
     const r = await rows();
     r.galleries[0]!.rollingDelivery = true;

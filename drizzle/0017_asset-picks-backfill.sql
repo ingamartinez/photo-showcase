@@ -36,6 +36,7 @@ DECLARE
   removed_open integer;
   undated integer;
   cart_finals integer;
+  closed_carts integer;
 BEGIN
   SELECT count(*) INTO orphan_pickers
   FROM "assets" a
@@ -62,9 +63,22 @@ BEGIN
     AND g."status" NOT IN ('selected', 'delivered', 'archived')
     AND a."requested_at" IS NULL AND gc."selection_locked_at" IS NULL;
 
-  IF orphan_pickers + removed_open + undated + cart_finals > 0 THEN
-    RAISE EXCEPTION 'asset_picks backfill refused: % picks by a non-member (admin/D9), % open-gallery picks by a removed member, % picks with no timestamp, % cart photos that already have a final',
-      orphan_pickers, removed_open, undated, cart_finals;
+  -- A pick in a closed gallery whose submission chain has no stamp at all
+  -- (requested_at set, but gc/g/asset timestamps all NULL) would land with
+  -- `submitted_at` NULL and turn into a cart in a `selected`/`delivered`/
+  -- `archived` gallery -- the one remaining path 4.3 could otherwise take
+  -- undetected. Refuse it here, before any write.
+  SELECT count(*) INTO closed_carts
+  FROM "assets" a
+  JOIN "galleries" g ON g."id" = a."gallery_id"
+  JOIN "gallery_clients" gc ON gc."gallery_id" = a."gallery_id" AND gc."user_id" = a."selected_by"
+  WHERE a."is_selected" AND a."selected_by" IS NOT NULL
+    AND g."status" IN ('selected', 'delivered', 'archived')
+    AND COALESCE(gc."selection_submitted_at", g."selection_submitted_at", a."selected_at") IS NULL;
+
+  IF orphan_pickers + removed_open + undated + cart_finals + closed_carts > 0 THEN
+    RAISE EXCEPTION 'asset_picks backfill refused: % picks by a non-member (admin/D9), % open-gallery picks by a removed member, % picks with no timestamp, % cart photos that already have a final, % closed-gallery picks with no submission stamp',
+      orphan_pickers, removed_open, undated, cart_finals, closed_carts;
   END IF;
 END $$;
 --> statement-breakpoint
@@ -100,8 +114,8 @@ WHERE a."is_selected" AND a."selected_by" IS NOT NULL;
 
 -- 4.3 Release the cart photos (unclaim). Mirrors the deselect path
 -- (selection/route.ts:398-405): the person's intent survives in
--- asset_picks.kind. The NOT EXISTS keeps this correct under future
--- multi-pick data, where another person may have submitted the same photo.
+-- asset_picks.kind. The NOT EXISTS avoids unclaiming a photo another person
+-- has already submitted; it does NOT re-resolve attribution (S5/S6 do).
 UPDATE "assets" a
 SET "is_selected" = false,
     "selected_at" = NULL,

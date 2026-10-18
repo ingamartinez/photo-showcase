@@ -105,7 +105,11 @@ export function compareArrival(
   return a.assetId < b.assetId ? -1 : 1;
 }
 
-const emptyShare = (): AttributionShare => ({
+/** The all-zero share. Exported because the WIRE carries shares (task #264):
+ * `SelectionCounter.people[].share` and `unattributedShare` are required
+ * fields, and a caller with no units to describe needs the zero to be
+ * produced by the same module that produces every other share. */
+export const emptyShare = (): AttributionShare => ({
   included: 0,
   extras: 0,
   originals: 0,

@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { ProofGrid, SELECTION_POLL_INTERVAL_MS } from "./proof-grid";
 import type { GalleryStatus, ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
+import { emptyShare } from "@/lib/quota-attribution";
 import type { SelectionEntry } from "@/lib/selection-snapshot";
 
 type SelectionPick = {
@@ -96,8 +97,13 @@ function counterFor(picks: LegacyPick[], viewerId: string) {
       userId,
       label: picks.find((pick) => pick.pickedBy?.id === userId)?.pickedBy?.label ?? userId,
       units: count,
+      // Task #264 — this fixture predates the per-person money wire and is not
+      // about money; the required share is the all-zero one, produced by the
+      // same module the server uses.
+      share: emptyShare(),
     })),
     unattributed: picks.filter((pick) => pick.pickedBy === null).length,
+    unattributedShare: emptyShare(),
   };
 }
 
@@ -153,6 +159,7 @@ function jsonResponse(status: number, body: unknown): Response {
         viewer: null,
         people: [],
         unattributed: 0,
+        unattributedShare: emptyShare(),
       },
     };
   }
@@ -780,6 +787,7 @@ describe("ProofGrid", () => {
               viewer: { yours: 0, shared: 0, toSend: 1 },
               people: [],
               unattributed: 0,
+              unattributedShare: emptyShare(),
             },
             quota: computeQuota(0, 1, {
               includedPhotosSnapshot: 13,
@@ -967,6 +975,7 @@ describe("ProofGrid", () => {
               viewer: { yours: 1, shared: 0, toSend: 0 },
               people: [{ userId: "client-a", label: "Ana", units: 1 }],
               unattributed: 0,
+              unattributedShare: emptyShare(),
             },
             quota: submittedQuota,
             viewerLock: null,
@@ -2772,6 +2781,7 @@ describe("ProofGrid", () => {
               viewer: { yours: 0, shared: 0, toSend: 0 },
               people: [{ userId: "client-b", label: "Beto Ruiz", units: 1 }],
               unattributed: 0,
+              unattributedShare: emptyShare(),
             },
             quota: computeQuota(1, 0, {
               includedPhotosSnapshot: 13,
@@ -2997,8 +3007,9 @@ describe("ProofGrid — no surface recounts the selection (epic #250 S6)", () =>
       initialCounter: {
         group: 7,
         viewer: { yours: 2, shared: 1, toSend: 4 },
-        people: [{ userId: "client-a", label: "Ana", units: 3 }],
+        people: [{ userId: "client-a", label: "Ana", units: 3, share: emptyShare() }],
         unattributed: 0,
+        unattributedShare: emptyShare(),
       },
       rollingDelivery: true,
     });

@@ -10,6 +10,7 @@ import type {
   SelectionKind,
   SelectionPickState,
 } from "@/lib/selection-snapshot";
+import { emptyShare, type AttributionShare } from "@/lib/quota-attribution";
 
 export const ANA = { id: "client-a", label: "Ana" } as const;
 export const BETO = { id: "client-b", label: "Beto" } as const;
@@ -69,6 +70,18 @@ export function counter(overrides: Partial<SelectionCounter> = {}): SelectionCou
     viewer: { yours: 0, shared: 0, toSend: 0 },
     people: [],
     unattributed: 0,
+    unattributedShare: emptyShare(),
     ...overrides,
   };
+}
+
+/** One `counter.people` row: the counts AND the money the server attributed to
+ * that person (task #264). Tests that only care about units can pass no share
+ * and get the all-zero one. */
+export function person(
+  who: { id: string; label: string },
+  units: number,
+  share: AttributionShare = emptyShare(),
+): SelectionCounter["people"][number] {
+  return { userId: who.id, label: who.label, units, share };
 }

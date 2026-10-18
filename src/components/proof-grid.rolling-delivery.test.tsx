@@ -13,6 +13,7 @@ import userEvent from "@testing-library/user-event";
 import { ProofGrid } from "./proof-grid";
 import type { ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
+import { emptyShare } from "@/lib/quota-attribution";
 import type { SelectionEntry, SelectionKind } from "@/lib/selection-snapshot";
 
 type SelectionPick = {
@@ -121,8 +122,17 @@ function counterFor(picks: SelectionPick[], viewerId: string) {
       shared: 0,
       toSend: own.filter((pick) => pick.requestedAt === null).length,
     },
-    people: [...counts].map(([userId, units]) => ({ userId, label: userId, units })),
+    // Task #264 — this fixture is about delivery/order state, not money; the
+    // required share is the all-zero one, produced by the same module the
+    // server uses.
+    people: [...counts].map(([userId, units]) => ({
+      userId,
+      label: userId,
+      units,
+      share: emptyShare(),
+    })),
     unattributed: 0,
+    unattributedShare: emptyShare(),
   };
 }
 

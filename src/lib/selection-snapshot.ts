@@ -21,6 +21,11 @@
 // the tray looks each thumbnail up in the presigned URL map `<ProofGrid>`
 // already holds.
 import type { QuotaResult } from "@/lib/quota";
+// Task #264 — the money breakdown needs the per-person split on the wire, so
+// this module names `AttributionShare`. Type-only: `@/lib/quota-attribution`
+// is pure (two imports, no I/O — its own test pins that), and the import is
+// erased at build time, so nothing new is bundled for the browser.
+import type { AttributionShare } from "@/lib/quota-attribution";
 
 /** Same five literals as `Gallery["status"]` in schema.ts, hand-rolled for
  * the identical reason `SelectionKind` below is: a type-only import off a
@@ -118,10 +123,19 @@ export type SelectionCounter = {
    * escalation, never up. */
   viewer: { yours: number; shared: number; toSend: number } | null;
   /** Units per billed person, removed members included, in userId code-unit
-   * order. The UI sorts for display. */
-  people: { userId: string; label: string; units: number }[];
+   * order. The UI sorts for display.
+   *
+   * `share` (task #264) is `attributeQuota`'s own `PersonShare` for this
+   * person, minus the id: the counts AND the money, priced at the gallery's
+   * unit prices by the server. The browser formats it, it never computes it —
+   * so `share.included + share.extras + share.originals === units` by
+   * construction, and no client can disagree with the gallery total below. */
+  people: { userId: string; label: string; units: number; share: AttributionShare }[];
   /** Units billed to nobody ("Sin registro"). */
   unattributed: number;
+  /** The "Sin registro" bucket's money, straight from `attributeQuota` — the
+   * last term of the Σ invariant the client renders as a row (task #264). */
+  unattributedShare: AttributionShare;
 };
 
 /** Epic #239 — the per-client selection lock, as the browser sees it. Dates

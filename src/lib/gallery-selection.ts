@@ -37,7 +37,7 @@ import { readPickState } from "@/lib/pick-claims";
 import { getSelectionLockSnapshot, type DbExecutor } from "@/lib/gallery-client-locks";
 
 import { claimFromAsset, derivePickStatus } from "@/lib/pick-resolution";
-import { attributeQuota } from "@/lib/quota-attribution";
+import { attributeQuota, shareFor } from "@/lib/quota-attribution";
 import { previewClientActions, unitsOf, type AssetRow, type PickRow } from "@/lib/pick-plans";
 import { type ClientPersonTally } from "@/lib/client-selection-state";
 import {
@@ -180,11 +180,16 @@ export function buildGallerySelection(input: {
       userId: person.userId,
       label: labels.get(person.userId) ?? UNATTRIBUTED_PICKER_LABEL,
       units: person.included + person.extras + person.originals,
+      // Task #264 — the SAME share `attributeQuota` bucketed, priced by the
+      // one `computeQuota` call above. The client renders this; it never
+      // recomputes a person's money from `quota`.
+      share: shareFor(attribution, person.userId),
     })),
     unattributed:
       attribution.unattributed.included +
       attribution.unattributed.extras +
       attribution.unattributed.originals,
+    unattributedShare: attribution.unattributed,
   };
 
   return { entries, quota: attribution.quota, counter };

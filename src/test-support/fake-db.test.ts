@@ -65,6 +65,24 @@ describe("fake db — supported conditions filter for real", () => {
     expect(ids(await read(isNull(galleryClients.removedAt)))).toEqual(["g1/a", "g2/a"]);
   });
 
+  it("inArray filters by membership", async () => {
+    expect(ids(await read(inArray(galleryClients.userId, ["b", "a"])))).toEqual([
+      "g1/a",
+      "g1/b",
+      "g2/a",
+    ]);
+    expect(ids(await read(inArray(galleryClients.galleryId, ["g2"])))).toEqual(["g2/a"]);
+  });
+
+  it("inArray combines with and()", async () => {
+    const condition = and(
+      eq(galleryClients.galleryId, "g1"),
+      inArray(galleryClients.userId, ["a", "b"]),
+      isNull(galleryClients.removedAt),
+    );
+    expect(ids(await read(condition))).toEqual(["g1/a"]);
+  });
+
   it("and of eq + isNull, including a nested and()", async () => {
     const condition = and(
       eq(galleryClients.galleryId, "g1"),
@@ -102,7 +120,6 @@ describe("fake db — unsupported conditions THROW instead of being mis-modelled
     ["ne", () => ne(galleryClients.userId, "a")],
     ["isNotNull", () => isNotNull(galleryClients.removedAt)],
     ["gt", () => gt(galleryClients.createdAt, new Date())],
-    ["inArray", () => inArray(galleryClients.userId, ["a", "b"])],
     ["column-to-column eq", () => eq(galleryClients.userId, galleryClients.galleryId)],
     ["or", () => or(eq(galleryClients.userId, "a"), eq(galleryClients.userId, "b"))],
   ];
@@ -124,6 +141,10 @@ describe("fake db — unsupported conditions THROW instead of being mis-modelled
 
   it.each(cases)("%s inside delete().where()", async (_name, build) => {
     expect(() => db.delete(galleryClients).where(build())).toThrow(/unsupported condition/);
+  });
+
+  it("an EMPTY inArray is not modelled rather than silently matching nothing", () => {
+    expect(() => read(inArray(galleryClients.userId, []))).toThrow(/unsupported condition/);
   });
 
   it("a condition that is not a drizzle expression at all", async () => {

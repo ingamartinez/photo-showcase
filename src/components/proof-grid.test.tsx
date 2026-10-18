@@ -6,7 +6,76 @@ import userEvent from "@testing-library/user-event";
 import { ProofGrid, SELECTION_POLL_INTERVAL_MS } from "./proof-grid";
 import type { GalleryStatus, ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
-import type { SelectionPick } from "@/lib/selection-snapshot";
+import type { SelectionEntry } from "@/lib/selection-snapshot";
+
+type SelectionPick = {
+  assetId: string;
+  selectedAt: string | null;
+  pickedBy: { id: string; label: string } | null;
+  selectionKind: "edited" | "original";
+  requestedAt?: string | null;
+};
+
+type LegacyPick = {
+  assetId: string;
+  selectedAt: string | null;
+  pickedBy: { id: string; label: string } | null;
+  selectionKind: "edited" | "original";
+  requestedAt?: string | null;
+};
+
+type GridOverrides = Partial<ComponentProps<typeof ProofGrid>> & {
+  /** Pre-S6 fixture shape: a flat list of claimed picks. The helper adapts it
+   * to the entry wire shape so 40-odd grid tests did not have to change. */
+  initialPicks?: LegacyPick[];
+  initialLockedPickerIds?: string[];
+  includedPhotosSnapshot?: number;
+  extraPhotoPriceCopSnapshot?: number;
+  extraPhotoPriceTiersSnapshot?: { minExtras: number; priceCop: number }[] | null;
+  originalPhotoPriceCopSnapshot?: number;
+};
+
+function entriesFor(picks: LegacyPick[]): SelectionEntry[] {
+  return picks.map((pick) => ({
+    assetId: pick.assetId,
+    claim: {
+      claimedAt: pick.selectedAt,
+      resolvedKind: pick.selectionKind,
+      billedTo: pick.pickedBy,
+      charge: "included",
+    },
+    picks: pick.pickedBy
+      ? [
+          {
+            userId: pick.pickedBy.id,
+            label: pick.pickedBy.label,
+            kind: pick.selectionKind,
+            pickedAt: pick.selectedAt ?? "2026-07-30T12:00:00.000Z",
+            submittedAt: pick.requestedAt === null ? null : pick.selectedAt,
+            state: "billed",
+          },
+        ]
+      : [],
+  }));
+}
+
+function counterFor(picks: LegacyPick[], viewerId: string) {
+  const counts = new Map<string, number>();
+  for (const pick of picks) {
+    if (!pick.pickedBy) continue;
+    counts.set(pick.pickedBy.id, (counts.get(pick.pickedBy.id) ?? 0) + 1);
+  }
+  return {
+    group: picks.length,
+    viewer: {
+      yours: counts.get(viewerId) ?? 0,
+      shared: 0,
+      toSend: 0,
+    },
+    people: [...counts].map(([userId, units]) => ({ userId, label: userId, units })),
+    unattributed: picks.filter((pick) => pick.pickedBy === null).length,
+  };
+}
 
 // <ProofGrid> renders <SelectionCounter>, which imports `formatCop` off
 // `@/lib/format` — a plain module with no `server-only`/`@/lib/db` import
@@ -43,27 +112,38 @@ function assetsFor(overrides: Partial<ProofAsset>[] = [{}]): ProofAsset[] {
 // Every test wants the same Estándar snapshot terms (PLAN.md §3's table)
 // unless it's specifically exercising the quota — this only overrides
 // `initialAssets` most of the time.
-function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
+function renderGrid(overrides: GridOverrides = {}) {
+  const {
+    initialPicks = [],
+    initialLockedPickerIds = [],
+    includedPhotosSnapshot = 13,
+    extraPhotoPriceCopSnapshot = 5_000,
+    extraPhotoPriceTiersSnapshot = null,
+    originalPhotoPriceCopSnapshot = 2_000,
+    ...rest
+  } = overrides;
+  const terms = {
+    includedPhotosSnapshot,
+    extraPhotoPriceCopSnapshot,
+    extraPhotoPriceTiersSnapshot,
+    originalPhotoPriceCopSnapshot,
+  };
+  const edited = initialPicks.filter((pick) => pick.selectionKind === "edited").length;
+  const original = initialPicks.length - edited;
+
   return render(
     <ProofGrid
       galleryId="g1"
       initialAssets={assetsFor()}
       initialStatus="proofing"
       initialSubmittedAt={null}
-      // Task #95: the collaborative tray's first paint. Most tests here
-      // predate it and are about the grid, so the default is "nobody has
-      // picked anything yet" — the tests that exercise the tray or the live
-      // sync override it.
-      initialPicks={[]}
+      // Epic #250 S6 — the server hands the entries, quota and counter; the
+      // legacy `initialPicks` fixture above is adapted once, here.
+      initialEntries={entriesFor(initialPicks)}
+      initialQuota={computeQuota(edited, original, terms)}
+      initialCounter={counterFor(initialPicks, "client-a")}
+      initialAdminLockedPickerIds={initialLockedPickerIds}
       viewerId="client-a"
-      includedPhotosSnapshot={13}
-      extraPhotoPriceCopSnapshot={5_000}
-      extraPhotoPriceTiersSnapshot={null}
-      // Task #206 — the third frozen snapshot term, matching the value
-      // `scripts/seed-packages.ts` and the migration default use. Most tests
-      // here only exercise `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot`;
-      // the ones exercising originals override this explicitly.
-      originalPhotoPriceCopSnapshot={2_000}
       // Task #204 — default to `flat`, today's only behavior; the tray's own
       // test file covers `by-person` grouping directly.
       selectionTrayMode="flat"
@@ -73,7 +153,7 @@ function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
       // switch itself (the "allowsOriginalSelection is OFF" describe block)
       // override this explicitly.
       allowsOriginalSelection={true}
-      {...overrides}
+      {...rest}
     />,
   );
 }

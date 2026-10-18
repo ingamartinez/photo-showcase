@@ -73,12 +73,20 @@ export async function getClientLock(
 }
 
 /** What the client page and the selection snapshot route hand `<ProofGrid>`
- * (slice #241 consumes it): the viewer's own lock, and which pickers are
- * locked so their picks can render as frozen. `viewerLock` is `null` while the
- * viewer is open — and always for an admin, who has no membership. */
+ * (slice #241 consumes it): the subject's own lock, and which pickers the
+ * PHOTOGRAPHER locked so their picks can render as frozen. `viewerLock` is
+ * `null` while the subject is open — and always when there is no subject
+ * (`viewerId === null`: an admin without view-as).
+ *
+ * `adminLockedPickerIds` lists ADMIN locks only. Since epic #250 S5 a client
+ * submit never locks (it places an order), and migration 0017 cleared every
+ * client lock in `proofing`; a `'client'` lock therefore survives only as
+ * history in `selected`/`delivered`/`archived` galleries, where the gallery
+ * status already freezes every control. "Envió" is derived per pick from
+ * `asset_picks.submitted_at`, not from a list here. */
 export async function getSelectionLockSnapshot(
   galleryId: string,
-  viewerId: string,
+  viewerId: string | null,
   executor: DbExecutor = db,
 ): Promise<SelectionLockSnapshot> {
   const members = await executor
@@ -92,8 +100,9 @@ export async function getSelectionLockSnapshot(
     .where(and(eq(galleryClients.galleryId, galleryId), isNull(galleryClients.removedAt)));
 
   const locked = members.filter((member) => member.lockedAt !== null);
-  const own = locked.find((member) => member.userId === viewerId);
-  const ownMembership = members.find((member) => member.userId === viewerId);
+  const own = viewerId === null ? undefined : locked.find((member) => member.userId === viewerId);
+  const ownMembership =
+    viewerId === null ? undefined : members.find((member) => member.userId === viewerId);
   return {
     viewerSubmittedAt: ownMembership?.submittedAt ? ownMembership.submittedAt.toISOString() : null,
     viewerLock: own
@@ -103,12 +112,10 @@ export async function getSelectionLockSnapshot(
           lockedBy: own.lockedBy,
         }
       : null,
-    lockedPickerIds: locked.map((member) => member.userId),
-    // Task #244: "submitted" = locked BY THE CLIENT (`selection_locked_by`),
-    // not "has a submit timestamp" — under rolling delivery an order sets the
-    // timestamp without locking, and a photographer lock can follow it.
-    submittedPickerIds: locked
-      .filter((member) => member.lockedBy === "client")
+    // Only the photographer's locks are written since S5; a `'client'` lock is
+    // closed-gallery history and would be a lie about who froze whom.
+    adminLockedPickerIds: locked
+      .filter((member) => member.lockedBy === "admin")
       .map((member) => member.userId),
   };
 }

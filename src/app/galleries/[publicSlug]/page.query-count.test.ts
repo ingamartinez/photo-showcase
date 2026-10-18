@@ -40,9 +40,35 @@ vi.mock("@/lib/gallery-access", () => ({
   // this file's own count needs no explanation the way `isGalleryOwner`'s
   // does above.
   isAdminPreviewingClientGallery: (session: Session) => session.user.role === "admin",
+  // Epic #250 S6 — own subject, no view-as.
+  resolveViewAs: async (session: Session) => ({
+    ok: true,
+    subjectId: session.user.role === "admin" ? null : session.user.id,
+  }),
 }));
 
-vi.mock("@/lib/gallery-selection", () => ({ getGallerySelection: () => Promise.resolve([]) }));
+vi.mock("@/lib/gallery-selection", async () => {
+  const { computeQuota } = await import("@/lib/quota");
+  return {
+    getGallerySelection: () =>
+      Promise.resolve({
+        entries: [],
+        quota: computeQuota(0, 0, {
+          includedPhotosSnapshot: 13,
+          extraPhotoPriceCopSnapshot: 5_000,
+          extraPhotoPriceTiersSnapshot: null,
+          originalPhotoPriceCopSnapshot: 2_000,
+        }),
+        counter: {
+          group: 0,
+          viewer: { yours: 0, shared: 0, toSend: 0 },
+          people: [],
+          unattributed: 0,
+        },
+        lock: { viewerLock: null, adminLockedPickerIds: [], viewerSubmittedAt: null },
+      }),
+  };
+});
 
 // Epic #239 — one fixed-cost read (the viewer's lock + locked pickers),
 // independent of the asset count, proven in its own suite.

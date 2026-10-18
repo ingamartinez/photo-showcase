@@ -26,6 +26,7 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Session } from "next-auth";
 import { db } from "@/lib/db";
 import { galleryClients } from "@/lib/db/schema";
+import { getClientLock } from "@/lib/gallery-client-locks";
 
 /**
  * Whether `session` may act on the gallery identified by `galleryId` — an
@@ -82,4 +83,47 @@ export async function isGalleryOwner(galleryId: string, session: Session): Promi
  */
 export function isAdminPreviewingClientGallery(session: Session): boolean {
   return session.user.role === "admin";
+}
+
+export type ViewAsResult =
+  | { ok: true; subjectId: string | null }
+  | { ok: false; error: "view_as_admin_only" | "invalid_view_as" | "view_as_not_member" };
+
+/**
+ * Epic #250 S6 — the admin's "view as this client" subject, from the
+ * `?viewAs=<userId>` query parameter the page and the GET selection route
+ * share.
+ *
+ * Rules, in order:
+ *   - absent -> the caller's own subject (`null` for an admin, their id for a
+ *     client);
+ *   - present at all for a non-admin (even their own id) -> refused loudly.
+ *     Silently ignoring it would let a buggy UI believe it is showing somebody
+ *     else;
+ *   - more than one value, empty, or whitespace -> `invalid_view_as`;
+ *   - an id with no ACTIVE membership -> `view_as_not_member`. Symmetric with
+ *     S5's `acting_client_not_member`, including removed members.
+ */
+export async function resolveViewAs(
+  session: Session,
+  galleryId: string,
+  raw: string | string[] | null | undefined,
+): Promise<ViewAsResult> {
+  const values = raw === undefined || raw === null ? [] : Array.isArray(raw) ? raw : [raw];
+  const present = values.length > 0;
+
+  if (!present) {
+    return {
+      ok: true,
+      subjectId: session.user.role === "admin" ? null : session.user.id,
+    };
+  }
+  if (session.user.role !== "admin") return { ok: false, error: "view_as_admin_only" };
+  if (values.length !== 1) return { ok: false, error: "invalid_view_as" };
+  const userId = values[0]?.trim();
+  if (!userId) return { ok: false, error: "invalid_view_as" };
+  if ((await getClientLock(db, galleryId, userId)) === null) {
+    return { ok: false, error: "view_as_not_member" };
+  }
+  return { ok: true, subjectId: userId };
 }

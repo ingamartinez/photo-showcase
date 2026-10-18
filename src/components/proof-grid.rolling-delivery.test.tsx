@@ -12,7 +12,15 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-li
 import { ProofGrid } from "./proof-grid";
 import type { ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
-import type { SelectionPick } from "@/lib/selection-snapshot";
+import type { SelectionEntry, SelectionKind } from "@/lib/selection-snapshot";
+
+type SelectionPick = {
+  assetId: string;
+  selectedAt: string | null;
+  pickedBy: { id: string; label: string } | null;
+  selectionKind: SelectionKind;
+  requestedAt?: string | null;
+};
 
 const TERMS = {
   includedPhotosSnapshot: 0,
@@ -67,21 +75,78 @@ function assets(): ProofAsset[] {
   }));
 }
 
-function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
+function entryFor(pick: SelectionPick): SelectionEntry {
+  return {
+    assetId: pick.assetId,
+    claim: {
+      claimedAt: pick.selectedAt,
+      resolvedKind: pick.selectionKind,
+      billedTo: pick.pickedBy,
+      charge: "included",
+    },
+    picks: pick.pickedBy
+      ? [
+          {
+            userId: pick.pickedBy.id,
+            label: pick.pickedBy.label,
+            kind: pick.selectionKind,
+            pickedAt: pick.selectedAt ?? "2026-10-16T08:00:00.000Z",
+            submittedAt: pick.requestedAt ?? null,
+            state: pick.requestedAt ? "billed" : "degraded",
+          },
+        ]
+      : [],
+  };
+}
+
+function counterFor(picks: SelectionPick[], viewerId: string) {
+  const counts = new Map<string, number>();
+  for (const pick of picks) {
+    if (!pick.pickedBy) continue;
+    counts.set(pick.pickedBy.id, (counts.get(pick.pickedBy.id) ?? 0) + 1);
+  }
+  const own = picks.filter((pick) => pick.pickedBy?.id === viewerId);
+  return {
+    group: picks.length,
+    viewer: {
+      yours: own.filter((pick) => pick.requestedAt !== null).length,
+      shared: 0,
+      toSend: own.filter((pick) => pick.requestedAt === null).length,
+    },
+    people: [...counts].map(([userId, units]) => ({ userId, label: userId, units })),
+    unattributed: picks.filter((pick) => pick.pickedBy === null).length,
+  };
+}
+
+function renderGrid(
+  overrides: Partial<ComponentProps<typeof ProofGrid>> & {
+    initialPicks?: SelectionPick[];
+    initialLockedPickerIds?: string[];
+    initialSubmittedPickerIds?: string[];
+  } = {},
+) {
+  const {
+    initialPicks = PICKS,
+    initialLockedPickerIds = [],
+    initialSubmittedPickerIds: _legacySubmitted,
+    ...rest
+  } = overrides;
   return render(
     <ProofGrid
       galleryId="g1"
       initialAssets={assets()}
       initialStatus="proofing"
       initialSubmittedAt={null}
-      initialPicks={PICKS}
+      initialEntries={initialPicks.map(entryFor)}
+      initialQuota={computeQuota(initialPicks.length, 0, TERMS)}
+      initialCounter={counterFor(initialPicks, ANA.id)}
+      initialAdminLockedPickerIds={initialLockedPickerIds}
       viewerId={ANA.id}
-      {...TERMS}
       selectionTrayMode="flat"
       allowsOriginalSelection={false}
       rollingDelivery
       finalsOpen
-      {...overrides}
+      {...rest}
     />,
   );
 }

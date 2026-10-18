@@ -28,7 +28,9 @@ type Row = Record<string, unknown>;
 type Table = Record<string, unknown>;
 
 type Leaf =
-  { dbColumnName: string; op: "eq"; value: unknown } | { dbColumnName: string; op: "isNull" };
+  | { dbColumnName: string; op: "eq"; value: unknown }
+  | { dbColumnName: string; op: "isNull" }
+  | { dbColumnName: string; op: "in"; values: unknown[] };
 
 const isColumn = (chunk: unknown): chunk is { name: string } =>
   !!chunk && typeof chunk === "object" && "name" in chunk && "table" in chunk;
@@ -53,14 +55,15 @@ function textOf(node: unknown): string | null {
 function unsupported(detail: string): never {
   throw new Error(
     `fake db: unsupported condition (${detail}). Supported: eq(column, value), ` +
-      "isNull(column), and(...) of those. Extend src/test-support/fake-db.ts deliberately " +
-      "rather than letting a query be mis-modelled.",
+      "isNull(column), inArray(column, values), and(...) of those. Extend " +
+      "src/test-support/fake-db.ts deliberately rather than letting a query be mis-modelled.",
   );
 }
 
 /** Parses ONE leaf — a node with a column among its immediate chunks — and
- * accepts exactly `col = <param>` and `col is null`. Everything else (`<>`,
- * `is not null`, `in (...)`, `col = col`, `<`, a lone column...) throws. */
+ * accepts exactly `col = <param>`, `col is null` and `col in (<params>)`.
+ * Everything else (`<>`, `is not null`, `col = col`, `<`, a lone column...)
+ * throws. */
 function parseLeaf(chunks: unknown[]): Leaf {
   const parts = chunks.filter((chunk) => textOf(chunk) !== "");
   const [column, op, operand, ...rest] = parts;
@@ -71,6 +74,22 @@ function parseLeaf(chunks: unknown[]): Leaf {
   }
   if (opText === "=" && isParam(operand)) {
     return { dbColumnName: column.name, op: "eq", value: operand.value };
+  }
+  // `inArray(col, values)` renders as `col in <Array of Param>` — the whole
+  // list is ONE bare array chunk, not one chunk per element (verified against
+  // the real condition, not assumed). Only that exact shape is understood: an
+  // array holding anything but params would be a different operator.
+  if (
+    opText === "in" &&
+    Array.isArray(operand) &&
+    operand.length > 0 &&
+    operand.every((chunk) => isParam(chunk))
+  ) {
+    return {
+      dbColumnName: column.name,
+      op: "in",
+      values: operand.map((chunk) => (chunk as { value: unknown }).value),
+    };
   }
   return unsupported(`operator ${JSON.stringify(opText ?? null)}`);
 }
@@ -107,7 +126,9 @@ function matches(row: Row, table: Table, condition: unknown): boolean {
   if (parsed.length === 0) unsupported("empty condition");
   return parsed.every((leaf) => {
     const value = row[jsKeyFor(table, leaf.dbColumnName)];
-    return leaf.op === "isNull" ? value == null : value === leaf.value;
+    if (leaf.op === "isNull") return value == null;
+    if (leaf.op === "in") return leaf.values.includes(value);
+    return value === leaf.value;
   });
 }
 

@@ -1185,8 +1185,9 @@ describe("SelectionCounter — two-level money detail (task #269)", () => {
     // layout engine, so this test cannot measure pixels; what it CAN pin is the
     // contract that makes the height content-independent in a browser: a
     // `h-`-prefixed allocation (not `max-h-`) with no breakpoint variant, the
-    // same class string before and after the reveal, and the same class string
-    // for a longer list of people.
+    // same class string before and after the reveal, the same class string
+    // for a longer list of people, and both levels nested inside that region —
+    // a fixed height only bounds what is inside it.
     const { unmount } = render(
       <SelectionCounter
         quota={QUOTA()}
@@ -1215,12 +1216,21 @@ describe("SelectionCounter — two-level money detail (task #269)", () => {
     expect(classes).not.toContain("lg:max-h-none");
     expect(classes).not.toContain("lg:overflow-visible");
 
+    // Both levels live INSIDE that one height-allocated region. Fixed height and
+    // unchanged classes alone do not prove it: the second disclosure and the
+    // block it reveals must be children of the element the bar is sized by,
+    // otherwise opening the total grows the bar and pushes the grid.
+    const total = toggle("Ver total de la galería");
+    expect(closedRegion?.contains(total)).toBe(true);
+
     // Revealing the total must not touch the box the bar is sized by: same
-    // element, and not one class added or removed.
-    fireEvent.click(toggle("Ver total de la galería"));
+    // element, and not one class added or removed — and the revealed content
+    // stays inside that same region, so it can only scroll it.
+    fireEvent.click(total);
     const openRegion = regionFor(toggle("Ocultar detalle"));
     expect(openRegion).toBe(closedRegion);
     expect(openRegion?.className).toBe(classes);
+    expect(closedRegion?.contains(screen.getByText("Entre todos"))).toBe(true);
     unmount();
 
     // More people, same allocated height: only what scrolls inside changes.

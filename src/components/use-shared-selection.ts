@@ -43,7 +43,6 @@ import {
   type SelectionCounter,
   type SelectionEntry,
   type SelectionKind,
-  type SelectionPicker,
   type SelectionSnapshot,
   type ViewerLock,
 } from "@/lib/selection-snapshot";
@@ -105,9 +104,10 @@ type SelectionResponse = {
     id: string;
     isSelected: boolean;
     selectedAt: string | null;
-    // Task #95: who the server recorded as the picker, straight from the
-    // route that just wrote it — see that route's own comment.
-    pickedBy: SelectionPicker | null;
+    // Epic #250 S6 — who the unit is currently BILLED to, straight from the
+    // route that just wrote it. This is attribution, not "who picked": under
+    // the multi-pick model many people can ask for one photo and the unit has
+    // exactly one holder. `null` for a legacy unit with no recorded owner.
     // Task #206 — the type the route just recorded, whether this response
     // came from a select/deselect (which resets it to `edited`) or a
     // type-only change.
@@ -136,54 +136,53 @@ export type SharedSelectionAsset = {
   isSelected: boolean;
 };
 
-// Epic #239 — the PATCH selection route's lock refusals. All four mean "the
-// board changed under you" (somebody just submitted, or an admin locked a
-// person), so the right response is a calm sentence AND a snapshot refresh so
-// the controls catch up — not the generic "no se pudo actualizar" red flag.
+// Epic #239 — the PATCH selection route's lock refusals. All of them mean "the
+// board changed under you" (somebody just sent, an admin locked a person, a
+// pick degraded), so the right response is a calm sentence AND a snapshot
+// refresh so the controls catch up — not the generic "no se pudo actualizar"
+// red flag.
 //
-// Task #249's `pick_not_yours` is deliberately NOT an entry here: its sentence
-// names the pick's owner, so it is built by `foreignPickRefusal` below from the
-// 409's body instead of being a static string.
+// `pick_not_yours` / `foreignPickRefusal` are gone with task #249's single-owner
+// model: a client's PATCH only addresses their OWN `asset_picks` row now, so
+// there is no foreign pick left to name. `pick_locked` is gone for the same
+// reason. `already_requested` keeps its tuteo copy verbatim.
 const LOCK_REFUSALS: Record<string, string> = {
   client_selection_locked: "Tu selección ya está cerrada, así que no se puede cambiar.",
-  pick_locked: "Esa foto es de alguien que ya envió su selección, así que no se puede cambiar.",
   gallery_locked: "La selección ya fue enviada, así que no se puede cambiar.",
-  // Task #244 — rolling delivery: an ordered ("pedida") pick is permanent for
-  // the client. Owner-approved copy.
+  // Task #244 — an ordered ("pedida") pick is permanent for the client.
   already_requested: "Esta foto ya fue pedida; para quitarla escríbele a tu fotógrafo.",
+  // Epic #250 S7 — the new per-pick refusals. A degraded pick may only move
+  // from original to edited (decision 16); an admin must name a client; a
+  // subject must still belong to the gallery.
+  pick_degraded: "Otra persona ya la pidió, así que solo puedes cambiarla a editada.",
+  admin_cannot_pick: "Elige un cliente antes de tocar una foto.",
+  acting_client_not_member: "Esa persona ya no es parte de esta galería.",
 };
-
-/** Task #249 — the sentence for a pick that belongs to somebody else. Owner's
- * copy, verbatim. The name comes from the SERVER (`pickedByName` on the 409,
- * under the app-wide `name ?? email` rule), never from the snapshot, so a stale
- * render or a pick that changed hands between render and click still names the
- * right person.
- *
- * The `trim()` guard is the ONE place that turns `""` / whitespace / `null` /
- * `undefined` into the anonymous sentence — a missing label must never render
- * as `null` or `undefined` on screen. */
-export function foreignPickRefusal(name: string | null): string {
-  const label = name?.trim();
-  return label
-    ? `Esa foto la eligió ${label}, así que no podés quitarla.`
-    : "Esa foto la eligió otra persona, así que no podés quitarla.";
-}
 
 /** The calm message for a 409 lock refusal, or `null` for any other failure.
  * Reads the body defensively: a non-JSON error is simply "not a lock refusal". */
 async function lockRefusalMessage(response: Response): Promise<string | null> {
   if (response.status !== 409) return null;
-  const body = (await response.json().catch(() => null)) as {
-    error?: string;
-    pickedByName?: unknown;
-  } | null;
-  // Task #249 — the only refusal whose copy depends on the body. A non-string
-  // `pickedByName` (absent, null, a number) reads as "no name", never as a
-  // rendered surprise.
-  if (body?.error === "pick_not_yours") {
-    return foreignPickRefusal(typeof body.pickedByName === "string" ? body.pickedByName : null);
-  }
+  const body = (await response.json().catch(() => null)) as { error?: string } | null;
   return (body?.error && LOCK_REFUSALS[body.error]) || null;
+}
+
+/** Whether this viewer's controls are frozen.
+ *
+ * A gallery past `proofing` freezes everyone. For a CLIENT, their own lock
+ * additionally freezes them while the others keep choosing. For an ADMIN acting
+ * on behalf of a client (decision 12), the subject's lock is irrelevant — the
+ * admin's write is the per-photo correction tool — but the gallery must still
+ * be `proofing`, because `actOnBehalf` refuses anything else. This is the ONE
+ * definition shared by the first paint, every snapshot and `handleSubmitted`. */
+function computeIsLocked(
+  status: GalleryStatus,
+  viewerLock: ViewerLock | null,
+  actingClientId: string | null,
+): boolean {
+  if (SUBMITTED_STATUSES.has(status)) return true;
+  if (actingClientId !== null) return status !== "proofing";
+  return viewerLock !== null;
 }
 
 /** Task #244 — under rolling delivery a CLIENT-SUBMITTED lock (submitted_at
@@ -207,6 +206,8 @@ export function useSharedSelection({
   initialViewerLock = null,
   initialAdminLockedPickerIds = [],
   viewAsId = null,
+  actingClientId = null,
+  readOnly = false,
   rollingDelivery = false,
   initialViewerSubmittedAt = null,
 }: {
@@ -222,13 +223,24 @@ export function useSharedSelection({
   initialAdminLockedPickerIds?: string[];
   /** Epic #250 S6 — the admin's view-as subject, forwarded to the live poll. */
   viewAsId?: string | null;
+  /** Epic #250 S7 — the client the admin acts on behalf of. Present on BOTH
+   * PATCH bodies, and only for an admin: a client sending it is a 400 at the
+   * route, so `null` means "the key is absent". */
+  actingClientId?: string | null;
+  /** Epic #250 S7 — an admin viewing WITHOUT a subject (the "Nadie (solo
+   * mirar)" option). Every pick control is disabled and the hook refuses to
+   * issue a write; the route would answer `admin_cannot_pick` anyway. */
+  readOnly?: boolean;
   rollingDelivery?: boolean;
   initialViewerSubmittedAt?: string | null;
 }) {
-  // `is_selected` per asset. Seeded from the initial server-rendered paint,
-  // then only ever overwritten by a toggle response's own `asset.isSelected`
-  // — never flipped locally before the round trip confirms it, so what this
-  // renders can never drift from what the database actually holds.
+  // `is_selected` per asset — under epic #250 that means CLAIMED (at least one
+  // sent pick), not "this viewer picked it". It still feeds the delivered
+  // split and the legacy response shape; the tile's own toggle reads the
+  // viewer's pick off `entries` instead (task #262). Seeded from the initial
+  // server-rendered paint, then only ever overwritten by a confirmed response
+  // — never flipped locally before the round trip, so what this renders can
+  // never drift from what the database actually holds.
   const [selectionById, setSelectionById] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(initialAssets.map((asset) => [asset.id, asset.isSelected])),
   );
@@ -282,8 +294,10 @@ export function useSharedSelection({
   );
   const isGalleryLocked = SUBMITTED_STATUSES.has(status);
   const isViewerLocked = viewerLock !== null;
-  // What every control gates on: either lock freezes THIS viewer's controls.
-  const isLocked = isGalleryLocked || isViewerLocked;
+  // What every control gates on: a closed gallery, this viewer's own lock, or
+  // (for an admin acting on behalf of somebody) any non-proofing status. See
+  // `computeIsLocked`.
+  const isLocked = computeIsLocked(status, viewerLock, actingClientId);
   const [submittedAt, setSubmittedAt] = useState<string | null>(initialSubmittedAt);
   // `toggleSelection` below is a `useCallback` with an EMPTY dependency
   // array (deliberate — see its own existing comments on why the guards
@@ -332,15 +346,17 @@ export function useSharedSelection({
   // LIVE SYNC (task #95) — how this hook converges on SERVER TRUTH
   // ==========================================================================
   //
-  // THE CONFLICT THIS EXISTS FOR: A deselects a photo while B selects it. Both
-  // clicks reach the server; one of them is simply last, and whatever the
-  // database holds after that is the answer — there is no merge, no
-  // "last-writer-wins on the client", and no attempt to reconcile two local
-  // intentions. Every viewer, including the one whose click LOST, ends up
-  // rendering the row the server actually holds. Getting this wrong is worse
-  // than not building the feature: two people would each be looking at a
-  // different "shared" selection, and one of them would quote the wrong
-  // surcharge.
+  // THE CONFLICT THIS EXISTS FOR: two tabs (or two people) writing the same
+  // pick at once. Since epic #250 a pick is a (person, photo) pair, so one
+  // client can no longer remove somebody else's — the race is one person's
+  // tabs against the server's own resolution (a send degrading an unsent pick,
+  // an admin correction, an escalation). Every write still reaches the server;
+  // one is simply last, and whatever the database holds after that is the
+  // answer — there is no merge and no "last-writer-wins on the client". Every
+  // viewer, including the one whose click LOST, ends up rendering the row the
+  // server actually holds. Getting this wrong is worse than not building the
+  // feature: two people would each be looking at a different "shared"
+  // selection, and one of them would quote the wrong surcharge.
   //
   // Which means the ONLY interesting question is: when a snapshot the server
   // sent and a local mutation this session made disagree, which wins? The
@@ -416,7 +432,7 @@ export function useSharedSelection({
 
       setStatus(snapshot.status);
       const nextViewerLock = effectiveViewerLock(snapshot.viewerLock ?? null, rollingDelivery);
-      isLockedRef.current = SUBMITTED_STATUSES.has(snapshot.status) || nextViewerLock !== null;
+      isLockedRef.current = computeIsLocked(snapshot.status, nextViewerLock, actingClientId);
       setViewerLock(nextViewerLock);
       setAdminLockedPickerIds(snapshot.adminLockedPickerIds ?? []);
       setSubmittedAt(snapshot.submittedAt);
@@ -455,7 +471,7 @@ export function useSharedSelection({
       appliedQuotaSequenceRef.current = issuedAtClock;
       setQuota(snapshot.quota);
     },
-    [rollingDelivery],
+    [rollingDelivery, actingClientId],
   );
 
   // Holds the LATEST `poll` — see the comment on its own assignment below for
@@ -677,6 +693,8 @@ export function useSharedSelection({
 
   const toggleSelection = useCallback(
     async (assetId: string, nextSelected: boolean) => {
+      // An admin looking without a subject may not write at all (decision 12).
+      if (readOnly) return;
       // UX-only mirror of the PATCH route's own server-side lock — a click
       // that somehow still reaches here (a stale render, a race with
       // `handleSubmitted` below) would get refused with a 409 anyway; this
@@ -694,7 +712,10 @@ export function useSharedSelection({
         const response = await fetch(`/api/assets/${assetId}/selection`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ selected: nextSelected }),
+          body: JSON.stringify({
+            selected: nextSelected,
+            ...(actingClientId ? { actingClientId } : {}),
+          }),
         });
         if (!response.ok) {
           const lockMessage = await lockRefusalMessage(response);
@@ -746,7 +767,7 @@ export function useSharedSelection({
         if (refreshAfter) requestRefresh();
       }
     },
-    [requestRefresh],
+    [requestRefresh, actingClientId, readOnly],
   );
 
   // Task #206 — set an ALREADY-selected pick's type, reusing every mechanism
@@ -762,6 +783,8 @@ export function useSharedSelection({
   // of the response this writes back.
   const setSelectionKind = useCallback(
     async (assetId: string, kind: SelectionKind) => {
+      // Same read-only refusal as `toggleSelection`.
+      if (readOnly) return;
       // Same UX-only mirror of the server-side lock as `toggleSelection` — see
       // that callback's own comment.
       if (isLockedRef.current) return;
@@ -776,7 +799,10 @@ export function useSharedSelection({
         const response = await fetch(`/api/assets/${assetId}/selection`, {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ selectionKind: kind }),
+          body: JSON.stringify({
+            selectionKind: kind,
+            ...(actingClientId ? { actingClientId } : {}),
+          }),
         });
         if (!response.ok) {
           const lockMessage = await lockRefusalMessage(response);
@@ -817,7 +843,7 @@ export function useSharedSelection({
         if (refreshAfter) requestRefresh();
       }
     },
-    [requestRefresh],
+    [requestRefresh, actingClientId, readOnly],
   );
 
   // <SubmitSelectionPanel>'s success callback — this session's OWN

@@ -178,16 +178,16 @@ export const UNATTRIBUTED_PICKER_LABEL = "Sin registro";
  * How one person's request is named in the tray, from the point of view of the
  * session looking at it.
  *
- * The viewer's OWN pick reads "Vos", not their own name: with two or three
+ * The viewer's OWN pick reads "Tú", not their own name: with two or three
  * people picking into one shared set, the question the tray answers is "who
  * asked for this", and "me / one of the others" is the distinction that
- * actually matters when a photo you did not ask for appears. Second person
- * also matches the voice the rest of this app's Spanish copy already uses
- * ("Todavía no subiste fotos…").
+ * actually matters when a photo you did not ask for appears. Tuteo also
+ * matches the voice the rest of this app's Spanish copy uses (task #262's own
+ * copy rule: "Toca", "puedes", "escríbele").
  */
 export function pickerLabelFor(pickedBy: SelectionPicker | null, viewerId: string | null): string {
   if (!pickedBy) return UNATTRIBUTED_PICKER_LABEL;
-  if (viewerId !== null && pickedBy.id === viewerId) return "Vos";
+  if (viewerId !== null && pickedBy.id === viewerId) return "Tú";
   return pickedBy.label;
 }
 

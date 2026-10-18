@@ -132,16 +132,13 @@
 // markup flat mode uses — see the effect below), so it tracks the exact same
 // arithmetic #203 already established, just applied to a different ref.
 //
-// THIS DOES NOT TOUCH #203'S OWN MECHANISM. The flat branch below (`mode ===
-// "flat"`) is byte-for-byte what #203 shipped: same `listRef`, same
-// `maxListHeightPx` state, same effect, same JSX. A second, independent ref/
-// state/effect trio exists purely for the `by-person` branch — reusing (or
-// generalizing) the flat measurement here was deliberately rejected: a
-// "generalize the selector" refactor would touch code that also runs for
-// `flat`, and the app's own constraint on this slice is that flat's current
-// behavior must not depend on a mechanism shared with a mode it didn't have
-// yesterday, even if the two happen to compute the same number today.
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+// TASK #262 REMOVED THE FLAT BRANCH. Under epic #250's order semantics every
+// proofing gallery shows the two-group split ("Por enviar" / "Pedidas"), so
+// the one-list layout #203 capped no longer exists. The measured pixel budget
+// #204 built for `by-person` survives unchanged and is the only height cap
+// left; `flat` is kept as a mode value for older galleries, and it now renders
+// the same split.
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Gallery } from "@/lib/db/schema";
 import {
   pickerLabelFor,
@@ -162,9 +159,9 @@ export type PickGroup = {
    * compares against — never the label, which two different people can
    * share. */
   key: string;
-  /** From `pickerLabelFor`, same function (and same "Vos" convention) every
+  /** From `pickerLabelFor`, same function (and same "Tú" convention) every
    * individual thumbnail in this file already uses — see `groupPicksByPicker`
-   * for why the viewer's OWN group header also reads "Vos" rather than their
+   * for why the viewer's OWN group header also reads "Tú" rather than their
    * real name. */
   label: string;
   picks: SelectionEntry[];
@@ -274,7 +271,6 @@ export function SelectionTray({
   adminLockedPickerIds = [],
   lockedByAdmin = false,
   isGalleryLocked = isLocked,
-  rollingDelivery = false,
   readableAssetIds,
   lastSubmittedAt = null,
   onOpenAsset,
@@ -291,8 +287,8 @@ export function SelectionTray({
   /** For the accessible label on each thumbnail. Same map the grid builds
    * from its server-rendered assets. */
   filenamesByAssetId: Record<string, string>;
-  /** The signed-in user's own id, so their picks read "Vos" — see
-   * `pickerLabelFor`. `null` is tolerated (nothing renders as "Vos") rather
+  /** The signed-in user's own id, so their picks read "Tú" — see
+   * `pickerLabelFor`. `null` is tolerated (nothing renders as "Tú") rather
    * than required, so this component stays renderable without a session in
    * tests. */
   viewerId: string | null;
@@ -363,8 +359,6 @@ export function SelectionTray({
   // back for the grid.
   const [isCollapsed, setIsCollapsed] = useState(false);
   const listRegionId = useId();
-  const listRef = useRef<HTMLUListElement>(null);
-  const [maxListHeightPx, setMaxListHeightPx] = useState<number | null>(null);
   const claimed = useMemo(() => entries.filter((entry) => entry.claim !== null), [entries]);
   const hasPicks = claimed.length > 0;
   const hasAnyOriginal = claimed.some((entry) => entry.claim!.resolvedKind === "original");
@@ -389,44 +383,6 @@ export function SelectionTray({
   // has zero originals, even in the narrow, should-never-happen case of a
   // stray `resolvedKind: "original"` row surviving past a switch flip.
   const showType = allowsOriginalSelection && hasAnyOriginal;
-
-  // Measures the ACTUAL rendered height of one row rather than hardcoding a
-  // pixel figure — see this file's header comment for why a hand-computed
-  // number is a trap here. Runs once picks first exist, and again whenever
-  // the observed item's own box changes size (font swap, zoom, a future
-  // style change to the label) — the row height does NOT depend on how many
-  // picks there are, only on the fixed 96px image and the single-line label
-  // beneath it, so re-measuring on `picks.length` changing count is not
-  // needed once a first real measurement has landed.
-  useEffect(() => {
-    const list = listRef.current;
-    const firstItem = list?.querySelector("li") ?? null;
-    if (!firstItem) return;
-
-    const measure = () => {
-      const itemHeight = firstItem.getBoundingClientRect().height;
-      // A zero height means the row is currently not laid out (e.g. this ran
-      // while `hidden` is set on an ancestor, which forces every descendant's
-      // box to 0) — keep whatever was last measured rather than clobbering it
-      // with a bogus cap.
-      if (itemHeight <= 0) return;
-      // `|| FALLBACK_ROW_GAP_PX` alone would treat a real, legitimate `0px`
-      // gap (e.g. `gap-3` ever gets dropped from the `<ul>` below) as
-      // "unreadable" too, since `0` is falsy — silently overshooting the cap
-      // by 12px. `Number.isFinite` only falls back for the actual unreadable
-      // case (jsdom's empty string parses to `NaN`).
-      const parsedRowGapPx = parseFloat(window.getComputedStyle(list as HTMLUListElement).rowGap);
-      const rowGapPx = Number.isFinite(parsedRowGapPx) ? parsedRowGapPx : FALLBACK_ROW_GAP_PX;
-      setMaxListHeightPx(itemHeight * VISIBLE_ROWS + rowGapPx * (VISIBLE_ROWS - 1));
-    };
-
-    measure();
-
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(firstItem);
-    return () => observer.disconnect();
-  }, [hasPicks]);
 
   // `by-person` mode's OWN grouping (task #204) — computed here, not by
   // `getGallerySelection()`, per that function's own header comment and this
@@ -554,103 +510,26 @@ export function SelectionTray({
                 ? "Tu fotógrafo cerró tu selección. Los demás todavía están eligiendo."
                 : "Tu selección ya fue enviada. Los demás todavía están eligiendo."}
           </p>
-        ) : rollingDelivery ? (
-          // Task #244 — never the classic "enviada/cerrada" copy: a send here
-          // is an order and the person keeps choosing.
+        ) : (
+          // Epic #250 S7 — order semantics are universal now: sending sends
+          // YOUR "por enviar" and closes nothing for anyone else (decision
+          // 10), so every proofing gallery gets this copy, not only rolling
+          // delivery.
           <p className={`text-fg-mute mb-2 text-xs ${hasPicks ? "" : "max-lg:hidden"}`}>
             {lastSubmittedAt
               ? `Último envío: ${new Date(lastSubmittedAt).toLocaleDateString("es-CO")}. `
               : ""}
             Puedes seguir eligiendo y enviar más fotos cuando quieras.
           </p>
-        ) : (
-          <p className={`text-fg-mute mb-2 text-xs ${hasPicks ? "" : "max-lg:hidden"}`}>
-            Se actualiza sola con lo que elijan los demás.
-          </p>
         )}
-        {claimed.length === 0 && !rollingDelivery ? (
+        {entries.length === 0 ? (
           // No scroll chrome for the empty state (task #203 acceptance
           // criterion #7) — an empty scrollable box reads as broken, not as
-          // "nothing here yet". Shared by BOTH modes: zero claimed entries
-          // means zero groups either way, so there is nothing `by-person`
-          // would show differently here.
+          // "nothing here yet".
           <p className="text-fg-dim text-[15px] leading-relaxed max-lg:hidden">
             Todavía no eligieron ninguna foto. Las que elijan van a aparecer acá, con el nombre de
             quién las eligió.
           </p>
-        ) : rollingDelivery ? (
-          // Task #244 — two groups, "Por enviar" then "Pedidas". `Por
-          // enviar` is exactly the viewer's own unsent picks (cart and
-          // degraded — the server's `counter.viewer.toSend` and "Enviar"
-          // agree by construction); `Pedidas` is every claimed entry not
-          // already listed there, plus readable finals. Each entry appears
-          // ONCE. Its own container: the flat/by-person height-measuring
-          // refs stay unmounted (their effects are no-ops when the ref is
-          // null), so this uses the pre-measure cap as a plain fixed ceiling.
-          (() => {
-            const unsent = entries.filter((entry) => {
-              const own = viewerPickOf(entry, viewerId);
-              return (
-                own !== null && own.submittedAt === null && !readableAssetIds?.has(entry.assetId)
-              );
-            });
-            const unsentIds = new Set(unsent.map((entry) => entry.assetId));
-            const requested = entries.filter(
-              (entry) =>
-                !unsentIds.has(entry.assetId) &&
-                (entry.claim !== null || readableAssetIds?.has(entry.assetId)),
-            );
-            const rollingGroups = [
-              { key: "unsent", label: "Por enviar", items: unsent },
-              { key: "requested", label: "Pedidas", items: requested },
-            ].filter((group) => group.items.length > 0);
-
-            if (rollingGroups.length === 0) {
-              return (
-                <p className="text-fg-dim text-[15px] leading-relaxed max-lg:hidden">
-                  Todavía no eligieron ninguna foto. Las que elijan van a aparecer acá, con el
-                  nombre de quién las eligió.
-                </p>
-              );
-            }
-
-            return (
-              <div
-                className="flex flex-col gap-4 overflow-y-auto overscroll-contain"
-                style={{ maxHeight: PRE_MEASURE_MAX_HEIGHT_PX }}
-              >
-                {rollingGroups.map((group) => (
-                  <div key={group.key}>
-                    <p className="text-fg-dim mb-2 text-sm font-medium">
-                      {group.label}{" "}
-                      <span className="text-fg-mute font-normal">({group.items.length})</span>
-                    </p>
-                    <ul className="flex flex-wrap gap-3">
-                      {group.items.map((entry) => (
-                        <TrayItem
-                          key={entry.assetId}
-                          entry={entry}
-                          src={urls[entry.assetId]}
-                          originalFilename={filenamesByAssetId[entry.assetId]}
-                          viewerId={viewerId}
-                          onOpen={() => onOpenAsset(entry.assetId)}
-                          onError={() => onImageError(entry.assetId)}
-                          showType={showType}
-                          statusLabel={
-                            readableAssetIds?.has(entry.assetId)
-                              ? "Editada"
-                              : group.key === "unsent"
-                                ? "Por enviar"
-                                : "Pedida"
-                          }
-                        />
-                      ))}
-                    </ul>
-                  </div>
-                ))}
-              </div>
-            );
-          })()
         ) : mode === "by-person" ? (
           // Task #204 — one row per picker, viewer first, alphabetical rest,
           // unattributed last (`groupPicksByPicker` above). Same
@@ -719,29 +598,94 @@ export function SelectionTray({
             ))}
           </div>
         ) : (
-          // `overscroll-contain`: without it, a finger scrolling this list to
-          // its end on a phone chains into scrolling the PAGE — the exact
-          // "trapped/confused" feeling this whole fix exists to avoid at the
-          // list's outer sticky boundary.
-          <div
-            className="overflow-y-auto overscroll-contain"
-            style={{ maxHeight: maxListHeightPx ?? PRE_MEASURE_MAX_HEIGHT_PX }}
-          >
-            <ul ref={listRef} className="flex flex-wrap gap-3">
-              {claimed.map((entry) => (
-                <TrayItem
-                  key={entry.assetId}
-                  entry={entry}
-                  src={urls[entry.assetId]}
-                  originalFilename={filenamesByAssetId[entry.assetId]}
-                  viewerId={viewerId}
-                  onOpen={() => onOpenAsset(entry.assetId)}
-                  onError={() => onImageError(entry.assetId)}
-                  showType={showType}
-                />
-              ))}
-            </ul>
-          </div>
+          // Epic #250 S7 — the rolling split is now universal: "Por enviar"
+          // (the viewer's own unsent cart/degraded picks, exactly what
+          // "Enviar" sends) then "Pedidas" (every claimed entry, plus
+          // readable finals). Each entry appears ONCE. A `.tray__cut` + the
+          // existing "Extra" tag marks the included/extra boundary inside
+          // Pedidas, using the charge the server already attributed.
+          (() => {
+            const unsent = entries.filter((entry) => {
+              const own = viewerPickOf(entry, viewerId);
+              return (
+                own !== null && own.submittedAt === null && !readableAssetIds?.has(entry.assetId)
+              );
+            });
+            const unsentIds = new Set(unsent.map((entry) => entry.assetId));
+            const requested = entries.filter(
+              (entry) =>
+                !unsentIds.has(entry.assetId) &&
+                (entry.claim !== null || readableAssetIds?.has(entry.assetId)),
+            );
+            const splitGroups = [
+              { key: "unsent", label: "Por enviar", items: unsent },
+              { key: "requested", label: "Pedidas", items: requested },
+            ].filter((group) => group.items.length > 0);
+
+            if (splitGroups.length === 0) {
+              return (
+                <p className="text-fg-dim text-[15px] leading-relaxed max-lg:hidden">
+                  Todavía no eligieron ninguna foto. Las que elijan van a aparecer acá, con el
+                  nombre de quién las eligió.
+                </p>
+              );
+            }
+
+            return (
+              <div
+                className="flex flex-col gap-4 overflow-y-auto overscroll-contain"
+                style={{ maxHeight: PRE_MEASURE_MAX_HEIGHT_PX }}
+              >
+                {splitGroups.map((group) => (
+                  <div key={group.key}>
+                    <p className="text-fg-dim mb-2 text-sm font-medium">
+                      {group.label}{" "}
+                      <span className="text-fg-mute font-normal">({group.items.length})</span>
+                    </p>
+                    <ul className="flex flex-wrap gap-3">
+                      {group.items.map((entry, index) => {
+                        const firstExtra =
+                          group.key === "requested" &&
+                          entry.claim?.charge === "extra" &&
+                          !group.items
+                            .slice(0, index)
+                            .some((other) => other.claim?.charge === "extra");
+                        return (
+                          <Fragment key={entry.assetId}>
+                            {firstExtra && (
+                              <li
+                                aria-hidden="true"
+                                className="text-accent-2 flex items-center gap-1 self-stretch text-[9px] font-semibold tracking-[0.12em] uppercase"
+                              >
+                                <span className="bg-accent/60 h-full w-px" />
+                                Extra
+                              </li>
+                            )}
+                            <TrayItem
+                              entry={entry}
+                              src={urls[entry.assetId]}
+                              originalFilename={filenamesByAssetId[entry.assetId]}
+                              viewerId={viewerId}
+                              onOpen={() => onOpenAsset(entry.assetId)}
+                              onError={() => onImageError(entry.assetId)}
+                              showType={showType}
+                              statusLabel={
+                                readableAssetIds?.has(entry.assetId)
+                                  ? "Editada"
+                                  : group.key === "unsent"
+                                    ? "Por enviar"
+                                    : "Pedida"
+                              }
+                            />
+                          </Fragment>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            );
+          })()
         )}
       </div>
     </section>

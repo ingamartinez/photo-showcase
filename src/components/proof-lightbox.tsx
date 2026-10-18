@@ -8,12 +8,13 @@
 // is specific to picking: the "cuántas van" line, the pick button, the
 // edited/original type control and the delivered per-photo download. It is
 // composed into the viewer's slots; no layout or behaviour moved.
+import type { ReactNode } from "react";
 import { DownloadFinalButton } from "@/components/download-final-button";
 import { Check } from "@/components/icons";
 import { PhotoViewer } from "@/components/photo-viewer";
 import type { ProofAsset } from "@/components/proof-grid";
 import type { QuotaResult } from "@/lib/quota";
-import type { SelectionKind } from "@/lib/selection-snapshot";
+import { viewerPickOf, type SelectionEntry, type SelectionKind } from "@/lib/selection-snapshot";
 
 export function ProofLightbox({
   assets,
@@ -31,6 +32,8 @@ export function ProofLightbox({
   onSetSelectionKind,
   allowsOriginalSelection,
   lockedAssetIds,
+  entryById = {},
+  viewerId = null,
 }: {
   assets: ProofAsset[];
   // Keyed by asset id. <ProofGrid> owns this state and shares it with the
@@ -68,19 +71,69 @@ export function ProofLightbox({
    * read-only for everyone else, per photo (the viewer's own `isLocked` is the
    * whole-screen version). */
   lockedAssetIds?: ReadonlySet<string>;
+  /** Epic #250 S7 — the current asset's full entry (claim + every asker), so
+   * the button and the line under it can describe the VIEWER'S own pick, never
+   * `assets.isSelected` (which is "somebody claimed it"). */
+  entryById?: Record<string, SelectionEntry | null>;
+  /** The viewer's own id, for "Tú" and for telling billed-from-joined apart. */
+  viewerId?: string | null;
 }) {
   const asset = assets[index];
   // Defensive only: <ProofGrid> never passes an out-of-range index.
   if (!asset) return null;
 
-  const isSelected = asset.isSelected;
+  const entry = entryById[asset.id] ?? null;
+  const claim = entry?.claim ?? null;
+  // The viewer's OWN pick decides this button. `assets.isSelected` is the
+  // claim, and on a shared board a claim is usually somebody else's.
+  const ownPick = entry ? viewerPickOf(entry, viewerId) : null;
+  const isOwnPick = ownPick !== null;
+  const isOwnSent = ownPick !== null && ownPick.submittedAt !== null;
   // Epic #239 — frozen for THIS photo even when the viewer is still free: it
   // is a pick of somebody who already submitted. Navigating to another photo
   // re-derives this, so the same open lightbox mixes frozen and live photos.
   const isAssetLocked = isLocked || (lockedAssetIds?.has(asset.id) ?? false);
-  const isPickDisabled = pendingAssetIds.has(asset.id) || isAssetLocked;
-  // Task #206 — only meaningful while `isSelected`.
-  const selectionKind = selectionKindById[asset.id] ?? "edited";
+  const isPickDisabled = pendingAssetIds.has(asset.id) || isAssetLocked || isOwnSent;
+  // Only meaningful while the viewer has a pick.
+  const selectionKind = selectionKindById[asset.id] ?? ownPick?.kind ?? "edited";
+  // Epic #250 S7 — D11 §1b: the name shown is always the person the unit is
+  // BILLED to. Other askers live on the tile's chips.
+  const billedTo = claim?.billedTo ?? null;
+  const ownUnsent = ownPick !== null && ownPick.submittedAt === null;
+  const ownSentBilled = isOwnSent && billedTo?.id === viewerId;
+  const ownSentJoined = isOwnSent && billedTo !== null && billedTo.id !== viewerId;
+
+  let statusLine: ReactNode = null;
+  if (ownSentBilled) {
+    statusLine = (
+      <>
+        La pediste <b>tú</b> · para sacarla, escríbele a tu fotógrafo
+      </>
+    );
+  } else if (ownSentJoined) {
+    statusLine = (
+      <>
+        La pidió <b>{billedTo.label}</b> · tú también la pediste
+      </>
+    );
+  } else if (claim && billedTo === null) {
+    // Legacy unit with no attribution (closed galleries only).
+    statusLine = <>Ya está pedida</>;
+  } else if (ownUnsent && claim && billedTo) {
+    statusLine = (
+      <>
+        Ya la pidió <b>{billedTo.label}</b>, así que la reciben todos · puedes sacar la tuya
+      </>
+    );
+  } else if (ownUnsent && !claim) {
+    statusLine = <>Todavía no la enviaste · puedes sacarla</>;
+  } else if (!isOwnPick && claim && billedTo) {
+    statusLine = (
+      <>
+        Ya la pidió <b>{billedTo.label}</b>, así que la reciben todos
+      </>
+    );
+  }
 
   return (
     <PhotoViewer
@@ -98,7 +151,7 @@ export function ProofLightbox({
         // changes it while the client is looking at the photo, not at this
         // line, and the grid's own counter is `aria-hidden` behind the dialog.
         <p className="text-fg-mute mt-[2px] text-xs" aria-live="polite">
-          {quota.selected} elegidas · {quota.includedPhotosSnapshot} incluidas
+          {quota.selected} pedidas · {quota.includedPhotosSnapshot} incluidas
         </p>
       }
       centerAction={
@@ -109,24 +162,29 @@ export function ProofLightbox({
            the visible label, NOT the tile's "Seleccionar: IMG_0001.JPG", so
            `getByRole("button", { name })` is not ambiguous while the tile is
            still mounted behind the dialog. */
-        <button
-          type="button"
-          onClick={() => onToggleSelection(asset.id, !isSelected)}
-          disabled={isPickDisabled}
-          aria-pressed={isSelected}
-          className={`inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-[3px] border px-5 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none ${
-            isSelected
-              ? "border-accent bg-accent text-ink font-semibold tracking-[0.02em]"
-              : "border-line-2 text-fg hover:border-accent hover:text-accent-2 tracking-[0.04em]"
-          }`}
-        >
-          {isSelected && (
-            <span aria-hidden="true">
-              <Check />
-            </span>
+        <>
+          <button
+            type="button"
+            onClick={() => onToggleSelection(asset.id, !isOwnPick)}
+            disabled={isPickDisabled}
+            aria-pressed={isOwnPick}
+            className={`inline-flex min-h-12 w-full items-center justify-center gap-2 rounded-[3px] border px-5 text-sm transition-colors disabled:cursor-not-allowed disabled:opacity-50 motion-reduce:transition-none ${
+              isOwnPick
+                ? "border-accent bg-accent text-ink font-semibold tracking-[0.02em]"
+                : "border-line-2 text-fg hover:border-accent hover:text-accent-2 tracking-[0.04em]"
+            }`}
+          >
+            {isOwnPick && (
+              <span aria-hidden="true">
+                <Check />
+              </span>
+            )}
+            {isOwnPick ? (isOwnSent ? "Pedida" : "Elegida") : "Elegir esta foto"}
+          </button>
+          {statusLine && (
+            <p className="text-fg-mute mt-2 text-center text-xs leading-relaxed">{statusLine}</p>
           )}
-          {isSelected ? "Elegida" : "Elegir esta foto"}
-        </button>
+        </>
       }
       footerExtras={
         <>
@@ -134,7 +192,7 @@ export function ProofLightbox({
               unlocked, and only when the gallery allows originals; same gate
               as <ProofTile>'s own. Two explicit buttons rather than a flip,
               mirroring the PATCH route's body shape. */}
-          {isSelected && !isAssetLocked && allowsOriginalSelection && (
+          {isOwnPick && !isAssetLocked && allowsOriginalSelection && (
             <div
               role="group"
               aria-label={`Tipo de foto: ${asset.originalFilename}`}

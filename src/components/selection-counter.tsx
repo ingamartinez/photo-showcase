@@ -105,6 +105,30 @@ import { UNATTRIBUTED_PICKER_LABEL, type SelectionCounter } from "@/lib/selectio
 // change. A single payer IS the gallery-wide total, so repeating it twice
 // would be noise, and a gallery where one person picks must not learn a new
 // vocabulary overnight.
+//
+// TASK #269 — TWO LEVELS, NOT ONE WALL. #264 put the rows and the gallery
+// total in the same block, and the owner reported two consequences of that
+// on 2026-10-18: on desktop the opened detail was a wall (every person's
+// numbers plus the whole pricing block at once), and on mobile expanding it
+// pushed the grid and the bar around. Both are the same defect — one
+// disclosure revealing two different questions — so the detail now has two:
+//
+//   "Ver detalle"     -> the person rows only, and nothing else.
+//   "Ver total de la galería" -> the pre-#264 global block, default closed.
+//
+// The second control lives INSIDE the bounded scroll region, not next to it:
+// expanding it grows that region's content, never the bar's own height, so
+// nothing below it moves. And the region stays `max-h-[40vh] overflow-y-auto`
+// at EVERY breakpoint (the old `lg:max-h-none lg:overflow-visible` is gone —
+// that is exactly what let the desktop detail become the wall the owner saw).
+//
+// WHEN THE SECOND LEVEL EXISTS: only when more than one row actually HOLDS
+// UNITS — `showBreakdown` is looser than that, because it also turns on for
+// the viewer's own zero row next to a single holder (or next to a bucket of
+// legacy picks with no attribution). That shape has ONE bill-holder, so the
+// gallery total IS that holder's amount and there is no wall to break up; it
+// keeps this component's pre-#269 output byte for byte, exactly like the
+// rows <= 1 single-payer case. A single payer never learns a second control.
 export type MoneyRow = {
   key: string;
   /** "Tú" for the viewer, the person's `name ?? email` otherwise, and
@@ -223,6 +247,13 @@ export function SelectionCounter({
   // situation in which "the gallery total" is not already the whole story.
   const moneyRows = moneyRowsFor(counter, viewerId);
   const showBreakdown = moneyRows.length > 1;
+  // Task #269 — the second level is for a gallery with SEVERAL bill-holders,
+  // not merely several rows: `moneyRows` also carries the viewer's own zero
+  // row, which can be the only other row next to a single holder. One holder
+  // of units means the gallery total is that holder's own amount (this file's
+  // own pre-#264 rule), so there is nothing to hide behind a second control.
+  const unitHolders = moneyRows.filter((row) => row.units > 0).length;
+  const showTotalLevel = showBreakdown && unitHolders > 1;
   const viewerShare = moneyRows.find((row) => row.viewer)?.share;
   // Task #231 — the gallery's volume scale, when it has one. `quota` already
   // carries the unit price in force (`extraUnitPriceCop`); this only lists the
@@ -242,6 +273,11 @@ export function SelectionCounter({
   const [detailOpen, setDetailOpen] = useState(false);
   const detailId = useId();
   const folded = collapsible && !detailOpen;
+  // Task #269 — the second level. Independent of `detailOpen` on purpose: the
+  // person rows and the gallery total answer different questions, so closing
+  // one never silently closes the other.
+  const [totalOpen, setTotalOpen] = useState(false);
+  const totalId = useId();
   // The compact row's amount. Without originals the surcharge IS the extras
   // amount; with originals `surchargeCop` is the TOTAL of both tariffs, so it
   // gets an honest "en total" label (and shows even at 0 extras).
@@ -260,6 +296,54 @@ export function SelectionCounter({
           ? `${formatCop(quota.extrasSurchargeCop)} en extras`
           : "";
 
+  // Task #269 — extracted so the two branches below (single payer: rendered
+  // in place; more than one bill-holder: behind the second disclosure) share
+  // ONE copy of the pre-#264 gallery block. Content, order and formatter are
+  // unchanged on purpose — the second level changes when it shows, never what
+  // it says.
+  const galleryTotal = (
+    <>
+      {/* The gallery is the SUM once more than one person holds units,
+          and says so — the total below is read off `quota`, never added
+          up from the rows above. */}
+      {showBreakdown && <p className="text-fg-mute mt-3 text-sm font-medium">Entre todos</p>}
+      <p className="text-fg-mute mt-1 text-sm">
+        extras {quota.extras} × {formatCop(quota.extraUnitPriceCop)} ={" "}
+        {formatCop(quota.extrasSurchargeCop)}
+        {!hasOriginals && " — se coordina por fuera de la app; acá no se cobra nada."}
+      </p>
+      {tiers && (
+        <div className="text-fg-mute mt-2 text-sm">
+          <p>Precio por foto extra, según cuántas extras elijas:</p>
+          <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
+            {tiers.map((tier, i) => (
+              <li
+                key={tier.minExtras}
+                aria-current={i === activeTier ? "true" : undefined}
+                className={i === activeTier ? "text-fg font-semibold" : undefined}
+              >
+                {tierRangeLabel(tiers, i)} fotos: {formatCop(tier.priceCop)} c/u
+              </li>
+            ))}
+          </ul>
+          <p className="mt-1">Todas las fotos extra se cobran al precio de la escala alcanzada.</p>
+        </div>
+      )}
+      {hasOriginals && (
+        <>
+          <p className="text-fg-mute mt-1 text-sm">
+            originales {quota.originals} × {formatCop(quota.originalPhotoPriceCopSnapshot)} ={" "}
+            {formatCop(quota.originalsSurchargeCop)} — un original nunca ahorra cuota, siempre suma.
+          </p>
+          <p className="text-fg-mute mt-1 text-sm">
+            total {formatCop(quota.surchargeCop)} — se coordina por fuera de la app; acá no se cobra
+            nada.
+          </p>
+        </>
+      )}
+    </>
+  );
+
   return (
     <div>
       {/* The live region wraps the headline AND the detail, but the toggle is
@@ -273,10 +357,13 @@ export function SelectionCounter({
         </p>
         <div
           id={detailId}
-          className={`max-h-[40vh] overflow-y-auto overscroll-contain lg:max-h-none lg:overflow-visible ${folded ? "max-lg:hidden" : ""}`}
+          // Task #269 — bounded and internally scrollable at EVERY breakpoint.
+          // The old `lg:max-h-none lg:overflow-visible` is deliberately gone:
+          // that is what let the opened desktop detail grow into a wall.
+          className={`max-h-[40vh] overflow-y-auto overscroll-contain ${folded ? "max-lg:hidden" : ""}`}
         >
-          {/* Task #264 — people first, then the gallery total. "Tú" leads and
-              is emphasised; the amounts are the server's own shares. */}
+          {/* Task #264 — people first, and (task #269) people ONLY: "Tú" leads
+              and is emphasised; the amounts are the server's own shares. */}
           {showBreakdown && (
             <dl className="text-fg-mute mt-1 grid gap-1 text-sm">
               {moneyRows.map((row) => (
@@ -294,46 +381,29 @@ export function SelectionCounter({
               ))}
             </dl>
           )}
-          {/* The gallery is the SUM once more than one person holds units,
-              and says so — the total below is read off `quota`, never added
-              up from the rows above. */}
-          {showBreakdown && <p className="text-fg-mute mt-3 text-sm font-medium">Entre todos</p>}
-          <p className="text-fg-mute mt-1 text-sm">
-            extras {quota.extras} × {formatCop(quota.extraUnitPriceCop)} ={" "}
-            {formatCop(quota.extrasSurchargeCop)}
-            {!hasOriginals && " — se coordina por fuera de la app; acá no se cobra nada."}
-          </p>
-          {tiers && (
-            <div className="text-fg-mute mt-2 text-sm">
-              <p>Precio por foto extra, según cuántas extras elijas:</p>
-              <ul className="mt-1 flex flex-wrap gap-x-4 gap-y-1">
-                {tiers.map((tier, i) => (
-                  <li
-                    key={tier.minExtras}
-                    aria-current={i === activeTier ? "true" : undefined}
-                    className={i === activeTier ? "text-fg font-semibold" : undefined}
-                  >
-                    {tierRangeLabel(tiers, i)} fotos: {formatCop(tier.priceCop)} c/u
-                  </li>
-                ))}
-              </ul>
-              <p className="mt-1">
-                Todas las fotos extra se cobran al precio de la escala alcanzada.
-              </p>
-            </div>
-          )}
-          {hasOriginals && (
+          {/* Task #269 — the second level, INSIDE the scroll region so that
+              expanding it can never grow the bar or move the grid below it.
+              Only rendered when more than one person holds units: a single
+              bill-holder gets the pre-#264 detail unchanged, with no extra
+              control to explain. */}
+          {showTotalLevel ? (
             <>
-              <p className="text-fg-mute mt-1 text-sm">
-                originales {quota.originals} × {formatCop(quota.originalPhotoPriceCopSnapshot)} ={" "}
-                {formatCop(quota.originalsSurchargeCop)} — un original nunca ahorra cuota, siempre
-                suma.
-              </p>
-              <p className="text-fg-mute mt-1 text-sm">
-                total {formatCop(quota.surchargeCop)} — se coordina por fuera de la app; acá no se
-                cobra nada.
-              </p>
+              <button
+                type="button"
+                onClick={() => setTotalOpen((open) => !open)}
+                aria-expanded={totalOpen}
+                aria-controls={totalId}
+                className="text-accent focus-visible:ring-accent mt-2 min-h-7 text-xs underline-offset-2 hover:underline focus-visible:ring-2 focus-visible:outline-none"
+              >
+                {totalOpen ? "Ocultar total" : "Ver total de la galería"}
+              </button>
+              {/* Always mounted, so `aria-controls` always names a real
+                  element; empty while closed, so an unopened total takes no
+                  space and is absent from the accessibility tree. */}
+              <div id={totalId}>{totalOpen && galleryTotal}</div>
             </>
+          ) : (
+            galleryTotal
           )}
         </div>
       </div>

@@ -266,6 +266,21 @@ function counterText(): string {
   return `${first} ${second}`.replace(/\s+/g, " ");
 }
 
+// Task #269 (fix round) — the gallery's own arithmetic now sits behind its own
+// control whenever the breakdown has more than one row (the viewer's own zero
+// row and the "Sin registro" bucket are each a row), so a test that reads
+// `^extras` off the counter has to open that level first, exactly as a reader
+// would. Returns whether a control was there at all, so a fixture can assert
+// its presence instead of clicking nothing: `getByRole` for a button that only
+// sometimes exists would make the failure a query error rather than a
+// statement about the UI.
+function openGalleryTotal(): boolean {
+  const button = screen.queryByRole("button", { name: "Ver total de la galería" });
+  if (!button) return false;
+  fireEvent.click(button);
+  return true;
+}
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -556,6 +571,10 @@ describe("ProofGrid", () => {
         extraPhotoPriceTiersSnapshot: null,
       });
 
+      // Task #269 (fix round) — this fixture's counter has a two-row
+      // breakdown (the viewer's own zero row plus "Sin registro"), so the
+      // arithmetic is one level down and has to be opened to be read.
+      expect(openGalleryTotal()).toBe(true);
       const text = counterText();
       expect(text).toContain("seleccionadas 2");
       expect(text).toContain("extras 1");
@@ -591,6 +610,10 @@ describe("ProofGrid", () => {
       // (1, since "a2" reads stale there) and subtracted `initialPicks`' own
       // originals count from that stale total would report "seleccionadas 1"
       // here — losing "a1" from the count entirely.
+      //
+      // Task #269 (fix round) — same two-row breakdown as the test above, so
+      // `counterText` reads the arithmetic only once its level is open.
+      expect(openGalleryTotal()).toBe(true);
       expect(counterText()).toContain("seleccionadas 2");
     });
 
@@ -1193,6 +1216,10 @@ describe("ProofGrid", () => {
         includedPhotosSnapshot: 1,
       });
 
+      // Task #269 (fix round) — the `selected` view is not folded, but it
+      // still splits rows from the gallery's arithmetic, and two unattributed
+      // picks plus the viewer's own row is a two-row breakdown.
+      expect(openGalleryTotal()).toBe(true);
       expect(counterText()).toContain("seleccionadas 2");
       // Task #236 — this view is not sticky: no "Ver detalle" fold.
       expect(screen.queryByRole("button", { name: /detalle/ })).toBeNull();
@@ -2998,6 +3025,7 @@ describe("ProofGrid — volume scale on first paint (task #231)", () => {
       ],
     });
 
+    expect(openGalleryTotal()).toBe(true);
     expect(counterText()).toContain("extras 3 × $ 13.000 = $ 39.000");
     expect(screen.getByText(/Precio por foto extra/)).toBeDefined();
   });
@@ -3011,6 +3039,7 @@ describe("ProofGrid — volume scale on first paint (task #231)", () => {
       extraPhotoPriceTiersSnapshot: null,
     });
 
+    expect(openGalleryTotal()).toBe(true);
     expect(counterText()).toContain("extras 3 × $ 5.000 = $ 15.000");
     expect(screen.queryByText(/Precio por foto extra/)).toBeNull();
   });

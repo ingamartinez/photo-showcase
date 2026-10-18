@@ -16,6 +16,7 @@ import { act, cleanup, fireEvent, render, screen } from "@testing-library/react"
 import { ProofGrid, SELECTION_POLL_INTERVAL_MS } from "./proof-grid";
 import type { GalleryStatus, ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
+import { emptyShare } from "@/lib/quota-attribution";
 import type { SelectionEntry, SelectionKind, ViewerLock } from "@/lib/selection-snapshot";
 
 const TERMS = {
@@ -82,8 +83,17 @@ function counterFor(picks: FixturePick[], viewerId: string) {
       shared: 0,
       toSend: picks.filter((pick) => pick.pickedBy.id === viewerId && !pick.submitted).length,
     },
-    people: [...counts].map(([userId, { label, units }]) => ({ userId, label, units })),
+    people: [...counts].map(([userId, { label, units }]) => ({
+      userId,
+      label,
+      units,
+      // Task #264 — this fixture is about lock state, not money; the
+      // required share is the all-zero one, produced by the same module the
+      // server uses.
+      share: emptyShare(),
+    })),
     unattributed: 0,
+    unattributedShare: emptyShare(),
   };
 }
 

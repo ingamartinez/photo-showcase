@@ -38,6 +38,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SubmitSelectionOutcome } from "@/components/submit-selection-panel";
 import type { QuotaResult } from "@/lib/quota";
+import { emptyShare } from "@/lib/quota-attribution";
 import {
   type GalleryStatus,
   type SelectionCounter,
@@ -446,6 +447,9 @@ export function useSharedSelection({
           viewer: null,
           people: [],
           unattributed: 0,
+          // Task #264 — the wire carries money per person; an absent
+          // counter has nobody to attribute it to.
+          unattributedShare: emptyShare(),
         },
       );
 

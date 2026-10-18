@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { ProofGrid, SELECTION_POLL_INTERVAL_MS } from "./proof-grid";
 import type { GalleryStatus, ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
+import { emptyShare } from "@/lib/quota-attribution";
 import type { SelectionEntry } from "@/lib/selection-snapshot";
 
 type SelectionPick = {
@@ -96,8 +97,13 @@ function counterFor(picks: LegacyPick[], viewerId: string) {
       userId,
       label: picks.find((pick) => pick.pickedBy?.id === userId)?.pickedBy?.label ?? userId,
       units: count,
+      // Task #264 — this fixture predates the per-person money wire and is not
+      // about money; the required share is the all-zero one, produced by the
+      // same module the server uses.
+      share: emptyShare(),
     })),
     unattributed: picks.filter((pick) => pick.pickedBy === null).length,
+    unattributedShare: emptyShare(),
   };
 }
 
@@ -153,6 +159,7 @@ function jsonResponse(status: number, body: unknown): Response {
         viewer: null,
         people: [],
         unattributed: 0,
+        unattributedShare: emptyShare(),
       },
     };
   }
@@ -490,6 +497,47 @@ describe("ProofGrid", () => {
   });
 
   describe("live quota counter", () => {
+    // Task #264 — <ProofGrid> is the only caller of <SelectionCounter> in the
+    // product, and `counter` is an OPTIONAL prop there (the single-payer
+    // contract, and every pre-#264 test in this repo, depend on that). So
+    // forgetting to pass it still compiles and still renders — it just puts
+    // every client back on the gallery-wide bill. This is the test that
+    // notices.
+    it("hands the bar the per-person counter: two holders render two money rows, the viewer's own name on top", () => {
+      const anaShare = {
+        included: 1,
+        extras: 2,
+        originals: 0,
+        extrasSurchargeCop: 10_000,
+        originalsSurchargeCop: 0,
+        surchargeCop: 10_000,
+      };
+      renderGrid({
+        initialCounter: {
+          group: 4,
+          viewer: { yours: 3, shared: 0, toSend: 0 },
+          people: [
+            { userId: "client-a", label: "Ana", units: 3, share: anaShare },
+            { userId: "client-b", label: "Beto", units: 1, share: emptyShare() },
+          ],
+          unattributed: 0,
+          unattributedShare: emptyShare(),
+        },
+        // The bar is the one collapsible caller; the folded row is where a
+        // phone reads the amount before opening the detail.
+        extraPhotoPriceCopSnapshot: 5_000,
+        includedPhotosSnapshot: 1,
+      });
+
+      expect(screen.getAllByRole("term").map((node) => node.textContent)).toEqual(["Tú", "Beto"]);
+      expect(screen.getAllByRole("definition")[0]?.textContent?.replace(/\s+/g, " ")).toContain(
+        "3 fotos · 2 extras · $ 10.000",
+      );
+      expect(
+        screen.getByRole("button", { name: "Ver detalle" }).parentElement?.textContent,
+      ).toContain("a tu nombre");
+    });
+
     it("renders the initial counter computed from the FIRST-PAINT PICKS, not the assets' own isSelected flags", () => {
       // Task #206, round-2 review — the initial quota is derived from
       // `initialPicks` alone (see use-shared-selection.ts's own comment on
@@ -780,6 +828,7 @@ describe("ProofGrid", () => {
               viewer: { yours: 0, shared: 0, toSend: 1 },
               people: [],
               unattributed: 0,
+              unattributedShare: emptyShare(),
             },
             quota: computeQuota(0, 1, {
               includedPhotosSnapshot: 13,
@@ -967,6 +1016,7 @@ describe("ProofGrid", () => {
               viewer: { yours: 1, shared: 0, toSend: 0 },
               people: [{ userId: "client-a", label: "Ana", units: 1 }],
               unattributed: 0,
+              unattributedShare: emptyShare(),
             },
             quota: submittedQuota,
             viewerLock: null,
@@ -2038,7 +2088,11 @@ describe("ProofGrid", () => {
       await onePollTick();
 
       expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
-      expect(screen.getByText("Beto Ruiz")).toBeDefined();
+      // Scoped to the tray: since task #264 the bar's breakdown names the
+      // same person in its own row, so an unscoped query is ambiguous.
+      expect(
+        within(screen.getByRole("region", { name: "Fotos elegidas" })).getByText("Beto Ruiz"),
+      ).toBeDefined();
       // And the grid tile agrees — the tray and the grid are two views of one
       // fact. The fact this tile renders is the VIEWER'S pick, and Beto is
       // somebody else, so the viewer may still join it (epic #250 S7).
@@ -2770,8 +2824,9 @@ describe("ProofGrid", () => {
             counter: {
               group: 1,
               viewer: { yours: 0, shared: 0, toSend: 0 },
-              people: [{ userId: "client-b", label: "Beto Ruiz", units: 1 }],
+              people: [{ userId: "client-b", label: "Beto Ruiz", units: 1, share: emptyShare() }],
               unattributed: 0,
+              unattributedShare: emptyShare(),
             },
             quota: computeQuota(1, 0, {
               includedPhotosSnapshot: 13,
@@ -2794,7 +2849,11 @@ describe("ProofGrid", () => {
       });
 
       expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
-      expect(screen.getByText("Beto Ruiz")).toBeDefined();
+      // Scoped to the tray: since task #264 the bar's breakdown names the
+      // same person in its own row, so an unscoped query is ambiguous.
+      expect(
+        within(screen.getByRole("region", { name: "Fotos elegidas" })).getByText("Beto Ruiz"),
+      ).toBeDefined();
     });
 
     it("queues exactly one more fetch when a `changed` push arrives while a fetch is already in flight", async () => {
@@ -2997,8 +3056,9 @@ describe("ProofGrid — no surface recounts the selection (epic #250 S6)", () =>
       initialCounter: {
         group: 7,
         viewer: { yours: 2, shared: 1, toSend: 4 },
-        people: [{ userId: "client-a", label: "Ana", units: 3 }],
+        people: [{ userId: "client-a", label: "Ana", units: 3, share: emptyShare() }],
         unattributed: 0,
+        unattributedShare: emptyShare(),
       },
       rollingDelivery: true,
     });

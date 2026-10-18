@@ -15,6 +15,7 @@ import type { ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
 import type { SelectionEntry } from "@/lib/selection-snapshot";
 import { ANA, BETO, SARA, counter, entry, pick } from "@/test-support/selection-fixtures";
+import { emptyShare } from "@/lib/quota-attribution";
 
 const A = ANA.id;
 const B = BETO.id;
@@ -110,8 +111,11 @@ function toggle(filename: string): HTMLButtonElement {
 /** The four-number line's own text, whitespace-normalised — JSX puts no
  * meaningful spaces between the interpolations but the DOM still can. */
 function counterLineText(): string | undefined {
+  // Scoped to the viewer line's own wording rather than /entre todos/: since
+  // task #264 the counter's HEADLINE also says "entre todos" once more than
+  // one person holds units, so that phrase alone is ambiguous.
   return screen
-    .getByText(/entre todos/)
+    .getByText(/tuyas|tuya/)
     .closest("p")
     ?.textContent?.replace(/\s+/g, " ")
     .trim();
@@ -300,8 +304,10 @@ describe("ProofGrid — the six viewer-relative tile rows (D11 §2)", () => {
         group: 15,
         viewer: { yours: 4, shared: 2, toSend: 3 },
         people: [
-          { userId: A, label: ANA.label, units: 4 },
-          { userId: B, label: BETO.label, units: 3 },
+          // Task #264 — required per-person money; this test is about the
+          // four NUMBERS, so the shares are the all-zero ones.
+          { userId: A, label: ANA.label, units: 4, share: emptyShare() },
+          { userId: B, label: BETO.label, units: 3, share: emptyShare() },
         ],
       }),
     });

@@ -4,6 +4,8 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { SelectionCounter } from "./selection-counter";
 import { computeQuota } from "@/lib/quota";
 import { formatCop } from "@/lib/format";
+import type { AttributionShare } from "@/lib/quota-attribution";
+import { ANA, BETO, SARA, counter, person } from "@/test-support/selection-fixtures";
 
 // No `@/lib/format` mock needed: unlike `@/lib/galleries`, it has no
 // `server-only`/`@/lib/db` import for jsdom to choke on — see that module's
@@ -491,5 +493,454 @@ describe("SelectionCounter — not collapsible (the `selected` view, task #236)"
     expect(screen.getByText(/Precio por foto extra/)).toBeDefined();
     expect(screen.getAllByRole("listitem")).toHaveLength(1);
     expect(screen.getByText(/no se cobra nada/)).toBeDefined();
+  });
+});
+
+// Task #264 — the per-person money breakdown. Every amount asserted below is
+// the SERVER's own `share.surchargeCop` (handed in as a fixture), which is the
+// point of the slice: the browser formats the split, it never derives it. The
+// gallery total in "Entre todos" is `quota`, also handed in whole.
+describe("SelectionCounter — per-person money (task #264)", () => {
+  /** A share with only the fields the test cares about set. No maths: a test
+   * that computed `extras * price` would agree with a component making the
+   * same mistake. */
+  function share(overrides: Partial<AttributionShare> = {}): AttributionShare {
+    return {
+      included: 0,
+      extras: 0,
+      originals: 0,
+      extrasSurchargeCop: 0,
+      originalsSurchargeCop: 0,
+      surchargeCop: 0,
+      ...overrides,
+    };
+  }
+
+  const labels = () => screen.getAllByRole("term").map((node) => node.textContent);
+  const amounts = () =>
+    screen
+      .getAllByRole("definition")
+      .map((node) => (node.textContent ?? "").replace(/\s+/g, " ").trim());
+
+  // The terms that make the fixture's rows ADD UP to its quota: 6 edited
+  // (4 included + 2 extras) and 1 original, over a 4-included pool. A fixture
+  // that did not add up would make this test unable to tell a read total from
+  // a summed one — that is T9's job, further down, on purpose.
+  const MONEY_TERMS = {
+    includedPhotosSnapshot: 4,
+    extraPhotoPriceCopSnapshot: 5_000,
+    extraPhotoPriceTiersSnapshot: null,
+    originalPhotoPriceCopSnapshot: 2_000,
+  };
+  const MONEY_QUOTA = () => computeQuota(6, 1, MONEY_TERMS);
+
+  const ANA_SHARE = share({
+    included: 1,
+    extras: 2,
+    extrasSurchargeCop: 10_000,
+    surchargeCop: 10_000,
+  });
+  const ANGELA_SHARE = share({ included: 2 });
+  const BETO_SHARE = share({ originals: 1, originalsSurchargeCop: 2_000, surchargeCop: 2_000 });
+  const LEGACY_SHARE = share({ included: 1 });
+
+  function threeHolders(overrides: Parameters<typeof counter>[0] = {}) {
+    return counter({
+      group: 7,
+      viewer: { yours: 3, shared: 0, toSend: 0 },
+      people: [
+        person(ANA, 3, ANA_SHARE),
+        // Sorts BEFORE Beto only under a Spanish collation of the label, and
+        // not first at all: "Tú" always leads.
+        person({ id: "client-z", label: "Ángela" }, 2, ANGELA_SHARE),
+        person(BETO, 1, BETO_SHARE),
+      ],
+      unattributed: 1,
+      unattributedShare: LEGACY_SHARE,
+      ...overrides,
+    });
+  }
+
+  it("lists one row per person — you first, then by label, then 'Sin registro' last — with the server's own amounts", () => {
+    render(
+      <SelectionCounter
+        quota={MONEY_QUOTA()}
+        allowsOriginalSelection
+        counter={threeHolders()}
+        viewerId={ANA.id}
+      />,
+    );
+
+    expect(labels()).toEqual(["Tú", "Ángela", "Beto", "Sin registro"]);
+    expect(amounts()).toEqual([
+      "3 fotos · 2 extras · $ 10.000",
+      "2 fotos · 0 extras · $ 0",
+      "1 foto · 0 extras · 1 original · $ 2.000",
+      "1 foto · 0 extras · $ 0",
+    ]);
+    // The headline counts the group once, not the sum of rows.
+    expect(screen.getByText(/incluidas 4/).textContent).toContain("seleccionadas 7 entre todos");
+    // The gallery's own block keeps its label and its number: 2 extras at
+    // 5.000 plus 1 original at 2.000.
+    expect(screen.getByText("Entre todos")).toBeDefined();
+    expect(screen.getByText(/total \$ 12\.000/)).toBeDefined();
+  });
+
+  it("still gives the viewer a row when they hold nothing, and emphasises only that row", () => {
+    render(
+      <SelectionCounter
+        quota={computeQuota(4, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={counter({
+          group: 2,
+          viewer: { yours: 0, shared: 0, toSend: 0 },
+          people: [person(ANA, 0), person(BETO, 2, share({ included: 2 }))],
+        })}
+        viewerId={ANA.id}
+      />,
+    );
+
+    expect(labels()).toEqual(["Tú", "Beto"]);
+    expect(amounts()[0]).toBe("0 fotos · 0 extras · $ 0");
+    const [own, other] = screen.getAllByRole("term");
+    expect(own?.className).toContain("text-fg");
+    expect(own?.className).toContain("font-medium");
+    expect(other?.className ?? "").not.toContain("font-medium");
+    const [ownAmount, otherAmount] = screen.getAllByRole("definition");
+    expect(ownAmount?.className).toContain("font-medium");
+    expect(otherAmount?.className ?? "").not.toContain("font-medium");
+  });
+
+  // THE REGRESSION GUARD. One holder of units IS the whole bill, so nothing
+  // about this component's output may change for them — not a row, not the
+  // headline, not a label. Byte equality against the same component rendered
+  // without any counter at all is the strongest form this assertion can take.
+  it("renders byte-identically to the pre-#264 output when a single person holds every unit", () => {
+    const quota = computeQuota(15, 0, SNAPSHOT);
+    const solo = counter({
+      group: 15,
+      viewer: { yours: 15, shared: 0, toSend: 0 },
+      people: [
+        person(
+          ANA,
+          15,
+          share({ included: 13, extras: 2, extrasSurchargeCop: 10_000, surchargeCop: 10_000 }),
+        ),
+      ],
+    });
+
+    const { container: wired, unmount } = render(
+      <SelectionCounter quota={quota} allowsOriginalSelection counter={solo} viewerId={ANA.id} />,
+    );
+    const wiredText = wired.textContent;
+    unmount();
+
+    const { container: legacy } = render(
+      <SelectionCounter quota={quota} allowsOriginalSelection />,
+    );
+
+    expect(wiredText).toBe(legacy.textContent);
+    expect(screen.queryByRole("term")).toBeNull();
+    expect(screen.queryByText(/entre todos/i)).toBeNull();
+  });
+
+  it("keeps the admin's solo view identical too — no subject, one holder", () => {
+    const quota = computeQuota(15, 0, SNAPSHOT);
+    const solo = counter({
+      group: 15,
+      viewer: null,
+      people: [
+        person(
+          ANA,
+          15,
+          share({ included: 13, extras: 2, extrasSurchargeCop: 10_000, surchargeCop: 10_000 }),
+        ),
+      ],
+    });
+
+    const { container: wired, unmount } = render(
+      <SelectionCounter quota={quota} allowsOriginalSelection counter={solo} viewerId={null} />,
+    );
+    const wiredText = wired.textContent;
+    unmount();
+
+    const { container: legacy } = render(
+      <SelectionCounter quota={quota} allowsOriginalSelection />,
+    );
+
+    expect(wiredText).toBe(legacy.textContent);
+    expect(screen.queryByRole("term")).toBeNull();
+  });
+
+  it("agrees with the person's own grammar: 1 foto · 1 extra · 1 original, never '1 fotos'", () => {
+    const one = counter({
+      group: 2,
+      viewer: { yours: 1, shared: 1, toSend: 0 },
+      people: [
+        person(ANA, 1, share({ extras: 1, extrasSurchargeCop: 5_000, surchargeCop: 5_000 })),
+        person(BETO, 1, share({ originals: 1, originalsSurchargeCop: 2_000, surchargeCop: 2_000 })),
+      ],
+    });
+    const { unmount } = render(
+      <SelectionCounter
+        quota={computeQuota(1, 1, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={one}
+        viewerId={ANA.id}
+      />,
+    );
+    expect(amounts()).toEqual([
+      "1 foto · 1 extra · $ 5.000",
+      "1 foto · 0 extras · 1 original · $ 2.000",
+    ]);
+    unmount();
+
+    const many = counter({
+      group: 4,
+      viewer: { yours: 2, shared: 1, toSend: 0 },
+      people: [person(ANA, 2), person(BETO, 2, share({ originals: 2 }))],
+    });
+    render(
+      <SelectionCounter
+        quota={computeQuota(4, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={many}
+        viewerId={ANA.id}
+      />,
+    );
+    expect(amounts()).toEqual([
+      "2 fotos · 0 extras · $ 0",
+      "2 fotos · 0 extras · 2 originales · $ 0",
+    ]);
+  });
+
+  // "Absent, not zeroed" survives here too: the per-row originals segment is
+  // hidden by the gallery's own switch AND by a zero count, never rendered as
+  // "0 originales".
+  it("hides the originals segment per row when the switch is off, and when a share has none", () => {
+    const withOriginals = counter({
+      group: 2,
+      viewer: { yours: 1, shared: 1, toSend: 0 },
+      people: [person(ANA, 1, BETO_SHARE), person(BETO, 1, BETO_SHARE)],
+    });
+
+    const { unmount } = render(
+      <SelectionCounter
+        quota={computeQuota(2, 0, SNAPSHOT)}
+        allowsOriginalSelection={false}
+        counter={withOriginals}
+        viewerId={ANA.id}
+      />,
+    );
+    expect(amounts()[0]).toBe("1 foto · 0 extras · $ 2.000");
+    expect(screen.queryByText(/originales/)).toBeNull();
+    unmount();
+
+    render(
+      <SelectionCounter
+        quota={computeQuota(2, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={counter({
+          group: 2,
+          viewer: { yours: 1, shared: 1, toSend: 0 },
+          people: [person(ANA, 1), person(BETO, 1)],
+        })}
+        viewerId={ANA.id}
+      />,
+    );
+    expect(amounts()).toEqual(["1 foto · 0 extras · $ 0", "1 foto · 0 extras · $ 0"]);
+    expect(screen.queryByText(/originales/)).toBeNull();
+  });
+
+  it("names the viewer's own amount in the folded bar, and leaves the solo wording alone", () => {
+    const compact = () =>
+      screen
+        .getByRole("button", { name: "Ver detalle" })
+        .parentElement?.textContent?.replace(/\s+/g, " ") ?? "";
+
+    const { unmount } = render(
+      <SelectionCounter
+        quota={computeQuota(15, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={threeHolders()}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+    expect(compact()).toContain("$ 10.000 a tu nombre");
+    expect(compact()).not.toContain("en extras");
+    unmount();
+
+    render(
+      <SelectionCounter
+        quota={computeQuota(15, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={counter({
+          group: 15,
+          viewer: { yours: 15, shared: 0, toSend: 0 },
+          people: [person(ANA, 15, ANA_SHARE)],
+        })}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+    expect(compact()).toContain(
+      `${formatCop(computeQuota(15, 0, SNAPSHOT).extrasSurchargeCop)} en extras`.replace(
+        /\s+/g,
+        " ",
+      ),
+    );
+    expect(compact()).not.toContain("a tu nombre");
+  });
+
+  // Review round 2, CRITICAL — THE ZERO-SHARE GUARD. The compact row names the
+  // viewer's amount only when there IS an amount to name: a STRICTLY positive
+  // `share.surchargeCop`. "$ 0 a tu nombre" points at money the reader does not
+  // owe, so a zero viewer share keeps the gallery-wide wording the pre-#264
+  // bar already had. This is the FOLDED, MULTI-ROW case that separates it from
+  // the solo fallbacks above: two bill-holders, so the breakdown is on and the
+  // viewer's own row renders at zero — while somebody ELSE holds the money.
+  it("keeps the gallery-wide wording when the viewer's own share is $ 0 — never '$ 0 a tu nombre'", () => {
+    const compact = () =>
+      screen
+        .getByRole("button", { name: "Ver detalle" })
+        .parentElement?.textContent?.replace(/\s+/g, " ") ?? "";
+
+    const billsAreSomeoneElses = counter({
+      group: 5,
+      viewer: { yours: 2, shared: 0, toSend: 0 },
+      people: [
+        // The viewer holds units but no money: both picks are included.
+        person(ANA, 2),
+        // Beto's extras are the whole bill.
+        person(
+          BETO,
+          3,
+          share({ included: 1, extras: 2, extrasSurchargeCop: 10_000, surchargeCop: 10_000 }),
+        ),
+      ],
+    });
+
+    const { unmount } = render(
+      <SelectionCounter
+        quota={computeQuota(15, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={billsAreSomeoneElses}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+
+    // Positive controls: the breakdown IS on and the viewer's row IS there, at
+    // zero, so the assertions below are about the guard and not about a
+    // missing row or an unfolded bar.
+    expect(labels()).toEqual(["Tú", "Beto"]);
+    expect(amounts()).toEqual(["2 fotos · 0 extras · $ 0", "3 fotos · 2 extras · $ 10.000"]);
+    expect(screen.getByRole("button", { name: "Ver detalle" })).toBeDefined();
+
+    // No originals, extras > 0: the approved gallery-wide fallback.
+    expect(compact()).toContain("$ 10.000 en extras");
+    expect(compact()).not.toContain("a tu nombre");
+    unmount();
+
+    // With originals the fallback is the gallery's TOTAL, labelled "en total"
+    // (2 extras at 5.000 + 1 original at 2.000) — still not the viewer's zero.
+    const withOriginals = computeQuota(15, 1, SNAPSHOT);
+    expect(withOriginals.surchargeCop).toBe(12_000);
+    render(
+      <SelectionCounter
+        quota={withOriginals}
+        allowsOriginalSelection
+        counter={billsAreSomeoneElses}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+    expect(compact()).toContain(
+      `${formatCop(withOriginals.surchargeCop)} en total`.replace(/\s+/g, " "),
+    );
+    expect(compact()).not.toContain("a tu nombre");
+  });
+
+  // Review round 2 — the SPARSE wire the server actually sends: `people` lists
+  // the holders of units, so a viewer who holds nothing is simply absent, not
+  // present with zeros. The bar must still lead with "Tú · 0 fotos" (the
+  // pre-#264 behavior for a viewer with nothing picked) and must not turn that
+  // absence into a zero amount in the compact row.
+  it("gives an absent-from-`people` viewer a zero row without naming a zero amount", () => {
+    const compact = () =>
+      screen
+        .getByRole("button", { name: "Ver detalle" })
+        .parentElement?.textContent?.replace(/\s+/g, " ") ?? "";
+
+    render(
+      <SelectionCounter
+        quota={computeQuota(15, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={counter({
+          group: 3,
+          viewer: { yours: 0, shared: 0, toSend: 0 },
+          people: [
+            person(ANA, 2, share({ included: 2 })),
+            person(BETO, 1, share({ extras: 1, extrasSurchargeCop: 5_000, surchargeCop: 5_000 })),
+          ],
+        })}
+        viewerId={SARA.id}
+        collapsible
+      />,
+    );
+
+    // Sara is the viewer and is NOT in `people` — her name must never appear as
+    // somebody else's row — yet "Tú" is still there, at zero, first.
+    expect(labels()).toEqual(["Tú", "Ana", "Beto"]);
+    expect(amounts()[0]).toBe("0 fotos · 0 extras · $ 0");
+    expect(screen.queryByText("Sara")).toBeNull();
+
+    expect(compact()).toContain("$ 10.000 en extras");
+    expect(compact()).not.toContain("a tu nombre");
+  });
+
+  // THE POINT OF THE SLICE, as an assertion: the total is READ off `quota`,
+  // not added up from the rows. The fixture's rows deliberately do NOT add up
+  // to the quota's total (3.000 vs 16.000), so an implementation that summed
+  // the rows — the tempting way to make the block "agree" — prints 3.000 and
+  // fails here.
+  it("prints the gallery total from `quota`, even when the rows do not add up to it", () => {
+    // 9 edited over a 7-included pool = 2 extras at 5.000; 3 originals at
+    // 2.000; total 16.000. The two rows below claim 1.000 + 2.000.
+    const quota = computeQuota(9, 3, {
+      ...SNAPSHOT,
+      includedPhotosSnapshot: 7,
+    });
+    expect(quota.surchargeCop).toBe(16_000);
+
+    render(
+      <SelectionCounter
+        quota={quota}
+        allowsOriginalSelection
+        counter={counter({
+          group: 2,
+          viewer: { yours: 1, shared: 1, toSend: 0 },
+          people: [
+            person(ANA, 1, share({ extras: 1, extrasSurchargeCop: 1_000, surchargeCop: 1_000 })),
+            person(
+              BETO,
+              1,
+              share({ originals: 1, originalsSurchargeCop: 2_000, surchargeCop: 2_000 }),
+            ),
+          ],
+        })}
+        viewerId={ANA.id}
+      />,
+    );
+
+    expect(screen.getByText(/total \$ 16\.000/)).toBeDefined();
+    expect(screen.queryByText(/total \$ 3\.000/)).toBeNull();
+    // Positive control: the rows rendered, so the assertion above is about a
+    // mounted breakdown and not about an empty render.
+    expect(amounts()).toEqual([
+      "1 foto · 1 extra · $ 1.000",
+      "1 foto · 0 extras · 1 original · $ 2.000",
+    ]);
   });
 });

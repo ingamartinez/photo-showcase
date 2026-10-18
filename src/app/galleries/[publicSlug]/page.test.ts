@@ -3,6 +3,7 @@ import type { Session } from "next-auth";
 import ClientGalleryPage from "./page";
 import type { GalleryDetail } from "@/lib/galleries";
 import { computeQuota, type GalleryQuotaSnapshot } from "@/lib/quota";
+import { emptyShare } from "@/lib/quota-attribution";
 
 // `import "server-only"` (transitively, via src/lib/auth-guards.ts and
 // src/lib/galleries.ts) only resolves inside a real Next.js bundle — see
@@ -212,8 +213,13 @@ function viewFor(
         userId,
         label: picks.find((pick) => pick.pickedBy?.id === userId)?.pickedBy?.label ?? userId,
         units,
+        // Task #264 — this fixture predates the per-person money wire; the
+        // required share is the all-zero one, from the same module the server
+        // uses.
+        share: emptyShare(),
       })),
       unattributed: picks.filter((pick) => pick.pickedBy === null).length,
+      unattributedShare: emptyShare(),
     },
     lock,
   };

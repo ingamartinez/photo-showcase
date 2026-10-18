@@ -34,6 +34,7 @@ export function ProofLightbox({
   lockedAssetIds,
   entryById = {},
   viewerId = null,
+  isActing = false,
 }: {
   assets: ProofAsset[];
   // Keyed by asset id. <ProofGrid> owns this state and shares it with the
@@ -75,6 +76,14 @@ export function ProofLightbox({
    * the button and the line under it can describe the VIEWER'S own pick, never
    * `assets.isSelected` (which is "somebody claimed it"). */
   entryById?: Record<string, SelectionEntry | null>;
+  /** Epic #250 S7 — an ADMIN is acting on the subject's behalf (`actingClientId`
+   * non-null). Sets no per-asset freeze, exactly as <ProofGrid> passes
+   * `frozenAssetIds = new Set()` in that case: `actOnBehalf` skips
+   * `gatePickEdit` (api/assets/[assetId]/selection/route.ts), so the tile's
+   * toggle stays live for a pick the SUBJECT already sent. Without this prop
+   * the tile showed that pick enabled while this screen's button stayed
+   * disabled — one photo, two answers (task #262 review, warning 5). */
+  isActing?: boolean;
   /** The viewer's own id, for "Tú" and for telling billed-from-joined apart. */
   viewerId?: string | null;
 }) {
@@ -93,7 +102,12 @@ export function ProofLightbox({
   // is a pick of somebody who already submitted. Navigating to another photo
   // re-derives this, so the same open lightbox mixes frozen and live photos.
   const isAssetLocked = isLocked || (lockedAssetIds?.has(asset.id) ?? false);
-  const isPickDisabled = pendingAssetIds.has(asset.id) || isAssetLocked || isOwnSent;
+  // The SENT freeze follows the same rule as <ProofTile>'s `lockedAssetIds`:
+  // it is real for the pick's own owner, and absent while an admin acts
+  // (`frozenAssetIds` is empty then). Trusting `isOwnSent` alone here made one
+  // photo render an enabled tile next to a disabled button and a live type
+  // control.
+  const isPickDisabled = pendingAssetIds.has(asset.id) || isAssetLocked || (isOwnSent && !isActing);
   // Only meaningful while the viewer has a pick.
   const selectionKind = selectionKindById[asset.id] ?? ownPick?.kind ?? "edited";
   // Epic #250 S7 — D11 §1b: the name shown is always the person the unit is

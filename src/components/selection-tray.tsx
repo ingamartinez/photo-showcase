@@ -522,10 +522,20 @@ export function SelectionTray({
             Puedes seguir eligiendo y enviar más fotos cuando quieras.
           </p>
         )}
-        {entries.length === 0 ? (
+        {(mode === "by-person" ? claimed.length === 0 : entries.length === 0) ? (
           // No scroll chrome for the empty state (task #203 acceptance
           // criterion #7) — an empty scrollable box reads as broken, not as
           // "nothing here yet".
+          //
+          // By-person is gated on CLAIMED, not `entries` (task #262 review,
+          // warning 3): `groups` is built from `claimed`, and since Q1
+          // another person's UNSENT cart is an entry with `claim: null`. A
+          // by-person tray holding only those carts has nothing to group, so
+          // gating on `entries` rendered an empty box with no copy — exactly
+          // the state criterion #7 forbids. Flat mode keeps the `entries`
+          // gate because its own rolling split below decides between
+          // "Por enviar" (the viewer's unsent picks) and "Pedidas", and has
+          // its own copy when both are empty.
           <p className="text-fg-dim text-[15px] leading-relaxed max-lg:hidden">
             Todavía no eligieron ninguna foto. Las que elijan van a aparecer acá, con el nombre de
             quién las eligió.

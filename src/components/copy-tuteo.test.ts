@@ -21,7 +21,17 @@ const CLIENT_FILES = [
 
 // Voseo imperatives/pronouns that must not reach the client. "escribile" (no
 // accent) is the voseo form; the tuteo form is "escríbele".
-const VOSEO = /\b(podés|tocá|escribile|enviás|querés|tenés|Vos)\b/;
+//
+// UNICODE-AWARE BOUNDARIES, NOT `\b`, AND CASE-INSENSITIVE. Both matter and
+// both were review findings (task #262, finding 2):
+//   - `\b` without the `u` flag is an ASCII boundary, so a trailing `\b`
+//     after `tocá` (which ends in a non-word character) can never match a
+//     following space or punctuation. The `tocá` alternative was dead code.
+//   - a case-sensitive list misses exactly the strings most likely to drift
+//     back in: the mock's own sentence-initial "Tocá una foto…"
+//     (client.html:714) and "¿Enviás estas 3?" (:844).
+const VOSEO =
+  /(?<!\p{L})(podés|tocá|escribile|enviás|querés|tenés|vos|sacala|arrepentís|elegí|mirá)(?!\p{L})/iu;
 
 /** Removes `//` line comments and `/* … *\/` block comments, leaving string
  * literals untouched enough for this purpose. */
@@ -34,6 +44,26 @@ describe("client copy is tuteo, never voseo", () => {
     const source = stripComments(readFileSync(file, "utf8"));
     const match = source.match(VOSEO);
     expect(match?.[0] ?? null).toBeNull();
+  });
+
+  // A guard that cannot fail on its headline case is not a guard. These
+  // self-tests pin the ABILITY to fail, independently of the shipped copy —
+  // if a future edit weakens `VOSEO` again (an ASCII `\b`, a dropped `i`
+  // flag), this goes RED even while every client file is clean.
+  it("is able to fail: it matches the mock's own voseo sentences, in any case", () => {
+    expect("Tocá una foto para verla grande".match(VOSEO)?.[0]).toBe("Tocá");
+    expect("¿Enviás estas 3?".match(VOSEO)?.[0]).toBe("Enviás");
+    expect("Podés sacarla cuando quieras".match(VOSEO)?.[0]).toBe("Podés");
+    expect("escribile a tu fotógrafo".match(VOSEO)?.[0]).toBe("escribile");
+    expect("si te arrepentís, sacala".match(VOSEO)?.[0]).toBe("arrepentís");
+    expect("Vos eliges".match(VOSEO)?.[0]).toBe("Vos");
+
+    // And it does not fire on the tuteo forms it exists to protect.
+    expect("Toca una foto para verla grande".match(VOSEO)).toBeNull();
+    expect("puedes sacarla".match(VOSEO)).toBeNull();
+    expect("escríbele a tu fotógrafo".match(VOSEO)).toBeNull();
+    // Regional "acá" is not voseo.
+    expect("las que elijan van a aparecer acá".match(VOSEO)).toBeNull();
   });
 
   it("keeps the approved tuteo strings in place", () => {

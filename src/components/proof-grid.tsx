@@ -902,6 +902,10 @@ export function ProofGrid({
           pendingAssetIds={pendingIds}
           isLocked={isLocked || readOnly}
           lockedAssetIds={frozenAssetIds}
+          // Epic #250 S7 — the lightbox's sent-pick freeze follows the tile's:
+          // real for the pick's owner, absent while an admin acts on the
+          // subject's behalf (see `frozenAssetIds` above).
+          isActing={actingClientId !== null}
           isDelivered={showsFinals}
           selectionKindById={selectionKindById}
           onSetSelectionKind={(assetId, kind) => void setSelectionKind(assetId, kind)}

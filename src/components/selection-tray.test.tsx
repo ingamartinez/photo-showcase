@@ -814,6 +814,42 @@ describe("SelectionTray — by-person mode (task #204)", () => {
     expect(screen.getAllByRole("listitem")).toHaveLength(6);
   });
 
+  // Task #262 review, warning 3. Since Q1 another person's UNSENT cart IS an
+  // entry (`claim: null`), and `groupPicksByPicker` groups CLAIMED entries
+  // only. Gating the empty state on `entries.length` meant a by-person tray
+  // holding nothing but other people's carts rendered an empty scroll box
+  // with no copy — the state task #203 criterion 7 forbids. The gate is now
+  // `claimed.length` for by-person.
+  it("shows the empty state when by-person's only entries are other people's carts", () => {
+    const otherCart = {
+      assetId: "a1",
+      claim: null,
+      picks: [
+        {
+          userId: "client-b",
+          label: "Beto Ruiz",
+          kind: "edited" as const,
+          pickedAt: "2026-07-30T12:00:00.000Z",
+          submittedAt: null,
+          state: "cart" as const,
+        },
+      ],
+    };
+
+    const { container } = renderTray({ mode: "by-person", entries: [otherCart] });
+
+    expect(screen.getByText(/Todavía no eligieron ninguna foto/)).toBeDefined();
+    // And no empty scroll box around it.
+    expect(container.querySelectorAll("ul")).toHaveLength(0);
+    expect(container.querySelectorAll(".overflow-y-auto")).toHaveLength(0);
+    cleanup();
+
+    // Flat mode reaches the same copy through its own state split; the fix
+    // above must not have moved that behaviour either.
+    renderTray({ mode: "flat", entries: [otherCart] });
+    expect(screen.getByText(/Todavía no eligieron ninguna foto/)).toBeDefined();
+  });
+
   // Criterion 4 — the task's own named trap: the viewer's name ("Zoe
   // Restrepo") sorts LAST alphabetically against "Ana" and "Beto", so this
   // fails under plain alphabetical order and only passes if "viewer first"

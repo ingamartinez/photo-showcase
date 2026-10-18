@@ -107,6 +107,16 @@ function toggle(filename: string): HTMLButtonElement {
   }) as HTMLButtonElement;
 }
 
+/** The four-number line's own text, whitespace-normalised — JSX puts no
+ * meaningful spaces between the interpolations but the DOM still can. */
+function counterLineText(): string | undefined {
+  return screen
+    .getByText(/entre todos/)
+    .closest("p")
+    ?.textContent?.replace(/\s+/g, " ")
+    .trim();
+}
+
 afterEach(() => {
   cleanup();
   vi.unstubAllGlobals();
@@ -241,23 +251,83 @@ describe("ProofGrid — the six viewer-relative tile rows (D11 §2)", () => {
     expect(within(anaDialog).getByText(/tú también la pediste/)).toBeDefined();
   });
 
+  it("reads the viewer's own kind, not the claim's: a degraded original on an edited claim", () => {
+    // Every other fixture leaves the pick's kind and the claim's
+    // `resolvedKind` both at the default "edited", so the two are
+    // indistinguishable. Here they disagree: Beto's sent unit resolved to
+    // `edited`, while Ana's degraded pick asked `original`. The tile and the
+    // lightbox must both read `viewerPickById`'s `pick.kind` — a map built
+    // from `claim.resolvedKind` would show Editada pressed in both surfaces.
+    renderGrid({
+      entries: [
+        entry("a4", { billedTo: BETO, resolvedKind: "edited" }, [
+          pick(B, BETO.label, "billed"),
+          pick(A, ANA.label, "degraded", "original"),
+        ]),
+      ],
+    });
+
+    const tileOriginal = screen.getByRole("button", {
+      name: "Marcar como original: IMG_0004.JPG",
+    });
+    const tileEdited = screen.getByRole("button", {
+      name: "Marcar como editada: IMG_0004.JPG",
+    });
+    expect(tileOriginal.getAttribute("aria-pressed")).toBe("true");
+    expect(tileEdited.getAttribute("aria-pressed")).toBe("false");
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver IMG_0004.JPG" }));
+    const dialog = screen.getByRole("dialog");
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "Marcar como original: IMG_0004.JPG" })
+        .getAttribute("aria-pressed"),
+    ).toBe("true");
+    expect(
+      within(dialog)
+        .getByRole("button", { name: "Marcar como editada: IMG_0004.JPG" })
+        .getAttribute("aria-pressed"),
+    ).toBe("false");
+  });
+
   it("renders the server's four numbers, singulars included, over entries that count differently", () => {
+    // ONE entry — Ana's unsent cart — so any RECOUNT of `entries` would give
+    // 1 for every viewer bucket. The server says 4 / 2 / 3. A line built by
+    // counting entries instead of reading `counter` fails on all three.
     renderGrid({
       entries: [entry("a3", null, [pick(A, ANA.label, "cart")])],
       counterData: counter({
         group: 15,
-        viewer: { yours: 1, shared: 2, toSend: 1 },
+        viewer: { yours: 4, shared: 2, toSend: 3 },
         people: [
-          { userId: A, label: ANA.label, units: 1 },
+          { userId: A, label: ANA.label, units: 4 },
           { userId: B, label: BETO.label, units: 3 },
         ],
       }),
     });
 
-    const line = screen.getByText(/1 tuya/).closest("p");
-    expect(line?.textContent?.replace(/\s+/g, " ")).toBe(
-      "1 tuya · 2 compartidas · 1 por enviar · 15 entre todos",
-    );
+    expect(counterLineText()).toBe("4 tuyas · 2 compartidas · 3 por enviar · 15 entre todos");
+    cleanup();
+
+    // Both singulars, in one render: `yours` plural with `shared` singular
+    // reaches "1 compartida", which a plural-only variant never renders
+    // (`yours: 0`/`shared: 0` would hide a "0 tuyas" bug behind the plural
+    // branch; `yours: 2` does not).
+    renderGrid({
+      entries: [entry("a3", null, [pick(A, ANA.label, "cart")])],
+      counterData: counter({ group: 0, viewer: { yours: 2, shared: 1, toSend: 0 } }),
+    });
+
+    expect(counterLineText()).toBe("2 tuyas · 1 compartida · 0 por enviar · 0 entre todos");
+    cleanup();
+
+    // And the singular "1 tuya" on its own.
+    renderGrid({
+      entries: [entry("a3", null, [pick(A, ANA.label, "cart")])],
+      counterData: counter({ group: 1, viewer: { yours: 1, shared: 2, toSend: 1 } }),
+    });
+
+    expect(counterLineText()).toBe("1 tuya · 2 compartidas · 1 por enviar · 1 entre todos");
   });
 
   it("labels degraded as Pedida and a cart as Por enviar even with rolling delivery OFF", () => {

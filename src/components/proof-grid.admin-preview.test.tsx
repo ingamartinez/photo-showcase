@@ -165,6 +165,41 @@ describe("ProofGrid — admin acting client (S7)", () => {
     expect(Object.keys(body)).toEqual(["selected"]);
   });
 
+  // Task #262 review, warning 5. The tile's freeze set is `frozenAssetIds`,
+  // which is EMPTY while an admin acts (decision 12: `actOnBehalf` skips
+  // `gatePickEdit`). The lightbox used to disable "Pedida" on `isOwnSent`
+  // regardless, so one photo showed an enabled tile, a disabled lightbox
+  // button and a live type control. Both surfaces now honour the same rule.
+  it("agrees with the tile on a sent pick: frozen for its owner, live while acting", async () => {
+    const sentEntry = entry("a2", { billedTo: BETO }, [pick(B, BETO.label, "billed")]);
+
+    // The pick's own owner, not acting: both surfaces freeze it.
+    renderGrid({ actingClientId: null, entries: [sentEntry] });
+    expect(toggle("IMG_0002.JPG").disabled).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Ver IMG_0002.JPG" }));
+    expect(screen.getByRole("button", { name: "Pedida" })).toHaveProperty("disabled", true);
+    cleanup();
+
+    // The admin acting as that owner: no per-asset freeze, so BOTH surfaces
+    // are live and BOTH write `actingClientId`.
+    const fetchMock = vi.fn(() => Promise.resolve(responseFor("a2", null)));
+    renderGrid({ entries: [sentEntry], fetchMock });
+    expect(toggle("IMG_0002.JPG").disabled).toBe(false);
+
+    fireEvent.click(screen.getByRole("button", { name: "Ver IMG_0002.JPG" }));
+    const lightboxButton = screen.getByRole("button", { name: "Pedida" });
+    expect(lightboxButton).toHaveProperty("disabled", false);
+    // Same rule for the type control, not a special case for the button.
+    expect(
+      screen.getByRole("button", { name: "Marcar como original: IMG_0002.JPG" }),
+    ).toHaveProperty("disabled", false);
+
+    fireEvent.click(lightboxButton);
+    await waitFor(() => expect(fetchMock).toHaveBeenCalledTimes(1));
+    const call = fetchMock.mock.calls[0] as unknown as [string, { body: string }];
+    expect(JSON.parse(call[1].body)).toEqual({ selected: false, actingClientId: B });
+  });
+
   it("acting ignores the subject's viewerLock but still refuses a non-proofing gallery", () => {
     renderGrid({
       initialViewerLock: {

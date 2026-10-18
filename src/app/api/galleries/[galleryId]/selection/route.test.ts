@@ -498,24 +498,33 @@ describe("GET /api/galleries/[galleryId]/selection — view as (epic #250 S6)", 
     );
   });
 
-  it.each([
-    ["a removed member", { removedAt: new Date("2026-07-29") }],
-    ["a non-member", null],
-  ])("404s a %s with view_as_not_member", async (_label, membership) => {
+  it("ALLOWS a removed member as a subject (owner Q1: their sent picks stay attributed)", async () => {
     const db = await seededDb();
-    if (membership) {
-      db.__rows.galleryClients.push({
-        galleryId: GALLERY_ID,
-        userId: "client-b",
-        selectionLockedAt: null,
-        selectionSubmittedAt: null,
-        ...membership,
-      });
-    }
+    db.__rows.galleryClients.push({
+      galleryId: GALLERY_ID,
+      userId: "client-b",
+      removedAt: new Date("2026-07-29"),
+      selectionLockedAt: null,
+      selectionSubmittedAt: null,
+    });
     authMock.mockResolvedValue(adminSession());
     const { GET } = await import("./route");
 
     const response = await GET(viewAsRequest(GALLERY_ID, ["client-b"]), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(200);
+    expect(getGallerySelectionMock).toHaveBeenCalledWith(
+      GALLERY_ID,
+      expect.any(Object),
+      "client-b",
+    );
+  });
+
+  it("404s a NON-member with view_as_not_member", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const { GET } = await import("./route");
+
+    const response = await GET(viewAsRequest(GALLERY_ID, ["stranger"]), paramsFor(GALLERY_ID));
 
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({ error: "view_as_not_member" });

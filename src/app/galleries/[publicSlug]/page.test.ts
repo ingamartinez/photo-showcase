@@ -386,7 +386,7 @@ describe("ClientGalleryPage", () => {
     expect(found[0]).toMatchObject({ viewerId: "client-b", viewAsId: "client-b" });
   });
 
-  it("404s an admin view-as for a removed / unknown member", async () => {
+  it("404s an admin view-as for an unknown member", async () => {
     authMock.mockResolvedValue(sessionFor("admin", "admin-1"));
     getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
     resolveViewAsMock.mockResolvedValue({ ok: false, error: "view_as_not_member" });

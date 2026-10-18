@@ -338,7 +338,7 @@ describe("resolveViewAs", () => {
     });
   });
 
-  it("refuses a REMOVED member with view_as_not_member", async () => {
+  it("ALLOWS a REMOVED member (owner answer Q1: their sent picks stay attributed)", async () => {
     const db = await seededDb();
     db.__rows.galleryClients.push({
       galleryId: GALLERY_ID,
@@ -348,8 +348,8 @@ describe("resolveViewAs", () => {
     const { resolveViewAs } = await import("./gallery-access");
 
     await expect(resolveViewAs(adminSession(), GALLERY_ID, "client-b")).resolves.toEqual({
-      ok: false,
-      error: "view_as_not_member",
+      ok: true,
+      subjectId: "client-b",
     });
   });
 

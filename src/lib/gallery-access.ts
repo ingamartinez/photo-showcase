@@ -26,7 +26,6 @@ import { and, eq, isNull } from "drizzle-orm";
 import type { Session } from "next-auth";
 import { db } from "@/lib/db";
 import { galleryClients } from "@/lib/db/schema";
-import { getClientLock } from "@/lib/gallery-client-locks";
 
 /**
  * Whether `session` may act on the gallery identified by `galleryId` — an
@@ -101,8 +100,10 @@ export type ViewAsResult =
  *     Silently ignoring it would let a buggy UI believe it is showing somebody
  *     else;
  *   - more than one value, empty, or whitespace -> `invalid_view_as`;
- *   - an id with no ACTIVE membership -> `view_as_not_member`. Symmetric with
- *     S5's `acting_client_not_member`, including removed members.
+ *   - an id with NO membership row, active or removed -> `view_as_not_member`.
+ *     A REMOVED member is allowed (owner answer Q1, 2026-10-17): decision 17
+ *     keeps their sent picks attributed, so the admin may inspect exactly
+ *     what they sent. An arbitrary user id is still refused.
  */
 export async function resolveViewAs(
   session: Session,
@@ -122,8 +123,15 @@ export async function resolveViewAs(
   if (values.length !== 1) return { ok: false, error: "invalid_view_as" };
   const userId = values[0]?.trim();
   if (!userId) return { ok: false, error: "invalid_view_as" };
-  if ((await getClientLock(db, galleryId, userId)) === null) {
-    return { ok: false, error: "view_as_not_member" };
-  }
+  // Deliberately NOT `getClientLock`: that helper filters `removedAt IS NULL`,
+  // and a removed member's submitted picks still exist under their name
+  // (decision 17). Gallery scoping is the row itself, so an arbitrary user id
+  // is still refused.
+  const [membership] = await db
+    .select({ userId: galleryClients.userId })
+    .from(galleryClients)
+    .where(and(eq(galleryClients.galleryId, galleryId), eq(galleryClients.userId, userId)))
+    .limit(1);
+  if (!membership) return { ok: false, error: "view_as_not_member" };
   return { ok: true, subjectId: userId };
 }

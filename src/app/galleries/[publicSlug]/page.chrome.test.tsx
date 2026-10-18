@@ -17,6 +17,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import type { Session } from "next-auth";
 import ClientGalleryPage from "./page";
 import type { GalleryDetail } from "@/lib/galleries";
+import { computeQuota, type GalleryQuotaSnapshot } from "@/lib/quota";
 
 const requireSessionMock = vi.fn<() => Promise<Session>>();
 vi.mock("@/lib/auth-guards", () => ({ requireSession: () => requireSessionMock() }));
@@ -112,15 +113,38 @@ vi.mock("@/lib/gallery-access", () => ({
   // is proven directly in gallery-access.test.ts; this file's own job is
   // whether the PAGE asks it and renders <ClientPreviewBanner> accordingly.
   isAdminPreviewingClientGallery: (session: Session) => session.user.role === "admin",
+  // Epic #250 S6 — the page resolves the optional admin view-as subject. The
+  // exhaustive refusal table is gallery-access.test.ts's job; here the default
+  // is "own subject", with no view-as.
+  resolveViewAs: async (session: Session, _galleryId: string) => ({
+    ok: true,
+    subjectId: session.user.role === "admin" ? null : session.user.id,
+  }),
 }));
 
 // Task #95: `@/lib/gallery-selection` is server-only for the same reason —
 // it reaches Postgres — so jsdom cannot resolve it either. Its own query is
 // proven in src/lib/gallery-selection.test.ts; what this file proves is that
 // whatever it returns reaches the collaborative tray's markup.
-const getGallerySelectionMock = vi.fn<(galleryId: string) => Promise<unknown[]>>();
+const getGallerySelectionMock = vi.fn<(...args: unknown[]) => Promise<unknown>>();
 vi.mock("@/lib/gallery-selection", () => ({
-  getGallerySelection: (...args: [string]) => getGallerySelectionMock(...args),
+  getGallerySelection: async (...args: unknown[]) => {
+    const value = await getGallerySelectionMock(...args);
+    if (!Array.isArray(value)) return value;
+    // The pre-S6 fixtures in this file are flat pick lists; adapt them using
+    // the same gallery detail the page just read, so quota assertions keep
+    // meaning what they meant.
+    const detail = await getGalleryDetailBySlugMock();
+    const terms = detail
+      ? {
+          includedPhotosSnapshot: detail.includedPhotosSnapshot,
+          extraPhotoPriceCopSnapshot: detail.extraPhotoPriceCopSnapshot,
+          extraPhotoPriceTiersSnapshot: detail.extraPhotoPriceTiersSnapshot,
+          originalPhotoPriceCopSnapshot: detail.originalPhotoPriceCopSnapshot,
+        }
+      : DEFAULT_TERMS;
+    return viewFor(value as LegacyPick[], terms);
+  },
 }));
 
 // Epic #239: the per-client lock snapshot reaches Postgres too; proven in
@@ -160,6 +184,66 @@ function paramsFor(publicSlug: string) {
   return { params: Promise.resolve({ publicSlug }) };
 }
 
+type LegacyPick = {
+  assetId: string;
+  selectedAt?: string | null;
+  pickedBy: { id: string; label: string } | null;
+  selectionKind?: "edited" | "original";
+};
+
+const DEFAULT_TERMS = {
+  includedPhotosSnapshot: 13,
+  extraPhotoPriceCopSnapshot: 5_000,
+  extraPhotoPriceTiersSnapshot: null,
+  originalPhotoPriceCopSnapshot: 2_000,
+};
+
+/** Adapts the pre-S6 fixture shape (a flat list of claimed picks) to the S6
+ * wire shape, computing the server's quota/counter exactly as
+ * `buildGallerySelection` would for these fixtures. */
+function viewFor(picks: LegacyPick[], terms: GalleryQuotaSnapshot = DEFAULT_TERMS) {
+  const entries = picks.map((pick) => ({
+    assetId: pick.assetId,
+    claim: {
+      claimedAt: pick.selectedAt ?? null,
+      resolvedKind: pick.selectionKind ?? ("edited" as const),
+      billedTo: pick.pickedBy,
+      charge: "included" as const,
+    },
+    picks: pick.pickedBy
+      ? [
+          {
+            userId: pick.pickedBy.id,
+            label: pick.pickedBy.label,
+            kind: pick.selectionKind ?? ("edited" as const),
+            pickedAt: pick.selectedAt ?? "2026-07-30T12:00:00.000Z",
+            submittedAt: pick.selectedAt ?? null,
+            state: "billed" as const,
+          },
+        ]
+      : [],
+  }));
+  const edited = picks.filter((pick) => (pick.selectionKind ?? "edited") === "edited").length;
+  const original = picks.length - edited;
+  const quota = computeQuota(edited, original, terms);
+  const counts = new Map<string, number>();
+  for (const pick of picks) {
+    if (!pick.pickedBy) continue;
+    counts.set(pick.pickedBy.id, (counts.get(pick.pickedBy.id) ?? 0) + 1);
+  }
+  return {
+    entries,
+    quota,
+    counter: {
+      group: picks.length,
+      viewer: { yours: counts.get("client-a") ?? 0, shared: 0, toSend: 0 },
+      people: [...counts].map(([userId, units]) => ({ userId, label: userId, units })),
+      unattributed: picks.filter((pick) => pick.pickedBy === null).length,
+    },
+    lock: { viewerLock: null, adminLockedPickerIds: [], viewerSubmittedAt: null },
+  };
+}
+
 beforeEach(() => {
   requireSessionMock.mockReset();
   requireSessionMock.mockResolvedValue({
@@ -168,7 +252,7 @@ beforeEach(() => {
   } as Session);
   getGalleryDetailBySlugMock.mockReset();
   getGallerySelectionMock.mockReset();
-  getGallerySelectionMock.mockResolvedValue([]);
+  getGallerySelectionMock.mockResolvedValue(viewFor([]));
   isGalleryOwnerMock.mockReset();
   isGalleryOwnerMock.mockResolvedValue(true);
   // Only needed by the one negative test below, which reaches `forbidden()`
@@ -283,7 +367,11 @@ describe("ClientGalleryPage chrome", () => {
 
       render(await ClientGalleryPage(paramsFor(SLUG)));
 
-      expect(getGallerySelectionMock).toHaveBeenCalledWith("g1");
+      expect(getGallerySelectionMock).toHaveBeenCalledWith(
+        "g1",
+        expect.objectContaining({ includedPhotosSnapshot: 13 }),
+        "client-a",
+      );
     });
 
     // Task #204 — END TO END through the REAL GraphQL pipeline (nothing under
@@ -361,7 +449,10 @@ describe("ClientGalleryPage chrome", () => {
       const groupHeaders = [...container.querySelectorAll("p")]
         .map((p) => p.textContent)
         .filter((text): text is string => /\(\d+\)/.test(text ?? ""));
-      expect(groupHeaders).toEqual(["Beto Ruiz (2)"]);
+      // Epic #250 S6 — "envió" now comes from the pick's own submittedAt,
+      // so a proofing gallery's sender is shown too (owner: leave it; S7
+      // decides presentation).
+      expect(groupHeaders).toEqual(["Beto Ruiz (2)envió"]);
     });
 
     // Task #206, criterion 4 — END TO END through the REAL GraphQL pipeline

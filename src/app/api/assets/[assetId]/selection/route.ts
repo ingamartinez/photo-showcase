@@ -54,10 +54,13 @@
 // `asset_picks` row there is nothing left for them to guard.
 //
 // The response is a legacy read-only `asset` block describing the asset's
-// CLAIM (what `assets` stores, unchanged by this route), plus the caller's own
-// `pick` and the gallery-wide `quota`. The client cart/season tray is S6/S7's
-// contract; between S4 and S7 the app's UI tabs do not render carts, which is
-// stated on the task rather than papered over.
+// CLAIM (what `assets` stores, unchanged by a client PATCH), the caller's own
+// `pick`, the gallery-wide `quota`, and — since epic #250 S6 — the asset's
+// current `entry` and the gallery's `counter` from the same builder the GET
+// route and the page use. That is what S7's local merge replaces wholesale:
+// one person's cart next to another person's pick cannot be reconstructed from
+// a single `pick`. Submit stays a full snapshot: an order rewrites many
+// entries at once.
 import { NextResponse, type NextRequest } from "next/server";
 import { z } from "zod";
 import { and, eq, isNull } from "drizzle-orm";
@@ -68,9 +71,9 @@ import { withApiSession } from "@/lib/auth-guards";
 import { ASSET_MUTATION_BLOCKED_STATUSES, loadOwnedAsset } from "@/lib/asset-access";
 import { isGalleryVisibleToClient } from "@/lib/galleries";
 import { getClientLock } from "@/lib/gallery-client-locks";
-import { computeQuota } from "@/lib/quota";
+import { getGallerySelection } from "@/lib/gallery-selection";
 import { claimFromAsset, derivePickStatus, gatePickEdit } from "@/lib/pick-resolution";
-import { actOnBehalf } from "@/lib/pick-claims";
+import { actOnBehalf, quotaSnapshotOf } from "@/lib/pick-claims";
 import type { PickStatus } from "@/lib/pick-resolution";
 import { notifySelectionChanged } from "@/lib/selection-events";
 
@@ -223,16 +226,9 @@ export const PATCH = withApiSession(async function PATCH(
       .where(eq(assets.galleryId, gallery.id));
     const current = siblings.find((row) => row.id === asset.id);
     if (!current) return errorResponse("asset_not_found", 404);
-    const selectedSiblings = siblings.filter((row) => row.isSelected);
-    const selectedOriginal = selectedSiblings.filter(
-      (row) => row.selectionKind === "original",
-    ).length;
-    const quota = computeQuota(selectedSiblings.length - selectedOriginal, selectedOriginal, {
-      includedPhotosSnapshot: gallery.includedPhotosSnapshot,
-      extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
-      extraPhotoPriceTiersSnapshot: gallery.extraPhotoPriceTiersSnapshot,
-      originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,
-    });
+    // The same builder the GET route and the page use, with the ACTING
+    // CLIENT as the subject (decision 12: the admin acts as that person).
+    const view = await getGallerySelection(gallery.id, quotaSnapshotOf(gallery), actingClientId);
     const billedLabel = current.billedTo === null ? null : await pickerLabel(current.billedTo);
     const labels: Record<string, string> = {};
     for (const person of onBehalf.delta.people) {
@@ -263,7 +259,9 @@ export const PATCH = withApiSession(async function PATCH(
             ),
           }
         : null,
-      quota,
+      quota: view.quota,
+      entry: view.entries.find((entry) => entry.assetId === asset.id) ?? null,
+      counter: view.counter,
       actingClientId,
       pickOutcome: onBehalf.pickOutcome,
       ...(onBehalf.counts ? { pickOutcomes: onBehalf.counts } : {}),
@@ -412,17 +410,10 @@ export const PATCH = withApiSession(async function PATCH(
     return errorResponse("asset_not_found", 404);
   }
 
-  const selectedSiblings = siblings.filter((row) => row.isSelected);
-  const selectedOriginal = selectedSiblings.filter(
-    (row) => row.selectionKind === "original",
-  ).length;
-  const selectedEdited = selectedSiblings.length - selectedOriginal;
-  const quota = computeQuota(selectedEdited, selectedOriginal, {
-    includedPhotosSnapshot: gallery.includedPhotosSnapshot,
-    extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
-    extraPhotoPriceTiersSnapshot: gallery.extraPhotoPriceTiersSnapshot,
-    originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,
-  });
+  // The same builder the GET route and the page use. A client PATCH never
+  // writes `assets`, so the quota and every claim are unchanged — this is
+  // simply the one definition of the numbers, not a second computation.
+  const view = await getGallerySelection(gallery.id, quotaSnapshotOf(gallery), session.user.id);
 
   const billedLabel = current.billedTo === null ? null : await pickerLabel(current.billedTo);
 
@@ -451,6 +442,8 @@ export const PATCH = withApiSession(async function PATCH(
           ),
         }
       : null,
-    quota,
+    quota: view.quota,
+    entry: view.entries.find((entry) => entry.assetId === asset.id) ?? null,
+    counter: view.counter,
   });
 });

@@ -279,3 +279,108 @@ describe("isAdminPreviewingClientGallery", () => {
     expect(isAdminPreviewingClientGallery(clientSession("client-a"))).toBe(false);
   });
 });
+
+// Epic #250 S6 — the admin "view as" subject resolver.
+describe("resolveViewAs", () => {
+  it("gives an admin no subject when the parameter is absent", async () => {
+    const { resolveViewAs } = await import("./gallery-access");
+
+    await expect(resolveViewAs(adminSession(), GALLERY_ID, undefined)).resolves.toEqual({
+      ok: true,
+      subjectId: null,
+    });
+    await expect(resolveViewAs(adminSession(), GALLERY_ID, [])).resolves.toEqual({
+      ok: true,
+      subjectId: null,
+    });
+  });
+
+  it("gives a client their OWN id when the parameter is absent", async () => {
+    const { resolveViewAs } = await import("./gallery-access");
+
+    await expect(resolveViewAs(clientSession("client-a"), GALLERY_ID, undefined)).resolves.toEqual({
+      ok: true,
+      subjectId: "client-a",
+    });
+  });
+
+  it("refuses a client sending the parameter at all, even their own id", async () => {
+    const { resolveViewAs } = await import("./gallery-access");
+
+    for (const raw of ["client-b", "client-a", ["client-a"]]) {
+      await expect(resolveViewAs(clientSession("client-a"), GALLERY_ID, raw)).resolves.toEqual({
+        ok: false,
+        error: "view_as_admin_only",
+      });
+    }
+  });
+
+  it.each([[["a", "b"]], [""], ["   "], [["   "]]])(
+    "refuses more than one value or an empty one (%j)",
+    async (raw) => {
+      const { resolveViewAs } = await import("./gallery-access");
+
+      await expect(resolveViewAs(adminSession(), GALLERY_ID, raw)).resolves.toEqual({
+        ok: false,
+        error: "invalid_view_as",
+      });
+    },
+  );
+
+  it("accepts an active member for an admin", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.push({ galleryId: GALLERY_ID, userId: "client-b", removedAt: null });
+    const { resolveViewAs } = await import("./gallery-access");
+
+    await expect(resolveViewAs(adminSession(), GALLERY_ID, "client-b")).resolves.toEqual({
+      ok: true,
+      subjectId: "client-b",
+    });
+  });
+
+  it("ALLOWS a REMOVED member (owner answer Q1: their sent picks stay attributed)", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.push({
+      galleryId: GALLERY_ID,
+      userId: "client-b",
+      removedAt: new Date("2026-07-29"),
+    });
+    const { resolveViewAs } = await import("./gallery-access");
+
+    await expect(resolveViewAs(adminSession(), GALLERY_ID, "client-b")).resolves.toEqual({
+      ok: true,
+      subjectId: "client-b",
+    });
+  });
+
+  it("refuses a non-member with view_as_not_member", async () => {
+    const { resolveViewAs } = await import("./gallery-access");
+
+    await expect(resolveViewAs(adminSession(), GALLERY_ID, "stranger")).resolves.toEqual({
+      ok: false,
+      error: "view_as_not_member",
+    });
+  });
+
+  // Task #261 review, warning 2. The "stranger" case above only proves that a
+  // user with NO membership row is refused — it stays green even if the
+  // `galleryId` clause is dropped from the query, because a row-less user
+  // matches nothing either way. This is the case that actually pins the
+  // GALLERY SCOPE: a perfectly valid member of ANOTHER gallery must not be
+  // viewable through this one. Mutation-proven by dropping
+  // `eq(galleryClients.galleryId, galleryId)` from `resolveViewAs`'s `where`
+  // — the "stranger" test stays green, this one turns RED.
+  it("refuses a valid member of ANOTHER gallery (the membership row must match THIS gallery)", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.push({
+      galleryId: OTHER_GALLERY_ID,
+      userId: "other-gallery-client",
+      removedAt: null,
+    });
+    const { resolveViewAs } = await import("./gallery-access");
+
+    await expect(
+      resolveViewAs(adminSession(), GALLERY_ID, "other-gallery-client"),
+    ).resolves.toEqual({ ok: false, error: "view_as_not_member" });
+  });
+});

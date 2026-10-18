@@ -6,7 +6,84 @@ import userEvent from "@testing-library/user-event";
 import { ProofGrid, SELECTION_POLL_INTERVAL_MS } from "./proof-grid";
 import type { GalleryStatus, ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
-import type { SelectionPick } from "@/lib/selection-snapshot";
+import type { SelectionEntry } from "@/lib/selection-snapshot";
+
+type SelectionPick = {
+  assetId: string;
+  selectedAt: string | null;
+  pickedBy: { id: string; label: string } | null;
+  selectionKind: "edited" | "original";
+  requestedAt?: string | null;
+};
+
+type LegacyPick = {
+  assetId: string;
+  selectedAt: string | null;
+  pickedBy: { id: string; label: string } | null;
+  selectionKind: "edited" | "original";
+  requestedAt?: string | null;
+};
+
+type GridOverrides = Partial<ComponentProps<typeof ProofGrid>> & {
+  /** Pre-S6 fixture shape: a flat list of claimed picks. The helper adapts it
+   * to the entry wire shape so 40-odd grid tests did not have to change. */
+  initialPicks?: LegacyPick[];
+  initialLockedPickerIds?: string[];
+  includedPhotosSnapshot?: number;
+  extraPhotoPriceCopSnapshot?: number;
+  extraPhotoPriceTiersSnapshot?: { minExtras: number; priceCop: number }[] | null;
+  originalPhotoPriceCopSnapshot?: number;
+};
+
+function entriesFor(picks: LegacyPick[]): SelectionEntry[] {
+  return picks.map((pick) => ({
+    assetId: pick.assetId,
+    claim: {
+      claimedAt: pick.selectedAt,
+      resolvedKind: pick.selectionKind,
+      billedTo: pick.pickedBy,
+      charge: "included",
+    },
+    picks: pick.pickedBy
+      ? [
+          {
+            userId: pick.pickedBy.id,
+            label: pick.pickedBy.label,
+            kind: pick.selectionKind,
+            pickedAt: pick.selectedAt ?? "2026-07-30T12:00:00.000Z",
+            // Most fixtures here predate the order semantics; treating them
+            // as unsent keeps their toggles/type controls live, which is what
+            // those tests are about. A test that needs a sent pick sets
+            // `requestedAt`.
+            submittedAt: pick.requestedAt ?? null,
+            state: pick.requestedAt ? "billed" : "degraded",
+          },
+        ]
+      : [],
+  }));
+}
+
+function counterFor(picks: LegacyPick[], viewerId: string) {
+  const counts = new Map<string, number>();
+  for (const pick of picks) {
+    if (!pick.pickedBy) continue;
+    counts.set(pick.pickedBy.id, (counts.get(pick.pickedBy.id) ?? 0) + 1);
+  }
+  return {
+    group: picks.length,
+    viewer: {
+      yours: counts.get(viewerId) ?? 0,
+      shared: 0,
+      toSend: 0,
+    },
+    people: [...counts].map(([userId, units]) => ({
+      userId,
+      label: picks.find((pick) => pick.pickedBy?.id === userId)?.pickedBy?.label ?? userId,
+      units,
+    })),
+    unattributed: picks.filter((pick) => pick.pickedBy === null).length,
+  };
+}
 
 // <ProofGrid> renders <SelectionCounter>, which imports `formatCop` off
 // `@/lib/format` — a plain module with no `server-only`/`@/lib/db` import
@@ -15,6 +92,54 @@ import type { SelectionPick } from "@/lib/selection-snapshot";
 // no mock needed here, the real `formatCop` runs.
 
 function jsonResponse(status: number, body: unknown): Response {
+  // Pre-S6 PATCH fixtures carry only the legacy `asset` block. Adapt them to
+  // the S6 response shape (entry + counter) here, so the tests keep asserting
+  // what the client does with a confirmed write rather than its wire spelling.
+  if (body && typeof body === "object" && "asset" in body && !("entry" in body)) {
+    const legacy = body as {
+      asset: {
+        id: string;
+        isSelected: boolean;
+        selectedAt?: string | null;
+        pickedBy?: { id: string; label: string } | null;
+        selectionKind?: "edited" | "original";
+      };
+      quota?: { selected?: number };
+    };
+    const { asset } = legacy;
+    body = {
+      ...legacy,
+      entry: asset.isSelected
+        ? {
+            assetId: asset.id,
+            claim: {
+              claimedAt: asset.selectedAt ?? null,
+              resolvedKind: asset.selectionKind ?? "edited",
+              billedTo: asset.pickedBy ?? null,
+              charge: "included",
+            },
+            picks: asset.pickedBy
+              ? [
+                  {
+                    userId: asset.pickedBy.id,
+                    label: asset.pickedBy.label,
+                    kind: asset.selectionKind ?? "edited",
+                    pickedAt: asset.selectedAt ?? "2026-07-30T12:00:00.000Z",
+                    submittedAt: asset.selectedAt ?? null,
+                    state: "billed",
+                  },
+                ]
+              : [],
+          }
+        : null,
+      counter: {
+        group: legacy.quota?.selected ?? 0,
+        viewer: null,
+        people: [],
+        unattributed: 0,
+      },
+    };
+  }
   return {
     ok: status >= 200 && status < 300,
     status,
@@ -43,27 +168,38 @@ function assetsFor(overrides: Partial<ProofAsset>[] = [{}]): ProofAsset[] {
 // Every test wants the same Estándar snapshot terms (PLAN.md §3's table)
 // unless it's specifically exercising the quota — this only overrides
 // `initialAssets` most of the time.
-function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
+function renderGrid(overrides: GridOverrides = {}) {
+  const {
+    initialPicks = [],
+    initialLockedPickerIds = [],
+    includedPhotosSnapshot = 13,
+    extraPhotoPriceCopSnapshot = 5_000,
+    extraPhotoPriceTiersSnapshot = null,
+    originalPhotoPriceCopSnapshot = 2_000,
+    ...rest
+  } = overrides;
+  const terms = {
+    includedPhotosSnapshot,
+    extraPhotoPriceCopSnapshot,
+    extraPhotoPriceTiersSnapshot,
+    originalPhotoPriceCopSnapshot,
+  };
+  const edited = initialPicks.filter((pick) => pick.selectionKind === "edited").length;
+  const original = initialPicks.length - edited;
+
   return render(
     <ProofGrid
       galleryId="g1"
       initialAssets={assetsFor()}
       initialStatus="proofing"
       initialSubmittedAt={null}
-      // Task #95: the collaborative tray's first paint. Most tests here
-      // predate it and are about the grid, so the default is "nobody has
-      // picked anything yet" — the tests that exercise the tray or the live
-      // sync override it.
-      initialPicks={[]}
+      // Epic #250 S6 — the server hands the entries, quota and counter; the
+      // legacy `initialPicks` fixture above is adapted once, here.
+      initialEntries={entriesFor(initialPicks)}
+      initialQuota={computeQuota(edited, original, terms)}
+      initialCounter={counterFor(initialPicks, "client-a")}
+      initialAdminLockedPickerIds={initialLockedPickerIds}
       viewerId="client-a"
-      includedPhotosSnapshot={13}
-      extraPhotoPriceCopSnapshot={5_000}
-      extraPhotoPriceTiersSnapshot={null}
-      // Task #206 — the third frozen snapshot term, matching the value
-      // `scripts/seed-packages.ts` and the migration default use. Most tests
-      // here only exercise `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot`;
-      // the ones exercising originals override this explicitly.
-      originalPhotoPriceCopSnapshot={2_000}
       // Task #204 — default to `flat`, today's only behavior; the tray's own
       // test file covers `by-person` grouping directly.
       selectionTrayMode="flat"
@@ -73,7 +209,7 @@ function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
       // switch itself (the "allowsOriginalSelection is OFF" describe block)
       // override this explicitly.
       allowsOriginalSelection={true}
-      {...overrides}
+      {...rest}
     />,
   );
 }
@@ -722,17 +858,56 @@ describe("ProofGrid", () => {
         extras: 0,
         surchargeCop: 0,
       };
-      const fetchMock = vi.fn(() =>
-        Promise.resolve(
+      const fetchMock = vi.fn((url: string) => {
+        if (url.endsWith("/submit-selection")) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              status: "submitted",
+              quota: submittedQuota,
+              submittedAt: "2026-07-28T12:00:00.000Z",
+              // Single-client gallery: this submission closes the gallery too.
+              gallerySelected: true,
+            }),
+          );
+        }
+        return Promise.resolve(
           jsonResponse(200, {
-            status: "submitted",
-            quota: submittedQuota,
+            status: "selected",
             submittedAt: "2026-07-28T12:00:00.000Z",
-            // Single-client gallery: this submission closes the gallery too.
-            gallerySelected: true,
+            entries: [
+              {
+                assetId: "a1",
+                claim: {
+                  claimedAt: "2026-07-28T12:00:00.000Z",
+                  resolvedKind: "edited",
+                  billedTo: { id: "client-a", label: "Ana" },
+                  charge: "included",
+                },
+                picks: [
+                  {
+                    userId: "client-a",
+                    label: "Ana",
+                    kind: "edited",
+                    pickedAt: "2026-07-28T12:00:00.000Z",
+                    submittedAt: "2026-07-28T12:00:00.000Z",
+                    state: "billed",
+                  },
+                ],
+              },
+            ],
+            counter: {
+              group: 1,
+              viewer: { yours: 1, shared: 0, toSend: 0 },
+              people: [{ userId: "client-a", label: "Ana", units: 1 }],
+              unattributed: 0,
+            },
+            quota: submittedQuota,
+            viewerLock: null,
+            adminLockedPickerIds: [],
+            viewerSubmittedAt: null,
           }),
-        ),
-      );
+        );
+      });
       vi.stubGlobal("fetch", fetchMock);
       const user = userEvent.setup();
 
@@ -1681,18 +1856,21 @@ describe("ProofGrid", () => {
       }> = {},
     ) {
       const picks = overrides.picks ?? [];
+      const quota = computeQuota(overrides.selectedCount ?? picks.length, 0, {
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
+        originalPhotoPriceCopSnapshot: 2_000,
+      });
       return {
         status: overrides.status ?? "proofing",
         submittedAt: overrides.submittedAt ?? null,
-        picks,
-        // Task #205 — 0 originals: nothing writes `assets.selectionKind` to
-        // anything but `edited` yet (task #206).
-        quota: computeQuota(overrides.selectedCount ?? picks.length, 0, {
-          includedPhotosSnapshot: 13,
-          extraPhotoPriceCopSnapshot: 5_000,
-          extraPhotoPriceTiersSnapshot: null,
-          originalPhotoPriceCopSnapshot: 2_000,
-        }),
+        entries: entriesFor(picks),
+        counter: counterFor(picks, "client-a"),
+        quota,
+        viewerLock: null,
+        adminLockedPickerIds: [],
+        viewerSubmittedAt: null,
       };
     }
 
@@ -2500,19 +2678,42 @@ describe("ProofGrid", () => {
           jsonResponse(200, {
             status: "proofing",
             submittedAt: null,
-            picks: [
+            entries: [
               {
                 assetId: "a1",
-                selectedAt: "2026-07-30T12:00:00.000Z",
-                pickedBy: { id: "client-b", label: "Beto Ruiz" },
+                claim: {
+                  claimedAt: "2026-07-30T12:00:00.000Z",
+                  resolvedKind: "edited",
+                  billedTo: { id: "client-b", label: "Beto Ruiz" },
+                  charge: "included",
+                },
+                picks: [
+                  {
+                    userId: "client-b",
+                    label: "Beto Ruiz",
+                    kind: "edited",
+                    pickedAt: "2026-07-30T12:00:00.000Z",
+                    submittedAt: null,
+                    state: "degraded",
+                  },
+                ],
               },
             ],
+            counter: {
+              group: 1,
+              viewer: { yours: 0, shared: 0, toSend: 0 },
+              people: [{ userId: "client-b", label: "Beto Ruiz", units: 1 }],
+              unattributed: 0,
+            },
             quota: computeQuota(1, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
               extraPhotoPriceTiersSnapshot: null,
               originalPhotoPriceCopSnapshot: 2_000,
             }),
+            viewerLock: null,
+            adminLockedPickerIds: [],
+            viewerSubmittedAt: null,
           }),
         ),
       );
@@ -2685,5 +2886,58 @@ describe("ProofGrid — volume scale on first paint (task #231)", () => {
 
     expect(counterText()).toContain("extras 3 × $ 5.000 = $ 15.000");
     expect(screen.queryByText(/Precio por foto extra/)).toBeNull();
+  });
+});
+
+// Epic #250 S6 — THE SUM TEST. The client must never count `entries`,
+// `picks.length` or `assets.isSelected` again: the four numbers come from the
+// server. The fixture is deliberately incompatible with any local recount —
+// only 2 claimed entries and 1 cart, while the server says 7 selected and 4 to
+// send — so a component that derives either number from the list it renders
+// goes red here.
+describe("ProofGrid — no surface recounts the selection (epic #250 S6)", () => {
+  it("renders the server's selected count and to-send count even when the entry list would count differently", () => {
+    const entries = entriesFor([
+      {
+        assetId: "a1",
+        selectedAt: "2026-10-01T12:00:00.000Z",
+        pickedBy: { id: "client-a", label: "Ana" },
+        selectionKind: "edited",
+      },
+      {
+        assetId: "a2",
+        selectedAt: "2026-10-01T12:01:00.000Z",
+        pickedBy: { id: "client-b", label: "Beto" },
+        selectionKind: "edited",
+      },
+      {
+        assetId: "a3",
+        selectedAt: null,
+        pickedBy: { id: "client-a", label: "Ana" },
+        selectionKind: "edited",
+      },
+    ]);
+
+    renderGrid({
+      initialEntries: entries,
+      initialQuota: computeQuota(7, 0, {
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
+        originalPhotoPriceCopSnapshot: 2_000,
+      }),
+      initialCounter: {
+        group: 7,
+        viewer: { yours: 2, shared: 1, toSend: 4 },
+        people: [{ userId: "client-a", label: "Ana", units: 3 }],
+        unattributed: 0,
+      },
+      rollingDelivery: true,
+    });
+
+    expect(counterText()).toContain("seleccionadas 7");
+    expect(screen.getByRole("button", { name: "Enviar 4 fotos" })).toBeDefined();
+    // The tray still renders only what the entries say: 3, never 7.
+    expect(screen.getByText("3", { selector: "section span" })).toBeDefined();
   });
 });

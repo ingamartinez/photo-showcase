@@ -4,7 +4,15 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { groupPicksByPicker, SelectionTray } from "./selection-tray";
-import type { SelectionPick } from "@/lib/selection-snapshot";
+import type { SelectionEntry, SelectionKind } from "@/lib/selection-snapshot";
+
+type SelectionPick = {
+  assetId: string;
+  selectedAt: string | null;
+  pickedBy: { id: string; label: string } | null;
+  selectionKind: SelectionKind;
+  requestedAt?: string | null;
+};
 
 function pick(overrides: Partial<SelectionPick> = {}): SelectionPick {
   return {
@@ -18,10 +26,41 @@ function pick(overrides: Partial<SelectionPick> = {}): SelectionPick {
   };
 }
 
-function renderTray(overrides: Partial<ComponentProps<typeof SelectionTray>> = {}) {
+function entryFor(pick: SelectionPick): SelectionEntry {
+  return {
+    assetId: pick.assetId,
+    claim: {
+      claimedAt: pick.selectedAt,
+      resolvedKind: pick.selectionKind,
+      billedTo: pick.pickedBy,
+      charge: "included",
+    },
+    picks: pick.pickedBy
+      ? [
+          {
+            userId: pick.pickedBy.id,
+            label: pick.pickedBy.label,
+            kind: pick.selectionKind,
+            pickedAt: pick.selectedAt ?? "2026-07-30T12:00:00.000Z",
+            submittedAt: pick.selectedAt,
+            state: "billed",
+          },
+        ]
+      : [],
+  };
+}
+
+function entriesFrom(picks: SelectionPick[]): SelectionEntry[] {
+  return picks.map(entryFor);
+}
+
+type TrayOverrides = Partial<ComponentProps<typeof SelectionTray>> & { picks?: SelectionPick[] };
+
+function renderTray(overrides: TrayOverrides = {}) {
+  const { picks = [], ...rest } = overrides;
   return render(
     <SelectionTray
-      picks={[]}
+      entries={entriesFrom(picks)}
       urls={{ a1: "https://r2.example.com/a1", a2: "https://r2.example.com/a2" }}
       filenamesByAssetId={{ a1: "IMG_0001.JPG", a2: "IMG_0002.JPG" }}
       viewerId="client-a"
@@ -36,7 +75,7 @@ function renderTray(overrides: Partial<ComponentProps<typeof SelectionTray>> = {
       allowsOriginalSelection={true}
       onOpenAsset={() => {}}
       onImageError={() => {}}
-      {...overrides}
+      {...rest}
     />,
   );
 }
@@ -255,10 +294,10 @@ describe("SelectionTray — collapsible tray with a height-capped list (task #20
 
     rerender(
       <SelectionTray
-        picks={[
+        entries={entriesFrom([
           pick({ assetId: "a1" }),
           pick({ assetId: "a2", pickedBy: { id: "client-c", label: "Caro" } }),
-        ]}
+        ])}
         urls={{ a1: "https://r2.example.com/a1", a2: "https://r2.example.com/a2" }}
         filenamesByAssetId={{ a1: "IMG_0001.JPG", a2: "IMG_0002.JPG" }}
         viewerId="client-a"
@@ -612,7 +651,7 @@ describe("groupPicksByPicker (task #204) — the pure grouping function", () => 
       pick({ assetId: "a2", pickedBy: { id: "client-y", label: "Ana" } }),
     ];
 
-    const groups = groupPicksByPicker(picks, null);
+    const groups = groupPicksByPicker(entriesFrom(picks), null);
 
     expect(groups).toHaveLength(2);
     expect(groups.map((g) => g.key).sort()).toEqual(["client-x", "client-y"]);
@@ -624,7 +663,7 @@ describe("groupPicksByPicker (task #204) — the pure grouping function", () => 
       pick({ assetId: "a2", pickedBy: { id: "client-b", label: "Zoe Restrepo" } }),
     ];
 
-    const groups = groupPicksByPicker(picks, "client-a");
+    const groups = groupPicksByPicker(entriesFrom(picks), "client-a");
 
     expect(groups).toHaveLength(2);
     expect(groups[0]).toMatchObject({ key: "client-a", label: "Vos" });
@@ -643,7 +682,7 @@ describe("groupPicksByPicker (task #204) — the pure grouping function", () => 
       pick({ assetId: "a4", pickedBy: null }),
     ];
 
-    const groups = groupPicksByPicker(picks, "client-z");
+    const groups = groupPicksByPicker(entriesFrom(picks), "client-z");
 
     expect(groups.map((g) => g.label)).toEqual(["Vos", "Ana Gómez", "Beto Ruiz", "Sin registro"]);
   });
@@ -654,7 +693,7 @@ describe("groupPicksByPicker (task #204) — the pure grouping function", () => 
       pick({ assetId: "new", pickedBy: { id: "client-a", label: "Ana" } }),
     ];
 
-    const groups = groupPicksByPicker(picks, null);
+    const groups = groupPicksByPicker(entriesFrom(picks), null);
 
     expect(groups[0]?.picks.map((p) => p.assetId)).toEqual(["old", "new"]);
   });
@@ -666,7 +705,7 @@ describe("groupPicksByPicker (task #204) — the pure grouping function", () => 
       pick({ assetId: "a3", pickedBy: { id: "client-a", label: "Ana" } }),
     ];
 
-    const groups = groupPicksByPicker(picks, null);
+    const groups = groupPicksByPicker(entriesFrom(picks), null);
 
     expect(groups[groups.length - 1]).toMatchObject({ label: "Sin registro" });
     expect(groups[groups.length - 1]?.picks).toHaveLength(2);
@@ -684,7 +723,7 @@ describe("groupPicksByPicker (task #204) — the pure grouping function", () => 
       pick({ assetId: "a1", pickedBy: { id: "client-a", label: "Ana Gómez" } }),
     ];
 
-    const groups = groupPicksByPicker(picks, "client-a");
+    const groups = groupPicksByPicker(entriesFrom(picks), "client-a");
 
     expect(groups[0]).toMatchObject({
       key: "client-a",
@@ -757,7 +796,11 @@ describe("SelectionTray — by-person mode (task #204)", () => {
       ],
     });
 
-    expect(groupHeaderTexts(container)).toEqual(["Vos (2)", "Beto Ruiz (1)", "Caro Ruiz (3)"]);
+    expect(groupHeaderTexts(container)).toEqual([
+      "Vos (2)envió",
+      "Beto Ruiz (1)envió",
+      "Caro Ruiz (3)envió",
+    ]);
     // Criterion 3: thumbnails still render through the SAME <TrayItem> — one
     // <ul> per group (3 people), one <li> per pick (6 total), and the
     // per-group counts (2 + 1 + 3) sum to that same 6.
@@ -780,7 +823,11 @@ describe("SelectionTray — by-person mode (task #204)", () => {
       ],
     });
 
-    expect(groupHeaderTexts(container)).toEqual(["Vos (1)", "Ana Gómez (1)", "Beto Ruiz (1)"]);
+    expect(groupHeaderTexts(container)).toEqual([
+      "Vos (1)envió",
+      "Ana Gómez (1)envió",
+      "Beto Ruiz (1)envió",
+    ]);
   });
 
   // Criterion 5 — unattributed picks (a deleted user, `onDelete: "set null"`)
@@ -797,7 +844,11 @@ describe("SelectionTray — by-person mode (task #204)", () => {
       ],
     });
 
-    expect(groupHeaderTexts(container)).toEqual(["Vos (1)", "Beto Ruiz (1)", "Sin registro (1)"]);
+    expect(groupHeaderTexts(container)).toEqual([
+      "Vos (1)envió",
+      "Beto Ruiz (1)envió",
+      "Sin registro (1)",
+    ]);
     // Not lost: still 3 thumbnails rendered in total.
     expect(screen.getAllByRole("listitem")).toHaveLength(3);
   });
@@ -1055,8 +1106,7 @@ describe("SelectionTray — compact chrome (task #236)", () => {
       renderTray({
         mode: "by-person",
         picks: [pick({ assetId: "a1", pickedBy: twin1 }), pick({ assetId: "a2", pickedBy: twin2 })],
-        lockedPickerIds: ["client-c"],
-        submittedPickerIds: ["client-c"],
+        adminLockedPickerIds: ["client-c"],
       });
 
       expect(screen.getAllByText("envió")).toHaveLength(1);
@@ -1072,8 +1122,7 @@ describe("SelectionTray — compact chrome (task #236)", () => {
       renderTray({
         mode: "by-person",
         picks: [pick({ assetId: "a1", pickedBy: twin1 }), pick({ assetId: "a2", pickedBy: twin2 })],
-        lockedPickerIds: ["client-b", "client-c"],
-        submittedPickerIds: ["client-c"],
+        adminLockedPickerIds: ["client-c"],
       });
 
       expect(screen.getAllByText("envió")).toHaveLength(1);
@@ -1082,9 +1131,60 @@ describe("SelectionTray — compact chrome (task #236)", () => {
       expect(screen.getByText("cerrada").parentElement?.textContent).toBe("Beto Ruiz (1)cerrada");
     });
 
-    it("shows no marker when nobody is locked", () => {
-      renderTray({ mode: "by-person", picks: [pick()], lockedPickerIds: [] });
+    it("shows no marker for an UNSENT pick with no admin lock", () => {
+      renderTray({
+        mode: "by-person",
+        picks: [pick({ selectedAt: null })],
+        adminLockedPickerIds: [],
+      });
 
+      expect(screen.queryByText("envió")).toBeNull();
+      expect(screen.queryByText("cerrada")).toBeNull();
+    });
+
+    // Task #261 review, warning 1. The badge used to ask only whether SOME
+    // pick on the entry was sent, never WHOSE — so a legacy "Sin registro"
+    // unit (`claim.billedTo === null`, a real state: the 0017 backfill's
+    // classic claims) read "Sin registro (1) envió" the moment another
+    // member joined that photo and sent their own pick. The header names
+    // nobody, so it cannot credit a send to anyone.
+    it("shows no 'envió' for an unattributed legacy unit, even when a member's joined pick was sent", () => {
+      const { container } = renderTray({
+        mode: "by-person",
+        entries: [
+          {
+            assetId: "a1",
+            claim: {
+              claimedAt: "2026-07-01T09:00:00.000Z",
+              resolvedKind: "edited",
+              billedTo: null,
+              charge: "included",
+            },
+            // Exactly what the domain emits for this shape: the unit has no
+            // billed holder, so a submitted pick on it resolves to "joined"
+            // (pick-resolution.ts) rather than "billed".
+            picks: [
+              {
+                userId: "client-b",
+                label: "Beto Ruiz",
+                kind: "edited",
+                pickedAt: "2026-07-30T12:00:00.000Z",
+                submittedAt: "2026-07-30T12:00:00.000Z",
+                state: "joined",
+              },
+            ],
+          },
+        ],
+      });
+
+      // The group still renders, under its own header — this is about the
+      // badge, not about dropping the photo.
+      const header = [...container.querySelectorAll("p")].find((p) =>
+        /\(\d+\)/.test(p.textContent ?? ""),
+      );
+      expect(header?.textContent).toBe("Sin registro (1)");
+      expect(screen.getAllByRole("listitem")).toHaveLength(1);
+      // No badge ANYWHERE: not on that header, not on any other.
       expect(screen.queryByText("envió")).toBeNull();
       expect(screen.queryByText("cerrada")).toBeNull();
     });

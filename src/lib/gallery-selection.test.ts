@@ -1,328 +1,676 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
+import type { FakeDb } from "@/test-support/fake-db";
 
 // `import "server-only"` only resolves inside a real Next.js bundle — see
 // src/lib/auth-guards.test.ts.
 vi.mock("server-only", () => ({}));
 
-// A minimal, genuinely-behaving double for `@/lib/db`. Same approach as the
-// route suites: the conditions are resolved off drizzle's REAL `eq()`/`and()`/
-// `inArray()` objects rather than being intercepted, so a query that starts
-// filtering on the wrong column fails here instead of passing.
-type Row = Record<string, unknown>;
-
-function flattenChunks(node: unknown, out: unknown[]): void {
-  if (node && typeof node === "object" && "queryChunks" in node) {
-    for (const chunk of (node as { queryChunks: unknown[] }).queryChunks) {
-      flattenChunks(chunk, out);
-    }
-    return;
-  }
-  // `inArray(col, [a, b])` renders as `col in <Array of Param>` — the
-  // parameters live inside a bare array chunk, not inside a nested `SQL`, so
-  // a flattener that only followed `queryChunks` would never see them.
-  // Verified by dumping the real drizzle condition, not assumed.
-  if (Array.isArray(node)) {
-    for (const chunk of node) flattenChunks(chunk, out);
-    return;
-  }
-  out.push(node);
-}
-
-/** `[{ dbColumnName, values }]` for every column referenced in a condition,
- * paired with the parameter(s) compared against it. `inArray` contributes one
- * entry with several values; `eq` contributes one with a single value. */
-function conditionsOf(condition: unknown): { dbColumnName: string; values: unknown[] }[] {
-  const flat: unknown[] = [];
-  flattenChunks(condition, flat);
-
-  const results: { dbColumnName: string; values: unknown[] }[] = [];
-  for (const chunk of flat) {
-    if (!chunk || typeof chunk !== "object") continue;
-    if ("name" in chunk && "table" in chunk) {
-      results.push({ dbColumnName: (chunk as { name: string }).name, values: [] });
-    } else if ("value" in chunk && "encoder" in chunk) {
-      // `inArray` may hand its whole list over as ONE parameter rather than
-      // as one placeholder per element — flattened here so both shapes end up
-      // as a plain list of candidate values.
-      const value = (chunk as { value: unknown }).value;
-      results.at(-1)?.values.push(...(Array.isArray(value) ? value : [value]));
-    }
-  }
-  return results;
-}
-
-function jsKeyFor(table: Record<string, unknown>, dbColumnName: string): string {
-  const found = Object.entries(table).find(
-    ([, col]) => col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
-  );
-  if (!found) throw new Error(`jsKeyFor: no column named ${dbColumnName}`);
-  return found[0];
-}
-
 vi.mock("@/lib/db", async () => {
-  const { assets, users } = await import("@/lib/db/schema");
-
-  const assetRows: Row[] = [];
-  const userRows: Row[] = [];
-
-  function shapeFor(table: unknown): Record<string, unknown> {
-    if (table === assets) return assets as unknown as Record<string, unknown>;
-    if (table === users) return users as unknown as Record<string, unknown>;
-    throw new Error("fake db: unsupported table");
-  }
-  function rowsFor(table: unknown): Row[] {
-    if (table === assets) return assetRows;
-    if (table === users) return userRows;
-    throw new Error("fake db: unsupported table");
-  }
-
-  function project(row: Row, columns: Record<string, unknown> | undefined): Row {
-    if (!columns) return row;
-    const projected: Row = {};
-    for (const [alias, column] of Object.entries(columns)) {
-      const dbColumnName = (column as { name: string }).name;
-      // The projection is keyed by the ALIAS the caller chose (`assetId:
-      // assets.id`), reading the row by the column's own JS key — exactly what
-      // drizzle does, and what makes a renamed alias visible in these tests.
-      const table = (column as { table: unknown }).table;
-      projected[alias] = row[jsKeyFor(shapeFor(table), dbColumnName)];
-    }
-    return projected;
-  }
-
+  const { assets, assetPicks, users, galleryClients } = await import("@/lib/db/schema");
+  const { createFakeDb } = await import("@/test-support/fake-db");
+  const fake = createFakeDb([assets, assetPicks, users, galleryClients]);
   return {
-    db: {
-      select: (columns?: Record<string, unknown>) => ({
-        from: (table: unknown) => ({
-          where: (condition: unknown) => {
-            const shape = shapeFor(table);
-            const conditions = conditionsOf(condition);
-            const matched = rowsFor(table).filter((row) =>
-              conditions.every(({ dbColumnName, values }) =>
-                values.includes(row[jsKeyFor(shape, dbColumnName)]),
-              ),
-            );
-            const result = matched.map((row) => project(row, columns));
-            const promise = Promise.resolve(result);
-            return {
-              orderBy: async (order: unknown) => {
-                const flat: unknown[] = [];
-                flattenChunks(order, flat);
-                const column = flat.find(
-                  (chunk) => chunk && typeof chunk === "object" && "name" in chunk,
-                ) as { name: string } | undefined;
-                if (!column) return result;
-                const key = jsKeyFor(shape, column.name);
-                // Mirrors Postgres's ASC default of NULLS LAST.
-                return [...matched]
-                  .sort((a, b) => {
-                    const left = a[key];
-                    const right = b[key];
-                    if (left == null && right == null) return 0;
-                    if (left == null) return 1;
-                    if (right == null) return -1;
-                    return Number(left) - Number(right);
-                  })
-                  .map((row) => project(row, columns));
-              },
-              then: promise.then.bind(promise),
-              catch: promise.catch.bind(promise),
-            };
-          },
-        }),
-      }),
-      __rows: { assets: assetRows, users: userRows },
-    },
+    db: Object.assign(fake, {
+      __rows: {
+        assets: fake.__tables.get(assets)!,
+        assetPicks: fake.__tables.get(assetPicks)!,
+        users: fake.__tables.get(users)!,
+        galleryClients: fake.__tables.get(galleryClients)!,
+      },
+    }),
   };
 });
 
-async function seededDb() {
-  const { db } = (await import("@/lib/db")) as unknown as {
-    db: { __rows: { assets: Row[]; users: Row[] } };
-  };
-  return db;
-}
+import { db } from "@/lib/db";
+import { assetPicks, assets, galleryClients, users } from "@/lib/db/schema";
+import { buildGallerySelection, getGallerySelection } from "@/lib/gallery-selection";
+import { unitsOf, type AssetRow, type PickRow } from "@/lib/pick-plans";
+import { computeQuota } from "@/lib/quota";
+import { attributeQuota } from "@/lib/quota-attribution";
+import type { SelectionKind, SelectionPickState } from "@/lib/selection-snapshot";
+import type { PickStatus } from "@/lib/pick-resolution";
 
-const GALLERY_A = "11111111-1111-4111-8111-111111111111";
-const GALLERY_B = "22222222-2222-4222-8222-222222222222";
+const fake = db as unknown as FakeDb;
+const assetRows = () => fake.__tables.get(assets)!;
+const pickRows = () => fake.__tables.get(assetPicks)!;
+const userRows = () => fake.__tables.get(users)!;
+const memberRows = () => fake.__tables.get(galleryClients)!;
 
-function assetRow(overrides: Partial<Row> = {}): Row {
+const GALLERY = "11111111-1111-4111-8111-111111111111";
+const OTHER_GALLERY = "22222222-2222-4222-8222-222222222222";
+
+const TERMS = {
+  includedPhotosSnapshot: 2,
+  extraPhotoPriceCopSnapshot: 5_000,
+  extraPhotoPriceTiersSnapshot: null,
+  originalPhotoPriceCopSnapshot: 2_000,
+};
+
+function asset(overrides: Partial<AssetRow> & { id: string }): AssetRow & { galleryId: string } {
   return {
-    id: "asset-1",
-    galleryId: GALLERY_A,
-    isSelected: true,
-    selectedAt: new Date("2026-07-30T12:00:00.000Z"),
-    billedTo: "client-a",
-    // Task #206 — the domain's own default; the tests exercising a marked
-    // original override this explicitly.
+    galleryId: GALLERY,
+    isSelected: false,
     selectionKind: "edited",
+    billedTo: null,
+    billedAt: null,
+    finalKey: null,
+    selectedAt: null,
+    requestedAt: null,
     ...overrides,
   };
 }
 
-beforeEach(async () => {
-  const db = await seededDb();
-  db.__rows.assets.length = 0;
-  db.__rows.users.length = 0;
-  db.__rows.users.push(
-    { id: "client-a", name: "Ana Pérez", email: "ana@example.com" },
-    { id: "client-b", name: null, email: "beto@example.com" },
+function pick(
+  overrides: Partial<PickRow> & { assetId: string; userId: string },
+): PickRow & { galleryId: string } {
+  return {
+    galleryId: GALLERY,
+    kind: "edited",
+    pickedAt: new Date("2026-10-01T10:00:00.000Z"),
+    submittedAt: new Date("2026-10-01T11:00:00.000Z"),
+    ...overrides,
+  };
+}
+
+function labelsOf(rows: { id: string; name: string | null; email: string }[]) {
+  return new Map(rows.map((row) => [row.id, row.name ?? row.email]));
+}
+
+beforeEach(() => {
+  assetRows().length = 0;
+  pickRows().length = 0;
+  userRows().length = 0;
+  memberRows().length = 0;
+  fake.__log.length = 0;
+  userRows().push(
+    { id: "ana", name: "Ana Pérez", email: "ana@example.com" },
+    { id: "beto", name: null, email: "beto@example.com" },
+    { id: "caro", name: "Caro Gil", email: "caro@example.com" },
   );
 });
 
-describe("getGallerySelection", () => {
-  it("returns nothing, and never touches `users` at all, when the gallery has no picks yet", async () => {
-    const db = await seededDb();
-    db.__rows.assets.push(assetRow({ id: "asset-1", isSelected: false, billedTo: null }));
-    // Emptying `users` proves the second query is genuinely skipped rather
-    // than merely returning nothing: if it ran, the fake would still resolve,
-    // but a picker lookup with an empty id list is a round trip this function
-    // promises not to make.
-    db.__rows.users.length = 0;
-    const { getGallerySelection } = await import("@/lib/gallery-selection");
+/** A two-person (plus one degraded cart) fixture used across the suites. */
+function seedTwoPeople() {
+  assetRows().push(
+    // Ana's claim, edited, arrived first.
+    asset({
+      id: "a1",
+      isSelected: true,
+      selectionKind: "edited",
+      billedTo: "ana",
+      billedAt: new Date("2026-10-01T12:00:00.000Z"),
+      selectedAt: new Date("2026-10-01T12:00:00.000Z"),
+      requestedAt: null,
+    }),
+    // Beto's joined pick on Ana's unit.
+    // Ana's second claim (extra).
+    asset({
+      id: "a2",
+      isSelected: true,
+      selectionKind: "edited",
+      billedTo: "ana",
+      billedAt: new Date("2026-10-01T12:01:00.000Z"),
+      selectedAt: new Date("2026-10-01T12:01:00.000Z"),
+    }),
+    // A third edited unit, over the included pool.
+    asset({
+      id: "a3",
+      isSelected: true,
+      selectionKind: "edited",
+      billedTo: "beto",
+      billedAt: new Date("2026-10-01T12:02:00.000Z"),
+      selectedAt: new Date("2026-10-01T12:02:00.000Z"),
+    }),
+    // An original, whatever the pool.
+    asset({
+      id: "a4",
+      isSelected: true,
+      selectionKind: "original",
+      billedTo: "beto",
+      billedAt: new Date("2026-10-01T12:03:00.000Z"),
+      selectedAt: new Date("2026-10-01T12:03:00.000Z"),
+    }),
+    // Caro's pure cart on an unclaimed asset.
+    asset({ id: "a5", isSelected: false }),
+    // Claimed by nobody recorded: the legacy "Sin registro" unit.
+    asset({
+      id: "a6",
+      isSelected: true,
+      selectionKind: "edited",
+      billedTo: null,
+      billedAt: null,
+      selectedAt: null,
+    }),
+  );
+  pickRows().push(
+    pick({ assetId: "a1", userId: "ana" }),
+    pick({ assetId: "a2", userId: "ana" }),
+    pick({ assetId: "a3", userId: "beto" }),
+    pick({ assetId: "a4", userId: "beto" }),
+    pick({ assetId: "a6", userId: "beto" }),
+    pick({ assetId: "a5", userId: "caro", submittedAt: null }),
+  );
+}
 
-    await expect(getGallerySelection(GALLERY_A)).resolves.toEqual([]);
-  });
+describe("buildGallerySelection — rows", () => {
+  it("carries an entry for every claimed asset AND for an unclaimed one somebody has in the cart", () => {
+    seedTwoPeople();
 
-  it("returns only the SELECTED assets of the given gallery", async () => {
-    const db = await seededDb();
-    db.__rows.assets.push(
-      assetRow({ id: "picked" }),
-      assetRow({ id: "not-picked", isSelected: false, billedTo: null, selectedAt: null }),
-      assetRow({ id: "other-gallery", galleryId: GALLERY_B }),
-    );
-    const { getGallerySelection } = await import("@/lib/gallery-selection");
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: "ana",
+    });
 
-    const picks = await getGallerySelection(GALLERY_A);
-
-    expect(picks.map((pick) => pick.assetId)).toEqual(["picked"]);
-  });
-
-  it("attributes each pick to whoever the row says picked it", async () => {
-    const db = await seededDb();
-    db.__rows.assets.push(
-      assetRow({
-        id: "asset-1",
-        billedTo: "client-a",
-        selectedAt: new Date("2026-07-30T12:00:00.000Z"),
-      }),
-      assetRow({
-        id: "asset-2",
-        billedTo: "client-b",
-        selectedAt: new Date("2026-07-30T12:01:00.000Z"),
-      }),
-    );
-    const { getGallerySelection } = await import("@/lib/gallery-selection");
-
-    const picks = await getGallerySelection(GALLERY_A);
-
-    expect(picks[0]?.pickedBy).toEqual({ id: "client-a", label: "Ana Pérez" });
-    // `name ?? email` — a client the photographer never named still renders
-    // as somebody, never as a blank.
-    expect(picks[1]?.pickedBy).toEqual({ id: "client-b", label: "beto@example.com" });
-  });
-
-  it("orders oldest pick first, so a photo appearing at the END really is the newest", async () => {
-    const db = await seededDb();
-    db.__rows.assets.push(
-      assetRow({ id: "third", selectedAt: new Date("2026-07-30T12:02:00.000Z") }),
-      assetRow({ id: "first", selectedAt: new Date("2026-07-30T12:00:00.000Z") }),
-      assetRow({ id: "second", selectedAt: new Date("2026-07-30T12:01:00.000Z") }),
-    );
-    const { getGallerySelection } = await import("@/lib/gallery-selection");
-
-    const picks = await getGallerySelection(GALLERY_A);
-
-    expect(picks.map((pick) => pick.assetId)).toEqual(["first", "second", "third"]);
-  });
-
-  it("reports a pick with no `selected_by` as unattributed rather than inventing a picker", async () => {
-    const db = await seededDb();
-    db.__rows.assets.push(assetRow({ id: "asset-1", billedTo: null }));
-    const { getGallerySelection } = await import("@/lib/gallery-selection");
-
-    const picks = await getGallerySelection(GALLERY_A);
-
-    expect(picks[0]?.pickedBy).toBeNull();
-  });
-
-  it("reports a picker whose user row no longer exists as unattributed, not undefined", async () => {
-    // `assets.selected_by` is `onDelete: "set null"` (schema.ts), so this is
-    // a narrow window rather than a permanent state — but a `undefined`
-    // leaking into the JSON would render as a missing key on the client.
-    const db = await seededDb();
-    db.__rows.assets.push(assetRow({ id: "asset-1", billedTo: "deleted-user" }));
-    const { getGallerySelection } = await import("@/lib/gallery-selection");
-
-    const picks = await getGallerySelection(GALLERY_A);
-
-    expect(picks[0]?.pickedBy).toBeNull();
-  });
-
-  it("serializes `selectedAt` as an ISO string, never a Date", async () => {
-    // This value crosses to a Client Component and then to JSON on every
-    // poll; a `Date` would serialize differently on the two paths.
-    const db = await seededDb();
-    db.__rows.assets.push(
-      assetRow({ id: "asset-1", selectedAt: new Date("2026-07-30T12:00:00.000Z") }),
-    );
-    const { getGallerySelection } = await import("@/lib/gallery-selection");
-
-    const picks = await getGallerySelection(GALLERY_A);
-
-    expect(picks[0]?.selectedAt).toBe("2026-07-30T12:00:00.000Z");
-  });
-
-  it("returns no R2 key, no URL and no email of its own invention — only ids, attribution and the pick's type", async () => {
-    // Task #95's constraint: the tray must not become a second way to obtain
-    // image bytes. Pinned as a shape assertion so adding `proofKey` to the
-    // projection for convenience fails loudly here. `selectionKind` is a
-    // DELIBERATE addition (task #206) — the type travels the same channel as
-    // every other pick fact, not a leak this test should have caught.
-    const db = await seededDb();
-    db.__rows.assets.push(assetRow({ id: "asset-1" }));
-    const { getGallerySelection } = await import("@/lib/gallery-selection");
-
-    const picks = await getGallerySelection(GALLERY_A);
-
-    expect(Object.keys(picks[0]!).sort()).toEqual([
-      "assetId",
-      "pickedBy",
-      "requestedAt",
-      "selectedAt",
-      "selectionKind",
+    expect(view.entries.map((entry) => entry.assetId).sort()).toEqual([
+      "a1",
+      "a2",
+      "a3",
+      "a4",
+      "a5",
+      "a6",
     ]);
   });
 
-  // Task #206 — the type travels the SAME query this function already ran;
-  // no second read, no second shape.
-  it("reports each pick's requestedAt (task #244): ISO for an ordered pick, null for one still por enviar", async () => {
-    const db = await seededDb();
-    db.__rows.assets.push(
-      assetRow({ id: "ordered", requestedAt: new Date("2026-10-16T09:00:00.000Z") }),
-      assetRow({ id: "cart", requestedAt: null }),
-    );
-    const { getGallerySelection } = await import("@/lib/gallery-selection");
+  it("represents a cart-only asset as claim null with a `cart` pick", () => {
+    seedTwoPeople();
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: null,
+    });
 
-    const picks = await getGallerySelection(GALLERY_A);
-
-    expect(picks.find((pick) => pick.assetId === "ordered")?.requestedAt).toBe(
-      "2026-10-16T09:00:00.000Z",
-    );
-    expect(picks.find((pick) => pick.assetId === "cart")?.requestedAt).toBeNull();
+    const cart = view.entries.find((entry) => entry.assetId === "a5")!;
+    expect(cart.claim).toBeNull();
+    expect(cart.picks[0]).toMatchObject({ userId: "caro", state: "cart" });
   });
 
-  it("reports each pick's selectionKind straight off the row", async () => {
-    const db = await seededDb();
-    db.__rows.assets.push(
-      assetRow({ id: "edited-1", selectionKind: "edited" }),
-      assetRow({ id: "original-1", selectionKind: "original" }),
+  it("reads `claimedAt` from selected_at, never requested_at — a classic claim's requested_at is null", () => {
+    assetRows().push(
+      asset({
+        id: "classic",
+        isSelected: true,
+        billedTo: "ana",
+        selectedAt: new Date("2026-10-02T09:00:00.000Z"),
+        requestedAt: null,
+      }),
     );
-    const { getGallerySelection } = await import("@/lib/gallery-selection");
 
-    const picks = await getGallerySelection(GALLERY_A);
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: [pick({ assetId: "classic", userId: "ana" })],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: "ana",
+    });
 
-    expect(picks.find((pick) => pick.assetId === "edited-1")?.selectionKind).toBe("edited");
-    expect(picks.find((pick) => pick.assetId === "original-1")?.selectionKind).toBe("original");
+    expect(view.entries[0]?.claim?.claimedAt).toBe("2026-10-02T09:00:00.000Z");
   });
+
+  it("keeps a legacy unbilled unit in the group and the unattributed bucket, never in a person's row", () => {
+    assetRows().push(
+      asset({
+        id: "legacy",
+        isSelected: true,
+        billedTo: null,
+        billedAt: null,
+        selectedAt: null,
+      }),
+    );
+
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: [],
+      labels: new Map(),
+      terms: TERMS,
+      subjectId: "ana",
+    });
+
+    expect(view.entries[0]?.claim?.billedTo).toBeNull();
+    expect(view.counter.group).toBe(1);
+    expect(view.counter.unattributed).toBe(1);
+    expect(view.counter.people).toEqual([]);
+  });
+
+  it("derives each pick's state on the server: billed, joined, degraded and cart", () => {
+    assetRows().push(
+      asset({ id: "claimed", isSelected: true, billedTo: "ana", billedAt: new Date(1) }),
+      asset({ id: "loose", isSelected: false }),
+    );
+    pickRows().push(
+      pick({ assetId: "claimed", userId: "ana" }),
+      pick({ assetId: "claimed", userId: "beto" }),
+      pick({ assetId: "claimed", userId: "caro", submittedAt: null }),
+      pick({ assetId: "loose", userId: "ana", submittedAt: null }),
+    );
+
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: "ana",
+    });
+
+    const states = Object.fromEntries(
+      view.entries.flatMap((entry) =>
+        entry.picks.map((p) => [`${entry.assetId}:${p.userId}`, p.state]),
+      ),
+    );
+    expect(states).toEqual({
+      "claimed:ana": "billed",
+      "claimed:beto": "joined",
+      "claimed:caro": "degraded",
+      "loose:ana": "cart",
+    });
+  });
+
+  it("orders claimed entries by arrival, unclaimed ones by earliest pick, and puts the holder's pick first", () => {
+    assetRows().push(
+      asset({
+        id: "late",
+        isSelected: true,
+        billedTo: "ana",
+        billedAt: new Date("2026-10-01T12:02:00.000Z"),
+        selectedAt: new Date("2026-10-01T12:02:00.000Z"),
+      }),
+      asset({
+        id: "early",
+        isSelected: true,
+        billedTo: "beto",
+        billedAt: new Date("2026-10-01T12:00:00.000Z"),
+        selectedAt: new Date("2026-10-01T12:00:00.000Z"),
+      }),
+      asset({ id: "cart-late", isSelected: false }),
+      asset({ id: "cart-early", isSelected: false }),
+    );
+    pickRows().push(
+      pick({ assetId: "early", userId: "beto" }),
+      pick({ assetId: "early", userId: "ana" }),
+      pick({ assetId: "late", userId: "ana" }),
+      pick({ assetId: "cart-late", userId: "caro", pickedAt: new Date(20), submittedAt: null }),
+      pick({ assetId: "cart-early", userId: "caro", pickedAt: new Date(10), submittedAt: null }),
+    );
+
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: null,
+    });
+
+    expect(view.entries.map((entry) => entry.assetId)).toEqual([
+      "early",
+      "late",
+      "cart-early",
+      "cart-late",
+    ]);
+    // The billed holder (beto) comes first, even though ana's pick arrival
+    // order in the fixture is not sorted.
+    expect(view.entries[0]?.picks.map((p) => p.userId)).toEqual(["beto", "ana"]);
+  });
+
+  it("carries the charge attributeQuota computed, so the client never re-derives the included split", () => {
+    seedTwoPeople();
+
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: null,
+    });
+
+    const charges = Object.fromEntries(
+      view.entries
+        .filter((entry) => entry.claim)
+        .map((entry) => [entry.assetId, entry.claim!.charge]),
+    );
+    expect(charges).toEqual({
+      a6: "included",
+      a1: "included",
+      a2: "extra",
+      a3: "extra",
+      a4: "original",
+    });
+  });
+
+  it("returns the same quota computeQuota produces over the claimed rows, with a tiered snapshot", () => {
+    const terms = {
+      includedPhotosSnapshot: 1,
+      extraPhotoPriceCopSnapshot: 15_000,
+      extraPhotoPriceTiersSnapshot: [
+        { minExtras: 1, priceCop: 15_000 },
+        { minExtras: 3, priceCop: 13_000 },
+      ],
+      originalPhotoPriceCopSnapshot: 2_000,
+    };
+    assetRows().push(
+      asset({ id: "e1", isSelected: true, billedAt: new Date(1) }),
+      asset({ id: "e2", isSelected: true, billedAt: new Date(2) }),
+      asset({ id: "e3", isSelected: true, billedAt: new Date(3) }),
+      asset({ id: "e4", isSelected: true, billedAt: new Date(4) }),
+      asset({ id: "o1", isSelected: true, selectionKind: "original", billedAt: new Date(5) }),
+    );
+
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: [],
+      labels: new Map(),
+      terms,
+      subjectId: null,
+    });
+
+    expect(view.quota).toEqual(computeQuota(4, 1, terms));
+  });
+});
+
+describe("buildGallerySelection — counter invariants", () => {
+  it("gives an admin without a subject counter.viewer === null", () => {
+    seedTwoPeople();
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: null,
+    });
+
+    expect(view.counter.viewer).toBeNull();
+  });
+
+  it("partitions the subject's picks by state, and agrees with the per-person units (P/S/Y)", () => {
+    seedTwoPeople();
+
+    for (const subject of ["ana", "beto", "caro"] as const) {
+      const view = buildGallerySelection({
+        rows: assetRows() as AssetRow[],
+        picks: pickRows() as PickRow[],
+        labels: labelsOf(userRows() as never),
+        terms: TERMS,
+        subjectId: subject,
+      });
+      const ownPicks = view.entries.flatMap((entry) =>
+        entry.picks.filter((p) => p.userId === subject),
+      );
+      const viewer = view.counter.viewer!;
+
+      // (P) partition
+      expect(viewer.yours + viewer.shared + viewer.toSend).toBe(ownPicks.length);
+      // (S) sum
+      expect(view.counter.group).toBe(view.quota.selected);
+      expect(view.counter.group).toBe(
+        view.counter.people.reduce((sum, person) => sum + person.units, 0) +
+          view.counter.unattributed,
+      );
+      // (Y) agreement, for every member who holds a unit
+      for (const person of view.counter.people) {
+        if (person.units === 0) continue;
+        const personView = buildGallerySelection({
+          rows: assetRows() as AssetRow[],
+          picks: pickRows() as PickRow[],
+          labels: labelsOf(userRows() as never),
+          terms: TERMS,
+          subjectId: person.userId,
+        });
+        expect(personView.counter.viewer!.yours).toBe(person.units);
+      }
+    }
+  });
+
+  it("labels people with name ?? email and keeps a removed member's submitted pick at their name", () => {
+    assetRows().push(
+      asset({ id: "a1", isSelected: true, billedTo: "beto", billedAt: new Date(1) }),
+    );
+    pickRows().push(pick({ assetId: "a1", userId: "beto" }));
+
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: "beto",
+    });
+
+    expect(view.entries[0]?.claim?.billedTo).toEqual({ id: "beto", label: "beto@example.com" });
+    expect(view.entries[0]?.picks[0]?.label).toBe("beto@example.com");
+    expect(view.counter.people[0]).toMatchObject({ label: "beto@example.com" });
+  });
+
+  it("names a picker whose user row is gone 'Sin registro' rather than dropping the pick", () => {
+    assetRows().push(asset({ id: "a1", isSelected: false }));
+    pickRows().push(pick({ assetId: "a1", userId: "ghost", submittedAt: null }));
+
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: new Map(),
+      terms: TERMS,
+      subjectId: null,
+    });
+
+    expect(view.entries[0]?.picks[0]?.label).toBe("Sin registro");
+  });
+
+  it("carries no R2 key, URL, gallery id or session id", () => {
+    seedTwoPeople();
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: "ana",
+    });
+
+    const serialized = JSON.stringify(view);
+    expect(serialized).not.toContain("proofKey");
+    expect(serialized).not.toContain("https://");
+    expect(serialized).not.toContain(GALLERY);
+  });
+});
+
+describe("buildGallerySelection — seeded property test", () => {
+  function mulberry32(seed: number) {
+    return () => {
+      seed |= 0;
+      seed = (seed + 0x6d2b79f5) | 0;
+      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  it("holds (P), (S) and (Y) on 300 random committed states", () => {
+    const rng = mulberry32(261);
+    const people = ["ana", "beto", "caro"] as const;
+    const kinds: SelectionKind[] = ["edited", "original"];
+
+    for (let run = 0; run < 300; run += 1) {
+      assetRows().length = 0;
+      pickRows().length = 0;
+      const used = new Set<string>();
+      for (let i = 0; i < 12; i += 1) {
+        const id = `p${i}`;
+        const claimed = rng() < 0.65;
+        const holder = rng() < 0.1 ? null : people[Math.floor(rng() * people.length)]!;
+        const kind = kinds[Math.floor(rng() * kinds.length)]!;
+        if (claimed) {
+          assetRows().push(
+            asset({
+              id,
+              isSelected: true,
+              selectionKind: kind,
+              billedTo: holder,
+              billedAt: holder === null ? null : new Date(1_000 + i * 10),
+              selectedAt: holder === null ? null : new Date(1_000 + i * 10),
+            }),
+          );
+        } else {
+          assetRows().push(asset({ id, isSelected: false }));
+        }
+
+        for (const person of people) {
+          const key = `${id}:${person}`;
+          if (used.has(key)) continue;
+          const rolls = rng();
+          if (claimed && person === holder) {
+            pickRows().push(
+              pick({ assetId: id, userId: person, kind, submittedAt: new Date(2_000 + i) }),
+            );
+            used.add(key);
+          } else if (claimed && rolls < 0.3) {
+            pickRows().push(
+              pick({
+                assetId: id,
+                userId: person,
+                kind: kinds[Math.floor(rng() * 2)]!,
+                submittedAt: rng() < 0.5 ? new Date(2_000 + i) : null,
+              }),
+            );
+            used.add(key);
+          } else if (!claimed && rolls < 0.3) {
+            pickRows().push(
+              pick({
+                assetId: id,
+                userId: person,
+                kind: kinds[Math.floor(rng() * 2)]!,
+                submittedAt: null,
+              }),
+            );
+            used.add(key);
+          }
+        }
+      }
+
+      for (const subject of [...people, null] as const) {
+        const view = buildGallerySelection({
+          rows: assetRows() as AssetRow[],
+          picks: pickRows() as PickRow[],
+          labels: labelsOf(userRows() as never),
+          terms: TERMS,
+          subjectId: subject,
+        });
+        // (S)
+        expect(view.counter.group).toBe(view.quota.selected);
+        expect(view.counter.group).toBe(
+          view.counter.people.reduce((sum, person) => sum + person.units, 0) +
+            view.counter.unattributed,
+        );
+        // (P)
+        if (subject === null) {
+          expect(view.counter.viewer).toBeNull();
+          continue;
+        }
+        const own = view.entries.flatMap((entry) =>
+          entry.picks.filter((p) => p.userId === subject),
+        ).length;
+        const viewer = view.counter.viewer!;
+        expect(viewer.yours + viewer.shared + viewer.toSend).toBe(own);
+        // (Y)
+        for (const person of view.counter.people) {
+          if (person.userId !== subject) continue;
+          expect(viewer.yours).toBe(person.units);
+        }
+      }
+    }
+  });
+});
+
+describe("getGallerySelection", () => {
+  it("reads in a read-only, repeatable-read transaction", async () => {
+    seedTwoPeople();
+    const spy = vi.spyOn(fake, "transaction");
+
+    await getGallerySelection(GALLERY, TERMS, "ana");
+
+    expect(spy).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "repeatable read",
+      accessMode: "read only",
+    });
+  });
+
+  it("never touches users when nothing is claimed or picked", async () => {
+    assetRows().push(asset({ id: "a1" }));
+    userRows().length = 0;
+
+    const view = await getGallerySelection(GALLERY, TERMS, null);
+
+    expect(view.entries).toEqual([]);
+    expect(fake.__log.filter((entry) => entry === "select").length).toBe(3);
+  });
+
+  it("never includes another gallery's assets or picks", async () => {
+    assetRows().push(
+      asset({ id: "mine", isSelected: true, billedTo: "ana", billedAt: new Date(1) }),
+      asset({
+        id: "other",
+        galleryId: OTHER_GALLERY,
+        isSelected: true,
+        billedTo: "ana",
+        billedAt: new Date(1),
+      } as never),
+    );
+    pickRows().push(pick({ assetId: "mine", userId: "ana" }), {
+      ...pick({ assetId: "other", userId: "ana" }),
+      galleryId: OTHER_GALLERY,
+    });
+
+    const view = await getGallerySelection(GALLERY, TERMS, "ana");
+
+    expect(view.entries.map((entry) => entry.assetId)).toEqual(["mine"]);
+  });
+
+  it("honours the subject in the counter and the lock", async () => {
+    seedTwoPeople();
+    memberRows().push(
+      {
+        galleryId: GALLERY,
+        userId: "ana",
+        removedAt: null,
+        selectionLockedAt: null,
+        selectionSubmittedAt: new Date(1),
+        selectionLockedBy: null,
+      },
+      {
+        galleryId: GALLERY,
+        userId: "beto",
+        removedAt: null,
+        selectionLockedAt: new Date(2),
+        selectionSubmittedAt: null,
+        selectionLockedBy: "admin",
+      },
+    );
+
+    const view = await getGallerySelection(GALLERY, TERMS, "ana");
+
+    expect(view.lock.viewerLock).toBeNull();
+    expect(view.lock.viewerSubmittedAt).toBe(new Date(1).toISOString());
+    expect(view.lock.adminLockedPickerIds).toEqual(["beto"]);
+    expect(view.counter.viewer?.yours).toBe(2);
+  });
+});
+
+describe("type parity", () => {
+  it("SelectionPickState is exactly PickStatus", () => {
+    expectTypeOf<SelectionPickState>().toEqualTypeOf<PickStatus>();
+  });
+});
+
+// `unitsOf`/`attributeQuota` are import-checked above; this pins the charge
+// values against the same function the builder uses.
+it("charge comes straight from attributeQuota's units", () => {
+  seedTwoPeople();
+  const units = attributeQuota(unitsOf(assetRows() as AssetRow[]), TERMS);
+  expect(units.units.map((unit) => [unit.assetId, unit.charge])).toEqual([
+    ["a6", "included"],
+    ["a1", "included"],
+    ["a2", "extra"],
+    ["a3", "extra"],
+    ["a4", "original"],
+  ]);
 });

@@ -181,8 +181,9 @@ export const selectionKind = pgEnum("selection_kind", ["edited", "original"]);
 
 // Task #204 — how the client's own "Fotos elegidas" tray lays out its picks.
 // `flat` (today's only behavior) is one list, each thumbnail labelled with
-// who picked it. `by-person` groups the SAME picks into one row per picker,
-// each with a name and count. Purely a presentation choice: it changes
+// the billed unit's holder. `by-person` groups the SAME units into one row per
+// billed person, each with a name and count. Purely a presentation choice: it
+// changes
 // nothing about what is selected, who owes what, or the frozen commercial
 // terms above — see galleries.selectionTrayMode's own comment for why it
 // carries none of #200's audit columns.
@@ -614,16 +615,17 @@ export const galleryClients = pgTable(
     // nullable timestamps, same "has this happened yet" vocabulary as
     // `removedAt` above:
     //   - `selectionLockedAt`: non-null = this client can no longer change
-    //     picks (and nobody else can undo the picks they made).
+    //     picks. NOBODY can undo another person's pick, locked or not: a
+    //     pick is a row of `asset_picks` keyed by its owner.
     //   - `selectionSubmittedAt`: non-null = the client pressed "Enviar
     //     selección" themselves.
     // Three states follow: open (locked NULL), submitted (both set) and
     // locked by the admin (locked set, submitted NULL — slice #242).
-    // Unlocking clears BOTH. The gallery moves `proofing -> selected` once
-    // EVERY ACTIVE membership is locked (src/lib/gallery-client-locks.ts's
-    // `settleGalleryLockStatus`), so a single-client gallery behaves exactly
-    // as it did when the lock was gallery-wide. Like every other read of
-    // this table, anything consulting these columns must filter
+    // Unlocking clears BOTH. The gallery moves `proofing -> selected` when it
+    // has at least one active member and EVERY active member is done — no
+    // unsent pick and either sent or locked (epic #250 decision 13;
+    // src/lib/gallery-client-locks.ts's `settleGalleryLockStatus`). Like every
+    // other read of this table, anything consulting these columns must filter
     // `removedAt IS NULL` — a removed client's lock state is history.
     selectionLockedAt: timestamp("selection_locked_at", { withTimezone: true }),
     selectionSubmittedAt: timestamp("selection_submitted_at", { withTimezone: true }),
@@ -631,10 +633,12 @@ export const galleryClients = pgTable(
     // inferred from the two timestamps: under rolling delivery every order
     // sets `selectionSubmittedAt`, so "locked + submitted" no longer means
     // "the client locked themselves" (a member can order and LATER be locked
-    // by the photographer). `'client'` = the classic (#239) submit,
-    // `'admin'` = the photographer's lock. Always cleared together with
-    // `selectionLockedAt`; null while open. The rolling-delivery toggle
-    // migration and the client snapshot both key off `'client'`.
+    // by the photographer). `'client'` = the classic (#239) submit, which
+    // nothing writes any more (epic #250 S5: an order never locks);
+    // `'admin'` = the photographer's lock, the only value written today.
+    // `'client'` survives only as history in closed galleries, where the
+    // gallery status already freezes every control. Always cleared together
+    // with `selectionLockedAt`; null while open.
     selectionLockedBy: text("selection_locked_by", { enum: ["client", "admin"] }),
   },
   (t) => [primaryKey({ columns: [t.galleryId, t.userId] })],
@@ -658,39 +662,28 @@ export const assets = pgTable(
     proofHeight: integer("proof_height").notNull(),
     isSelected: boolean("is_selected").notNull().default(false),
     selectedAt: timestamp("selected_at", { withTimezone: true }),
-    // Task #244 — ROLLING DELIVERY "order" stamp. A selected asset with
-    // `requestedAt IS NULL` is still in its picker's CART (freely removable);
-    // submitting stamps it, which freezes it for every non-admin client
-    // (`already_requested`, PATCH selection route) and makes it the
-    // photographer's work. Only ever written in galleries with
-    // `rolling_delivery` on. Kept in lockstep with `isSelected`: null whenever
-    // the asset is not selected (every deselect path clears it).
+    // Epic #250 — the CLAIM stamp: when the asset's unit was claimed. It is
+    // written on every claim since S4 (not only in rolling-delivery
+    // galleries), and is NULL on classic claims imported by the 0017
+    // backfill. NEVER use it to decide whether an asset is claimed — that is
+    // `isSelected`. Carts live in `asset_picks` rows with
+    // `submitted_at IS NULL`. Kept in lockstep with the claim: cleared when
+    // the asset is unclaimed.
     requestedAt: timestamp("requested_at", { withTimezone: true }),
-    // Epic #250, S4 — the TS field is now `billedTo`: the person this asset's
+    // Epic #250, S4 — the TS field is `billedTo`: the person this asset's
     // single billed unit is attributed to (the claim's holder, or the
-    // escalation's winner). The DB column stays `selected_by`. The rest of
-    // this docblock is task #94's history, rewritten in full by S6.
+    // escalation's winner). The DB column stays `selected_by`.
     //
-    // WHO last set `isSelected`/`selectedAt` — task #94's "shared selection,
-    // ATTRIBUTED" decision (2026-07-29, owner-approved): with several clients
-    // now able to pick into the SAME shared set, an anonymous boolean is no
-    // longer enough — the picker needs to show who chose each photo. This
-    // stays nullable and is ALWAYS kept in lockstep with `isSelected`: set to
-    // the acting session's user id the instant `isSelected` flips to `true`,
-    // and cleared back to `null` the instant it flips to `false` (see the
-    // PATCH /api/assets/[assetId]/selection route) — never left stale.
+    // WHO holds the asset's SINGLE billed unit — the claim's holder, or the
+    // escalation's winner. Not "who picked it": several people may have an
+    // `asset_picks` row for the same asset (decision 1), and that set of
+    // askers is read from `asset_picks`, never from this column. Written only
+    // by an order submit or by an admin re-resolution; a CLIENT PATCH never
+    // touches `assets` (decision 7, structural).
     //
-    // DESELECTION, decided explicitly rather than left implicit: if A selects
-    // a photo and B later deselects it, this column goes back to `null`, NOT
-    // "B" — same lockstep as `selectedAt`, which already goes back to `null`
-    // on deselect. The alternative (keep B as the last actor even though their
-    // action UNDID the pick) would make `billedTo` answer a different
-    // question — "who last touched this row" instead of "who picked this photo
-    // right now" — and the UI has no way to tell those two apart without a
-    // second flag; showing a name next to an unselected thumbnail would read
-    // as an active pick that isn't real. A true "who did what, in order" audit
-    // would need a separate append-only event table, not a single column —
-    // out of scope for this slice (kanban #94's own "Not in this slice").
+    // Nullable: a legacy unit with no recorded owner, imported by the 0017
+    // backfill. It renders "Sin registro" and lands in the attribution
+    // layer's matching bucket — honest, rather than a guessed name.
     //
     // `onDelete: "set null"`, deliberately NOT "restrict" like
     // `gallery_clients.userId` above — different columns, different failure
@@ -711,8 +704,10 @@ export const assets = pgTable(
     // (a cart) or was never picked at all. Backfilled from
     // `coalesce(requested_at, selected_at)` by task #257.
     billedAt: timestamp("billed_at", { withTimezone: true }),
-    // Task #205 — WHAT the client asked for this pick to become: `edited`
-    // (default, today's only behavior) or `original` (delivered as shot, no
+    // The RESOLVED kind of the claimed unit: `edited` iff some submitted pick
+    // asked for an edit (decision 3). Each person's own request lives on
+    // `asset_picks.kind`, not here. `edited` (default, today's only behavior)
+    // or `original` (delivered as shot, no
     // edit — see `packages.originalPhotoPriceCop`'s own comment). Deliberately
     // NOT merged with `isSelected` into a three-state enum ("not selected" /
     // "selected, edited" / "selected, original") — `isSelected` already answers
@@ -750,20 +745,22 @@ export const assets = pgTable(
     // WHY THIS IS A STORED FLAG rather than derived from `finalKey IS NOT NULL
     // AND isSelected = false`, which is the shape it looks like it should have:
     // that predicate is ALSO true for a photo the client picked, the
-    // photographer finished, and the client then DESELECTED. `finalKey` and
-    // `isEdited` are never cleared on deselect (only `selectedAt`/`billedTo`
-    // are — see those columns above), so a derived rule would silently start
-    // delivering discarded photos for free the moment this slice shipped. That
-    // is a regression nobody asked for, and no amount of care at the read sites
-    // can recover intent that was never recorded. An extra is a DECISION, so it
-    // gets written down.
+    // photographer finished, and the claim was later UNCLAIMED (an admin
+    // removal re-resolved it). `finalKey` and `isEdited` are never cleared on
+    // unclaim (only `selectedAt`/`billedTo`/`billedAt` are — see those
+    // columns above), so a derived rule would silently start
+    // delivering discarded photos for free. That is a regression nobody asked
+    // for, and no amount of care at the read sites can recover intent that was
+    // never recorded. An extra is a DECISION, so it gets written down. A
+    // CLIENT never clears `assets` any more; only an admin re-resolution can.
     //
     // Meaningless while `isSelected` is `true` — the same "meaningless until"
     // relationship `selectionKind`/`selectedAt`/`billedTo` above already have
     // with that boolean. Consequence worth stating plainly, because it is
     // reachable: if the photographer gifts a photo while the gallery is still
-    // `proofing` and the client then PICKS it, `isSelected` wins — the photo
-    // becomes an ordinary pick and counts against the package like any other.
+    // `proofing` and a member then CLAIMS it (sends a pick), `isSelected` wins
+    // — the photo becomes an ordinary pick and counts against the package like
+    // any other.
     // The client asked for it; charging for it is the honest outcome, and the
     // alternative (a pick that is silently free because of an earlier gift)
     // would make the quota unexplainable to the person paying it.
@@ -778,10 +775,10 @@ export const assets = pgTable(
     // belongs to, so the `by-person` tray has a row to put it in.
     //
     // WHY THIS IS NOT `billedTo`, which is the obvious place to put it: that
-    // column answers "who picked this photo right now" (see its own comment
-    // above), is kept in lockstep with `isSelected`, and is cleared to `null`
-    // the instant a pick is undone. It is also what the `by-person` tray groups
-    // on. Writing the photographer's choice into it would make a photo NOBODY
+    // column answers "who the claimed unit is billed to" (see its own comment
+    // above), is clear on an unclaimed asset, and is what the `by-person` tray
+    // groups units by. Writing the photographer's choice into it would make a
+    // photo NOBODY
     // picked render as somebody's active pick, and there would be no way for
     // the tray to tell the two apart. Two different questions, two columns.
     //

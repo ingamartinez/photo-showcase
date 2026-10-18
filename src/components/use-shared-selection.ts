@@ -37,22 +37,18 @@
 // THIS FILE now — same text, moved whole with the code.)
 import { useCallback, useEffect, useRef, useState } from "react";
 import type { SubmitSelectionOutcome } from "@/components/submit-selection-panel";
-import { computeQuota, type QuotaResult } from "@/lib/quota";
-import type {
-  SelectionKind,
-  SelectionPick,
-  SelectionPicker,
-  ViewerLock,
+import type { QuotaResult } from "@/lib/quota";
+import {
+  type GalleryStatus,
+  type SelectionCounter,
+  type SelectionEntry,
+  type SelectionKind,
+  type SelectionPicker,
+  type SelectionSnapshot,
+  type ViewerLock,
 } from "@/lib/selection-snapshot";
 
-// Hand-rolled, not imported from `@/lib/db/schema`'s `Gallery["status"]`:
-// even a type-only import is erased at compile time and technically safe
-// to bundle, but proof-grid.tsx's own header comment already tells the story of
-// ONE import off the wrong module breaking the production build (task #24's
-// review) — duplicating five string literals here costs nothing and removes
-// any need to reason about it ever again. Keep in sync with
-// `galleryStatus` in schema.ts.
-export type GalleryStatus = "draft" | "proofing" | "selected" | "delivered" | "archived";
+export type { GalleryStatus };
 
 // A gallery is no longer accepting toggles or a fresh submission once it has
 // left `proofing` — see the submit route's own REOPEN POLICY comment
@@ -120,25 +116,16 @@ type SelectionResponse = {
     requestedAt?: string | null;
   };
   quota: QuotaResult;
+  // Epic #250 S6 — the asset's entry and the gallery-wide counter from the
+  // SAME builder the GET route uses, so a confirmed toggle can replace one
+  // entry wholesale without waiting for a snapshot.
+  entry: SelectionEntry | null;
+  counter: SelectionCounter;
 };
 
 /** The shared-selection snapshot returned by `GET
  * /api/galleries/[galleryId]/selection`. The SERVER's view, in full — never
  * merged field-by-field with a local guess; see `applySnapshot` below. */
-type SelectionSnapshot = {
-  status: GalleryStatus;
-  submittedAt: string | null;
-  quota: QuotaResult;
-  picks: SelectionPick[];
-  // Epic #239 — per-person lock state. Optional only so an older server (or a
-  // test double) that omits them reads as "nobody locked"; the real route
-  // always sends both.
-  viewerLock?: ViewerLock | null;
-  lockedPickerIds?: string[];
-  submittedPickerIds?: string[];
-  // Task #244 — the viewer's own last submit, locked or not.
-  viewerSubmittedAt?: string | null;
-};
 
 /** The two fields of `ProofAsset` (src/components/proof-grid.tsx) this hook
  * reads, and only for the FIRST paint's seed. Structural rather than an import
@@ -209,31 +196,17 @@ function effectiveViewerLock(lock: ViewerLock | null, rolling: boolean): ViewerL
   return rolling && lock !== null && lock.lockedBy === "client" ? null : lock;
 }
 
-/** Same reasoning for the group: under rolling delivery only ADMIN-locked
- * pickers are frozen, so client-submitted ids are dropped from both lists. */
-function effectivePickerIds(
-  locked: string[],
-  submitted: string[],
-  rolling: boolean,
-): { locked: string[]; submitted: string[] } {
-  if (!rolling) return { locked, submitted };
-  return { locked: locked.filter((id) => !submitted.includes(id)), submitted: [] };
-}
-
 export function useSharedSelection({
   galleryId,
   initialAssets,
   initialStatus,
   initialSubmittedAt,
-  initialPicks,
-  includedPhotosSnapshot,
-  extraPhotoPriceCopSnapshot,
-  extraPhotoPriceTiersSnapshot,
-  originalPhotoPriceCopSnapshot,
-  viewerId,
+  initialEntries,
+  initialQuota,
+  initialCounter,
   initialViewerLock = null,
-  initialLockedPickerIds = [],
-  initialSubmittedPickerIds = [],
+  initialAdminLockedPickerIds = [],
+  viewAsId = null,
   rollingDelivery = false,
   initialViewerSubmittedAt = null,
 }: {
@@ -241,34 +214,14 @@ export function useSharedSelection({
   initialAssets: SharedSelectionAsset[];
   initialStatus: GalleryStatus;
   initialSubmittedAt: string | null;
-  initialPicks: SelectionPick[];
-  includedPhotosSnapshot: number;
-  extraPhotoPriceCopSnapshot: number;
-  // Task #231 — frozen volume scale, `null`/absent = flat price.
-  extraPhotoPriceTiersSnapshot: { minExtras: number; priceCop: number }[] | null;
-  // Task #206 — REQUIRED, not optional. This used to not exist as a prop at
-  // all: the GraphQL `Gallery` type didn't expose
-  // `originalPhotoPriceCopSnapshot`, `page.tsx` had nothing to pass, and this
-  // hook hardcoded `0` right where the value now goes (harmless before this
-  // slice, since nothing wrote `assets.selectionKind` to anything but
-  // `edited` — see #205's own "Hueco de cableado" note). Making the prop
-  // required is what turns "the wiring gap is closed" into a compile error
-  // at every call site that doesn't supply it, rather than a comment asking
-  // nicely for it.
-  originalPhotoPriceCopSnapshot: number;
-  // Epic #239 (task #241) — the signed-in user's id, so a submit by THIS
-  // session can add itself to `lockedPickerIds` without waiting for a poll.
+  initialEntries: SelectionEntry[];
+  initialQuota: QuotaResult;
+  initialCounter: SelectionCounter;
   viewerId: string;
-  // Epic #239 — the viewer's OWN lock and whose picks are frozen, as of the
-  // server render. After the first paint both are replaced wholesale by each
-  // accepted snapshot, so an admin unlocking this person reopens the controls
-  // with no reload.
   initialViewerLock?: ViewerLock | null;
-  initialLockedPickerIds?: string[];
-  initialSubmittedPickerIds?: string[];
-  // Task #244 — rolling delivery: a submit places an ORDER (stamps
-  // `requestedAt` on the viewer's "por enviar" picks) instead of locking the
-  // viewer. `initialViewerSubmittedAt` seeds "Último envío".
+  initialAdminLockedPickerIds?: string[];
+  /** Epic #250 S6 — the admin's view-as subject, forwarded to the live poll. */
+  viewAsId?: string | null;
   rollingDelivery?: boolean;
   initialViewerSubmittedAt?: string | null;
 }) {
@@ -279,45 +232,19 @@ export function useSharedSelection({
   const [selectionById, setSelectionById] = useState<Record<string, boolean>>(() =>
     Object.fromEntries(initialAssets.map((asset) => [asset.id, asset.isSelected])),
   );
-  // Task #206, corrected after review (round 2) — BOTH the total and the
-  // edited/original split come off `initialPicks` alone, never off
-  // `initialAssets`. An earlier version of this took the total from
-  // `initialAssets.filter(isSelected).length` and subtracted `initialPicks`'
-  // own originals count from it, on the claim that the two were "built from
-  // the same query so they can never disagree". That claim was false:
-  // `initialAssets` comes from `readClientGalleryBySlug` (page.tsx's FIRST
-  // await), `initialPicks` comes from `getGallerySelection` (a SEPARATE,
-  // LATER await, same file) — two sequential reads with a write window
-  // between them, in a feature whose entire premise (#94/#95) is several
-  // clients editing the same shared selection concurrently. A pick changing
-  // kind, or a NEW pick landing, in that window left `initialAssets` stale
-  // and `initialPicks` fresh, and subtracting one from the other produced a
-  // wrong count on the first paint of a money screen — see
-  // proof-grid.test.tsx's own "the two initial reads can disagree" test for
-  // the reproduced case.
-  //
-  // `initialPicks.length` alone is the correct total: every entry in it IS
-  // a currently-selected asset by construction (selection-snapshot.ts's own
-  // comment on `SelectionPick`), so there is nothing left to read off
-  // `initialAssets` for this calculation at all.
-  const [quota, setQuota] = useState<QuotaResult>(() => {
-    const selectedOriginal = initialPicks.filter(
-      (pick) => pick.selectionKind === "original",
-    ).length;
-    const selectedEdited = initialPicks.length - selectedOriginal;
-    return computeQuota(selectedEdited, selectedOriginal, {
-      includedPhotosSnapshot,
-      extraPhotoPriceCopSnapshot,
-      extraPhotoPriceTiersSnapshot,
-      originalPhotoPriceCopSnapshot,
-    });
-  });
+  // The server's own quota for the first paint (epic #250 S6). There is no
+  // local arithmetic anywhere in this file: every accepted snapshot and every
+  // toggle response replaces this whole object with the server's recomputation.
+  const [quota, setQuota] = useState<QuotaResult>(initialQuota);
   // Task #95: the shared, ATTRIBUTED selection — the tray's whole content.
   // Seeded from the server render, then replaced WHOLESALE by each accepted
   // snapshot (never merged field by field) plus the one local edit a
   // confirmed toggle of this session's own makes; see `applySnapshot` and
-  // `toggleSelection` below.
-  const [picks, setPicks] = useState<SelectionPick[]>(initialPicks);
+  // `toggleSelection` below. Each entry is claimed-or-carted with its askers;
+  // one entry per asset is the wire unit (epic #250 S6).
+  const [entries, setEntries] = useState<SelectionEntry[]>(initialEntries);
+  // The server's four-number counter. The client never derives any of it.
+  const [counter, setCounter] = useState<SelectionCounter>(initialCounter);
 
   // Task #25 + #95: the gallery's status, now LIVE rather than fixed at
   // mount. It was a one-way `isLocked` boolean that only `handleSubmitted`
@@ -346,16 +273,9 @@ export function useSharedSelection({
   const [viewerLock, setViewerLock] = useState<ViewerLock | null>(
     effectiveViewerLock(initialViewerLock, rollingDelivery),
   );
-  const initialPickerIds = effectivePickerIds(
-    initialLockedPickerIds,
-    initialSubmittedPickerIds,
-    rollingDelivery,
-  );
-  const [lockedPickerIds, setLockedPickerIds] = useState<string[]>(initialPickerIds.locked);
-  // The subset of `lockedPickerIds` who submitted themselves (the rest were
-  // closed by the photographer).
-  const [submittedPickerIds, setSubmittedPickerIds] = useState<string[]>(
-    initialPickerIds.submitted,
+  // Only PHOTOGRAPHER locks are listed now (S5 never writes a client lock).
+  const [adminLockedPickerIds, setAdminLockedPickerIds] = useState<string[]>(
+    initialAdminLockedPickerIds,
   );
   const [viewerSubmittedAt, setViewerSubmittedAt] = useState<string | null>(
     initialViewerSubmittedAt,
@@ -442,8 +362,9 @@ export function useSharedSelection({
   //      so both are discarded.
   //
   // Note what is NOT in that list: there is no per-asset merge, no "keep my
-  // version of this one photo". The snapshot replaces `picks`, `selectionById`,
-  // `quota`, `status` and `submittedAt` together, as one consistent view. A
+  // version of this one photo". The snapshot replaces `entries`, `counter`,
+  // `selectionById`, `quota`, `status` and `submittedAt` together, as one
+  // consistent view. A
   // half-applied snapshot is how a tray and a counter start disagreeing.
   //
   // WHAT "ISSUE CLOCK" MEANS FOR A PUSHED EVENT (task #114, worked out BEFORE
@@ -497,18 +418,24 @@ export function useSharedSelection({
       const nextViewerLock = effectiveViewerLock(snapshot.viewerLock ?? null, rollingDelivery);
       isLockedRef.current = SUBMITTED_STATUSES.has(snapshot.status) || nextViewerLock !== null;
       setViewerLock(nextViewerLock);
-      const pickerIds = effectivePickerIds(
-        snapshot.lockedPickerIds ?? [],
-        snapshot.submittedPickerIds ?? [],
-        rollingDelivery,
-      );
-      setLockedPickerIds(pickerIds.locked);
-      setSubmittedPickerIds(pickerIds.submitted);
+      setAdminLockedPickerIds(snapshot.adminLockedPickerIds ?? []);
       setSubmittedAt(snapshot.submittedAt);
       setViewerSubmittedAt(snapshot.viewerSubmittedAt ?? null);
-      setPicks(snapshot.picks);
+      setEntries(snapshot.entries ?? []);
+      setCounter(
+        snapshot.counter ?? {
+          // A pre-S6 server (or a test double) has no counter. Deriving a
+          // gallery-only fallback is honest: there is no subject to describe.
+          group: snapshot.quota?.selected ?? 0,
+          viewer: null,
+          people: [],
+          unattributed: 0,
+        },
+      );
 
-      const pickedAssetIds = new Set(snapshot.picks.map((pick) => pick.assetId));
+      const pickedAssetIds = new Set(
+        snapshot.entries.filter((entry) => entry.claim !== null).map((entry) => entry.assetId),
+      );
       // Rebuilt from the keys THIS HOOK knows about, not from the
       // snapshot's own list: an asset the photographer uploaded after this page
       // was server-rendered exists in the snapshot but has no tile here and no
@@ -549,7 +476,11 @@ export function useSharedSelection({
     pollInFlightRef.current = true;
     const issuedAtClock = ++quotaSequenceRef.current;
     try {
-      const response = await fetch(`/api/galleries/${galleryId}/selection`);
+      const response = await fetch(
+        `/api/galleries/${galleryId}/selection${
+          viewAsId ? `?viewAs=${encodeURIComponent(viewAsId)}` : ""
+        }`,
+      );
       if (!response.ok) {
         // A 403/404 here means this session lost access while the tab was open
         // (removed from the gallery, task #97) — treated exactly like a
@@ -608,7 +539,7 @@ export function useSharedSelection({
         void pollRef.current();
       }
     }
-  }, [galleryId, applySnapshot]);
+  }, [galleryId, applySnapshot, viewAsId]);
   // Kept current in an effect, not assigned during render: refs must not be
   // written while rendering (`react-hooks/refs`) — an effect runs in the
   // commit phase, still well before any async `fetch` this hook issues
@@ -780,33 +711,16 @@ export function useSharedSelection({
         // `quotaSequenceRef`'s own comment above for why.
         setSelectionById((prev) => ({ ...prev, [body.asset.id]: body.asset.isSelected }));
 
-        // Task #95: the tray moves the photo the instant the server confirms
-        // it, not one poll interval later — waiting up to 5 seconds to see your
-        // OWN click take effect would read as the app being broken. Every field
-        // written here comes from the response (`isSelected`, `selectedAt`,
-        // `pickedBy`, `selectionKind`), never guessed: this is the same row the
-        // route just wrote, reported back by the route that wrote it (task
-        // #206's own "always `edited` on a fresh select" rule lives in that
-        // route, not here). The next accepted snapshot replaces the whole list
-        // anyway.
-        //
-        // Removed-then-appended on select rather than sorted: the server orders
-        // by `selected_at` ascending, and a pick made now IS the newest, so
-        // appending reproduces the server's own order without re-sorting a list
-        // whose other timestamps this hook never re-reads.
-        setPicks((prev) => {
-          const without = prev.filter((pick) => pick.assetId !== body.asset.id);
-          if (!body.asset.isSelected) return without;
-          return [
-            ...without,
-            {
-              assetId: body.asset.id,
-              selectedAt: body.asset.selectedAt,
-              pickedBy: body.asset.pickedBy,
-              selectionKind: body.asset.selectionKind,
-              requestedAt: body.asset.requestedAt ?? null,
-            },
-          ];
+        // Epic #250 S6 — the asset's whole entry (its claim and every person's
+        // pick on it) comes back from the server, so the local merge replaces
+        // that one entry wholesale. Reconstructing it from a single `pick`
+        // would drop somebody else's cart sitting on the same photo. The next
+        // accepted snapshot replaces the whole list anyway.
+        setEntries((prev) => {
+          const index = prev.findIndex((entry) => entry.assetId === body.asset.id);
+          if (!body.entry) return prev.filter((entry) => entry.assetId !== body.asset.id);
+          if (index === -1) return [...prev, body.entry];
+          return prev.map((entry) => (entry.assetId === body.asset.id ? body.entry! : entry));
         });
 
         // This session now holds a write the server has confirmed. Any snapshot
@@ -814,12 +728,13 @@ export function useSharedSelection({
         // not be applied over it — see the LIVE SYNC section above.
         lastLocalWriteClockRef.current = quotaSequenceRef.current;
 
-        // The server's own recomputed quota — only applied if no LATER-issued
-        // toggle's response (or accepted snapshot) has already been applied. See
-        // the header comment on `quotaSequenceRef` above.
+        // The server's own recomputed quota and counter — only applied if no
+        // LATER-issued toggle's response (or accepted snapshot) has already been
+        // applied. See the header comment on `quotaSequenceRef` above.
         if (sequence > appliedQuotaSequenceRef.current) {
           appliedQuotaSequenceRef.current = sequence;
           setQuota(body.quota);
+          if (body.counter) setCounter(body.counter);
         }
       } catch {
         setToggleError("No se pudo conectar.");
@@ -880,26 +795,19 @@ export function useSharedSelection({
         // here costs nothing and keeps this handler symmetric with
         // `toggleSelection`'s own "trust only the response" stance.
         setSelectionById((prev) => ({ ...prev, [body.asset.id]: body.asset.isSelected }));
-        // `pickedBy` too — not just `selectionKind` — for the SAME reason
-        // `toggleSelection` above writes back every field its own response
-        // carries rather than assuming the pick's existing local copy is still
-        // right: the route's own `pickedBy` is a REAL lookup (since task #249 a
-        // type change is only reachable by an admin, by the picker, or on an
-        // unprotected pick — the route refuses everyone else — so the recorded
-        // picker can still differ from this session), and this is the one place
-        // that lookup's result is actually consumed.
-        setPicks((prev) =>
-          prev.map((pick) =>
-            pick.assetId === body.asset.id
-              ? { ...pick, selectionKind: body.asset.selectionKind, pickedBy: body.asset.pickedBy }
-              : pick,
-          ),
-        );
+        // Epic #250 S6 — replace this asset's entry wholesale.
+        setEntries((prev) => {
+          const index = prev.findIndex((entry) => entry.assetId === body.asset.id);
+          if (!body.entry) return prev.filter((entry) => entry.assetId !== body.asset.id);
+          if (index === -1) return [...prev, body.entry];
+          return prev.map((entry) => (entry.assetId === body.asset.id ? body.entry! : entry));
+        });
 
         lastLocalWriteClockRef.current = quotaSequenceRef.current;
         if (sequence > appliedQuotaSequenceRef.current) {
           appliedQuotaSequenceRef.current = sequence;
           setQuota(body.quota);
+          if (body.counter) setCounter(body.counter);
         }
       } catch {
         setToggleError("No se pudo conectar.");
@@ -913,80 +821,42 @@ export function useSharedSelection({
   );
 
   // <SubmitSelectionPanel>'s success callback — this session's OWN
-  // submission. Also replaces `quota` wholesale with the submit route's own
-  // recomputation, same "never trust a number this hook didn't get
-  // handed by the server" stance `toggleSelection` already follows above,
-  // and covers the idempotent "already_submitted" outcome identically to a
-  // fresh "submitted" one — both mean "the gallery is locked, here is the
-  // real quota", which is all this needs to know.
-  //
-  // Task #95: this is no longer the ONLY way the lock can arrive — a snapshot
-  // reporting somebody ELSE's submission does the same thing (see
-  // `applySnapshot`). `"selected"` is the status the submit route transitions
-  // to, and setting it here rather than a separate boolean is what keeps the
-  // two paths from being able to disagree. The write clock is stamped for the
-  // same reason a toggle stamps it: a snapshot issued before this submission
-  // committed must not reopen the UI for one interval.
-  //
-  // Epic #239: a submit now locks only THIS person. The gallery moves to
-  // `selected` only when the server says this submission closed it
-  // (`gallerySelected`); otherwise it stays `proofing` for the others, and this
-  // session's lock is recorded as `viewerLock` right away — no reload, no
-  // waiting for a poll. `outcome.submittedAt` is the caller's OWN time.
+  // submission. Epic #250 S5 made EVERY submit an order that never locks, so
+  // there is ONE path here: record the send time, apply the server's quota,
+  // follow the gallery to `selected` only when the server says this submission
+  // closed it, and ask for a full snapshot (a send rewrites many entries at
+  // once, so the snapshot is the honest refresh).
   const handleSubmitted = useCallback(
     (outcome: SubmitSelectionOutcome) => {
-      if (rollingDelivery) {
-        // Only an order that THIS call actually placed marks anything. The
-        // idempotent 200 (e.g. an admin-locked client: nothing was stamped)
-        // carries no `requestedCount`; the next snapshot tells the truth.
-        if (!outcome.requestedCount) return;
-        // Task #244: an ORDER, not a lock. The viewer's "por enviar" picks
-        // become "pedidas" right away (the server stamped exactly those) and
-        // the grid stays interactive: no `viewerLock`, no `isLockedRef`.
-        const orderedAt = outcome.submittedAt ?? new Date().toISOString();
-        setViewerSubmittedAt(orderedAt);
-        setPicks((prev) =>
-          prev.map((pick) =>
-            pick.pickedBy?.id === viewerId && !pick.requestedAt
-              ? { ...pick, requestedAt: orderedAt }
-              : pick,
-          ),
-        );
-        setQuota(outcome.quota);
-        lastLocalWriteClockRef.current = ++quotaSequenceRef.current;
-        appliedQuotaSequenceRef.current = quotaSequenceRef.current;
-        return;
-      }
-      isLockedRef.current = true;
+      // A rolling idempotent 200 (`already_submitted`, no `requestedCount`)
+      // stamped nothing, so it must not pretend this person just sent.
+      const stamped = !rollingDelivery || outcome.requestedCount !== undefined;
+      if (outcome.submittedAt && stamped) setViewerSubmittedAt(outcome.submittedAt);
       if (outcome.gallerySelected) {
+        isLockedRef.current = true;
         setStatus("selected");
         setSubmittedAt(outcome.submittedAt);
       }
-      setViewerLock({
-        lockedAt: outcome.submittedAt ?? new Date().toISOString(),
-        submittedAt: outcome.submittedAt,
-      });
-      setLockedPickerIds((prev) => (prev.includes(viewerId) ? prev : [...prev, viewerId]));
-      setSubmittedPickerIds((prev) => (prev.includes(viewerId) ? prev : [...prev, viewerId]));
       setQuota(outcome.quota);
       lastLocalWriteClockRef.current = ++quotaSequenceRef.current;
       appliedQuotaSequenceRef.current = quotaSequenceRef.current;
+      requestRefresh();
     },
-    [viewerId, rollingDelivery],
+    [requestRefresh, rollingDelivery],
   );
 
   return {
     viewerSubmittedAt,
     selectionById,
     quota,
-    picks,
+    entries,
+    counter,
     status,
     isLocked,
     isGalleryLocked,
     isViewerLocked,
     viewerLock,
-    lockedPickerIds,
-    submittedPickerIds,
+    adminLockedPickerIds,
     submittedAt,
     pendingIds,
     toggleError,

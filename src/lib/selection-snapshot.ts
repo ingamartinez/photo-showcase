@@ -1,6 +1,8 @@
-// The SHAPE of a gallery's shared, attributed selection (task #95), plus the
-// one pure decision about how a picker is named. No I/O, no imports of
-// anything that touches Postgres or R2.
+// The SHAPE of a gallery's shared, attributed selection (task #95, extended by
+// epic #250 S6): each asset's claim, the people who asked for it and what each
+// of them asked for, the server-computed quota, and the four-number counter.
+// Plus the one pure decision about how a person is named. No I/O, no imports
+// of anything that touches Postgres or R2.
 //
 // This module exists for the same reason `@/lib/format` and `@/lib/quota` do,
 // and the reason is a production build failure, not tidiness: the tray is a
@@ -15,11 +17,18 @@
 //
 // Everything below travels to the browser, so nothing that must not be
 // public may be added to these types: no R2 keys, no presigned URLs, no
-// gallery id, no session id. Asset ids and picker attribution only — the tray
-// looks each thumbnail up in the presigned URL map `<ProofGrid>` already
-// holds.
+// gallery id, no session id. Asset ids, people and what they asked for only —
+// the tray looks each thumbnail up in the presigned URL map `<ProofGrid>`
+// already holds.
+import type { QuotaResult } from "@/lib/quota";
 
-/** Who picked one photo. */
+/** Same five literals as `Gallery["status"]` in schema.ts, hand-rolled for
+ * the identical reason `SelectionKind` below is: a type-only import off a
+ * module this close to `@/lib/db` has broken this app's production build
+ * before. Keep in sync with `galleryStatus` in schema.ts. */
+export type GalleryStatus = "draft" | "proofing" | "selected" | "delivered" | "archived";
+
+/** Who a claimed unit is billed to, or one of the people who asked for it. */
 export type SelectionPicker = {
   id: string;
   /** `users.name` when the photographer recorded one, otherwise the email
@@ -37,54 +46,86 @@ export type SelectionPicker = {
   label: string;
 };
 
-/** Task #206 — what the client asked THIS pick to become: `edited` (the
- * default, today's only pre-#206 behavior) or `original` (delivered as shot,
- * no edit — see `packages.originalPhotoPriceCop`'s own comment in schema.ts,
- * and `assets.selectionKind`'s comment there for the full "original is a
- * commercial label on a request, not a second set of bytes this app can
- * serve" story).
+/** What one person asked THEIR pick to become: `edited` (the default) or
+ * `original` (delivered as shot, no edit — see `packages.originalPhotoPriceCop`'s
+ * own comment in schema.ts, and `assets.selectionKind`'s comment there for the
+ * full "original is a commercial label on a request, not a second set of bytes
+ * this app can serve" story).
  *
  * Hand-rolled here rather than imported from `@/lib/db/schema`'s own
- * `selectionKind` pgEnum, for the identical reason `use-shared-selection.ts`
- * hand-rolls `GalleryStatus` instead of importing `Gallery["status"]`: even a
- * type-only import off a module this close to `@/lib/db` has broken this
- * app's production build before (see that file's own header comment) —
- * duplicating one two-value string union costs nothing and removes the need
- * to ever reason about it again. Keep in sync with `selectionKind` in
- * schema.ts. */
+ * `selectionKind` pgEnum, for the identical reason `GalleryStatus` above is
+ * hand-rolled. Keep in sync with `selectionKind` in schema.ts. */
 export type SelectionKind = "edited" | "original";
 
-export type SelectionPick = {
+/** The read-time state of one person's pick on one asset. Same literal union
+ * as `PickStatus` (pick-resolution.ts:29); a type-level test pins the equality.
+ * `cart`: unsent on an unclaimed asset. `degraded`: unsent on an asset somebody
+ * else already claimed (decision 8). `billed`: sent, and this person holds the
+ * asset's unit. `joined`: sent, but the unit belongs to someone else. */
+export type SelectionPickState = "cart" | "degraded" | "billed" | "joined";
+
+/** One person's request for one asset. */
+export type SelectionEntryPick = {
+  userId: string;
+  /** `users.name ?? users.email`, resolved on the server. */
+  label: string;
+  /** `asset_picks.kind`: what THIS person asked for. */
+  kind: SelectionKind;
+  /** ISO 8601. */
+  pickedAt: string;
+  /** ISO 8601; `null` = still "por enviar". */
+  submittedAt: string | null;
+  /** `derivePickStatus(pick, claimFromAsset(row))`, computed once on the
+   * server so no client re-implements the state machine. */
+  state: SelectionPickState;
+};
+
+/** The resolved claim of one asset: what `assets` stores, written only by
+ * submit/admin paths, never by a client PATCH. */
+export type SelectionClaim = {
+  /** ISO 8601, from `assets.selected_at` — NEVER `requested_at`, which is
+   * NULL on the classic claims the 0017 backfill imported. */
+  claimedAt: string | null;
+  /** `assets.selection_kind`, resolved: edited iff some submitted pick was
+   * edited. */
+  resolvedKind: SelectionKind;
+  /** The unit's holder. `null` = a legacy unit with no recorded owner,
+   * rendered "Sin registro". */
+  billedTo: SelectionPicker | null;
+  /** Which tariff this unit landed in, straight from `attributeQuota`'s own
+   * `units[].charge` — the included/extra boundary is quota maths and must
+   * not be re-derived on the client. */
+  charge: "included" | "extra" | "original";
+};
+
+/** One asset that is claimed OR has at least one pick. */
+export type SelectionEntry = {
   assetId: string;
-  /** ISO 8601, or `null` for a row whose `selected_at` was never stamped.
-   * Kept in lockstep with `is_selected` by the PATCH selection route since
-   * task #24, so in practice this is always set for a selected asset. */
-  selectedAt: string | null;
-  /** `null` when `assets.selected_by` is null. Two reachable ways to get
-   * there, both honest states rather than bugs: a pick made before task #94
-   * added the column, and a picker whose `users` row was later deleted
-   * (`onDelete: "set null"`, schema.ts). The tray says so plainly instead of
-   * guessing a name. */
-  pickedBy: SelectionPicker | null;
-  /** Task #206 — travels the SAME channel every other fact about a pick
-   * already does (the server render, the poll route, the PATCH route's own
-   * response, the SSE-triggered refresh): there is no second channel for
-   * "what type is this pick", by design — see `use-shared-selection.ts`'s
-   * own `setSelectionKind`. Meaningless for an asset that isn't picked at
-   * all (that's `assets.isSelected`, a separate question); every entry in a
-   * `SelectionPick[]` IS picked by construction, so this is never optional
-   * here. */
-  selectionKind: SelectionKind;
-  /** Task #244 — rolling delivery only: when this pick was ORDERED (the
-   * client pressed "Enviar"), ISO 8601. `null`/absent = still "por enviar"
-   * (the internal "cart"), freely removable by its picker. Optional so older
-   * snapshots and test doubles read as "not ordered". */
-  requestedAt?: string | null;
+  /** `null` iff `assets.is_selected` is false (a pure cart/degraded asset). */
+  claim: SelectionClaim | null;
+  /** Everyone who asked for this asset, in display order: the billed holder's
+   * pick first, then by `pickedAt`, then by id. */
+  picks: SelectionEntryPick[];
+};
+
+/** The four numbers (decision 14). All computed on the server; the client
+ * never counts picks or claims. */
+export type SelectionCounter = {
+  /** "entre todos": claimed photos. Always `=== quota.selected`. */
+  group: number;
+  /** The subject's own partition; `null` when there is no subject (an admin
+   * without view-as). `yours` may only go down because of somebody else's
+   * escalation, never up. */
+  viewer: { yours: number; shared: number; toSend: number } | null;
+  /** Units per billed person, removed members included, in userId code-unit
+   * order. The UI sorts for display. */
+  people: { userId: string; label: string; units: number }[];
+  /** Units billed to nobody ("Sin registro"). */
+  unattributed: number;
 };
 
 /** Epic #239 — the per-client selection lock, as the browser sees it. Dates
- * are ISO 8601 strings (this crosses the server/client boundary). Slice #241
- * renders from it; this slice only exposes it. */
+ * are ISO 8601 strings (this crosses the server/client boundary). */
 export type ViewerLock = {
   /** When this viewer stopped being able to change picks. */
   lockedAt: string;
@@ -99,41 +140,70 @@ export type ViewerLock = {
 };
 
 export type SelectionLockSnapshot = {
-  /** `null` while the viewer is open (and always for an admin, who has no
-   * membership to lock). */
+  /** `null` while the viewer is open (and always when there is no subject,
+   * e.g. an admin without view-as). */
   viewerLock: ViewerLock | null;
-  /** User ids of every ACTIVE client who is locked — their picks are frozen
-   * for everybody else. Includes the viewer when locked. */
-  lockedPickerIds: string[];
-  /** The subset of `lockedPickerIds` who pressed "Enviar selección"
-   * themselves. The rest of the locked ones were closed by the photographer
-   * (`selectionSubmittedAt` is null), which the tray words differently. */
-  submittedPickerIds: string[];
-  /** Task #244 — the viewer's own LAST submit time (ISO), whether or not it
-   * locked them. Under rolling delivery a submit never locks, so
+  /** User ids of every ACTIVE client the PHOTOGRAPHER locked. Only admin
+   * locks are written since epic #250 S5; a `'client'` lock survives only as
+   * history in closed galleries, where `isGalleryLocked` already freezes
+   * everything, so it is not listed here. */
+  adminLockedPickerIds: string[];
+  /** Task #244 — the subject's own LAST submit time (ISO), whether or not it
+   * locked them. Under order semantics a submit never locks, so
    * `viewerLock.submittedAt` is always absent there and this is the only
-   * place "Último envío" can come from. `null` before any submit. */
-  viewerSubmittedAt?: string | null;
+   * place "Último envío" can come from. `null` before any submit or without a
+   * subject. */
+  viewerSubmittedAt: string | null;
 };
 
-/** Copy shown when a pick carries no attribution at all — see
- * `SelectionPick.pickedBy`. Deliberately not a name-shaped guess: the tray
+/** The `GET /api/galleries/[galleryId]/selection` body, and the shape the page
+ * hands `<ProofGrid>` in pieces. */
+export type SelectionSnapshot = {
+  status: GalleryStatus;
+  submittedAt: string | null;
+  quota: QuotaResult;
+  counter: SelectionCounter;
+  entries: SelectionEntry[];
+  viewerLock: ViewerLock | null;
+  adminLockedPickerIds: string[];
+  viewerSubmittedAt: string | null;
+};
+
+/** Copy shown when a unit has no attribution at all — see
+ * `SelectionClaim.billedTo`. Deliberately not a name-shaped guess: the tray
  * would rather admit it does not know than credit the wrong person. */
 export const UNATTRIBUTED_PICKER_LABEL = "Sin registro";
 
 /**
- * How one pick's picker is named in the tray, from the point of view of the
+ * How one person's request is named in the tray, from the point of view of the
  * session looking at it.
  *
- * The viewer's OWN picks read "Vos", not their own name: with two or three
+ * The viewer's OWN pick reads "Vos", not their own name: with two or three
  * people picking into one shared set, the question the tray answers is "who
- * chose this", and "me / one of the others" is the distinction that actually
- * matters when a photo you did not pick appears. Second person also matches
- * the voice the rest of this app's Spanish copy already uses ("Todavía no
- * subiste fotos…").
+ * asked for this", and "me / one of the others" is the distinction that
+ * actually matters when a photo you did not ask for appears. Second person
+ * also matches the voice the rest of this app's Spanish copy already uses
+ * ("Todavía no subiste fotos…").
  */
 export function pickerLabelFor(pickedBy: SelectionPicker | null, viewerId: string | null): string {
   if (!pickedBy) return UNATTRIBUTED_PICKER_LABEL;
   if (viewerId !== null && pickedBy.id === viewerId) return "Vos";
   return pickedBy.label;
+}
+
+/** The CLAIMED entries, in server (arrival) order. Every expression that used
+ * to read the old `picks` list reads this, and only this — a filter, never a
+ * count. */
+export function claimedEntries(entries: readonly SelectionEntry[]): SelectionEntry[] {
+  return entries.filter((entry) => entry.claim !== null);
+}
+
+/** The viewer's own pick on one entry, or `null`. Identity is the user id,
+ * never the label. */
+export function viewerPickOf(
+  entry: SelectionEntry,
+  viewerId: string | null,
+): SelectionEntryPick | null {
+  if (viewerId === null) return null;
+  return entry.picks.find((pick) => pick.userId === viewerId) ?? null;
 }

@@ -1,18 +1,22 @@
 // @vitest-environment jsdom
 //
-// Epic #239 / task #241 — the CLIENT side of the per-person selection lock.
-// Every fixture here is a GROUP gallery with three clients and DISTINCT picks
-// (Ana = the viewer, Beto = locked, Carla = still choosing), because a uniform
-// fixture ("everybody picked the same") cannot tell "this tile is frozen
-// because Beto submitted" from "every tile is frozen" — the identity bug this
-// suite exists to catch.
+// Epic #239 / epic #250 S6 — the CLIENT side of per-person state after
+// "choosing is asking, not owning".
+//
+// The OLD rule froze another person's pick on the board. S4/S5 made that
+// structural on the server (a client PATCH only touches its own
+// `asset_picks` row), so what is left to render is:
+//   - the viewer's OWN submitted picks are frozen (degrado still removable);
+//   - a person the PHOTOGRAPHER locked reads "cerrada" in the tray;
+//   - a person who sent a pick reads "envió";
+//   - the viewer's own lock freezes every control.
 import type { ComponentProps } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { ProofGrid, SELECTION_POLL_INTERVAL_MS } from "./proof-grid";
 import type { GalleryStatus, ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
-import type { SelectionPick, ViewerLock } from "@/lib/selection-snapshot";
+import type { SelectionEntry, SelectionKind, ViewerLock } from "@/lib/selection-snapshot";
 
 const TERMS = {
   includedPhotosSnapshot: 13,
@@ -29,17 +33,59 @@ const ANA = { id: "client-a", label: "Ana Pérez" };
 const BETO = { id: "client-b", label: "Beto Ruiz" };
 const CARLA = { id: "client-c", label: "Carla Gil" };
 
-function pick(assetId: string, pickedBy: { id: string; label: string }): SelectionPick {
+type FixturePick = {
+  assetId: string;
+  pickedBy: { id: string; label: string };
+  submitted: boolean;
+  kind?: SelectionKind;
+};
+
+function entryFor(pick: FixturePick): SelectionEntry {
   return {
-    assetId,
-    selectedAt: "2026-10-15T12:00:00.000Z",
-    pickedBy,
-    selectionKind: "edited",
+    assetId: pick.assetId,
+    claim: {
+      claimedAt: "2026-10-15T12:00:00.000Z",
+      resolvedKind: pick.kind ?? "edited",
+      billedTo: pick.pickedBy,
+      charge: "included",
+    },
+    picks: [
+      {
+        userId: pick.pickedBy.id,
+        label: pick.pickedBy.label,
+        kind: pick.kind ?? "edited",
+        pickedAt: "2026-10-15T12:00:00.000Z",
+        submittedAt: pick.submitted ? "2026-10-15T12:00:00.000Z" : null,
+        state: pick.submitted ? "billed" : "degraded",
+      },
+    ],
   };
 }
 
-// a1 -> Ana (viewer), a2 -> Beto, a3 -> Carla, a4 -> nobody.
-const PICKS = [pick("a1", ANA), pick("a2", BETO), pick("a3", CARLA)];
+const PICKS: FixturePick[] = [
+  { assetId: "a1", pickedBy: ANA, submitted: true },
+  { assetId: "a2", pickedBy: BETO, submitted: true },
+  { assetId: "a3", pickedBy: CARLA, submitted: true },
+];
+
+function counterFor(picks: FixturePick[], viewerId: string) {
+  const counts = new Map<string, { label: string; units: number }>();
+  for (const pick of picks) {
+    const existing = counts.get(pick.pickedBy.id);
+    if (existing) existing.units += 1;
+    else counts.set(pick.pickedBy.id, { label: pick.pickedBy.label, units: 1 });
+  }
+  return {
+    group: picks.length,
+    viewer: {
+      yours: picks.filter((pick) => pick.pickedBy.id === viewerId && pick.submitted).length,
+      shared: 0,
+      toSend: picks.filter((pick) => pick.pickedBy.id === viewerId && !pick.submitted).length,
+    },
+    people: [...counts].map(([userId, { label, units }]) => ({ userId, label, units })),
+    unattributed: 0,
+  };
+}
 
 function assets(): ProofAsset[] {
   return [1, 2, 3, 4].map((n) => ({
@@ -60,19 +106,27 @@ const VIEWER_LOCK: ViewerLock = {
   submittedAt: "2026-10-15T13:00:00.000Z",
 };
 
-function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
+function renderGrid(
+  overrides: Partial<ComponentProps<typeof ProofGrid>> & {
+    picks?: FixturePick[];
+    lockedPickerIds?: string[];
+  } = {},
+) {
+  const { picks = PICKS, lockedPickerIds = [], ...rest } = overrides;
   return render(
     <ProofGrid
       galleryId="g1"
       initialAssets={assets()}
       initialStatus="proofing"
       initialSubmittedAt={null}
-      initialPicks={PICKS}
+      initialEntries={picks.map(entryFor)}
+      initialQuota={computeQuota(picks.length, 0, TERMS)}
+      initialCounter={counterFor(picks, ANA.id)}
+      initialAdminLockedPickerIds={lockedPickerIds}
       viewerId={ANA.id}
-      {...TERMS}
       selectionTrayMode="by-person"
       allowsOriginalSelection={true}
-      {...overrides}
+      {...rest}
     />,
   );
 }
@@ -81,25 +135,25 @@ function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
 function snapshotBody(
   overrides: {
     status?: GalleryStatus;
-    picks?: SelectionPick[];
+    submittedAt?: string | null;
+    picks?: FixturePick[];
     viewerLock?: ViewerLock | null;
     lockedPickerIds?: string[];
-    submittedPickerIds?: string[];
   } = {},
 ) {
   const picks = overrides.picks ?? PICKS;
   return {
     status: overrides.status ?? "proofing",
-    submittedAt: null,
+    submittedAt: overrides.submittedAt ?? null,
     quota: computeQuota(picks.length, 0, TERMS),
-    picks,
+    counter: counterFor(picks, ANA.id),
+    entries: picks.map(entryFor),
     viewerLock: overrides.viewerLock ?? null,
-    lockedPickerIds: overrides.lockedPickerIds ?? [],
-    submittedPickerIds: overrides.submittedPickerIds ?? overrides.lockedPickerIds ?? [],
+    adminLockedPickerIds: overrides.lockedPickerIds ?? [],
+    viewerSubmittedAt: null,
   };
 }
 
-/** The per-tile pick button. */
 function tileButton(n: number) {
   const name = `IMG_000${n}.JPG`;
   return (screen.queryByRole("button", { name: `Quitar de seleccionadas: ${name}` }) ??
@@ -117,199 +171,85 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("ProofGrid — per-person lock (epic #239, task #241)", () => {
-  describe("viewer locked, gallery still proofing", () => {
+describe("ProofGrid — per-person state after S6", () => {
+  describe("viewer locked", () => {
     it("disables EVERY tile and offers no submit button", () => {
-      renderGrid({
-        initialViewerLock: VIEWER_LOCK,
-        initialLockedPickerIds: [ANA.id],
-      });
+      renderGrid({ initialViewerLock: VIEWER_LOCK, lockedPickerIds: [ANA.id] });
 
       expect(disabledTiles()).toEqual([1, 2, 3, 4]);
       expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
     });
 
-    it("says THEIR selection was sent and the group is still choosing, never that the photographer has 'la selección'", () => {
-      renderGrid({
-        initialViewerLock: VIEWER_LOCK,
-        initialLockedPickerIds: [ANA.id],
-      });
+    it("says THEIR selection was sent and the group is still choosing", () => {
+      renderGrid({ initialViewerLock: VIEWER_LOCK, lockedPickerIds: [ANA.id] });
 
       expect(screen.getByText("¿Qué pasa ahora?")).toBeDefined();
-      expect(
-        screen.getByText(/Tu fotógrafo ya tiene tu selección — la enviaste el .* \(1 foto tuya\)/),
-      ).toBeDefined();
+      expect(screen.getByText(/Tu fotógrafo ya tiene tu selección/)).toBeDefined();
       expect(screen.getAllByText(/Los demás todavía están eligiendo/).length).toBeGreaterThan(0);
-      // The gallery-wide wording would claim the group's selection is in.
       expect(screen.queryByText(/ya tiene la selección/)).toBeNull();
-      expect(screen.queryByText(/está editando/)).toBeNull();
-      // The panel's own line agrees.
-      expect(screen.getByText(/Enviaste tu selección/)).toBeDefined();
     });
 
     it("does not call a photographer-locked person a submitter", () => {
       renderGrid({
         initialViewerLock: { lockedAt: "2026-10-15T13:00:00.000Z", submittedAt: null },
-        initialLockedPickerIds: [ANA.id],
+        lockedPickerIds: [ANA.id],
       });
 
       expect(screen.getAllByText(/Tu fotógrafo cerró tu selección/).length).toBeGreaterThan(0);
       expect(screen.queryByText(/la enviaste/)).toBeNull();
       expect(screen.queryByText(/Enviaste tu selección/)).toBeNull();
     });
-
-    it("the TRAY note for a photographer-locked viewer agrees with the panel, and never says 'enviada'", () => {
-      renderGrid({
-        initialViewerLock: { lockedAt: "2026-10-15T13:00:00.000Z", submittedAt: null },
-        initialLockedPickerIds: [ANA.id],
-      });
-
-      expect(
-        screen.getByText("Tu fotógrafo cerró tu selección. Los demás todavía están eligiendo."),
-      ).toBeDefined();
-      expect(screen.queryByText(/Tu selección ya fue enviada/)).toBeNull();
-    });
-
-    it("keeps the TRAY note 'enviada' for a viewer who submitted themselves", () => {
-      renderGrid({
-        initialViewerLock: VIEWER_LOCK,
-        initialLockedPickerIds: [ANA.id],
-        initialSubmittedPickerIds: [ANA.id],
-      });
-
-      expect(
-        screen.getByText("Tu selección ya fue enviada. Los demás todavía están eligiendo."),
-      ).toBeDefined();
-    });
   });
 
-  describe("another client locked, viewer still choosing", () => {
-    it("freezes ONLY the locked person's picks; the viewer's own, Carla's and unpicked tiles stay live", () => {
-      renderGrid({ initialLockedPickerIds: [BETO.id] });
+  describe("freeze is the viewer's own sent pick, not somebody else's lock", () => {
+    it("freezes ONLY the viewer's own submitted pick; an admin lock on Beto does not touch the board", () => {
+      renderGrid({ lockedPickerIds: [BETO.id] });
 
-      // a2 is Beto's. a1 (mine), a3 (Carla, still choosing) and a4 (nobody's)
-      // must remain enabled — a "lock everything" bug would also pass a test
-      // that only looked at a2.
-      expect(disabledTiles()).toEqual([2]);
+      // a1 is the viewer's own submitted pick. a2 (Beto, admin-locked) and
+      // a3 (Carla) stay interactive — S4 made "you cannot edit somebody
+      // else's row" structural on the server, so freezing it here would be
+      // a UI lie that also blocks joining a claimed photo.
+      expect(disabledTiles()).toEqual([1]);
+      expect(tileButton(2).disabled).toBe(false);
       expect(screen.getByRole("button", { name: "Enviar selección" })).toBeDefined();
     });
 
-    it("marks the locked person's tray group 'envió', and nobody else's", () => {
+    it("leaves the viewer's own UNSENT pick removable", () => {
       renderGrid({
-        initialLockedPickerIds: [BETO.id],
-        initialSubmittedPickerIds: [BETO.id],
+        picks: [
+          { assetId: "a1", pickedBy: ANA, submitted: false },
+          { assetId: "a2", pickedBy: BETO, submitted: true },
+        ],
       });
 
-      const marker = screen.getByText("envió");
-      expect(marker.parentElement?.textContent).toMatch(/Beto Ruiz/);
-      expect(screen.getAllByText("envió")).toHaveLength(1);
+      expect(tileButton(1).disabled).toBe(false);
     });
 
-    it("marks a photographer-locked person 'cerrada' in the tray, not 'envió', and still freezes their picks", () => {
-      renderGrid({ initialLockedPickerIds: [BETO.id], initialSubmittedPickerIds: [] });
+    it("marks an admin-locked person 'cerrada' and a sender 'envió', by id not label", () => {
+      renderGrid({ lockedPickerIds: [BETO.id] });
 
       const marker = screen.getByText("cerrada");
       expect(marker.parentElement?.textContent).toMatch(/Beto Ruiz/);
-      expect(screen.queryByText("envió")).toBeNull();
-      expect(disabledTiles()).toEqual([2]);
-    });
-
-    it("freezes the locked person's photo in the lightbox too, but not the others'", () => {
-      renderGrid({ initialLockedPickerIds: [BETO.id] });
-
-      fireEvent.click(screen.getByRole("button", { name: "Ver IMG_0002.JPG" }));
-      expect((screen.getByRole("button", { name: "Elegida" }) as HTMLButtonElement).disabled).toBe(
-        true,
-      );
-      // And the type control is not offered on a frozen pick.
-      expect(screen.queryByRole("group", { name: /Tipo de foto/ })).toBeNull();
-
-      fireEvent.click(screen.getByRole("button", { name: "Cerrar" }));
-      fireEvent.click(screen.getByRole("button", { name: "Ver IMG_0003.JPG" }));
-      expect((screen.getByRole("button", { name: "Elegida" }) as HTMLButtonElement).disabled).toBe(
-        false,
-      );
-      expect(screen.getByRole("group", { name: /Tipo de foto/ })).toBeDefined();
-    });
-  });
-
-  describe("submitting", () => {
-    function submitFetch(body: Record<string, unknown>) {
-      return vi.fn(() =>
-        Promise.resolve(
-          jsonResponse(200, {
-            status: "submitted",
-            quota: computeQuota(3, 0, TERMS),
-            submittedAt: "2026-10-15T13:00:00.000Z",
-            ...body,
-          }),
-        ),
-      );
-    }
-
-    it("locks the viewer at once with no reload while the gallery stays proofing for the others", async () => {
-      vi.spyOn(window, "confirm").mockReturnValue(true);
-      vi.stubGlobal("fetch", submitFetch({ gallerySelected: false }));
-
-      renderGrid({ initialLockedPickerIds: [BETO.id], initialSubmittedPickerIds: [BETO.id] });
-      expect(disabledTiles()).toEqual([2]);
-
-      await act(async () => {
-        fireEvent.click(screen.getByRole("button", { name: "Enviar selección" }));
-      });
-
-      await vi.waitFor(() => expect(screen.getByText("¿Qué pasa ahora?")).toBeDefined());
-      expect(disabledTiles()).toEqual([1, 2, 3, 4]);
-      expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
-      expect(screen.getAllByText(/Los demás todavía están eligiendo/).length).toBeGreaterThan(0);
-      expect(screen.queryByText(/ya tiene la selección/)).toBeNull();
-      // The viewer joined the 'envió' markers (Beto was already there).
+      // Ana and Carla sent picks, so they read "envió".
       expect(screen.getAllByText("envió")).toHaveLength(2);
     });
 
-    it("single-client gallery: the same submit ends in the gallery-wide 'tiene acceso' state, as before", async () => {
-      vi.spyOn(window, "confirm").mockReturnValue(true);
-      vi.stubGlobal("fetch", submitFetch({ gallerySelected: true }));
-
-      renderGrid({ initialPicks: [pick("a1", ANA)] });
-
-      await act(async () => {
-        fireEvent.click(screen.getByRole("button", { name: "Enviar selección" }));
-      });
-
-      await vi.waitFor(() => expect(screen.getByText(/tiene acceso/)).toBeDefined());
-      expect(screen.getByText(/Tu fotógrafo ya tiene la selección/)).toBeDefined();
-      expect(disabledTiles()).toEqual([1, 2, 3, 4]);
-    });
-
-    it("keeps the button disabled when the viewer has no picks of their own, even though the group does", () => {
-      renderGrid({ initialPicks: [pick("a2", BETO), pick("a3", CARLA)] });
-
-      expect(
-        (screen.getByRole("button", { name: "Enviar selección" }) as HTMLButtonElement).disabled,
-      ).toBe(true);
-    });
-
-    it("puts the viewer's OWN count, not the group's, in the confirmation", async () => {
-      const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-      vi.stubGlobal("fetch", vi.fn());
-
+    it("keeps two people with the same display name apart when only one is admin-locked", () => {
+      const twin1 = { id: "client-b", label: "Beto Ruiz" };
+      const twin2 = { id: "client-c", label: "Beto Ruiz" };
       renderGrid({
-        initialPicks: [pick("a1", ANA), pick("a2", ANA), pick("a3", CARLA)],
+        picks: [
+          { assetId: "a1", pickedBy: twin1, submitted: true },
+          { assetId: "a2", pickedBy: twin2, submitted: true },
+        ],
+        lockedPickerIds: [twin2.id],
       });
-      fireEvent.click(screen.getByRole("button", { name: "Enviar selección" }));
 
-      const message = confirmSpy.mock.calls[0]?.[0] as string;
-      expect(message).toMatch(/¿Cerrar tu selección \(2 fotos tuyas\)\?/);
-    });
-
-    it("an admin previewing the page gets a note, not a submit button", () => {
-      renderGrid({ isAdminPreview: true });
-
-      expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
-      expect(
-        screen.getByText(/Vista previa: el envío de la selección es solo para clientes/),
-      ).toBeDefined();
+      const headers = screen
+        .getAllByText(/Beto Ruiz/, { selector: "p" })
+        .filter((node) => node.textContent?.includes("(1)"));
+      expect(headers).toHaveLength(2);
+      expect(headers.filter((header) => header.textContent?.includes("cerrada"))).toHaveLength(1);
     });
   });
 
@@ -330,19 +270,18 @@ describe("ProofGrid — per-person lock (epic #239, task #241)", () => {
         vi.fn(() => Promise.resolve(jsonResponse(200, snapshotBody({ viewerLock: null })))),
       );
 
-      renderGrid({ initialViewerLock: VIEWER_LOCK, initialLockedPickerIds: [ANA.id] });
+      renderGrid({ initialViewerLock: VIEWER_LOCK, lockedPickerIds: [ANA.id] });
       expect(disabledTiles()).toEqual([1, 2, 3, 4]);
-      expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
 
       await pollTick();
 
-      expect(disabledTiles()).toEqual([]);
+      // Only the viewer's own submitted pick stays frozen; the rest reopens.
+      expect(disabledTiles()).toEqual([1]);
       expect(screen.getByRole("button", { name: "Enviar selección" })).toBeDefined();
       expect(screen.queryByText("¿Qué pasa ahora?")).toBeNull();
-      expect(screen.queryByText("envió")).toBeNull();
     });
 
-    it("freezes a person's picks when a snapshot reports they submitted", async () => {
+    it("applies a snapshot's admin lock, relabelling that person 'cerrada'", async () => {
       vi.stubGlobal(
         "fetch",
         vi.fn(() =>
@@ -350,31 +289,12 @@ describe("ProofGrid — per-person lock (epic #239, task #241)", () => {
         ),
       );
 
-      renderGrid();
-      expect(disabledTiles()).toEqual([]);
-
-      await pollTick();
-
-      expect(disabledTiles()).toEqual([3]);
-    });
-
-    it("relabels a person 'envió' -> 'cerrada' with no reload when a snapshot says the photographer closed them", async () => {
-      vi.stubGlobal(
-        "fetch",
-        vi.fn(() =>
-          Promise.resolve(
-            jsonResponse(200, snapshotBody({ lockedPickerIds: [BETO.id], submittedPickerIds: [] })),
-          ),
-        ),
-      );
-
-      renderGrid({ initialLockedPickerIds: [BETO.id], initialSubmittedPickerIds: [BETO.id] });
-      expect(screen.getByText("envió")).toBeDefined();
+      renderGrid({ lockedPickerIds: [] });
+      expect(screen.queryByText("cerrada")).toBeNull();
 
       await pollTick();
 
       expect(screen.getByText("cerrada")).toBeDefined();
-      expect(screen.queryByText("envió")).toBeNull();
     });
 
     it("locks the viewer when the snapshot carries their lock (an admin locked them)", async () => {
@@ -401,22 +321,84 @@ describe("ProofGrid — per-person lock (epic #239, task #241)", () => {
     });
   });
 
+  describe("submit", () => {
+    it("does not latch a local lock: a send asks for a fresh snapshot and follows the server", async () => {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      const fetchMock = vi.fn((url: string) => {
+        if (url.endsWith("/submit-selection")) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              status: "submitted",
+              quota: computeQuota(3, 0, TERMS),
+              submittedAt: "2026-10-15T13:00:00.000Z",
+              gallerySelected: false,
+            }),
+          );
+        }
+        return Promise.resolve(jsonResponse(200, snapshotBody()));
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid({
+        picks: [
+          { assetId: "a1", pickedBy: ANA, submitted: false },
+          { assetId: "a2", pickedBy: BETO, submitted: true },
+        ],
+      });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Enviar selección" }));
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/submit-selection", {
+        method: "POST",
+      });
+      // The refresh is what decides the state; nothing was latched locally.
+      await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection"));
+      expect(screen.getByRole("button", { name: "Enviar selección" })).toBeDefined();
+    });
+
+    it("shows the gallery-wide 'tiene acceso' state when the server says it closed", async () => {
+      vi.spyOn(window, "confirm").mockReturnValue(true);
+      const fetchMock = vi.fn((url: string) => {
+        if (url.endsWith("/submit-selection")) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              status: "submitted",
+              quota: computeQuota(3, 0, TERMS),
+              submittedAt: "2026-10-15T13:00:00.000Z",
+              gallerySelected: true,
+            }),
+          );
+        }
+        return Promise.resolve(
+          jsonResponse(
+            200,
+            snapshotBody({ status: "selected", submittedAt: "2026-10-15T13:00:00.000Z" }),
+          ),
+        );
+      });
+      vi.stubGlobal("fetch", fetchMock);
+
+      renderGrid();
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Enviar selección" }));
+      });
+
+      await vi.waitFor(() => expect(screen.getByText(/tiene acceso/)).toBeDefined());
+      expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
+    });
+  });
+
   describe("server 409s", () => {
     beforeEach(() => {
       vi.useFakeTimers();
     });
 
-    /** Answers the PATCH with `refusal` (a bare error code, or a full body
-     * for a refusal whose copy reads from it) and the snapshot GET with `after`. */
-    function refusingFetch(
-      refusal: string | Record<string, unknown>,
-      after: ReturnType<typeof snapshotBody>,
-    ) {
+    function refusingFetch(refusal: string | Record<string, unknown>, after: unknown) {
       const body = typeof refusal === "string" ? { error: refusal } : refusal;
       return vi.fn((url: string, init?: { method?: string }) => {
-        if (init?.method === "PATCH") {
-          return Promise.resolve(jsonResponse(409, body));
-        }
+        if (init?.method === "PATCH") return Promise.resolve(jsonResponse(409, body));
         return Promise.resolve(jsonResponse(200, after));
       });
     }
@@ -425,27 +407,21 @@ describe("ProofGrid — per-person lock (epic #239, task #241)", () => {
       await act(async () => {
         fireEvent.click(element);
       });
-      // Let the follow-up snapshot fetch settle.
       await act(async () => {
         await vi.advanceTimersByTimeAsync(0);
       });
     }
 
-    it("pick_locked: a calm message, then a snapshot refresh that freezes the photo", async () => {
-      // Carla's pick looked free when the viewer clicked; she had just submitted.
+    it("pick_locked: a calm message, then a snapshot refresh", async () => {
       const fetchMock = refusingFetch("pick_locked", snapshotBody({ lockedPickerIds: [CARLA.id] }));
       vi.stubGlobal("fetch", fetchMock);
 
       renderGrid();
       expect(tileButton(3).disabled).toBe(false);
-
       await click(tileButton(3));
 
       expect(screen.getByText(/ya envió su selección, así que no se puede cambiar/)).toBeDefined();
-      expect(screen.queryByText(/No se pudo actualizar/)).toBeNull();
       expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
-      // The refresh landed: Carla's photo is frozen, the viewer's is not.
-      expect(disabledTiles()).toEqual([3]);
     });
 
     it("client_selection_locked: a calm message, then a refresh that locks the viewer", async () => {
@@ -459,14 +435,11 @@ describe("ProofGrid — per-person lock (epic #239, task #241)", () => {
       vi.stubGlobal("fetch", fetchMock);
 
       renderGrid();
-      await click(tileButton(1));
+      await click(tileButton(3));
 
-      // The bottom bar that normally carries the message is gone once locked,
-      // so the message must still be readable in the locked layout.
       expect(
         screen.getByText("Tu selección ya está cerrada, así que no se puede cambiar."),
       ).toBeDefined();
-      expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
       expect(disabledTiles()).toEqual([1, 2, 3, 4]);
     });
 
@@ -479,76 +452,6 @@ describe("ProofGrid — per-person lock (epic #239, task #241)", () => {
 
       expect(screen.getByText("No se pudo actualizar la selección.")).toBeDefined();
       expect(fetchMock).toHaveBeenCalledTimes(1);
-    });
-
-    // Task #249 — `pick_not_yours` is the one refusal whose sentence comes from
-    // the 409's own body (`pickedByName`) instead of the static LOCK_REFUSALS
-    // map. These tests exist because the bridge's client half shipped with no
-    // coverage at all: garbling the copy, deleting the branch, or rendering a
-    // literal `null` on screen all survived the whole component suite.
-    describe("pick_not_yours (task #249)", () => {
-      it("names the pick's owner in the visible sentence", async () => {
-        const fetchMock = refusingFetch(
-          { error: "pick_not_yours", pickedByName: CARLA.label },
-          snapshotBody(),
-        );
-        vi.stubGlobal("fetch", fetchMock);
-
-        renderGrid();
-        await click(tileButton(3));
-
-        expect(
-          screen.getByText("Esa foto la eligió Carla Gil, así que no podés quitarla."),
-        ).toBeDefined();
-        expect(screen.queryByText(/No se pudo actualizar/)).toBeNull();
-        // The refusal is a lock refusal, so the snapshot refresh still happens.
-        expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
-      });
-
-      it("falls back to 'otra persona' when the owner's label is null, never rendering `null`", async () => {
-        vi.stubGlobal(
-          "fetch",
-          refusingFetch({ error: "pick_not_yours", pickedByName: null }, snapshotBody()),
-        );
-
-        renderGrid();
-        await click(tileButton(3));
-
-        expect(
-          screen.getByText("Esa foto la eligió otra persona, así que no podés quitarla."),
-        ).toBeDefined();
-        const rendered = document.body.textContent ?? "";
-        expect(rendered).not.toContain("null");
-        expect(rendered).not.toContain("undefined");
-      });
-
-      it("falls back to 'otra persona' when `pickedByName` is absent altogether", async () => {
-        vi.stubGlobal("fetch", refusingFetch({ error: "pick_not_yours" }, snapshotBody()));
-
-        renderGrid();
-        await click(tileButton(3));
-
-        expect(
-          screen.getByText("Esa foto la eligió otra persona, así que no podés quitarla."),
-        ).toBeDefined();
-        const rendered = document.body.textContent ?? "";
-        expect(rendered).not.toContain("null");
-        expect(rendered).not.toContain("undefined");
-      });
-
-      it("still maps the other refusals to their own copy (the new branch does not swallow the map)", async () => {
-        vi.stubGlobal("fetch", refusingFetch("pick_locked", snapshotBody()));
-
-        renderGrid();
-        await click(tileButton(3));
-
-        expect(
-          screen.getByText(
-            "Esa foto es de alguien que ya envió su selección, así que no se puede cambiar.",
-          ),
-        ).toBeDefined();
-        expect(screen.queryByText(/la eligió/)).toBeNull();
-      });
     });
   });
 });

@@ -49,9 +49,14 @@ function rng(seed: number) {
   };
 }
 
-function assetRow(id: string, overrides: Partial<AssetRow> = {}): AssetRow {
+function assetRow(id: string, overrides: Partial<AssetRow> = {}): AssetRow & { galleryId: string } {
   return {
     id,
+    // The planners only ever read the claim columns; `gallery_id` is here
+    // because `claimCart` stamps and re-reads THROUGH it. Without it the stamp
+    // matches nothing and the parity test compares an untouched table with
+    // itself — the vacuity review C1 found on #260.
+    galleryId: G,
     isSelected: false,
     selectionKind: "edited",
     billedTo: null,
@@ -63,9 +68,14 @@ function assetRow(id: string, overrides: Partial<AssetRow> = {}): AssetRow {
   };
 }
 
-function pickRow(assetId: string, userId: string, overrides: Partial<PickRow> = {}): PickRow {
+function pickRow(
+  assetId: string,
+  userId: string,
+  overrides: Partial<PickRow> = {},
+): PickRow & { galleryId: string } {
   return {
     assetId,
+    galleryId: G,
     userId,
     kind: "edited",
     pickedAt: t(0),
@@ -76,8 +86,8 @@ function pickRow(assetId: string, userId: string, overrides: Partial<PickRow> = 
 
 function randomState(seed: number) {
   const random = rng(seed);
-  const rows: AssetRow[] = [];
-  const picks: PickRow[] = [];
+  const rows: (AssetRow & { galleryId: string })[] = [];
+  const picks: (PickRow & { galleryId: string })[] = [];
   const allowsOriginal = random() < 0.5;
 
   for (let i = 0; i < 6; i += 1) {
@@ -114,9 +124,15 @@ function randomState(seed: number) {
     }
   }
 
+  // Cart (and degraded) picks for A and B — noise the claim must NOT read —
+  // plus the CART BEING CLAIMED. `C` is deliberately never a holder above, so
+  // its picks are either cart (unclaimed asset) or DEGRADED (on a claimed
+  // one), which is exactly the mix `claimCart` is called with in production.
+  // Leaving C out of this loop made the parity test below compare an untouched
+  // table with itself for all 200 seeds (review of #260, C1).
   for (let i = 0; i < 6; i += 1) {
     const id = `asset-${i}`;
-    for (const user of [A, B]) {
+    for (const user of [A, B, C]) {
       const already = picks.some((pick) => pick.assetId === id && pick.userId === user);
       if (!already && random() < 0.25) {
         picks.push(
@@ -130,6 +146,18 @@ function randomState(seed: number) {
     }
   }
 
+  // Every seed must exercise a REAL cart claim (review of #260, C1) — the
+  // loop above can leave C with nothing, which is what made this suite vacuous.
+  if (!picks.some((pick) => pick.userId === C)) {
+    picks.push(
+      pickRow(`asset-${Math.floor(random() * 6)}`, C, {
+        kind: random() < 0.5 ? "edited" : "original",
+        pickedAt: t(Math.floor(random() * 4)),
+        submittedAt: null,
+      }),
+    );
+  }
+
   return { rows, picks, allowsOriginal };
 }
 
@@ -139,11 +167,27 @@ describe("planCartClaim — parity with the executed claimCart (preview == write
   });
 
   it("agrees with claimCart on every one of 200 seeded random states", async () => {
+    // Anti-vacuity counters (review of #260, C1): a parity test over states
+    // whose cart is always empty compares two no-ops and catches nothing.
+    // Every outcome the planner can produce must actually occur somewhere.
+    let seedsWithClaim = 0;
+    let seedsWithEscalation = 0;
+    let seedsWithJoin = 0;
+    let seedsWithBlockedEscalation = 0;
+    let seedsWithKindFix = 0;
+    let emptyCartSeeds = 0;
+
     for (let seed = 1; seed <= 200; seed += 1) {
       const { rows, picks, allowsOriginal } = randomState(seed);
       const cart = picks.filter((pick) => pick.userId === C && pick.submittedAt === null);
+      if (cart.length === 0) emptyCartSeeds += 1;
       const now = t(7);
       const plan = planCartClaim(rows, cart, C, now, { allowsOriginal });
+      if (plan.counts.claimed > 0) seedsWithClaim += 1;
+      if (plan.counts.escalated > 0) seedsWithEscalation += 1;
+      if (plan.counts.joined > 0) seedsWithJoin += 1;
+      if (plan.counts.escalationBlocked > 0) seedsWithBlockedEscalation += 1;
+      if (plan.pickKindFixes.length > 0) seedsWithKindFix += 1;
 
       const fake = createFakeDb([assets, assetPicks]);
       fake.__tables.get(assets)!.push(...rows.map((row) => ({ ...row })));
@@ -172,6 +216,13 @@ describe("planCartClaim — parity with the executed claimCart (preview == write
         });
       }
     }
+
+    expect(emptyCartSeeds).toBe(0);
+    expect(seedsWithClaim).toBeGreaterThan(0);
+    expect(seedsWithEscalation).toBeGreaterThan(0);
+    expect(seedsWithJoin).toBeGreaterThan(0);
+    expect(seedsWithBlockedEscalation).toBeGreaterThan(0);
+    expect(seedsWithKindFix).toBeGreaterThan(0);
   });
 });
 

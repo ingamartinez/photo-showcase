@@ -51,8 +51,12 @@ function entriesFor(picks: LegacyPick[]): SelectionEntry[] {
             label: pick.pickedBy.label,
             kind: pick.selectionKind,
             pickedAt: pick.selectedAt ?? "2026-07-30T12:00:00.000Z",
-            submittedAt: pick.requestedAt === null ? null : pick.selectedAt,
-            state: "billed",
+            // Most fixtures here predate the order semantics; treating them
+            // as unsent keeps their toggles/type controls live, which is what
+            // those tests are about. A test that needs a sent pick sets
+            // `requestedAt`.
+            submittedAt: pick.requestedAt ?? null,
+            state: pick.requestedAt ? "billed" : "degraded",
           },
         ]
       : [],
@@ -72,7 +76,11 @@ function counterFor(picks: LegacyPick[], viewerId: string) {
       shared: 0,
       toSend: 0,
     },
-    people: [...counts].map(([userId, units]) => ({ userId, label: userId, units })),
+    people: [...counts].map(([userId, units]) => ({
+      userId,
+      label: picks.find((pick) => pick.pickedBy?.id === userId)?.pickedBy?.label ?? userId,
+      units,
+    })),
     unattributed: picks.filter((pick) => pick.pickedBy === null).length,
   };
 }
@@ -84,6 +92,54 @@ function counterFor(picks: LegacyPick[], viewerId: string) {
 // no mock needed here, the real `formatCop` runs.
 
 function jsonResponse(status: number, body: unknown): Response {
+  // Pre-S6 PATCH fixtures carry only the legacy `asset` block. Adapt them to
+  // the S6 response shape (entry + counter) here, so the tests keep asserting
+  // what the client does with a confirmed write rather than its wire spelling.
+  if (body && typeof body === "object" && "asset" in body && !("entry" in body)) {
+    const legacy = body as {
+      asset: {
+        id: string;
+        isSelected: boolean;
+        selectedAt?: string | null;
+        pickedBy?: { id: string; label: string } | null;
+        selectionKind?: "edited" | "original";
+      };
+      quota?: { selected?: number };
+    };
+    const { asset } = legacy;
+    body = {
+      ...legacy,
+      entry: asset.isSelected
+        ? {
+            assetId: asset.id,
+            claim: {
+              claimedAt: asset.selectedAt ?? null,
+              resolvedKind: asset.selectionKind ?? "edited",
+              billedTo: asset.pickedBy ?? null,
+              charge: "included",
+            },
+            picks: asset.pickedBy
+              ? [
+                  {
+                    userId: asset.pickedBy.id,
+                    label: asset.pickedBy.label,
+                    kind: asset.selectionKind ?? "edited",
+                    pickedAt: asset.selectedAt ?? "2026-07-30T12:00:00.000Z",
+                    submittedAt: asset.selectedAt ?? null,
+                    state: "billed",
+                  },
+                ]
+              : [],
+          }
+        : null,
+      counter: {
+        group: legacy.quota?.selected ?? 0,
+        viewer: null,
+        people: [],
+        unattributed: 0,
+      },
+    };
+  }
   return {
     ok: status >= 200 && status < 300,
     status,
@@ -802,17 +858,56 @@ describe("ProofGrid", () => {
         extras: 0,
         surchargeCop: 0,
       };
-      const fetchMock = vi.fn(() =>
-        Promise.resolve(
+      const fetchMock = vi.fn((url: string) => {
+        if (url.endsWith("/submit-selection")) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              status: "submitted",
+              quota: submittedQuota,
+              submittedAt: "2026-07-28T12:00:00.000Z",
+              // Single-client gallery: this submission closes the gallery too.
+              gallerySelected: true,
+            }),
+          );
+        }
+        return Promise.resolve(
           jsonResponse(200, {
-            status: "submitted",
-            quota: submittedQuota,
+            status: "selected",
             submittedAt: "2026-07-28T12:00:00.000Z",
-            // Single-client gallery: this submission closes the gallery too.
-            gallerySelected: true,
+            entries: [
+              {
+                assetId: "a1",
+                claim: {
+                  claimedAt: "2026-07-28T12:00:00.000Z",
+                  resolvedKind: "edited",
+                  billedTo: { id: "client-a", label: "Ana" },
+                  charge: "included",
+                },
+                picks: [
+                  {
+                    userId: "client-a",
+                    label: "Ana",
+                    kind: "edited",
+                    pickedAt: "2026-07-28T12:00:00.000Z",
+                    submittedAt: "2026-07-28T12:00:00.000Z",
+                    state: "billed",
+                  },
+                ],
+              },
+            ],
+            counter: {
+              group: 1,
+              viewer: { yours: 1, shared: 0, toSend: 0 },
+              people: [{ userId: "client-a", label: "Ana", units: 1 }],
+              unattributed: 0,
+            },
+            quota: submittedQuota,
+            viewerLock: null,
+            adminLockedPickerIds: [],
+            viewerSubmittedAt: null,
           }),
-        ),
-      );
+        );
+      });
       vi.stubGlobal("fetch", fetchMock);
       const user = userEvent.setup();
 
@@ -1761,18 +1856,21 @@ describe("ProofGrid", () => {
       }> = {},
     ) {
       const picks = overrides.picks ?? [];
+      const quota = computeQuota(overrides.selectedCount ?? picks.length, 0, {
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
+        originalPhotoPriceCopSnapshot: 2_000,
+      });
       return {
         status: overrides.status ?? "proofing",
         submittedAt: overrides.submittedAt ?? null,
-        picks,
-        // Task #205 — 0 originals: nothing writes `assets.selectionKind` to
-        // anything but `edited` yet (task #206).
-        quota: computeQuota(overrides.selectedCount ?? picks.length, 0, {
-          includedPhotosSnapshot: 13,
-          extraPhotoPriceCopSnapshot: 5_000,
-          extraPhotoPriceTiersSnapshot: null,
-          originalPhotoPriceCopSnapshot: 2_000,
-        }),
+        entries: entriesFor(picks),
+        counter: counterFor(picks, "client-a"),
+        quota,
+        viewerLock: null,
+        adminLockedPickerIds: [],
+        viewerSubmittedAt: null,
       };
     }
 
@@ -2580,19 +2678,42 @@ describe("ProofGrid", () => {
           jsonResponse(200, {
             status: "proofing",
             submittedAt: null,
-            picks: [
+            entries: [
               {
                 assetId: "a1",
-                selectedAt: "2026-07-30T12:00:00.000Z",
-                pickedBy: { id: "client-b", label: "Beto Ruiz" },
+                claim: {
+                  claimedAt: "2026-07-30T12:00:00.000Z",
+                  resolvedKind: "edited",
+                  billedTo: { id: "client-b", label: "Beto Ruiz" },
+                  charge: "included",
+                },
+                picks: [
+                  {
+                    userId: "client-b",
+                    label: "Beto Ruiz",
+                    kind: "edited",
+                    pickedAt: "2026-07-30T12:00:00.000Z",
+                    submittedAt: null,
+                    state: "degraded",
+                  },
+                ],
               },
             ],
+            counter: {
+              group: 1,
+              viewer: { yours: 0, shared: 0, toSend: 0 },
+              people: [{ userId: "client-b", label: "Beto Ruiz", units: 1 }],
+              unattributed: 0,
+            },
             quota: computeQuota(1, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
               extraPhotoPriceTiersSnapshot: null,
               originalPhotoPriceCopSnapshot: 2_000,
             }),
+            viewerLock: null,
+            adminLockedPickerIds: [],
+            viewerSubmittedAt: null,
           }),
         ),
       );

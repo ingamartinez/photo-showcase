@@ -43,6 +43,7 @@ vi.mock("@/lib/r2", () => ({
 // isn't), so this suite keeps testing exactly its own job: does this PAGE
 // call `isGalleryOwner` and honor its result.
 const isGalleryOwnerMock = vi.fn<(galleryId: string, session: Session) => Promise<boolean>>();
+const resolveViewAsMock = vi.fn();
 vi.mock("@/lib/gallery-access", () => ({
   isGalleryOwner: (...args: [string, Session]) => isGalleryOwnerMock(...args),
   // Task #139: a plain re-implementation of the real predicate (admin, full
@@ -51,12 +52,8 @@ vi.mock("@/lib/gallery-access", () => ({
   // gallery-access.test.ts; this file's own concern is authorization and the
   // notFound()/forbidden() branches, not this banner's gate.
   isAdminPreviewingClientGallery: (session: Session) => session.user.role === "admin",
-  // Epic #250 S6 — own subject, no view-as by default. `getClientLock` is not
-  // reached on this path.
-  resolveViewAs: async (session: Session) => ({
-    ok: true,
-    subjectId: session.user.role === "admin" ? null : session.user.id,
-  }),
+  // Epic #250 S6 — own subject, no view-as by default.
+  resolveViewAs: (...args: unknown[]) => resolveViewAsMock(...args),
 }));
 
 // Task #95: the collaborative tray's first paint. Mocked for the same reason
@@ -80,6 +77,11 @@ vi.mock("@/lib/gallery-client-locks", () => ({
 
 beforeEach(() => {
   authMock.mockReset();
+  resolveViewAsMock.mockReset();
+  resolveViewAsMock.mockImplementation(async (session: Session) => ({
+    ok: true,
+    subjectId: session.user.role === "admin" ? null : session.user.id,
+  }));
   getSelectionLockSnapshotMock.mockReset();
   getSelectionLockSnapshotMock.mockResolvedValue({
     viewerLock: null,
@@ -346,6 +348,55 @@ describe("ClientGalleryPage", () => {
       initialAdminLockedPickerIds: lock.adminLockedPickerIds,
       initialViewerSubmittedAt: lock.viewerSubmittedAt,
     });
+  });
+
+  it("forbids a CLIENT that sends a view-as parameter", async () => {
+    authMock.mockResolvedValue(sessionFor("client", "client-a"));
+    getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+    resolveViewAsMock.mockResolvedValue({ ok: false, error: "view_as_admin_only" });
+
+    await expect(ClientGalleryPage(paramsFor(SLUG))).rejects.toMatchObject({
+      digest: "NEXT_HTTP_ERROR_FALLBACK;403",
+    });
+    expect(getGallerySelectionMock).not.toHaveBeenCalled();
+  });
+
+  it("views as an active member for an admin: subject id reaches the read, viewerId and the remount key", async () => {
+    authMock.mockResolvedValue(sessionFor("admin", "admin-1"));
+    getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+    resolveViewAsMock.mockResolvedValue({ ok: true, subjectId: "client-b" });
+
+    const tree = await ClientGalleryPage({
+      ...paramsFor(SLUG),
+      searchParams: Promise.resolve({ viewAs: "client-b" }),
+    });
+
+    expect(resolveViewAsMock).toHaveBeenCalledWith(expect.anything(), "g1", "client-b");
+    expect(getGallerySelectionMock).toHaveBeenCalledWith("g1", expect.any(Object), "client-b");
+    const found: Record<string, unknown>[] = [];
+    const walk = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) return node.forEach(walk);
+      const props = (node as { props?: Record<string, unknown> }).props;
+      if (props && "viewAsId" in props) found.push(props);
+      if (props) walk(props.children);
+    };
+    walk(tree);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ viewerId: "client-b", viewAsId: "client-b" });
+  });
+
+  it("404s an admin view-as for a removed / unknown member", async () => {
+    authMock.mockResolvedValue(sessionFor("admin", "admin-1"));
+    getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+    resolveViewAsMock.mockResolvedValue({ ok: false, error: "view_as_not_member" });
+
+    await expect(
+      ClientGalleryPage({
+        ...paramsFor(SLUG),
+        searchParams: Promise.resolve({ viewAs: "gone" }),
+      }),
+    ).rejects.toMatchObject({ digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
   });
 
   it("presigns a proof URL for every asset in the gallery", async () => {

@@ -452,13 +452,33 @@ export function ProofGrid({
   //     sent. That is the honest freeze (decision 8: a degraded pick stays
   //     removable). Never "somebody's lock" — nobody can edit anybody else's
   //     pick any more.
-  //   - `ownPickCount`: what the subject asked for AND sent, off the server's
-  //     counter (yours + shared), never a client-side count.
+  //   - `ownPickCount`: every pick the subject has (sent or still to send),
+  //     off the server's counter, never a client-side count. It gates the
+  //     classic submit button, so leaving `toSend` out would make a gallery
+  //     whose picks are all still carts impossible to send.
   const claimedAssetIds = useMemo(
     () => new Set(claimedEntries(entries).map((entry) => entry.assetId)),
     [entries],
   );
-  const ownPickCount = counter.viewer ? counter.viewer.yours + counter.viewer.shared : 0;
+  // "Por enviar" is the VIEWER's own unsent pick (cart or degraded), the same
+  // set `counter.viewer.toSend` counts and "Enviar" sends. An asset claimed by
+  // somebody else reads "Pedida" even when the viewer's own pick on it is
+  // degraded.
+  const viewerUnsentAssetIds = useMemo(
+    () =>
+      new Set(
+        entries
+          .filter((entry) => {
+            const own = viewerPickOf(entry, viewerId);
+            return own !== null && own.submittedAt === null;
+          })
+          .map((entry) => entry.assetId),
+      ),
+    [entries, viewerId],
+  );
+  const ownPickCount = counter.viewer
+    ? counter.viewer.yours + counter.viewer.shared + counter.viewer.toSend
+    : 0;
   const viewerSubmittedAssetIds = useMemo(
     () =>
       new Set(
@@ -554,11 +574,11 @@ export function ProofGrid({
           // `requested_at` stamp.
           rollingDelivery && showsFinals && asset.hasFinal
             ? "Editada"
-            : rollingDelivery && !isDelivered && asset.isSelected
-              ? claimedAssetIds.has(asset.id)
+            : rollingDelivery && !isDelivered && viewerUnsentAssetIds.has(asset.id)
+              ? "Por enviar"
+              : rollingDelivery && !isDelivered && claimedAssetIds.has(asset.id)
                 ? "Pedida"
-                : "Por enviar"
-              : null
+                : null
         }
         onError={() => void refreshUrl(asset.id)}
         onOpen={() => setLightbox({ group, index })}

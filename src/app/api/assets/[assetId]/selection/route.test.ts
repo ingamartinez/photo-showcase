@@ -981,6 +981,61 @@ describe("PATCH /api/assets/[assetId]/selection — per-client lock and other pe
   });
 });
 
+describe("PATCH — the S6 entry/counter contract", () => {
+  it("returns the asset's whole entry, including somebody else's cart on the same photo", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.assets.push(assetRow({ id: ASSET_2_ID, sortOrder: 1 }));
+    db.__rows.assetPicks.push(pickRow(ASSET_2_ID, "client-b", { submittedAt: null }));
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_2_ID, true), paramsFor(ASSET_2_ID));
+    const body = (await response.json()) as {
+      entry: { claim: unknown; picks: { userId: string }[] } | null;
+      counter: { viewer: { toSend: number } | null };
+    };
+
+    expect(response.status).toBe(200);
+    expect(body.entry?.claim).toBeNull();
+    expect(body.entry?.picks.map((pick) => pick.userId).sort()).toEqual(["client-a", "client-b"]);
+    expect(body.counter.viewer?.toSend).toBe(1);
+  });
+
+  it("returns entry: null when the caller removes the last pick of an unclaimed asset", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.assetPicks.push(pickRow(ASSET_1_ID, "client-a", { submittedAt: null }));
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, false), paramsFor(ASSET_1_ID));
+    const body = (await response.json()) as { entry: unknown; counter: { group: number } };
+
+    expect(response.status).toBe(200);
+    expect(body.entry).toBeNull();
+    expect(body.counter.group).toBe(0);
+  });
+
+  it("keeps the quota unchanged across a client PATCH (a client never writes assets)", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const db = await seededDb();
+    db.__rows.assets[0] = claimed({
+      isSelected: true,
+      billedTo: "client-b",
+      billedAt: new Date(1),
+    });
+    db.__rows.assetPicks.push(pickRow(ASSET_1_ID, "client-b", { submittedAt: new Date(1) }));
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(requestFor(ASSET_1_ID, true), paramsFor(ASSET_1_ID));
+    const body = (await response.json()) as { quota: { selected: number; surchargeCop: number } };
+
+    expect(response.status).toBe(200);
+    expect(body.quota.selected).toBe(1);
+    expect(body.quota.surchargeCop).toBe(0);
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, billedTo: "client-b" });
+  });
+});
+
 describe("SELECTION_LOCKED_STATUSES — single shared definition (task #58)", () => {
   it("is reference-identical to the shared ASSET_MUTATION_BLOCKED_STATUSES", async () => {
     const { SELECTION_LOCKED_STATUSES } = await import("./route");

@@ -31,6 +31,14 @@ DRAFT ──▶ PROOFING ──▶ SELECTED ──▶ DELIVERED  (──▶ ARCH
   └─ Photographer uploads proofs (auto watermark + downscale). Not yet visible to client.
 ```
 
+> **Drift (epic #250, 2026-10-17).** `PROOFING ──▶ SELECTED` is no longer a client
+> action. A client's "Enviar" places an order for their own picks and never closes the
+> gallery. The gallery closes by itself when every active member is done: no unsent pick,
+> and either sent or locked by the photographer (`gallery-client-locks.ts`). An admin
+> unlock or removal can reopen it. "Picks which to edit" now means each person asks for
+> photos (`asset_picks`); `assets.is_selected` is the resolved claim that §3's count and
+> the delivery read.
+
 ### Each photo is one asset with two representations
 
 We never model "a photo." We model an **asset** that carries:

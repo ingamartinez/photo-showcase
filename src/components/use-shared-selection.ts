@@ -204,7 +204,6 @@ export function useSharedSelection({
   initialEntries,
   initialQuota,
   initialCounter,
-  viewerId,
   initialViewerLock = null,
   initialAdminLockedPickerIds = [],
   viewAsId = null,
@@ -363,8 +362,9 @@ export function useSharedSelection({
   //      so both are discarded.
   //
   // Note what is NOT in that list: there is no per-asset merge, no "keep my
-  // version of this one photo". The snapshot replaces `picks`, `selectionById`,
-  // `quota`, `status` and `submittedAt` together, as one consistent view. A
+  // version of this one photo". The snapshot replaces `entries`, `counter`,
+  // `selectionById`, `quota`, `status` and `submittedAt` together, as one
+  // consistent view. A
   // half-applied snapshot is how a tray and a counter start disagreeing.
   //
   // WHAT "ISSUE CLOCK" MEANS FOR A PUSHED EVENT (task #114, worked out BEFORE
@@ -421,8 +421,17 @@ export function useSharedSelection({
       setAdminLockedPickerIds(snapshot.adminLockedPickerIds ?? []);
       setSubmittedAt(snapshot.submittedAt);
       setViewerSubmittedAt(snapshot.viewerSubmittedAt ?? null);
-      setEntries(snapshot.entries);
-      setCounter(snapshot.counter);
+      setEntries(snapshot.entries ?? []);
+      setCounter(
+        snapshot.counter ?? {
+          // A pre-S6 server (or a test double) has no counter. Deriving a
+          // gallery-only fallback is honest: there is no subject to describe.
+          group: snapshot.quota?.selected ?? 0,
+          viewer: null,
+          people: [],
+          unattributed: 0,
+        },
+      );
 
       const pickedAssetIds = new Set(
         snapshot.entries.filter((entry) => entry.claim !== null).map((entry) => entry.assetId),
@@ -725,7 +734,7 @@ export function useSharedSelection({
         if (sequence > appliedQuotaSequenceRef.current) {
           appliedQuotaSequenceRef.current = sequence;
           setQuota(body.quota);
-          setCounter(body.counter);
+          if (body.counter) setCounter(body.counter);
         }
       } catch {
         setToggleError("No se pudo conectar.");
@@ -798,7 +807,7 @@ export function useSharedSelection({
         if (sequence > appliedQuotaSequenceRef.current) {
           appliedQuotaSequenceRef.current = sequence;
           setQuota(body.quota);
-          setCounter(body.counter);
+          if (body.counter) setCounter(body.counter);
         }
       } catch {
         setToggleError("No se pudo conectar.");
@@ -819,7 +828,10 @@ export function useSharedSelection({
   // once, so the snapshot is the honest refresh).
   const handleSubmitted = useCallback(
     (outcome: SubmitSelectionOutcome) => {
-      if (outcome.submittedAt) setViewerSubmittedAt(outcome.submittedAt);
+      // A rolling idempotent 200 (`already_submitted`, no `requestedCount`)
+      // stamped nothing, so it must not pretend this person just sent.
+      const stamped = !rollingDelivery || outcome.requestedCount !== undefined;
+      if (outcome.submittedAt && stamped) setViewerSubmittedAt(outcome.submittedAt);
       if (outcome.gallerySelected) {
         isLockedRef.current = true;
         setStatus("selected");
@@ -830,7 +842,7 @@ export function useSharedSelection({
       appliedQuotaSequenceRef.current = quotaSequenceRef.current;
       requestRefresh();
     },
-    [requestRefresh],
+    [requestRefresh, rollingDelivery],
   );
 
   return {

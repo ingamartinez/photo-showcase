@@ -8,7 +8,8 @@
 // frozen" (the identity bug the #239 suite documents).
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ProofGrid } from "./proof-grid";
 import type { ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
@@ -21,6 +22,10 @@ type SelectionPick = {
   selectionKind: SelectionKind;
   requestedAt?: string | null;
 };
+
+function jsonResponse(status: number, body: unknown): Response {
+  return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
+}
 
 const TERMS = {
   includedPhotosSnapshot: 0,
@@ -164,14 +169,15 @@ afterEach(() => {
 });
 
 describe("ProofGrid — rolling delivery (#244)", () => {
-  it("freezes exactly the ORDERED picks (any picker's) and leaves por-enviar picks and unpicked photos interactive", () => {
+  it("freezes exactly the VIEWER's own sent picks, not somebody else's order", () => {
     renderGrid();
 
     const disabled = [1, 2, 3, 4, 5, 6].filter((n) => tileButton(n).disabled);
 
-    // a1, a2 (Ana's orders) and a5 (Beto's order); NOT a3/a4 (por enviar) and
-    // NOT a6 (unpicked).
-    expect(disabled).toEqual([1, 2, 5]);
+    // Only a1/a2 are Ana's sent picks. a5 is Beto's order and a3/a4 are
+    // unsent; joining or removing a pick only ever touches the viewer's own
+    // `asset_picks` row.
+    expect(disabled).toEqual([1, 2]);
   });
 
   it("labels each pick por enviar / pedida / editada on its tile", () => {
@@ -179,8 +185,8 @@ describe("ProofGrid — rolling delivery (#244)", () => {
     const grid = screen.getAllByRole("list").at(-1)!;
 
     expect(within(grid).getAllByText("Editada")).toHaveLength(1);
-    expect(within(grid).getAllByText("Pedida")).toHaveLength(2);
-    expect(within(grid).getAllByText("Por enviar")).toHaveLength(2);
+    expect(within(grid).getAllByText("Pedida")).toHaveLength(3);
+    expect(within(grid).getAllByText("Por enviar")).toHaveLength(1);
   });
 
   it("groups the tray into Por enviar and Pedidas, with Editada only where the final is readable", () => {
@@ -189,11 +195,11 @@ describe("ProofGrid — rolling delivery (#244)", () => {
 
     // The group headings carry their counts; the per-photo status lines do not.
     const headings = Array.from(tray.querySelectorAll("p")).map((p) => p.textContent?.trim());
-    expect(headings).toContain("Por enviar (2)");
-    expect(headings).toContain("Pedidas (3)");
+    expect(headings).toContain("Por enviar (1)");
+    expect(headings).toContain("Pedidas (4)");
     // Pedidas holds a1 (Editada), a2 and a5 (Pedida).
     expect(within(tray).getAllByText("Editada")).toHaveLength(1);
-    expect(within(tray).getAllByText("Pedida")).toHaveLength(2);
+    expect(within(tray).getAllByText("Pedida")).toHaveLength(3);
   });
 
   it("offers the readable final's download and a zip of exactly the readable finals", () => {
@@ -236,22 +242,40 @@ describe("ProofGrid — rolling delivery (#244)", () => {
   });
 
   it("submitting orders the por-enviar photos WITHOUT locking: the grid stays interactive and the order is shown", async () => {
-    vi.stubGlobal("confirm", () => true);
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        status: "submitted",
-        quota: computeQuota(5, 0, TERMS),
-        submittedAt: "2026-10-16T12:00:00.000Z",
-        gallerySelected: false,
-        requestedCount: 1,
-      }),
-    }));
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    const afterPicks = PICKS.map((p) =>
+      p.assetId === "a3" ? { ...p, requestedAt: ORDERED_AT } : p,
+    );
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/submit-selection")) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            status: "submitted",
+            quota: computeQuota(5, 0, TERMS),
+            submittedAt: "2026-10-16T12:00:00.000Z",
+            gallerySelected: false,
+            requestedCount: 1,
+          }),
+        );
+      }
+      return Promise.resolve(
+        jsonResponse(200, {
+          status: "proofing",
+          submittedAt: null,
+          entries: afterPicks.map(entryFor),
+          counter: counterFor(afterPicks, ANA.id),
+          quota: computeQuota(5, 0, TERMS),
+          viewerLock: null,
+          adminLockedPickerIds: [],
+          viewerSubmittedAt: "2026-10-16T12:00:00.000Z",
+        }),
+      );
+    });
     vi.stubGlobal("fetch", fetchMock);
     renderGrid();
 
-    fireEvent.click(screen.getByRole("button", { name: "Enviar 1 foto" }));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Enviar 1 foto" }));
 
     await waitFor(() => expect(screen.getAllByText(/Último envío:/).length).toBeGreaterThan(0));
     // a3 is now ordered (frozen); the unpicked a6 and Beto's por-enviar a4 are
@@ -264,23 +288,39 @@ describe("ProofGrid — rolling delivery (#244)", () => {
   });
 
   it("an idempotent already_submitted 200 (nothing stamped) does NOT mark the por-enviar photos as ordered", async () => {
-    vi.stubGlobal("confirm", () => true);
+    vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          status: "already_submitted",
-          quota: computeQuota(5, 0, TERMS),
-          submittedAt: "2026-10-16T12:00:00.000Z",
-          gallerySelected: false,
-        }),
-      })),
+      vi.fn((url: string) => {
+        if (url.endsWith("/submit-selection")) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              status: "already_submitted",
+              quota: computeQuota(5, 0, TERMS),
+              submittedAt: "2026-10-16T12:00:00.000Z",
+              gallerySelected: false,
+            }),
+          );
+        }
+        return Promise.resolve(
+          jsonResponse(200, {
+            status: "proofing",
+            submittedAt: null,
+            entries: PICKS.map(entryFor),
+            counter: counterFor(PICKS, ANA.id),
+            quota: computeQuota(5, 0, TERMS),
+            viewerLock: null,
+            adminLockedPickerIds: [],
+            viewerSubmittedAt: null,
+          }),
+        );
+      }),
     );
     renderGrid();
 
-    fireEvent.click(screen.getByRole("button", { name: "Enviar 1 foto" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Enviar 1 foto" }));
+    });
 
     await waitFor(() => expect(screen.getByRole("button", { name: "Enviar 1 foto" })).toBeTruthy());
     expect(tileButton(3).disabled).toBe(false);
@@ -331,12 +371,12 @@ describe("ProofGrid — rolling delivery (#244)", () => {
     const tray = screen.getByRole("region", { name: "Fotos elegidas" });
 
     expect(within(grid).getAllByText("Editada")).toHaveLength(1);
-    expect(within(grid).getAllByText("Por enviar")).toHaveLength(2);
+    expect(within(grid).getAllByText("Por enviar")).toHaveLength(1);
     expect(within(tray).getAllByText("Editada")).toHaveLength(1);
     const headings = Array.from(tray.querySelectorAll("p")).map((p) => p.textContent?.trim());
     // a1 moved out of "Por enviar" (a3, a4 remain) into "Pedidas" (a1, a2, a5).
-    expect(headings).toContain("Por enviar (2)");
-    expect(headings).toContain("Pedidas (3)");
+    expect(headings).toContain("Por enviar (1)");
+    expect(headings).toContain("Pedidas (4)");
   });
 
   // A member migrated by updateRollingDelivery: unlocked, submitted_at kept.

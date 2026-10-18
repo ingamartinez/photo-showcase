@@ -449,7 +449,10 @@ describe("ClientGalleryPage chrome", () => {
       const groupHeaders = [...container.querySelectorAll("p")]
         .map((p) => p.textContent)
         .filter((text): text is string => /\(\d+\)/.test(text ?? ""));
-      expect(groupHeaders).toEqual(["Beto Ruiz (2)"]);
+      // Epic #250 S6 — "envió" now comes from the pick's own submittedAt,
+      // so a proofing gallery's sender is shown too (owner: leave it; S7
+      // decides presentation).
+      expect(groupHeaders).toEqual(["Beto Ruiz (2)envió"]);
     });
 
     // Task #206, criterion 4 — END TO END through the REAL GraphQL pipeline

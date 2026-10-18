@@ -99,7 +99,7 @@ export async function getSelectionLockSnapshot(
     .from(galleryClients)
     .where(and(eq(galleryClients.galleryId, galleryId), isNull(galleryClients.removedAt)));
 
-  const locked = members.filter((member) => member.lockedAt !== null);
+  const locked = members.filter((member) => member.lockedAt != null);
   const own = viewerId === null ? undefined : locked.find((member) => member.userId === viewerId);
   const ownMembership =
     viewerId === null ? undefined : members.find((member) => member.userId === viewerId);

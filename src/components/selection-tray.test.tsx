@@ -796,7 +796,11 @@ describe("SelectionTray — by-person mode (task #204)", () => {
       ],
     });
 
-    expect(groupHeaderTexts(container)).toEqual(["Vos (2)", "Beto Ruiz (1)", "Caro Ruiz (3)"]);
+    expect(groupHeaderTexts(container)).toEqual([
+      "Vos (2)envió",
+      "Beto Ruiz (1)envió",
+      "Caro Ruiz (3)envió",
+    ]);
     // Criterion 3: thumbnails still render through the SAME <TrayItem> — one
     // <ul> per group (3 people), one <li> per pick (6 total), and the
     // per-group counts (2 + 1 + 3) sum to that same 6.
@@ -819,7 +823,11 @@ describe("SelectionTray — by-person mode (task #204)", () => {
       ],
     });
 
-    expect(groupHeaderTexts(container)).toEqual(["Vos (1)", "Ana Gómez (1)", "Beto Ruiz (1)"]);
+    expect(groupHeaderTexts(container)).toEqual([
+      "Vos (1)envió",
+      "Ana Gómez (1)envió",
+      "Beto Ruiz (1)envió",
+    ]);
   });
 
   // Criterion 5 — unattributed picks (a deleted user, `onDelete: "set null"`)
@@ -836,7 +844,11 @@ describe("SelectionTray — by-person mode (task #204)", () => {
       ],
     });
 
-    expect(groupHeaderTexts(container)).toEqual(["Vos (1)", "Beto Ruiz (1)", "Sin registro (1)"]);
+    expect(groupHeaderTexts(container)).toEqual([
+      "Vos (1)envió",
+      "Beto Ruiz (1)envió",
+      "Sin registro (1)",
+    ]);
     // Not lost: still 3 thumbnails rendered in total.
     expect(screen.getAllByRole("listitem")).toHaveLength(3);
   });
@@ -1110,7 +1122,7 @@ describe("SelectionTray — compact chrome (task #236)", () => {
       renderTray({
         mode: "by-person",
         picks: [pick({ assetId: "a1", pickedBy: twin1 }), pick({ assetId: "a2", pickedBy: twin2 })],
-        adminLockedPickerIds: ["client-b", "client-c"],
+        adminLockedPickerIds: ["client-c"],
       });
 
       expect(screen.getAllByText("envió")).toHaveLength(1);
@@ -1119,8 +1131,12 @@ describe("SelectionTray — compact chrome (task #236)", () => {
       expect(screen.getByText("cerrada").parentElement?.textContent).toBe("Beto Ruiz (1)cerrada");
     });
 
-    it("shows no marker when nobody is locked", () => {
-      renderTray({ mode: "by-person", picks: [pick()], adminLockedPickerIds: [] });
+    it("shows no marker for an UNSENT pick with no admin lock", () => {
+      renderTray({
+        mode: "by-person",
+        picks: [pick({ selectedAt: null })],
+        adminLockedPickerIds: [],
+      });
 
       expect(screen.queryByText("envió")).toBeNull();
       expect(screen.queryByText("cerrada")).toBeNull();

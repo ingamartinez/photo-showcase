@@ -260,6 +260,39 @@ describe("planRemovePicks", () => {
     expect(plan.assetChanges[0]!.after).toEqual({ claimed: false });
     expect(plan.assetChanges[0]!.op).toBe("unclaim");
   });
+
+  it("never bills a DEGRADED pick (submittedAt null): removing A leaves the asset unclaimed", () => {
+    // Decision 8: a cart/degraded pick carries no claim. If it were fed to the
+    // resolution as if submitted (M2 of #260's review), the unit would land on
+    // B — who never submitted — and B's pick would stop being a cart pick.
+    const degraded = pickRow("x", B, { submittedAt: null });
+
+    const plan = planRemovePicks(rows, [pickRow("x", A, { submittedAt: t(2) }), degraded], A, t(9));
+
+    expect(plan.assetChanges).toHaveLength(1);
+    expect(plan.assetChanges[0]!.after).toEqual({ claimed: false });
+    expect(plan.assetChanges[0]!.op).toBe("unclaim");
+  });
+
+  it("picks the SUBMITTERS when one remaining picker submitted and another did not", () => {
+    // Same clause, the comparator's end of it: a `submittedAt: null` reaching
+    // the arrival sort is `.getTime()` on null — a 500 in production.
+    const picks = [
+      pickRow("x", A, { submittedAt: t(2) }),
+      pickRow("x", B, { submittedAt: null }),
+      pickRow("x", C, { submittedAt: t(4) }),
+    ];
+
+    const plan = planRemovePicks(rows, picks, A, t(9));
+
+    expect(plan.assetChanges[0]!.op).toBe("transfer");
+    expect(plan.assetChanges[0]!.after).toEqual({
+      claimed: true,
+      kind: "edited",
+      billedTo: C,
+      billedAt: t(2),
+    });
+  });
 });
 
 describe("planOriginalsOff", () => {

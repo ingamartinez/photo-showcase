@@ -3,11 +3,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 // `import "server-only"` only resolves inside a real Next.js bundle.
 vi.mock("server-only", () => ({}));
 
-import { assetPicks, assets } from "@/lib/db/schema";
+import { assetPicks, assets, galleries, galleryClients } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 import type { DbTransaction } from "@/lib/gallery-client-locks";
 import { createFakeDb } from "@/test-support/fake-db";
-import { applyAssetChanges, claimCart, reresolveAssets } from "@/lib/pick-claims";
+import { actOnBehalf, applyAssetChanges, claimCart, reresolveAssets } from "@/lib/pick-claims";
 import { type ClaimedUnit } from "@/lib/quota-attribution";
 import type { GalleryQuotaSnapshot } from "@/lib/quota";
 
@@ -490,5 +490,64 @@ describe("reresolveAssets — end to end", () => {
       selectedAt: null,
       requestedAt: null,
     });
+  });
+});
+
+// Review of #260, W1. The on-behalf retype of a SUBMITTED pick lowers the
+// claim to `original` without passing through `claimCart`, so the route's gate
+// 9 — which reads the flag WITHOUT the gallery lock — is not the last word.
+// `actOnBehalf` re-checks it after `lockGalleryRow`.
+describe("actOnBehalf — the LOCKED gallery's originals flag (hazard 6)", () => {
+  function onBehalfSetup() {
+    const fake = createFakeDb([galleries, galleryClients, assets, assetPicks]);
+    const galleryStore = fake.__tables.get(galleries)!;
+    galleryStore.push({
+      id: G,
+      status: "proofing",
+      allowsOriginalSelection: false,
+      includedPhotosSnapshot: 1,
+      extraPhotoPriceCopSnapshot: 5_000,
+      extraPhotoPriceTiersSnapshot: null,
+      originalPhotoPriceCopSnapshot: 2_000,
+    });
+    fake.__tables.get(galleryClients)!.push({
+      galleryId: G,
+      userId: A,
+      removedAt: null,
+      selectionLockedAt: null,
+      selectionSubmittedAt: null,
+      selectionLockedBy: null,
+    });
+    const assetStore = fake.__tables.get(assets)!;
+    const pickStore = fake.__tables.get(assetPicks)!;
+    assetStore.push(assetRow("x", claim({ billedAt: t(1) })));
+    pickStore.push(pickRow("x", A, { kind: "edited", submittedAt: t(1) }));
+    return {
+      galleryStore,
+      assetStore,
+      pickStore,
+      tx: fake as unknown as DbTransaction,
+    };
+  }
+
+  it("refuses a retype to original with originals_not_allowed, writing nothing", async () => {
+    const { galleryStore, assetStore, pickStore, tx } = onBehalfSetup();
+    const assetsBefore = structuredClone(assetStore);
+    const picksBefore = structuredClone(pickStore);
+
+    const result = await actOnBehalf(tx, G, "x", A, { selectionKind: "original" });
+
+    expect(result).toEqual({ ok: false, error: "originals_not_allowed" });
+    expect(structuredClone(assetStore)).toEqual(assetsBefore);
+    expect(structuredClone(pickStore)).toEqual(picksBefore);
+
+    // The guard is the FLAG, not the word `original`: with originals allowed
+    // the same retype goes through, because an admin is exempt from decision 7.
+    galleryStore[0]!.allowsOriginalSelection = true;
+    const allowed = await actOnBehalf(tx, G, "x", A, { selectionKind: "original" });
+
+    expect(allowed.ok).toBe(true);
+    expect(pickStore[0]).toMatchObject({ kind: "original", submittedAt: t(1) });
+    expect(assetStore[0]).toMatchObject({ selectionKind: "original", billedTo: A });
   });
 });

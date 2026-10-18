@@ -573,6 +573,21 @@ describe("reresolveClaim", () => {
     expect(result).toMatchObject({ billedTo: "a" });
   });
 
+  it("RESOLVES the kind on the picks but transfers the unit when the holder's own kind moved", () => {
+    // The on-behalf retype (decision 12): X is billed `edited` to A, B joined
+    // `edited`, and the admin retypes A's own submitted pick to `original`.
+    // A no longer asks for the unit, so rule 5 hands it to the earliest
+    // picker of the resolved kind (M16 of #260's review: keeping the holder
+    // whenever their pick is merely PRESENT bills A for a unit A stopped
+    // asking for).
+    const result = reresolveClaim(
+      claim({ kind: "edited", billedTo: "A", billedAt: t(2) }),
+      [pick("A", "original", t(2)), pick("B", "edited", t(3))],
+      { hasFinal: false, arrival },
+    );
+    expect(result).toEqual({ claimed: true, kind: "edited", billedTo: "B", billedAt: t(2) });
+  });
+
   it("freezes the kind in BOTH directions while a final exists (decision 15)", () => {
     // No raise over a file.
     expect(
@@ -581,13 +596,17 @@ describe("reresolveClaim", () => {
         arrival,
       }),
     ).toEqual({ claimed: true, kind: "original", billedTo: "A", billedAt: t(1) });
-    // No lowering either: the final was produced against `edited`.
+    // No lowering either: the final was produced against `edited`. The holder
+    // is GONE and the only remaining pick asks for `original`, so a rule that
+    // froze only the raise would relabel the unit to `original` here — and in
+    // production `applyAssetChanges` refuses a kind change under a final
+    // (`final_key IS NULL`), so the admin action would 500 instead.
     expect(
-      reresolveClaim(claim({ kind: "edited" }), [pick("A", "edited"), pick("B", "original")], {
+      reresolveClaim(claim({ billedTo: "gone", kind: "edited" }), [pick("B", "original")], {
         hasFinal: true,
         arrival,
       }),
-    ).toEqual({ claimed: true, kind: "edited", billedTo: "A", billedAt: t(1) });
+    ).toEqual({ claimed: true, kind: "edited", billedTo: "B", billedAt: t(1) });
   });
 
   it("still transfers the unit when the holder left and a final froze the kind", () => {

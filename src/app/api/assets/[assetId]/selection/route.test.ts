@@ -1147,6 +1147,37 @@ describe("PATCH — on behalf of a client (decision 12)", () => {
     await expectInvariants();
   });
 
+  it("O5b — retyping A's submitted pick to original hands the edited unit to B (rule 5)", async () => {
+    // Review of #260, C2/M16, the on-behalf twin: A holds X `edited` and B
+    // joined `edited`. When the admin retypes A's pick to `original`, A no
+    // longer asks for the unit, so the resolution must TRANSFER it to B and
+    // keep `billedAt` — not leave A billed for a unit A stopped asking for.
+    const db = await seedMembers();
+    db.__rows.assets[0] = claimed({ billedTo: "client-a", billedAt: T0 });
+    db.__rows.assetPicks.push(
+      pickRow(ASSET_1_ID, "client-a", { submittedAt: T0 }),
+      pickRow(ASSET_1_ID, "client-b", { submittedAt: new Date(T0.getTime() + 1000) }),
+    );
+
+    const result = await patchAsAdmin(ASSET_1_ID, {
+      selectionKind: "original",
+      actingClientId: "client-a",
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.body.pickOutcome).toBe("reresolved");
+    expect(db.__rows.assets[0]).toMatchObject({
+      isSelected: true,
+      billedTo: "client-b",
+      selectionKind: "edited",
+      billedAt: T0,
+    });
+    expect(db.__rows.assetPicks.find((pick) => pick.userId === "client-a")).toMatchObject({
+      kind: "original",
+    });
+    await expectInvariants();
+  });
+
   it("O6 — a CLIENT sending actingClientId is refused with 400 and writes nothing", async () => {
     await seededDb();
     authMock.mockResolvedValue(clientASession());

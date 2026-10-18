@@ -327,7 +327,10 @@ export async function reresolveAssets(
 // ---------------------------------------------------------------------------
 
 export type OnBehalfFailure =
-  "gallery_not_submittable" | "acting_client_not_member" | "asset_not_selected";
+  | "gallery_not_submittable"
+  | "acting_client_not_member"
+  | "asset_not_selected"
+  | "originals_not_allowed";
 
 export type OnBehalfResult =
   | { ok: false; error: OnBehalfFailure }
@@ -372,6 +375,20 @@ export async function actOnBehalf(
   if (!gallery || gallery.status !== "proofing") {
     return { ok: false, error: "gallery_not_submittable" };
   }
+
+  // Gate 9 again, this time under the lock. The route reads
+  // `allowsOriginalSelection` from a row it loaded WITHOUT this lock, and the
+  // cart paths are safe only because `claimCart` coerces under it. A
+  // submitted-pick retype goes through `reresolveAssets` instead, so without
+  // this check an OFF committing between the route's read and this lock would
+  // lower a claim to `original` in a gallery that no longer allows originals —
+  // hazard 6's state, reached through an admin racing their own toggle.
+  const desiredKind: SelectionKind | null =
+    body.selected === false ? null : (body.selectionKind ?? "edited");
+  if (desiredKind === "original" && !gallery.allowsOriginalSelection) {
+    return { ok: false, error: "originals_not_allowed" };
+  }
+
   const membership = await getClientLock(tx, gallery.id, actingClientId);
   if (!membership) return { ok: false, error: "acting_client_not_member" };
 

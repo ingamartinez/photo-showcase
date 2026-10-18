@@ -440,3 +440,52 @@ export function attributionDeltaBetween(
   }
   return delta;
 }
+
+/**
+ * The before/after the dashboard shows BEFORE the admin confirms either of the
+ * two money-affecting per-person actions (epic #250, task #263):
+ *
+ *   - `lock`      — `lockGalleryClientSelection`, which claims that person's
+ *                   cart (decision 18). Same planner the write runs:
+ *                   `planCartClaim`, the one `claimCart` executes.
+ *   - `removePicks` — `removeGalleryClientPicks`, which deletes every pick of
+ *                   that person and re-resolves the assets that lose a
+ *                   submitted one. Same planner the write runs:
+ *                   `planRemovePicks`, the one `removeGalleryClientPicks`
+ *                   executes.
+ *
+ * THE PARITY IS THE POINT. The preview and the write call the same function
+ * on the same rows, and the executed delta comes from `attributionDeltaBetween`
+ * over the rows the write actually produced — so "what it said would happen"
+ * and "what happened" cannot be two pieces of maths. `pick-plans.test.ts` and
+ * `actions.client-selection.test.ts` (the parity suite) pin that.
+ *
+ * `opts.allowsOriginal` mirrors `claimCart`'s own coercion: an `original` cart
+ * pick in a gallery that no longer allows originals is previewed as the
+ * `edited` pick the lock will actually resolve.
+ */
+export function previewClientActions(
+  rows: readonly AssetRow[],
+  picks: readonly PickRow[],
+  userId: string,
+  now: Date,
+  snapshot: Parameters<typeof attributeQuota>[1],
+  labels: Readonly<Record<string, string | null | undefined>> = {},
+  opts: { allowsOriginal: boolean },
+): { lock: AttributionDelta; removePicks: AttributionDelta } {
+  const cartPicks = picks.filter((pick) => pick.userId === userId && pick.submittedAt === null);
+  return {
+    lock: attributionDelta(
+      rows,
+      planCartClaim(rows, cartPicks, userId, now, { allowsOriginal: opts.allowsOriginal }),
+      snapshot,
+      labels,
+    ),
+    removePicks: attributionDelta(
+      rows,
+      planRemovePicks(rows, picks, userId, now),
+      snapshot,
+      labels,
+    ),
+  };
+}

@@ -318,6 +318,49 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
     expect(body.counter).toEqual(counter);
   });
 
+  // Task #264 — the per-person money has to reach the browser; a route that
+  // whitelisted counter fields would drop it and the bar would silently fall
+  // back to the gallery-wide total, which is the bug this slice fixes.
+  it("delivers each person's money share and the unattributed share unchanged", async () => {
+    const anaShare = {
+      included: 1,
+      extras: 2,
+      originals: 0,
+      extrasSurchargeCop: 10_000,
+      originalsSurchargeCop: 0,
+      surchargeCop: 10_000,
+    };
+    const legacyShare = {
+      included: 1,
+      extras: 0,
+      originals: 0,
+      extrasSurchargeCop: 0,
+      originalsSurchargeCop: 0,
+      surchargeCop: 0,
+    };
+    const counter = {
+      group: 4,
+      viewer: { yours: 3, shared: 0, toSend: 0 },
+      people: [{ userId: "client-a", label: "Ana", units: 3, share: anaShare }],
+      unattributed: 1,
+      unattributedShare: legacyShare,
+    };
+    getGallerySelectionMock.mockResolvedValue(view({ counter }));
+    authMock.mockResolvedValue(clientASession());
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
+    const body = (await response.json()) as {
+      counter: {
+        people: { userId: string; share: typeof anaShare }[];
+        unattributedShare: typeof legacyShare;
+      };
+    };
+
+    expect(body.counter.people[0]?.share).toEqual(anaShare);
+    expect(body.counter.unattributedShare).toEqual(legacyShare);
+  });
+
   it("asks the builder for the gallery's FROZEN terms and the caller's subject", async () => {
     const db = await seededDb();
     db.__rows.galleries.length = 0;

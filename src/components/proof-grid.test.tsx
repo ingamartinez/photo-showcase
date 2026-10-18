@@ -497,6 +497,47 @@ describe("ProofGrid", () => {
   });
 
   describe("live quota counter", () => {
+    // Task #264 — <ProofGrid> is the only caller of <SelectionCounter> in the
+    // product, and `counter` is an OPTIONAL prop there (the single-payer
+    // contract, and every pre-#264 test in this repo, depend on that). So
+    // forgetting to pass it still compiles and still renders — it just puts
+    // every client back on the gallery-wide bill. This is the test that
+    // notices.
+    it("hands the bar the per-person counter: two holders render two money rows, the viewer's own name on top", () => {
+      const anaShare = {
+        included: 1,
+        extras: 2,
+        originals: 0,
+        extrasSurchargeCop: 10_000,
+        originalsSurchargeCop: 0,
+        surchargeCop: 10_000,
+      };
+      renderGrid({
+        initialCounter: {
+          group: 4,
+          viewer: { yours: 3, shared: 0, toSend: 0 },
+          people: [
+            { userId: "client-a", label: "Ana", units: 3, share: anaShare },
+            { userId: "client-b", label: "Beto", units: 1, share: emptyShare() },
+          ],
+          unattributed: 0,
+          unattributedShare: emptyShare(),
+        },
+        // The bar is the one collapsible caller; the folded row is where a
+        // phone reads the amount before opening the detail.
+        extraPhotoPriceCopSnapshot: 5_000,
+        includedPhotosSnapshot: 1,
+      });
+
+      expect(screen.getAllByRole("term").map((node) => node.textContent)).toEqual(["Tú", "Beto"]);
+      expect(screen.getAllByRole("definition")[0]?.textContent?.replace(/\s+/g, " ")).toContain(
+        "3 fotos · 2 extras · $ 10.000",
+      );
+      expect(
+        screen.getByRole("button", { name: "Ver detalle" }).parentElement?.textContent,
+      ).toContain("a tu nombre");
+    });
+
     it("renders the initial counter computed from the FIRST-PAINT PICKS, not the assets' own isSelected flags", () => {
       // Task #206, round-2 review — the initial quota is derived from
       // `initialPicks` alone (see use-shared-selection.ts's own comment on

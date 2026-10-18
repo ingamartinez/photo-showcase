@@ -819,7 +819,8 @@ describe("SelectionTray — by-person mode (task #204)", () => {
   // only. Gating the empty state on `entries.length` meant a by-person tray
   // holding nothing but other people's carts rendered an empty scroll box
   // with no copy — the state task #203 criterion 7 forbids. The gate is now
-  // `claimed.length` for by-person.
+  // `claimed.length === 0 && unsent.length === 0` for by-person (finding 1
+  // added the unsent half: the VIEWER's own cart is `claim: null` too).
   it("shows the empty state when by-person's only entries are other people's carts", () => {
     const otherCart = {
       assetId: "a1",
@@ -848,6 +849,27 @@ describe("SelectionTray — by-person mode (task #204)", () => {
     // above must not have moved that behaviour either.
     renderTray({ mode: "flat", entries: [otherCart] });
     expect(screen.getByText(/Todavía no eligieron ninguna foto/)).toBeDefined();
+  });
+
+  // Task #262 review, finding 1 — the state EVERY by-person gallery starts
+  // in: the viewer has picked a photo and nobody has sent anything yet. The
+  // viewer's own cart is an entry with `claim: null` (Q1), so gating the
+  // empty copy on `claimed.length` alone told the client "nobody has picked a
+  // photo yet" right after they picked one.
+  it("shows the viewer's own unsent cart as 'Por enviar', never the empty state", () => {
+    const ownCart = fixtureEntry("a1", null, [fixturePick("client-a", "Ana", "cart")]);
+    const { container } = renderTray({
+      mode: "by-person",
+      viewerId: "client-a",
+      entries: [ownCart],
+    });
+
+    expect(screen.queryByText(/Todavía no eligieron ninguna foto/)).toBeNull();
+    expect(groupHeaderTexts(container)).toEqual(["Por enviar (1)"]);
+    // The pick is really rendered — once — and not duplicated into "Tú"'s
+    // claimed group.
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(groupHeaderTexts(container)).not.toContain("Tú (1)");
   });
 
   // Criterion 4 — the task's own named trap: the viewer's name ("Zoe

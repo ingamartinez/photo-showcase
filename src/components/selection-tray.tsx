@@ -360,7 +360,28 @@ export function SelectionTray({
   const [isCollapsed, setIsCollapsed] = useState(false);
   const listRegionId = useId();
   const claimed = useMemo(() => entries.filter((entry) => entry.claim !== null), [entries]);
-  const hasPicks = claimed.length > 0;
+
+  // Epic #250 S7 — the viewer's own unsent picks (cart + degraded), exactly
+  // what the "Enviar" button sends. Computed ONCE here and shared by BOTH
+  // layouts: flat mode's "Pedidas" split and by-person's "Por enviar" group.
+  // Task #262 review, finding 1 — by-person used to build its groups from
+  // `claimed` only, so an entry whose viewer pick is still unsent (Q1: an
+  // unsent cart carries `claim: null`) rendered NOWHERE, and gating the empty
+  // state on `claimed.length` made the tray claim nobody had picked while the
+  // viewer was looking at their own pick.
+  const unsent = useMemo(
+    () =>
+      entries.filter((entry) => {
+        const own = viewerPickOf(entry, viewerId);
+        return own !== null && own.submittedAt === null && !readableAssetIds?.has(entry.assetId);
+      }),
+    [entries, viewerId, readableAssetIds],
+  );
+  const unsentIds = useMemo(() => new Set(unsent.map((entry) => entry.assetId)), [unsent]);
+  // "Has picks" now means "has anything to render in the list", unsent
+  // included: with only a still-unsent own cart there IS a row to fold, so the
+  // mobile toggle must be offered (the empty-state gate below is separate).
+  const hasPicks = claimed.length > 0 || unsent.length > 0;
   const hasAnyOriginal = claimed.some((entry) => entry.claim!.resolvedKind === "original");
 
   // Task #206, criterion 8 — the governing constraint: a gallery where
@@ -391,7 +412,19 @@ export function SelectionTray({
   // owns. Recomputed on every `entries`/`viewerId` change — `useMemo` only to
   // avoid re-sorting on an unrelated re-render (a lightbox open/close, a
   // toggled `isStale`), not because the computation is expensive.
-  const groups = useMemo(() => groupPicksByPicker(claimed, viewerId), [claimed, viewerId]);
+  // The viewer's unsent picks are rendered in their OWN "Por enviar" group,
+  // under the same one-entry-once rule flat mode uses, so they are excluded
+  // from the per-picker groups here. In the plain case they are already
+  // absent from `claimed` (claim `null`); the filter only matters for a
+  // degraded pick the viewer holds on an asset somebody else's unit owns.
+  const groups = useMemo(
+    () =>
+      groupPicksByPicker(
+        claimed.filter((entry) => !unsentIds.has(entry.assetId)),
+        viewerId,
+      ),
+    [claimed, unsentIds, viewerId],
+  );
 
   // `by-person`'s OWN height cap — a SEPARATE ref/state/effect from the flat
   // trio above, not a generalization of it. See this file's header comment
@@ -522,20 +555,27 @@ export function SelectionTray({
             Puedes seguir eligiendo y enviar más fotos cuando quieras.
           </p>
         )}
-        {(mode === "by-person" ? claimed.length === 0 : entries.length === 0) ? (
+        {(
+          mode === "by-person" ? claimed.length === 0 && unsent.length === 0 : entries.length === 0
+        ) ? (
           // No scroll chrome for the empty state (task #203 acceptance
           // criterion #7) — an empty scrollable box reads as broken, not as
           // "nothing here yet".
           //
-          // By-person is gated on CLAIMED, not `entries` (task #262 review,
-          // warning 3): `groups` is built from `claimed`, and since Q1
-          // another person's UNSENT cart is an entry with `claim: null`. A
-          // by-person tray holding only those carts has nothing to group, so
-          // gating on `entries` rendered an empty box with no copy — exactly
-          // the state criterion #7 forbids. Flat mode keeps the `entries`
-          // gate because its own rolling split below decides between
-          // "Por enviar" (the viewer's unsent picks) and "Pedidas", and has
-          // its own copy when both are empty.
+          // By-person is gated on CLAIMED **and** the viewer's own UNSENT
+          // picks, not `entries` (task #262 review, warnings 3 and finding
+          // 1): `groups` is built from `claimed`, and since Q1 another
+          // person's UNSENT cart is an entry with `claim: null`. A by-person
+          // tray holding only those carts has nothing to group, so gating on
+          // `entries` rendered an empty box with no copy — exactly the state
+          // criterion #7 forbids. But gating on `claimed` alone was worse: an
+          // unsent pick of the VIEWER'S OWN is also an entry with
+          // `claim: null`, so the tray told the client nobody had picked a
+          // photo right after they picked one. The viewer's unsent picks are
+          // a real "Por enviar" group now, so they count as content. Flat
+          // mode keeps the `entries` gate because its own split below decides
+          // between "Por enviar" and "Pedidas", and has its own copy when
+          // both are empty.
           <p className="text-fg-dim text-[15px] leading-relaxed max-lg:hidden">
             Todavía no eligieron ninguna foto. Las que elijan van a aparecer acá, con el nombre de
             quién las eligió.
@@ -552,6 +592,33 @@ export function SelectionTray({
             className="flex flex-col gap-4 overflow-y-auto overscroll-contain"
             style={{ maxHeight: groupedMaxHeightPx ?? PRE_MEASURE_MAX_HEIGHT_PX }}
           >
+            {unsent.length > 0 && (
+              // Epic #250 S7, task #262 review finding 1 — the viewer's own
+              // unsent picks, in the group name the approved copy uses (never
+              // "carrito" in UI). Rendered FIRST, before the per-picker
+              // groups, matching flat mode's own order: what you still have
+              // to do, then who asked for what.
+              <div key="unsent">
+                <p className="text-fg-dim mb-2 text-sm font-medium">
+                  Por enviar <span className="text-fg-mute font-normal">({unsent.length})</span>
+                </p>
+                <ul className="flex flex-wrap gap-3">
+                  {unsent.map((entry) => (
+                    <TrayItem
+                      key={entry.assetId}
+                      entry={entry}
+                      src={urls[entry.assetId]}
+                      originalFilename={filenamesByAssetId[entry.assetId]}
+                      viewerId={viewerId}
+                      onOpen={() => onOpenAsset(entry.assetId)}
+                      onError={() => onImageError(entry.assetId)}
+                      showType={showType}
+                      statusLabel="Por enviar"
+                    />
+                  ))}
+                </ul>
+              </div>
+            )}
             {groups.map((group) => (
               <div key={group.key}>
                 {/* "alejandro (5)" — the task's own example copy. The count
@@ -615,13 +682,6 @@ export function SelectionTray({
           // existing "Extra" tag marks the included/extra boundary inside
           // Pedidas, using the charge the server already attributed.
           (() => {
-            const unsent = entries.filter((entry) => {
-              const own = viewerPickOf(entry, viewerId);
-              return (
-                own !== null && own.submittedAt === null && !readableAssetIds?.has(entry.assetId)
-              );
-            });
-            const unsentIds = new Set(unsent.map((entry) => entry.assetId));
             const requested = entries.filter(
               (entry) =>
                 !unsentIds.has(entry.assetId) &&

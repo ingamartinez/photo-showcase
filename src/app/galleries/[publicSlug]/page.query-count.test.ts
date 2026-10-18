@@ -29,6 +29,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "next-auth";
 import { db } from "@/lib/db";
 import ClientGalleryPage from "./page";
+import { emptyShare } from "@/lib/quota-attribution";
 
 const authMock = vi.fn();
 vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
@@ -64,6 +65,7 @@ vi.mock("@/lib/gallery-selection", async () => {
           viewer: { yours: 0, shared: 0, toSend: 0 },
           people: [],
           unattributed: 0,
+          unattributedShare: emptyShare(),
         },
         lock: { viewerLock: null, adminLockedPickerIds: [], viewerSubmittedAt: null },
       }),

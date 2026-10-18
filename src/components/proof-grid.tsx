@@ -672,7 +672,14 @@ export function ProofGrid({
           nothing left to act on. */}
       {!isDelivered && isLocked && (
         <div className="mb-4">
-          <SelectionCounter quota={quota} allowsOriginalSelection={allowsOriginalSelection} />
+          {/* Task #264 — the same per-person counter the proofing bar shows:
+              the `selected` view had the identical one-bill assumption. */}
+          <SelectionCounter
+            quota={quota}
+            allowsOriginalSelection={allowsOriginalSelection}
+            counter={counter}
+            viewerId={viewerId}
+          />
         </div>
       )}
 
@@ -816,6 +823,8 @@ export function ProofGrid({
             <SelectionCounter
               quota={quota}
               allowsOriginalSelection={allowsOriginalSelection}
+              counter={counter}
+              viewerId={viewerId}
               collapsible
             />
             <div className="flex items-center gap-3">

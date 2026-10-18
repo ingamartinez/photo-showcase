@@ -18,6 +18,7 @@ import type { Session } from "next-auth";
 import ClientGalleryPage from "./page";
 import type { GalleryDetail } from "@/lib/galleries";
 import { computeQuota, type GalleryQuotaSnapshot } from "@/lib/quota";
+import { emptyShare } from "@/lib/quota-attribution";
 
 // Epic #250 S7 — the admin banner mounts <ActingClientSelect>, which reads the
 // router. A plain render in jsdom has no app-router context, so stub the two
@@ -249,8 +250,17 @@ function viewFor(picks: LegacyPick[], terms: GalleryQuotaSnapshot = DEFAULT_TERM
     counter: {
       group: picks.length,
       viewer: { yours: counts.get("client-a") ?? 0, shared: 0, toSend: 0 },
-      people: [...counts].map(([userId, units]) => ({ userId, label: userId, units })),
+      // Task #264 — these fixtures predate the per-person money wire; the
+      // required share is the all-zero one, from the same module the server
+      // uses.
+      people: [...counts].map(([userId, units]) => ({
+        userId,
+        label: userId,
+        units,
+        share: emptyShare(),
+      })),
       unattributed: picks.filter((pick) => pick.pickedBy === null).length,
+      unattributedShare: emptyShare(),
     },
     lock: { viewerLock: null, adminLockedPickerIds: [], viewerSubmittedAt: null },
   };

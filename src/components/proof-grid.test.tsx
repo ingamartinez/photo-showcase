@@ -2047,7 +2047,11 @@ describe("ProofGrid", () => {
       await onePollTick();
 
       expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
-      expect(screen.getByText("Beto Ruiz")).toBeDefined();
+      // Scoped to the tray: since task #264 the bar's breakdown names the
+      // same person in its own row, so an unscoped query is ambiguous.
+      expect(
+        within(screen.getByRole("region", { name: "Fotos elegidas" })).getByText("Beto Ruiz"),
+      ).toBeDefined();
       // And the grid tile agrees — the tray and the grid are two views of one
       // fact. The fact this tile renders is the VIEWER'S pick, and Beto is
       // somebody else, so the viewer may still join it (epic #250 S7).
@@ -2779,7 +2783,7 @@ describe("ProofGrid", () => {
             counter: {
               group: 1,
               viewer: { yours: 0, shared: 0, toSend: 0 },
-              people: [{ userId: "client-b", label: "Beto Ruiz", units: 1 }],
+              people: [{ userId: "client-b", label: "Beto Ruiz", units: 1, share: emptyShare() }],
               unattributed: 0,
               unattributedShare: emptyShare(),
             },
@@ -2804,7 +2808,11 @@ describe("ProofGrid", () => {
       });
 
       expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
-      expect(screen.getByText("Beto Ruiz")).toBeDefined();
+      // Scoped to the tray: since task #264 the bar's breakdown names the
+      // same person in its own row, so an unscoped query is ambiguous.
+      expect(
+        within(screen.getByRole("region", { name: "Fotos elegidas" })).getByText("Beto Ruiz"),
+      ).toBeDefined();
     });
 
     it("queues exactly one more fetch when a `changed` push arrives while a fetch is already in flight", async () => {

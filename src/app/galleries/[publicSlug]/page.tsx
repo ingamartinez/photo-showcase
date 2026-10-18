@@ -346,7 +346,7 @@ export default async function ClientGalleryPage({
         actingClientId={actingClientId}
         // An admin without an active subject may look but not touch.
         readOnly={readOnly}
-        // Display only — the tray renders the subject's own picks as "Vos".
+        // Display only — the tray renders the subject's own picks as "Tú".
         // Nothing is authorized by it: every route <ProofGrid> calls resolves
         // the acting session server-side.
         viewerId={subjectId ?? session.user.id}

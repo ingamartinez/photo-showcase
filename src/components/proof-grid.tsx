@@ -278,7 +278,7 @@ export function ProofGrid({
   // Task #244 — the viewer's own last submit time, for "Último envío".
   initialViewerSubmittedAt?: string | null;
   // The subject's own id (the admin's view-as person when there is one), so
-  // the tray can render their own picks as "Vos" rather than their own name
+  // the tray can render their own picks as "Tú" rather than their own name
   // (see `pickerLabelFor`). Nothing is authorized by this value — it is a
   // display detail; every route this component calls resolves the acting
   // session server-side and would refuse a request regardless of what is
@@ -966,7 +966,7 @@ function SelectedStateNote({
   quota: QuotaResult;
   counter: SelectionCounterData;
   /** Same prop <SelectionTray> already takes — the viewer's own picks read
-   * "Vos" in the per-picker recap below too, for the same reason. */
+   * "Tú" in the per-picker recap below too, for the same reason. */
   viewerId: string;
   /** The VIEWER's own submission time (epic #239), not the gallery's closing
    * time. `null` when an admin locked them. */
@@ -980,7 +980,7 @@ function SelectedStateNote({
   /** Epic #239 — photos THIS person picked and sent, off the server counter. */
   ownPickCount: number;
 }) {
-  // Per-picker tally (task #94's shared gallery, not per-client): "Vos 9 ·
+  // Per-picker tally (task #94's shared gallery, not per-client): "Tú 9 ·
   // Beto 4 · Sara 2" (client.html:726, :848-850), off the SERVER's `people`
   // rows plus its "Sin registro" bucket — never a client-side count of the
   // entry list.
@@ -1033,7 +1033,7 @@ function SelectedStateNote({
         cerrada, pero escríbele a tu fotógrafo y él la reabre.
       </p>
       {/* Only worth a breakdown once more than one person actually picked
-          something — a solo client seeing "Vos: 15" would just be the same
+          something — a solo client seeing "Tú: 15" would just be the same
           number repeated with no new information. */}
       {perPicker.length > 1 && (
         <dl className="mt-4 grid gap-2 text-sm">

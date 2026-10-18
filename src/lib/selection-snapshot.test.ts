@@ -21,10 +21,10 @@ describe("pickerLabelFor", () => {
     );
   });
 
-  it("renders the viewer's OWN pick as 'Vos', not their own name", () => {
+  it("renders the viewer's OWN pick as 'Tú', not their own name", () => {
     // The distinction the tray exists to draw is "me vs. one of the others" —
     // seeing your own name attributed back at you is noise.
-    expect(pickerLabelFor(picker({ id: "client-a", label: "Ana Pérez" }), "client-a")).toBe("Vos");
+    expect(pickerLabelFor(picker({ id: "client-a", label: "Ana Pérez" }), "client-a")).toBe("Tú");
   });
 
   it("falls back to the server's label when there is no viewer id at all", () => {
@@ -41,7 +41,7 @@ describe("pickerLabelFor", () => {
 
   it("never credits the viewer for a pick that merely shares their label", () => {
     // Identity is the id, never the display string — two people can share a
-    // name, and "Vos" next to somebody else's pick is the one wrong answer
+    // name, and "Tú" next to somebody else's pick is the one wrong answer
     // this function must not give.
     expect(pickerLabelFor(picker({ id: "client-b", label: "Ana Pérez" }), "client-a")).toBe(
       "Ana Pérez",

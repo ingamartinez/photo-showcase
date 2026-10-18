@@ -40,7 +40,11 @@ export function pick(
  * is a pure cart/degraded row) or the billed unit a sent pick produced. */
 export function entry(
   assetId: string,
-  claim: { billedTo: { id: string; label: string } | null; resolvedKind?: SelectionKind } | null,
+  claim: {
+    billedTo: { id: string; label: string } | null;
+    resolvedKind?: SelectionKind;
+    charge?: "included" | "extra" | "original";
+  } | null,
   picks: SelectionEntryPick[],
 ): SelectionEntry {
   return {
@@ -50,7 +54,7 @@ export function entry(
           claimedAt: SENT_AT,
           resolvedKind: claim.resolvedKind ?? "edited",
           billedTo: claim.billedTo,
-          charge: "included",
+          charge: claim.charge ?? "included",
         }
       : null,
     picks,

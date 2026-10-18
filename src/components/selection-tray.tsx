@@ -655,7 +655,7 @@ export function SelectionTray({
                             {firstExtra && (
                               <li
                                 aria-hidden="true"
-                                className="text-accent-2 flex items-center gap-1 self-stretch text-[9px] font-semibold tracking-[0.12em] uppercase"
+                                className="text-accent-2 flex items-center gap-1 self-stretch text-[10px] font-medium"
                               >
                                 <span className="bg-accent/60 h-full w-px" />
                                 Extra

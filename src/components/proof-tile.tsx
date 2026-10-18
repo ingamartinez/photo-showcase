@@ -121,6 +121,13 @@ export function ProofTile({
   // now has to stack above it (O1) and the two must agree about whether the
   // corner is occupied.
   const hasTypeControl = isSelected && !isLocked && allowsOriginalSelection;
+  // The state label stacks above whichever control owns the bottom-left
+  // corner: the type control (O1) or the delivered-gallery download button.
+  const orderLabelBottom = hasTypeControl
+    ? "bottom-[32px]"
+    : showDownload
+      ? "bottom-[36px]"
+      : "bottom-2";
   // Decision 16: a degraded pick may go original → edited, never the other
   // way. "Original" is therefore inert (not merely refused) when the viewer's
   // own degraded pick is currently `edited`.
@@ -357,11 +364,9 @@ export function ProofTile({
         </div>
       )}
 
-      {orderLabel && !showDownload && (
+      {orderLabel && (
         <span
-          className={`bg-[rgb(26 21 18 /0.62)] text-fg pointer-events-none absolute left-2 z-10 rounded-full px-2 py-0.5 text-[10px] leading-none backdrop-blur-[6px] ${
-            hasTypeControl ? "bottom-[32px]" : "bottom-2"
-          }`}
+          className={`bg-[rgb(26 21 18 /0.62)] text-fg pointer-events-none absolute left-2 z-10 rounded-full px-2 py-0.5 text-[10px] leading-none backdrop-blur-[6px] ${orderLabelBottom}`}
         >
           {orderLabel}
         </span>

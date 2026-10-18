@@ -177,7 +177,7 @@ describe("ProofGrid — per-person state after S6", () => {
       renderGrid({ initialViewerLock: VIEWER_LOCK, lockedPickerIds: [ANA.id] });
 
       expect(disabledTiles()).toEqual([1, 2, 3, 4]);
-      expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Enviar/ })).toBeNull();
     });
 
     it("says THEIR selection was sent and the group is still choosing", () => {
@@ -211,7 +211,7 @@ describe("ProofGrid — per-person state after S6", () => {
       // a UI lie that also blocks joining a claimed photo.
       expect(disabledTiles()).toEqual([1]);
       expect(tileButton(2).disabled).toBe(false);
-      expect(screen.getByRole("button", { name: "Enviar selección" })).toBeDefined();
+      expect(screen.getByRole("button", { name: /^Enviar/ })).toBeDefined();
     });
 
     it("leaves the viewer's own UNSENT pick removable", () => {
@@ -277,7 +277,7 @@ describe("ProofGrid — per-person state after S6", () => {
 
       // Only the viewer's own submitted pick stays frozen; the rest reopens.
       expect(disabledTiles()).toEqual([1]);
-      expect(screen.getByRole("button", { name: "Enviar selección" })).toBeDefined();
+      expect(screen.getByRole("button", { name: /^Enviar/ })).toBeDefined();
       expect(screen.queryByText("¿Qué pasa ahora?")).toBeNull();
     });
 
@@ -317,7 +317,7 @@ describe("ProofGrid — per-person state after S6", () => {
       await pollTick();
 
       expect(disabledTiles()).toEqual([1, 2, 3, 4]);
-      expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Enviar/ })).toBeNull();
     });
   });
 
@@ -347,7 +347,7 @@ describe("ProofGrid — per-person state after S6", () => {
       });
 
       await act(async () => {
-        fireEvent.click(screen.getByRole("button", { name: "Enviar selección" }));
+        fireEvent.click(screen.getByRole("button", { name: /^Enviar/ }));
       });
 
       expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/submit-selection", {
@@ -355,7 +355,7 @@ describe("ProofGrid — per-person state after S6", () => {
       });
       // The refresh is what decides the state; nothing was latched locally.
       await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection"));
-      expect(screen.getByRole("button", { name: "Enviar selección" })).toBeDefined();
+      expect(screen.getByRole("button", { name: /^Enviar/ })).toBeDefined();
     });
 
     it("shows the gallery-wide 'tiene acceso' state when the server says it closed", async () => {
@@ -380,13 +380,20 @@ describe("ProofGrid — per-person state after S6", () => {
       });
       vi.stubGlobal("fetch", fetchMock);
 
-      renderGrid();
+      // The viewer needs something "por enviar" for the button to be live
+      // under order semantics (C9 counts their own unsent picks).
+      renderGrid({
+        picks: [
+          { assetId: "a1", pickedBy: ANA, submitted: false },
+          { assetId: "a2", pickedBy: BETO, submitted: true },
+        ],
+      });
       await act(async () => {
-        fireEvent.click(screen.getByRole("button", { name: "Enviar selección" }));
+        fireEvent.click(screen.getByRole("button", { name: /^Enviar/ }));
       });
 
       await vi.waitFor(() => expect(screen.getByText(/tiene acceso/)).toBeDefined());
-      expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Enviar/ })).toBeNull();
     });
   });
 
@@ -412,7 +419,11 @@ describe("ProofGrid — per-person state after S6", () => {
       });
     }
 
-    it("pick_locked: a calm message, then a snapshot refresh", async () => {
+    it("pick_locked is DELETED: it falls through to the generic sentence and does not refresh", async () => {
+      // `pick_locked` protected somebody else's row under the single-owner
+      // model. A PATCH can no longer address that row, so the code is gone
+      // (route comment); an old server still answering it must not get the
+      // calm lock copy or a refresh, because nothing about the board changed.
       const fetchMock = refusingFetch("pick_locked", snapshotBody({ lockedPickerIds: [CARLA.id] }));
       vi.stubGlobal("fetch", fetchMock);
 
@@ -420,8 +431,8 @@ describe("ProofGrid — per-person state after S6", () => {
       expect(tileButton(3).disabled).toBe(false);
       await click(tileButton(3));
 
-      expect(screen.getByText(/ya envió su selección, así que no se puede cambiar/)).toBeDefined();
-      expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
+      expect(screen.getByText("No se pudo actualizar la selección.")).toBeDefined();
+      expect(fetchMock).not.toHaveBeenCalledWith("/api/galleries/g1/selection");
     });
 
     it("client_selection_locked: a calm message, then a refresh that locks the viewer", async () => {

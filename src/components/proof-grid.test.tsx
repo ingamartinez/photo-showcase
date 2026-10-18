@@ -22,6 +22,9 @@ type LegacyPick = {
   pickedBy: { id: string; label: string } | null;
   selectionKind: "edited" | "original";
   requestedAt?: string | null;
+  /** `false` = an UNSENT pick on a still-free photo (a true cart). Defaults
+   * to `true` so the 40-odd older fixtures keep meaning "claimed". */
+  claimed?: boolean;
 };
 
 type GridOverrides = Partial<ComponentProps<typeof ProofGrid>> & {
@@ -36,50 +39,63 @@ type GridOverrides = Partial<ComponentProps<typeof ProofGrid>> & {
 };
 
 function entriesFor(picks: LegacyPick[]): SelectionEntry[] {
-  return picks.map((pick) => ({
-    assetId: pick.assetId,
-    claim: {
-      claimedAt: pick.selectedAt,
-      resolvedKind: pick.selectionKind,
-      billedTo: pick.pickedBy,
-      charge: "included",
-    },
-    picks: pick.pickedBy
-      ? [
-          {
-            userId: pick.pickedBy.id,
-            label: pick.pickedBy.label,
-            kind: pick.selectionKind,
-            pickedAt: pick.selectedAt ?? "2026-07-30T12:00:00.000Z",
-            // Most fixtures here predate the order semantics; treating them
-            // as unsent keeps their toggles/type controls live, which is what
-            // those tests are about. A test that needs a sent pick sets
-            // `requestedAt`.
-            submittedAt: pick.requestedAt ?? null,
-            state: pick.requestedAt ? "billed" : "degraded",
-          },
-        ]
-      : [],
-  }));
+  return picks.map((pick) => {
+    const claimed = pick.claimed ?? true;
+    return {
+      assetId: pick.assetId,
+      claim:
+        pick.pickedBy && claimed
+          ? {
+              claimedAt: pick.selectedAt,
+              resolvedKind: pick.selectionKind,
+              billedTo: pick.pickedBy,
+              charge: "included",
+            }
+          : null,
+      picks: pick.pickedBy
+        ? [
+            {
+              userId: pick.pickedBy.id,
+              label: pick.pickedBy.label,
+              kind: pick.selectionKind,
+              pickedAt: pick.selectedAt ?? "2026-07-30T12:00:00.000Z",
+              // Most fixtures here predate the order semantics; treating them
+              // as unsent keeps their toggles/type controls live, which is what
+              // those tests are about. A test that needs a sent pick sets
+              // `requestedAt`.
+              submittedAt: pick.requestedAt ?? null,
+              state: pick.requestedAt ? "billed" : claimed ? "degraded" : "cart",
+            },
+          ]
+        : [],
+    };
+  });
 }
 
 function counterFor(picks: LegacyPick[], viewerId: string) {
-  const counts = new Map<string, number>();
+  const units = new Map<string, number>();
+  let group = 0;
+  let yours = 0;
+  let shared = 0;
+  let toSend = 0;
   for (const pick of picks) {
-    if (!pick.pickedBy) continue;
-    counts.set(pick.pickedBy.id, (counts.get(pick.pickedBy.id) ?? 0) + 1);
+    const sent = pick.requestedAt != null;
+    if (sent && pick.pickedBy) {
+      group += 1;
+      units.set(pick.pickedBy.id, (units.get(pick.pickedBy.id) ?? 0) + 1);
+      if (pick.pickedBy.id === viewerId) yours += 1;
+      else shared += 1;
+    } else if (pick.pickedBy?.id === viewerId) {
+      toSend += 1;
+    }
   }
   return {
-    group: picks.length,
-    viewer: {
-      yours: counts.get(viewerId) ?? 0,
-      shared: 0,
-      toSend: 0,
-    },
-    people: [...counts].map(([userId, units]) => ({
+    group,
+    viewer: { yours, shared, toSend },
+    people: [...units].map(([userId, count]) => ({
       userId,
       label: picks.find((pick) => pick.pickedBy?.id === userId)?.pickedBy?.label ?? userId,
-      units,
+      units: count,
     })),
     unattributed: picks.filter((pick) => pick.pickedBy === null).length,
   };
@@ -184,20 +200,37 @@ function renderGrid(overrides: GridOverrides = {}) {
     extraPhotoPriceTiersSnapshot,
     originalPhotoPriceCopSnapshot,
   };
-  const edited = initialPicks.filter((pick) => pick.selectionKind === "edited").length;
-  const original = initialPicks.length - edited;
+  // Most fixtures spell "the viewer picked this" as `asset.isSelected: true`
+  // without an explicit entry. Under epic #250 that flag is the CLAIM, so the
+  // helper mirrors each such flag as the viewer's own UNSENT pick — which is
+  // what those tests mean, and what keeps their toggle assertions about the
+  // viewer instead of about somebody else's claim.
+  const initialAssets = rest.initialAssets ?? assetsFor();
+  const effectivePicks = [...initialPicks];
+  for (const asset of initialAssets) {
+    if (asset.isSelected && !effectivePicks.some((pick) => pick.assetId === asset.id)) {
+      effectivePicks.push({
+        assetId: asset.id,
+        selectedAt: null,
+        pickedBy: { id: "client-a", label: "Ana" },
+        selectionKind: "edited",
+      });
+    }
+  }
+  const edited = effectivePicks.filter((pick) => pick.selectionKind === "edited").length;
+  const original = effectivePicks.length - edited;
 
   return render(
     <ProofGrid
       galleryId="g1"
-      initialAssets={assetsFor()}
+      initialAssets={initialAssets}
       initialStatus="proofing"
       initialSubmittedAt={null}
       // Epic #250 S6 — the server hands the entries, quota and counter; the
       // legacy `initialPicks` fixture above is adapted once, here.
-      initialEntries={entriesFor(initialPicks)}
+      initialEntries={entriesFor(effectivePicks)}
       initialQuota={computeQuota(edited, original, terms)}
-      initialCounter={counterFor(initialPicks, "client-a")}
+      initialCounter={counterFor(effectivePicks, "client-a")}
       initialAdminLockedPickerIds={initialLockedPickerIds}
       viewerId="client-a"
       // Task #204 — default to `flat`, today's only behavior; the tray's own
@@ -699,12 +732,12 @@ describe("ProofGrid", () => {
     });
   });
 
-  // Task #206, round-2 review — proves the PATCH response's own `pickedBy`
-  // (not just `selectionKind`) is genuinely applied to local state after a
-  // type-only change, closing the exact gap the review found: a `users`
-  // lookup on the server whose result nothing on the client ever read.
+  // Epic #250 S7 — a type-only response carries the asset's WHOLE entry
+  // (claim + every asker), and the client must replace that entry wholesale.
+  // This is the local-merge half of "one person's cart next to somebody
+  // else's pick cannot be reconstructed from a single `pick`".
   describe("type control (task #206)", () => {
-    it("updates the tray's picker label from the response after a type-only change, not just the type", async () => {
+    it("applies the response's whole entry after a type-only change, picks and chips included", async () => {
       const fetchMock = vi.fn(() =>
         Promise.resolve(
           jsonResponse(200, {
@@ -712,11 +745,41 @@ describe("ProofGrid", () => {
               id: "a1",
               isSelected: true,
               selectedAt: "2026-07-30T12:00:00.000Z",
-              // A DIFFERENT picker than the tray's own server-rendered
-              // seed below — proving this label came from THIS response,
-              // not from the pick's existing local copy.
-              pickedBy: { id: "client-c", label: "Caro Ruiz" },
+              pickedBy: { id: "client-a", label: "Ana" },
               selectionKind: "original",
+            },
+            entry: {
+              assetId: "a1",
+              claim: {
+                claimedAt: "2026-07-30T12:00:00.000Z",
+                resolvedKind: "original",
+                billedTo: { id: "client-a", label: "Ana" },
+                charge: "included",
+              },
+              picks: [
+                {
+                  userId: "client-a",
+                  label: "Ana",
+                  kind: "original",
+                  pickedAt: "2026-07-30T11:00:00.000Z",
+                  submittedAt: null,
+                  state: "degraded",
+                },
+                {
+                  userId: "client-c",
+                  label: "Sara",
+                  kind: "edited",
+                  pickedAt: "2026-07-30T11:30:00.000Z",
+                  submittedAt: null,
+                  state: "degraded",
+                },
+              ],
+            },
+            counter: {
+              group: 1,
+              viewer: { yours: 0, shared: 0, toSend: 1 },
+              people: [],
+              unattributed: 0,
             },
             quota: computeQuota(0, 1, {
               includedPhotosSnapshot: 13,
@@ -731,19 +794,17 @@ describe("ProofGrid", () => {
       const user = userEvent.setup();
 
       renderGrid({
-        initialAssets: assetsFor([{ isSelected: true }]),
+        initialAssets: assetsFor([{ isSelected: false }]),
         initialPicks: [
           {
             assetId: "a1",
             selectedAt: "2026-07-30T11:00:00.000Z",
-            pickedBy: { id: "client-b", label: "Beto Ruiz" },
+            pickedBy: { id: "client-a", label: "Ana" },
             selectionKind: "edited",
+            claimed: false,
           },
         ],
       });
-
-      const tray = screen.getByRole("region", { name: "Fotos elegidas" });
-      expect(within(tray).getByText("Beto Ruiz")).toBeDefined();
 
       await user.click(screen.getByRole("button", { name: "Marcar como original: IMG_0001.JPG" }));
 
@@ -752,10 +813,16 @@ describe("ProofGrid", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ selectionKind: "original" }),
       });
+      // The unseen Sara pick arrives with the response — proof the entry, not
+      // just the kind, was applied.
       await vi.waitFor(() => {
-        expect(within(tray).getByText("Caro Ruiz")).toBeDefined();
+        expect(screen.getByText(/Eligieron esta foto: Tú, Sara/)).toBeDefined();
       });
-      expect(within(tray).queryByText("Beto Ruiz")).toBeNull();
+      expect(
+        screen
+          .getByRole("button", { name: "Marcar como original: IMG_0001.JPG" })
+          .getAttribute("aria-pressed"),
+      ).toBe("true");
     });
   });
 
@@ -822,7 +889,7 @@ describe("ProofGrid", () => {
     it("renders the submit button and enabled toggles for a gallery still in proofing", () => {
       renderGrid({ initialStatus: "proofing", initialAssets: assetsFor([{ isSelected: true }]) });
 
-      expect(screen.getByRole("button", { name: "Enviar selección" })).toBeDefined();
+      expect(screen.getByRole("button", { name: /^Enviar/ })).toBeDefined();
       expect(screen.getByRole("button", { name: /Quitar de seleccionadas/ })).toHaveProperty(
         "disabled",
         false,
@@ -836,7 +903,7 @@ describe("ProofGrid", () => {
         initialAssets: assetsFor([{ isSelected: true }]),
       });
 
-      expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Enviar/ })).toBeNull();
       // Pinned to the CORRECTED copy, not just the shared "Selección
       // enviada" prefix — see submit-selection-panel.test.tsx's own comment
       // on this exact assertion for why the prefix alone doesn't catch a
@@ -932,14 +999,14 @@ describe("ProofGrid", () => {
         ],
       });
 
-      await user.click(screen.getByRole("button", { name: "Enviar selección" }));
+      await user.click(screen.getByRole("button", { name: /^Enviar/ }));
 
       expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/submit-selection", {
         method: "POST",
       });
       // Pinned to the CORRECTED copy — see the previous test's own comment.
       await vi.waitFor(() => expect(screen.getByText(/tiene acceso/)).toBeDefined());
-      expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Enviar/ })).toBeNull();
       expect(screen.getByRole("button", { name: /Quitar de seleccionadas/ })).toHaveProperty(
         "disabled",
         true,
@@ -1059,7 +1126,7 @@ describe("ProofGrid", () => {
       });
 
       expect(screen.getByText("¿Qué pasa ahora?")).toBeDefined();
-      expect(screen.getByText(/escribile a tu fotógrafo/)).toBeDefined();
+      expect(screen.getByText(/escríbele a tu fotógrafo/)).toBeDefined();
     });
 
     it("still shows the live quota counter while the client waits", () => {
@@ -1085,7 +1152,7 @@ describe("ProofGrid", () => {
       // The tray above (still rendered for `selected`, see this file's own
       // "THREE STATES" comment) attributes each PICK the same way — so this
       // queries the recap's own <dl>, not the page as a whole, since both
-      // surfaces legitimately render "Vos"/"Beto Ruiz" at once.
+      // surfaces legitimately render "Tú"/"Beto Ruiz" at once.
       const { container } = renderGrid({
         initialStatus: "selected",
         initialSubmittedAt: "2026-07-28T12:00:00.000Z",
@@ -1097,19 +1164,21 @@ describe("ProofGrid", () => {
             selectedAt: "2026-07-28T11:00:00.000Z",
             pickedBy: { id: "client-a", label: "Ana Pérez" },
             selectionKind: "edited",
+            requestedAt: "2026-07-28T11:00:00.000Z",
           },
           {
             assetId: "a2",
             selectedAt: "2026-07-28T11:05:00.000Z",
             pickedBy: { id: "client-b", label: "Beto Ruiz" },
             selectionKind: "edited",
+            requestedAt: "2026-07-28T11:05:00.000Z",
           },
         ],
       });
 
       const recap = container.querySelector("dl");
       expect(recap).not.toBeNull();
-      expect(recap?.textContent).toContain("Vos");
+      expect(recap?.textContent).toContain("Tú");
       expect(recap?.textContent).toContain("Beto Ruiz");
     });
 
@@ -1545,13 +1614,13 @@ describe("ProofGrid", () => {
           {
             assetId: "a2",
             selectedAt: "2026-07-30T12:00:00.000Z",
-            pickedBy: { id: "client-a", label: "Vos" },
+            pickedBy: { id: "client-a", label: "Tú" },
             selectionKind: "edited",
           },
           {
             assetId: "a4",
             selectedAt: "2026-07-30T12:05:00.000Z",
-            pickedBy: { id: "client-a", label: "Vos" },
+            pickedBy: { id: "client-a", label: "Tú" },
             selectionKind: "edited",
           },
         ],
@@ -1971,10 +2040,9 @@ describe("ProofGrid", () => {
       expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
       expect(screen.getByText("Beto Ruiz")).toBeDefined();
       // And the grid tile agrees — the tray and the grid are two views of one
-      // fact, never two independently-derived ones.
-      expect(
-        screen.getByRole("button", { name: "Quitar de seleccionadas: IMG_0001.JPG" }),
-      ).toBeDefined();
+      // fact. The fact this tile renders is the VIEWER'S pick, and Beto is
+      // somebody else, so the viewer may still join it (epic #250 S7).
+      expect(screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" })).toBeDefined();
     });
 
     it("removes a pick that ANOTHER session deselected, from the tray and the tile alike", async () => {
@@ -2044,8 +2112,8 @@ describe("ProofGrid", () => {
       vi.stubGlobal("fetch", fetchMock);
 
       renderGrid({
-        initialAssets: assetsFor([{ isSelected: true }]),
-        initialPicks: [pickBy("a1", "client-a", "Ana")],
+        initialAssets: assetsFor([{ isSelected: false }]),
+        initialPicks: [{ ...pickBy("a1", "client-a", "Ana"), claimed: false }],
       });
 
       await clickAndSettle(
@@ -2124,8 +2192,8 @@ describe("ProofGrid", () => {
       vi.stubGlobal("fetch", fetchMock);
 
       renderGrid({
-        initialAssets: assetsFor([{ isSelected: true }]),
-        initialPicks: [pickBy("a1", "client-a", "Ana")],
+        initialAssets: assetsFor([{ isSelected: false }]),
+        initialPicks: [{ ...pickBy("a1", "client-a", "Ana"), claimed: false }],
       });
 
       // Poll issued and hangs — this is the "photograph of the past" whose
@@ -2178,13 +2246,13 @@ describe("ProofGrid", () => {
       vi.stubGlobal("fetch", fetchMock);
 
       renderGrid({ initialAssets: assetsFor([{ isSelected: true }]) });
-      expect(screen.getByRole("button", { name: /enviar selección/i })).toBeDefined();
+      expect(screen.getByRole("button", { name: /^Enviar/ })).toBeDefined();
 
       await onePollTick();
 
-      expect(screen.queryByRole("button", { name: /enviar selección/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Enviar/ })).toBeNull();
       expect(
-        screen.getByRole("button", { name: "Quitar de seleccionadas: IMG_0001.JPG" }),
+        screen.getByRole("button", { name: /Seleccionar:|Quitar de seleccionadas:/ }),
       ).toHaveProperty("disabled", true);
       expect(screen.getByText(/la selección ya fue enviada/i)).toBeDefined();
     });
@@ -2197,11 +2265,11 @@ describe("ProofGrid", () => {
       vi.stubGlobal("fetch", fetchMock);
 
       renderGrid({ initialStatus: "selected", initialSubmittedAt: "2026-07-30T13:00:00.000Z" });
-      expect(screen.queryByRole("button", { name: /enviar selección/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Enviar/ })).toBeNull();
 
       await onePollTick();
 
-      expect(screen.getByRole("button", { name: /enviar selección/i })).toBeDefined();
+      expect(screen.getByRole("button", { name: /^Enviar/ })).toBeDefined();
     });
 
     it("spends nothing polling a gallery whose selection can no longer change", async () => {
@@ -2237,9 +2305,9 @@ describe("ProofGrid", () => {
       renderGrid();
       await clickAndSettle(screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" }));
 
-      // Attributed as "Vos" — from the id the SERVER reported, not a local
+      // Attributed as "Tú" — from the id the SERVER reported, not a local
       // assumption about who is clicking.
-      expect(screen.getByText("Vos")).toBeDefined();
+      expect(screen.getByText("Tú")).toBeDefined();
       expect(fetchMock).not.toHaveBeenCalledWith("/api/galleries/g1/selection");
     });
 
@@ -2295,14 +2363,14 @@ describe("ProofGrid", () => {
       await onePollTick(); // poll issued, hangs
 
       await clickAndSettle(screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" }));
-      expect(screen.getByText("Vos")).toBeDefined();
+      expect(screen.getByText("Tú")).toBeDefined();
 
       // The stale snapshot finally lands, still reporting nothing selected.
       await act(async () => {
         resolvePoll?.(jsonResponse(200, snapshot({ picks: [] })));
       });
 
-      expect(screen.getByText("Vos")).toBeDefined();
+      expect(screen.getByText("Tú")).toBeDefined();
       expect(
         screen.getByRole("button", { name: "Quitar de seleccionadas: IMG_0001.JPG" }),
       ).toBeDefined();
@@ -2335,7 +2403,7 @@ describe("ProofGrid", () => {
 
       // The snapshot said "nothing selected" — but it was dropped, so the tray
       // still shows what this session last knew rather than half-applying.
-      expect(screen.getByText("Vos")).toBeDefined();
+      expect(screen.getByText("Tú")).toBeDefined();
 
       await act(async () => {
         resolveToggle?.(
@@ -2936,7 +3004,7 @@ describe("ProofGrid — no surface recounts the selection (epic #250 S6)", () =>
     });
 
     expect(counterText()).toContain("seleccionadas 7");
-    expect(screen.getByRole("button", { name: "Enviar 4 fotos" })).toBeDefined();
+    expect(screen.getByRole("button", { name: "Enviar las 4" })).toBeDefined();
     // The tray still renders only what the entries say: 3, never 7.
     expect(screen.getByText("3", { selector: "section span" })).toBeDefined();
   });

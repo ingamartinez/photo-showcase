@@ -322,3 +322,101 @@ describe("ProofTile", () => {
     });
   });
 });
+
+// Epic #250 S7 — attribution chips and the state label's new corner. The mock
+// wins the top-right for `.who` (client.html:359-369), so the label moves to
+// the bottom-left and stacks above whichever control already lives there.
+describe("ProofTile — people chips and the state label (S7)", () => {
+  function picker(
+    userId: string,
+    label: string,
+  ): NonNullable<Parameters<typeof ProofTile>[0]["pickers"]>[number] {
+    return {
+      userId,
+      label,
+      kind: "edited",
+      pickedAt: "2026-10-17T12:00:00.000Z",
+      submittedAt: null,
+      state: "cart",
+    };
+  }
+
+  it("caps the chips at three and counts the rest as +N, keeping the server order", () => {
+    renderTile({
+      pickers: [
+        picker("client-b", "Beto"),
+        picker("client-c", "Sara"),
+        picker("client-d", "Diego"),
+        picker("client-e", "Elena"),
+        picker("client-f", "Fran"),
+      ],
+    });
+
+    expect(screen.getByText("+2")).toBeDefined();
+    expect(screen.getByText("Eligieron esta foto: Beto, Sara, Diego, Elena, Fran")).toBeDefined();
+  });
+
+  it("puts the viewer's own chip in the accent treatment and says 'Tú' to a screen reader", () => {
+    const { container } = renderTile({
+      viewerId: "client-b",
+      pickers: [picker("client-b", "Beto"), picker("client-c", "Sara")],
+    });
+
+    const accent = [...container.querySelectorAll("span")].filter(
+      (span) => span.className.includes("bg-accent") && span.textContent === "B",
+    );
+    expect(accent).toHaveLength(1);
+    expect(screen.getByText("Eligieron esta foto: Tú, Sara")).toBeDefined();
+  });
+
+  it("keeps the state label out of the chips' top-right corner", () => {
+    renderTile({ isSelected: true, orderLabel: "Pedida", allowsOriginalSelection: false });
+
+    const label = screen.getByText("Pedida");
+    expect(label.className).toContain("bottom-2");
+    expect(label.className).toContain("left-2");
+    expect(label.className).not.toContain("top-2");
+    expect(label.className).not.toContain("right-2");
+  });
+
+  it("stacks the label above the type control when both render", () => {
+    renderTile({ isSelected: true, orderLabel: "Por enviar" });
+
+    const label = screen.getByText("Por enviar");
+    expect(label.className).toContain("bottom-[32px]");
+    expect(screen.getByRole("group", { name: /Tipo de foto/ })).toBeDefined();
+  });
+
+  it("disables Original on the viewer's own DEGRADED edited pick (decision 16)", () => {
+    renderTile({ isSelected: true, viewerPickState: "degraded", selectionKind: "edited" });
+
+    expect(
+      screen
+        .getByRole("button", { name: "Marcar como original: IMG_0001.JPG" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    // Edited stays available: original -> edited is the one allowed move.
+    expect(
+      screen
+        .getByRole("button", { name: "Marcar como editada: IMG_0001.JPG" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
+  });
+
+  it("leaves Original enabled on a cart and on a degraded pick that already asked original", () => {
+    const cart = renderTile({ isSelected: true, viewerPickState: "cart" });
+    expect(
+      screen
+        .getByRole("button", { name: "Marcar como original: IMG_0001.JPG" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
+    cart.unmount();
+
+    renderTile({ isSelected: true, viewerPickState: "degraded", selectionKind: "original" });
+    expect(
+      screen
+        .getByRole("button", { name: "Marcar como original: IMG_0001.JPG" })
+        .hasAttribute("disabled"),
+    ).toBe(false);
+  });
+});

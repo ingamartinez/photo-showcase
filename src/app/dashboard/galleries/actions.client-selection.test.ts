@@ -1075,14 +1075,11 @@ describe("preview == write (task #263)", () => {
   it("lockGalleryClientSelection's answered delta deep-equals the preview", async () => {
     const r = await seedParityFixture();
     const preview = await previewFor(B);
-    // The preview is not vacuous: Beto's cart really does move money.
-    expect(preview.lock.gallery.before.surchargeCop).toBe(7_000);
-    expect(preview.lock.gallery.after.surchargeCop).toBe(15_000);
-    expect(preview.lock.assets.map((change) => change.op).sort()).toEqual(["claim", "escalate"]);
 
     const { lockGalleryClientSelection } = await import("./actions");
     const result = await lockGalleryClientSelection({ status: "idle" }, form(B));
 
+    // PARITY FIRST: a preview recomputed with different maths fails HERE.
     expect(result.status).toBe("done");
     expect(result.delta?.gallery).toEqual(preview.lock.gallery);
     expect(result.delta?.people).toEqual(preview.lock.people);
@@ -1090,21 +1087,22 @@ describe("preview == write (task #263)", () => {
     expect(
       [...(result.delta?.assets ?? [])].sort((a, b) => (a.assetId < b.assetId ? -1 : 1)),
     ).toEqual([...preview.lock.assets].sort((a, b) => (a.assetId < b.assetId ? -1 : 1)));
+
+    // ...and the preview is not vacuous: Beto's cart really does move money.
+    expect(preview.lock.gallery.before.surchargeCop).toBe(7_000);
+    expect(preview.lock.gallery.after.surchargeCop).toBe(15_000);
+    expect(preview.lock.assets.map((change) => change.op).sort()).toEqual(["claim", "escalate"]);
     expectPickInvariants(r);
   });
 
   it("removeGalleryClientPicks' answered delta deep-equals the preview", async () => {
     const r = await seedParityFixture();
     const preview = await previewFor(A);
-    expect(preview.removePicks.assets.map((change) => change.op).sort()).toEqual([
-      "transfer",
-      "unclaim",
-      "unclaim",
-    ]);
 
     const { removeGalleryClientPicks } = await import("./actions");
     const result = await removeGalleryClientPicks({ status: "idle" }, form(A));
 
+    // PARITY FIRST: same reason as the lock case above.
     expect(result.status).toBe("done");
     expect(result.delta?.gallery).toEqual(preview.removePicks.gallery);
     expect(result.delta?.people).toEqual(preview.removePicks.people);
@@ -1112,6 +1110,13 @@ describe("preview == write (task #263)", () => {
     expect(
       [...(result.delta?.assets ?? [])].sort((a, b) => (a.assetId < b.assetId ? -1 : 1)),
     ).toEqual([...preview.removePicks.assets].sort((a, b) => (a.assetId < b.assetId ? -1 : 1)));
+
+    // ...and the preview is not vacuous: X transfers, Y and W unclaim.
+    expect(preview.removePicks.assets.map((change) => change.op).sort()).toEqual([
+      "transfer",
+      "unclaim",
+      "unclaim",
+    ]);
     expectPickInvariants(r);
   });
 });

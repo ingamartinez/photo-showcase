@@ -38,7 +38,11 @@ import { DownloadFinalButton } from "@/components/download-final-button";
 import { Check } from "@/components/icons";
 import { PhotoTile } from "@/components/photo-tile";
 import type { ProofAsset } from "@/components/proof-grid";
-import type { SelectionKind } from "@/lib/selection-snapshot";
+import type {
+  SelectionEntryPick,
+  SelectionKind,
+  SelectionPickState,
+} from "@/lib/selection-snapshot";
 
 export function ProofTile({
   asset,
@@ -55,6 +59,9 @@ export function ProofTile({
   onSetSelectionKind,
   allowsOriginalSelection,
   orderLabel = null,
+  pickers = [],
+  viewerId = null,
+  viewerPickState = null,
 }: {
   asset: ProofAsset;
   /** 1-based position in the grid, rendered in the tile's corner
@@ -94,11 +101,40 @@ export function ProofTile({
    * comment on the render gate below for why this is ANDed in rather than
    * checked separately. */
   allowsOriginalSelection: boolean;
-  /** Task #244 — rolling delivery's state of THIS photo: "Por enviar"
-   * (picked, not sent yet), "Pedida" (sent) or "Editada" (final readable).
-   * `null` everywhere else, which renders nothing. */
+  /** Task #244 — this photo's state label: "Por enviar" (the viewer's own
+   * unsent pick on a free photo), "Pedida" (somebody has sent one) or
+   * "Editada" (final readable). `null` when nothing applies. */
   orderLabel?: "Por enviar" | "Pedida" | "Editada" | null;
+  /** Epic #250 S7 — everyone who asked for this photo, in the server's display
+   * order (billed holder first). Rendered as attribution chips, never as a
+   * control: a pick belongs to whoever made it. */
+  pickers?: SelectionEntryPick[];
+  /** The viewer's own id, so their chip (and the screen-reader sentence) says
+   * "Tú" instead of their name. Display only. */
+  viewerId?: string | null;
+  /** The viewer's own pick state on this photo, or `null` when they have
+   * none. Only used to disable `Original` on a degraded pick — decision 16
+   * refuses edited → original there (`pick_degraded`). */
+  viewerPickState?: SelectionPickState | null;
 }) {
+  // The type control's own render gate, computed once because the state label
+  // now has to stack above it (O1) and the two must agree about whether the
+  // corner is occupied.
+  const hasTypeControl = isSelected && !isLocked && allowsOriginalSelection;
+  // The state label stacks above whichever control owns the bottom-left
+  // corner: the type control (O1) or the delivered-gallery download button.
+  const orderLabelBottom = hasTypeControl
+    ? "bottom-[32px]"
+    : showDownload
+      ? "bottom-[36px]"
+      : "bottom-2";
+  // Decision 16: a degraded pick may go original → edited, never the other
+  // way. "Original" is therefore inert (not merely refused) when the viewer's
+  // own degraded pick is currently `edited`.
+  const originalDisabled = viewerPickState === "degraded" && selectionKind === "edited";
+  const shownPickers = pickers.slice(0, 3);
+  const extraPickers = pickers.length - shownPickers.length;
+  const pickerNames = pickers.map((picker) => (picker.userId === viewerId ? "Tú" : picker.label));
   return (
     <PhotoTile
       name={asset.originalFilename}
@@ -271,7 +307,7 @@ export function ProofTile({
             onClick={() => onSetSelectionKind("original")}
             aria-pressed={selectionKind === "original"}
             aria-label={`Marcar como original: ${asset.originalFilename}`}
-            disabled={isPending}
+            disabled={isPending || originalDisabled}
             className={`px-1.5 py-1 text-[9px] leading-none transition-colors disabled:cursor-not-allowed disabled:opacity-60 ${
               selectionKind === "original" ? "bg-accent text-ink" : "text-fg hover:text-accent-2"
             }`}
@@ -296,8 +332,42 @@ export function ProofTile({
           (a status past `isLocked` becoming true) — the same "never both at
           once" property `showDownload` and the pick-button corner already
           had before this slice. */}
+      {/* Epic #250 S7 — WHO ASKED, as chips in the mock's own `.who` corner
+          (client.html:359-369). The state label moved to the bottom-left
+          because these two would otherwise collide here: chips stay top-right
+          (the mock wins), the label goes where the download/type control
+          already lives. Chips are capped at 3 + "+N" (the crew rule) and are
+          always the SERVER's order — the billed holder first. The initials are
+          decorative; the sentence below is what a screen reader hears. */}
+      {pickers.length > 0 && (
+        <div className="pointer-events-none absolute top-[7px] right-[7px] z-10 flex items-center gap-[3px]">
+          <span aria-hidden="true" className="flex gap-[3px]">
+            {shownPickers.map((picker) => (
+              <span
+                key={picker.userId}
+                className={`grid h-[21px] w-[21px] place-items-center rounded-full border text-[9.5px] leading-none font-bold tracking-[0.02em] backdrop-blur-[6px] ${
+                  picker.userId === viewerId
+                    ? "border-accent bg-accent text-ink"
+                    : "text-fg border-[rgb(236_234_242/0.35)] bg-[rgb(7_7_9/0.6)]"
+                }`}
+              >
+                {picker.label.trim().charAt(0).toUpperCase()}
+              </span>
+            ))}
+            {extraPickers > 0 && (
+              <span className="text-fg grid h-[21px] min-w-[21px] place-items-center rounded-full border border-[rgb(236_234_242/0.35)] bg-[rgb(7_7_9/0.6)] px-1 text-[9.5px] leading-none font-bold backdrop-blur-[6px]">
+                +{extraPickers}
+              </span>
+            )}
+          </span>
+          <span className="sr-only">Eligieron esta foto: {pickerNames.join(", ")}</span>
+        </div>
+      )}
+
       {orderLabel && (
-        <span className="bg-[rgb(26 21 18 /0.62)] text-fg pointer-events-none absolute top-2 right-2 z-10 rounded-full px-2 py-0.5 text-[10px] leading-none backdrop-blur-[6px]">
+        <span
+          className={`bg-[rgb(26 21 18 /0.62)] text-fg pointer-events-none absolute left-2 z-10 rounded-full px-2 py-0.5 text-[10px] leading-none backdrop-blur-[6px] ${orderLabelBottom}`}
+        >
           {orderLabel}
         </span>
       )}

@@ -13,11 +13,15 @@ const authMock = vi.fn();
 vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 
 const getGalleryDetailBySlugMock = vi.fn();
+const getGalleryClientsMock = vi.fn();
 vi.mock("@/lib/galleries", async () => {
   const actual = await vi.importActual<typeof import("@/lib/galleries")>("@/lib/galleries");
   return {
     ...actual,
     getGalleryDetailBySlug: (...args: unknown[]) => getGalleryDetailBySlugMock(...args),
+    // Epic #250 S7 — the admin-preview selector's member list. A real query,
+    // so it is mocked here; the client path must never call it.
+    getGalleryClients: (...args: unknown[]) => getGalleryClientsMock(...args),
   };
 });
 
@@ -91,6 +95,8 @@ beforeEach(() => {
   getGallerySelectionMock.mockReset();
   getGallerySelectionMock.mockResolvedValue(viewFor([]));
   getGalleryDetailBySlugMock.mockReset();
+  getGalleryClientsMock.mockReset();
+  getGalleryClientsMock.mockResolvedValue([]);
   getPresignedUrlMock.mockReset();
   getPresignedUrlMock.mockReturnValue("https://r2.example.com/presigned-proof-url");
   isGalleryOwnerMock.mockReset();
@@ -202,7 +208,11 @@ function viewFor(
     counter: {
       group: picks.length,
       viewer: { yours: counts.get("client-a") ?? 0, shared: 0, toSend: 0 },
-      people: [...counts].map(([userId, units]) => ({ userId, label: userId, units })),
+      people: [...counts].map(([userId, units]) => ({
+        userId,
+        label: picks.find((pick) => pick.pickedBy?.id === userId)?.pickedBy?.label ?? userId,
+        units,
+      })),
       unattributed: picks.filter((pick) => pick.pickedBy === null).length,
     },
     lock,
@@ -361,9 +371,12 @@ describe("ClientGalleryPage", () => {
     expect(getGallerySelectionMock).not.toHaveBeenCalled();
   });
 
-  it("views as an active member for an admin: subject id reaches the read, viewerId and the remount key", async () => {
+  it("views as an active member for an admin: subject id reaches the read, viewerId, actingClientId and the remount key", async () => {
     authMock.mockResolvedValue(sessionFor("admin", "admin-1"));
     getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+    getGalleryClientsMock.mockResolvedValue([
+      { id: "client-b", name: null, email: "beto@example.com" },
+    ]);
     resolveViewAsMock.mockResolvedValue({ ok: true, subjectId: "client-b" });
 
     const tree = await ClientGalleryPage({
@@ -383,7 +396,92 @@ describe("ClientGalleryPage", () => {
     };
     walk(tree);
     expect(found).toHaveLength(1);
-    expect(found[0]).toMatchObject({ viewerId: "client-b", viewAsId: "client-b" });
+    expect(found[0]).toMatchObject({
+      viewerId: "client-b",
+      viewAsId: "client-b",
+      actingClientId: "client-b",
+      readOnly: false,
+      isAdminPreview: true,
+    });
+  });
+
+  it("an admin with no subject is read-only: no actingClientId, readOnly true", async () => {
+    authMock.mockResolvedValue(sessionFor("admin", "admin-1"));
+    getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+    getGalleryClientsMock.mockResolvedValue([
+      { id: "client-b", name: "Beto", email: "beto@example.com" },
+    ]);
+
+    const tree = await ClientGalleryPage(paramsFor(SLUG));
+
+    const found: Record<string, unknown>[] = [];
+    const walk = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) return node.forEach(walk);
+      const props = (node as { props?: Record<string, unknown> }).props;
+      if (props && "actingClientId" in props) found.push(props);
+      if (props) walk(props.children);
+    };
+    walk(tree);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ actingClientId: null, readOnly: true });
+  });
+
+  it("a REMOVED view-as subject is read-only and keeps the name the selection view still carries", async () => {
+    authMock.mockResolvedValue(sessionFor("admin", "admin-1"));
+    getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+    // `getGalleryClients` is active-only, so the removed member is absent…
+    getGalleryClientsMock.mockResolvedValue([]);
+    resolveViewAsMock.mockResolvedValue({ ok: true, subjectId: "client-gone" });
+    // …but their sent picks still carry their label (decision 17).
+    getGallerySelectionMock.mockResolvedValue(
+      viewFor([
+        {
+          assetId: "a1",
+          selectedAt: "2026-10-01T12:00:00.000Z",
+          pickedBy: { id: "client-gone", label: "Carla" },
+          selectionKind: "edited",
+        },
+      ]),
+    );
+
+    const tree = await ClientGalleryPage({
+      ...paramsFor(SLUG),
+      searchParams: Promise.resolve({ viewAs: "client-gone" }),
+    });
+
+    const gridProps: Record<string, unknown>[] = [];
+    const bannerProps: Record<string, unknown>[] = [];
+    const walk = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) return node.forEach(walk);
+      const props = (node as { props?: Record<string, unknown> }).props;
+      if (props && "actingClientId" in props) gridProps.push(props);
+      if (props && "subject" in props) bannerProps.push(props);
+      if (props) walk(props.children);
+    };
+    walk(tree);
+
+    expect(getGalleryClientsMock).toHaveBeenCalledWith("g1");
+    expect(gridProps[0]).toMatchObject({
+      viewerId: "client-gone",
+      actingClientId: null,
+      readOnly: true,
+    });
+    expect(bannerProps[0]?.subject).toMatchObject({
+      id: "client-gone",
+      label: "Carla",
+      isActive: false,
+    });
+  });
+
+  it("never calls getGalleryClients for a CLIENT's own visit", async () => {
+    authMock.mockResolvedValue(sessionFor("client", "client-a"));
+    getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+
+    await ClientGalleryPage(paramsFor(SLUG));
+
+    expect(getGalleryClientsMock).not.toHaveBeenCalled();
   });
 
   it("404s an admin view-as for an unknown member", async () => {

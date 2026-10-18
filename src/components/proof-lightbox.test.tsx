@@ -58,10 +58,46 @@ afterEach(() => {
 function lightboxProps(
   overrides: Partial<ComponentProps<typeof ProofLightbox>> = {},
 ): ComponentProps<typeof ProofLightbox> {
+  const assets = overrides.assets ?? assetsFor(3);
+  const viewerId = overrides.viewerId ?? "viewer";
+  // Most tests predate epic #250 and spell "the viewer picked this" as
+  // `asset.isSelected: true`. That flag is the CLAIM now, so the helper
+  // mirrors it as the viewer's own UNSENT pick — which is what those tests
+  // mean. Tests that need a foreign or sent pick override `entryById`.
+  const entryById =
+    overrides.entryById ??
+    Object.fromEntries(
+      assets
+        .filter((asset) => asset.isSelected)
+        .map((asset) => [
+          asset.id,
+          {
+            assetId: asset.id,
+            claim: {
+              claimedAt: "2026-10-17T12:00:00.000Z",
+              resolvedKind: "edited" as const,
+              billedTo: { id: viewerId, label: "Ana" },
+              charge: "included" as const,
+            },
+            picks: [
+              {
+                userId: viewerId,
+                label: "Ana",
+                kind: "edited" as const,
+                pickedAt: "2026-10-17T12:00:00.000Z",
+                submittedAt: null,
+                state: "cart" as const,
+              },
+            ],
+          },
+        ]),
+    );
   return {
-    assets: assetsFor(3),
+    assets,
     urls: {},
     index: 1,
+    viewerId,
+    entryById,
     quota: QUOTA,
     onClose,
     onNavigate,
@@ -127,7 +163,7 @@ describe("ProofLightbox", () => {
       }),
     });
 
-    expect(screen.getByText("9 elegidas · 13 incluidas")).toBeDefined();
+    expect(screen.getByText("9 pedidas · 13 incluidas")).toBeDefined();
   });
 
   it("announces the running count politely, since it changes while the client looks at the photo", () => {
@@ -140,7 +176,7 @@ describe("ProofLightbox", () => {
       }),
     });
 
-    expect(screen.getByText("9 elegidas · 13 incluidas").getAttribute("aria-live")).toBe("polite");
+    expect(screen.getByText("9 pedidas · 13 incluidas").getAttribute("aria-live")).toBe("polite");
   });
 
   it("prefers the shared refreshed URL over the asset's own stale proofUrl", () => {
@@ -920,5 +956,123 @@ describe("ProofLightbox — desktop zoom to 1:1", () => {
     const second = primeStage("IMG_0002.JPG");
 
     expect(painted(second.img)).toBeNull();
+  });
+});
+
+// Epic #250 S7 — the full lightbox line set (D11 §1b). The line describes the
+// VIEWER'S own pick and names the person the unit is BILLED to; the other
+// askers live on the tile's chips. The button is the viewer's pick, never
+// `assets.isSelected`.
+describe("ProofLightbox — the owner's copy set (S7)", () => {
+  const A = { id: "client-a", label: "Ana" };
+  const B = { id: "client-b", label: "Beto" };
+  const sent = "2026-10-17T12:00:00.000Z";
+  const base = {
+    userId: A.id,
+    label: A.label,
+    kind: "edited" as const,
+    pickedAt: sent,
+  };
+  const claim = (billedTo: { id: string; label: string } | null) => ({
+    claimedAt: sent,
+    resolvedKind: "edited" as const,
+    billedTo,
+    charge: "included" as const,
+  });
+
+  function renderWithEntry(
+    entry: ComponentProps<typeof ProofLightbox>["entryById"] extends infer _T
+      ? NonNullable<ComponentProps<typeof ProofLightbox>["entryById"]>[string]
+      : never,
+  ) {
+    return renderLightbox({
+      assets: assetsFor(1),
+      index: 0,
+      viewerId: A.id,
+      entryById: { a1: entry },
+    });
+  }
+
+  it("C3: the viewer's own unsent pick on a free photo", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: null,
+      picks: [{ ...base, submittedAt: null, state: "cart" }],
+    });
+
+    expect(screen.getByRole("button", { name: "Elegida" })).toBeDefined();
+    expect(screen.getByText("Todavía no la enviaste · puedes sacarla")).toBeDefined();
+  });
+
+  it("C4: a degraded pick names the billed holder and only removes the viewer's own", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: claim(B),
+      picks: [
+        { ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" },
+        { ...base, submittedAt: null, state: "degraded" },
+      ],
+    });
+
+    const line = screen.getByText(/Ya la pidió/);
+    expect(line.querySelector("b")?.textContent).toBe("Beto");
+    expect(line.textContent).toContain("así que la reciben todos");
+    expect(line.textContent).toContain("puedes sacar la tuya");
+  });
+
+  it("C5: claimed by somebody else and the viewer has no pick", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: claim(B),
+      picks: [{ ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" }],
+    });
+
+    expect(screen.getByRole("button", { name: "Elegir esta foto" })).toBeDefined();
+    expect(screen.getByText(/Ya la pidió/).textContent).toContain("Beto");
+  });
+
+  it("C6: billed to the viewer -> 'La pediste tú', disabled", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: claim(A),
+      picks: [{ ...base, submittedAt: sent, state: "billed" }],
+    });
+
+    const button = screen.getByRole("button", { name: "Pedida" });
+    expect(button).toHaveProperty("disabled", true);
+    expect(screen.getByText(/La pediste/).textContent).toContain("tú");
+    expect(screen.getByText(/escríbele a tu fotógrafo/)).toBeDefined();
+  });
+
+  it("C7: joined -> names the billed holder, disabled", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: claim(B),
+      picks: [
+        { ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" },
+        { ...base, submittedAt: sent, state: "joined" },
+      ],
+    });
+
+    const line = screen.getByText(/La pidió/);
+    expect(line.querySelector("b")?.textContent).toBe("Beto");
+    expect(line.textContent).toContain("tú también la pediste");
+    expect(screen.getByRole("button", { name: "Pedida" })).toHaveProperty("disabled", true);
+  });
+
+  it("C8: a legacy unit with no attribution", () => {
+    renderWithEntry({ assetId: "a1", claim: claim(null), picks: [] });
+
+    expect(screen.getByRole("button", { name: "Elegir esta foto" })).toBeDefined();
+    expect(screen.getByText("Ya está pedida")).toBeDefined();
+  });
+
+  it("shows no line at all on a free photo with no pick", () => {
+    renderWithEntry(null);
+
+    expect(screen.getByRole("button", { name: "Elegir esta foto" })).toBeDefined();
+    expect(
+      screen.queryByText(/Todavía no|Ya la pidió|Ya está pedida|La pediste|La pidió/),
+    ).toBeNull();
   });
 });

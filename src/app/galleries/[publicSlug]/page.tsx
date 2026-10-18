@@ -5,6 +5,7 @@ import {
   formatClientGalleryCardState,
   formatGalleryStatus,
   formatSessionDate,
+  getGalleryClients,
   getGalleryDetailBySlug,
   isGalleryVisibleToClient,
 } from "@/lib/galleries";
@@ -18,7 +19,7 @@ import { getGallerySelection } from "@/lib/gallery-selection";
 import { readClientGalleryBySlug } from "@/lib/graphql/client-gallery-reads";
 import { selectionTrayModeFromWire } from "@/lib/graphql/types/selection-tray-mode";
 import { displayKey, getPresignedUrl, storedKey } from "@/lib/r2";
-import { ClientPreviewBanner } from "@/components/client-preview-banner";
+import { ClientPreviewBanner, type PreviewSubject } from "@/components/client-preview-banner";
 import { ProofGrid } from "@/components/proof-grid";
 
 export const metadata: Metadata = {
@@ -228,6 +229,43 @@ export default async function ClientGalleryPage({
     subjectId,
   );
 
+  // Epic #250 S7 — the admin's acting subject (decision 12). `getGalleryClients`
+  // is an ADMIN-only query: a real client's path keeps exactly the reads it
+  // had before this slice (page.query-count.test.ts pins that).
+  const isAdmin = isAdminPreviewingClientGallery(session);
+  const members = isAdmin
+    ? (await getGalleryClients(gallery.id)).map((client) => ({
+        id: client.id,
+        label: client.name ?? client.email,
+      }))
+    : [];
+  const activeMember = subjectId !== null ? members.find((m) => m.id === subjectId) : undefined;
+  // Acting requires BOTH an admin and a subject that is still an ACTIVE member.
+  // A removed member (resolveViewAs deliberately allows inspecting their sent
+  // picks) is read-only: decision 17 keeps their history, not their write
+  // access.
+  const actingClientId = isAdmin && subjectId !== null && activeMember ? subjectId : null;
+  const readOnly = isAdmin && actingClientId === null;
+  // The removed subject's label lives on the selection view already (the
+  // counter's `people` rows include removed members, and every pick carries
+  // its own label), so C17 needs no extra query. Fallback is the anonymous
+  // "Esta persona" in the banner.
+  const subjectFromView =
+    subjectId === null
+      ? null
+      : (view.counter.people.find((person) => person.userId === subjectId)?.label ??
+        view.entries.flatMap((entry) => entry.picks).find((pick) => pick.userId === subjectId)
+          ?.label ??
+        null);
+  const previewSubject: PreviewSubject | null =
+    isAdmin && subjectId !== null
+      ? {
+          id: subjectId,
+          label: activeMember?.label ?? subjectFromView,
+          isActive: activeMember !== undefined,
+        }
+      : null;
+
   return (
     <>
       {/* Task #139: orientation, not permission — see
@@ -237,8 +275,12 @@ export default async function ClientGalleryPage({
           sees this: `session.user.role` here is populated server-side by
           `src/auth.ts`'s session callback, not anything a client could
           spoof to make it appear. */}
-      {isAdminPreviewingClientGallery(session) && (
-        <ClientPreviewBanner dashboardHref={`/dashboard/galleries/${gallery.id}`} />
+      {isAdmin && (
+        <ClientPreviewBanner
+          dashboardHref={`/dashboard/galleries/${gallery.id}`}
+          members={members}
+          subject={previewSubject}
+        />
       )}
 
       <div className="mb-10">
@@ -298,8 +340,13 @@ export default async function ClientGalleryPage({
         initialAdminLockedPickerIds={view.lock.adminLockedPickerIds}
         // The submit route refuses admins (`admin_cannot_submit`), so the
         // previewing photographer gets a note instead of a dead button.
-        isAdminPreview={isAdminPreviewingClientGallery(session)}
-        // Display only — the tray renders the subject's own picks as "Vos".
+        isAdminPreview={isAdmin}
+        // Epic #250 S7 — decision 12: every PATCH names the acting client, or
+        // the route answers 409 `admin_cannot_pick`. A client never sends it.
+        actingClientId={actingClientId}
+        // An admin without an active subject may look but not touch.
+        readOnly={readOnly}
+        // Display only — the tray renders the subject's own picks as "Tú".
         // Nothing is authorized by it: every route <ProofGrid> calls resolves
         // the acting session server-side.
         viewerId={subjectId ?? session.user.id}

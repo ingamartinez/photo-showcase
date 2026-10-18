@@ -19,12 +19,24 @@ import ClientGalleryPage from "./page";
 import type { GalleryDetail } from "@/lib/galleries";
 import { computeQuota, type GalleryQuotaSnapshot } from "@/lib/quota";
 
+// Epic #250 S7 — the admin banner mounts <ActingClientSelect>, which reads the
+// router. A plain render in jsdom has no app-router context, so stub the two
+// hooks; the selector's own behaviour is tested in acting-client-select.test.tsx.
+vi.mock("next/navigation", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("next/navigation")>()),
+  useRouter: () => ({ replace: vi.fn(), push: vi.fn(), refresh: vi.fn() }),
+  usePathname: () => "/galleries/abc123def456",
+}));
+
 const requireSessionMock = vi.fn<() => Promise<Session>>();
 vi.mock("@/lib/auth-guards", () => ({ requireSession: () => requireSessionMock() }));
 
 const getGalleryDetailBySlugMock = vi.fn<() => Promise<GalleryDetail | null>>();
+const getGalleryClientsMock =
+  vi.fn<() => Promise<{ id: string; name: string | null; email: string }[]>>();
 vi.mock("@/lib/galleries", () => ({
   getGalleryDetailBySlug: () => getGalleryDetailBySlugMock(),
+  getGalleryClients: () => getGalleryClientsMock(),
   isGalleryVisibleToClient: (status: string) => status !== "draft" && status !== "archived",
   // The studio's own workflow word — admin surfaces only (dashboard) per
   // that function's own comment, and this page's ADMIN-PREVIEW-ONLY
@@ -251,6 +263,8 @@ beforeEach(() => {
     expires: "2099-01-01T00:00:00.000Z",
   } as Session);
   getGalleryDetailBySlugMock.mockReset();
+  getGalleryClientsMock.mockReset();
+  getGalleryClientsMock.mockResolvedValue([]);
   getGallerySelectionMock.mockReset();
   getGallerySelectionMock.mockResolvedValue(viewFor([]));
   isGalleryOwnerMock.mockReset();
@@ -334,7 +348,7 @@ describe("ClientGalleryPage chrome", () => {
       expect(screen.getByText("Beto Ruiz")).toBeDefined();
     });
 
-    it("renders THIS session's own pick as 'Vos', from the session id the page passes down", async () => {
+    it("renders THIS session's own pick as 'Tú', from the session id the page passes down", async () => {
       // `requireSessionMock`'s default user is `client-a` — the same id this
       // pick is attributed to.
       getGalleryDetailBySlugMock.mockResolvedValue(withOnePhoto());
@@ -349,7 +363,7 @@ describe("ClientGalleryPage chrome", () => {
       const element = await ClientGalleryPage(paramsFor(SLUG));
       render(element);
 
-      expect(screen.getByText("Vos")).toBeDefined();
+      expect(screen.getByText("Tú")).toBeDefined();
     });
 
     it("renders the tray, with its explanation, before anybody has picked anything", async () => {
@@ -940,10 +954,9 @@ describe("ClientGalleryPage chrome", () => {
     // disambiguation, only for scoping to this panel's own message.)
     expect(screen.getByRole("status").textContent).toMatch(/tiene acceso/);
     expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
-    expect(screen.getByRole("button", { name: /Quitar de seleccionadas/ })).toHaveProperty(
-      "disabled",
-      true,
-    );
+    expect(
+      screen.getByRole("button", { name: /Seleccionar:|Quitar de seleccionadas:/ }),
+    ).toHaveProperty("disabled", true);
   });
 
   // Task #28: wired end to end through the real page — `hasFinal` is
@@ -1231,9 +1244,10 @@ describe("ClientGalleryPage chrome", () => {
       // admin bypass and #94's attribution. This pins the corrected,
       // accurate claim so a regression back to the false one is caught
       // here, not just in review.
-      expect(
-        screen.getByText(/se guarda en la selección real del cliente, a tu nombre/),
-      ).toBeDefined();
+      // Corrected by epic #250 S7: with no subject selected, the admin may
+      // only look. The old "se guarda ... a tu nombre" claim described the
+      // single-owner model that no longer exists.
+      expect(screen.getByText(/Elige un cliente para pedir fotos a su nombre/)).toBeDefined();
     });
 
     // The default fixture in this file is the owning CLIENT (`client-a`) —

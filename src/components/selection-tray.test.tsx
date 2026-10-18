@@ -1142,6 +1142,53 @@ describe("SelectionTray — compact chrome (task #236)", () => {
       expect(screen.queryByText("cerrada")).toBeNull();
     });
 
+    // Task #261 review, warning 1. The badge used to ask only whether SOME
+    // pick on the entry was sent, never WHOSE — so a legacy "Sin registro"
+    // unit (`claim.billedTo === null`, a real state: the 0017 backfill's
+    // classic claims) read "Sin registro (1) envió" the moment another
+    // member joined that photo and sent their own pick. The header names
+    // nobody, so it cannot credit a send to anyone.
+    it("shows no 'envió' for an unattributed legacy unit, even when a member's joined pick was sent", () => {
+      const { container } = renderTray({
+        mode: "by-person",
+        entries: [
+          {
+            assetId: "a1",
+            claim: {
+              claimedAt: "2026-07-01T09:00:00.000Z",
+              resolvedKind: "edited",
+              billedTo: null,
+              charge: "included",
+            },
+            // Exactly what the domain emits for this shape: the unit has no
+            // billed holder, so a submitted pick on it resolves to "joined"
+            // (pick-resolution.ts) rather than "billed".
+            picks: [
+              {
+                userId: "client-b",
+                label: "Beto Ruiz",
+                kind: "edited",
+                pickedAt: "2026-07-30T12:00:00.000Z",
+                submittedAt: "2026-07-30T12:00:00.000Z",
+                state: "joined",
+              },
+            ],
+          },
+        ],
+      });
+
+      // The group still renders, under its own header — this is about the
+      // badge, not about dropping the photo.
+      const header = [...container.querySelectorAll("p")].find((p) =>
+        /\(\d+\)/.test(p.textContent ?? ""),
+      );
+      expect(header?.textContent).toBe("Sin registro (1)");
+      expect(screen.getAllByRole("listitem")).toHaveLength(1);
+      // No badge ANYWHERE: not on that header, not on any other.
+      expect(screen.queryByText("envió")).toBeNull();
+      expect(screen.queryByText("cerrada")).toBeNull();
+    });
+
     it("tells a photographer-locked viewer their selection was closed, never that it was sent", () => {
       renderTray({ picks: [pick()], isLocked: true, isGalleryLocked: false, lockedByAdmin: true });
 

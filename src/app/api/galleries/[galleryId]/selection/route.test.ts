@@ -60,6 +60,7 @@ async function seededDb() {
 }
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
+const OTHER_GALLERY_ID = "22222222-2222-4222-8222-222222222222";
 
 function clientASession(): Session {
   return {
@@ -525,6 +526,35 @@ describe("GET /api/galleries/[galleryId]/selection — view as (epic #250 S6)", 
     const { GET } = await import("./route");
 
     const response = await GET(viewAsRequest(GALLERY_ID, ["stranger"]), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "view_as_not_member" });
+    expect(getGallerySelectionMock).not.toHaveBeenCalled();
+  });
+
+  // Task #261 review, warning 2 — through the ROUTE, not just the helper. The
+  // "stranger" case above has no membership row at all, so it also passes if
+  // the gallery scope is dropped from the query. This one seeds a valid,
+  // active membership in a DIFFERENT gallery and requires the same 404: an
+  // admin must not reach across galleries through `viewAs`. Without this
+  // case, deleting `eq(galleryClients.galleryId, galleryId)` from
+  // `resolveViewAs` left this whole suite green.
+  it("404s a user who is a member of ANOTHER gallery, not this one", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.push({
+      galleryId: OTHER_GALLERY_ID,
+      userId: "other-gallery-client",
+      removedAt: null,
+      selectionLockedAt: null,
+      selectionSubmittedAt: null,
+    });
+    authMock.mockResolvedValue(adminSession());
+    const { GET } = await import("./route");
+
+    const response = await GET(
+      viewAsRequest(GALLERY_ID, ["other-gallery-client"]),
+      paramsFor(GALLERY_ID),
+    );
 
     expect(response.status).toBe(404);
     await expect(response.json()).resolves.toEqual({ error: "view_as_not_member" });

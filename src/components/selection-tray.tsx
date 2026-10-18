@@ -683,11 +683,20 @@ export function SelectionTray({
                       picks are frozen for everybody. "Envió" is derived
                       from the entries' own `submittedAt` (S6), so it stays
                       truthful in proofing galleries too. Matched by id (the
-                      group key), never by label. Plain text, no new chrome. */}
+                      group key), never by label. Plain text, no new chrome.
+                      Task #261 review: "envió" needs a REAL named picker AND
+                      that picker's OWN sent pick. Checking only the entry's
+                      picks made a legacy "Sin registro" unit (billedTo null)
+                      claim "envió" as soon as a member joined it and sent
+                      theirs — a header that names nobody crediting a send to
+                      nobody. */}
                   {adminLockedPickerIds.includes(group.key) ? (
                     <span className="text-accent ml-2 text-xs font-normal">cerrada</span>
-                  ) : group.picks.some((entry) =>
-                      entry.picks.some((pick) => pick.submittedAt !== null),
+                  ) : group.key !== UNATTRIBUTED_GROUP_KEY &&
+                    group.picks.some((entry) =>
+                      entry.picks.some(
+                        (pick) => pick.userId === group.key && pick.submittedAt !== null,
+                      ),
                     ) ? (
                     <span className="text-accent ml-2 text-xs font-normal">envió</span>
                   ) : null}

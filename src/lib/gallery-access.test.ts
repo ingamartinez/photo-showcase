@@ -361,4 +361,26 @@ describe("resolveViewAs", () => {
       error: "view_as_not_member",
     });
   });
+
+  // Task #261 review, warning 2. The "stranger" case above only proves that a
+  // user with NO membership row is refused — it stays green even if the
+  // `galleryId` clause is dropped from the query, because a row-less user
+  // matches nothing either way. This is the case that actually pins the
+  // GALLERY SCOPE: a perfectly valid member of ANOTHER gallery must not be
+  // viewable through this one. Mutation-proven by dropping
+  // `eq(galleryClients.galleryId, galleryId)` from `resolveViewAs`'s `where`
+  // — the "stranger" test stays green, this one turns RED.
+  it("refuses a valid member of ANOTHER gallery (the membership row must match THIS gallery)", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.push({
+      galleryId: OTHER_GALLERY_ID,
+      userId: "other-gallery-client",
+      removedAt: null,
+    });
+    const { resolveViewAs } = await import("./gallery-access");
+
+    await expect(
+      resolveViewAs(adminSession(), GALLERY_ID, "other-gallery-client"),
+    ).resolves.toEqual({ ok: false, error: "view_as_not_member" });
+  });
 });

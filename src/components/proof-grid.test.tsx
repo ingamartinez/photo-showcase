@@ -2888,3 +2888,56 @@ describe("ProofGrid — volume scale on first paint (task #231)", () => {
     expect(screen.queryByText(/Precio por foto extra/)).toBeNull();
   });
 });
+
+// Epic #250 S6 — THE SUM TEST. The client must never count `entries`,
+// `picks.length` or `assets.isSelected` again: the four numbers come from the
+// server. The fixture is deliberately incompatible with any local recount —
+// only 2 claimed entries and 1 cart, while the server says 7 selected and 4 to
+// send — so a component that derives either number from the list it renders
+// goes red here.
+describe("ProofGrid — no surface recounts the selection (epic #250 S6)", () => {
+  it("renders the server's selected count and to-send count even when the entry list would count differently", () => {
+    const entries = entriesFor([
+      {
+        assetId: "a1",
+        selectedAt: "2026-10-01T12:00:00.000Z",
+        pickedBy: { id: "client-a", label: "Ana" },
+        selectionKind: "edited",
+      },
+      {
+        assetId: "a2",
+        selectedAt: "2026-10-01T12:01:00.000Z",
+        pickedBy: { id: "client-b", label: "Beto" },
+        selectionKind: "edited",
+      },
+      {
+        assetId: "a3",
+        selectedAt: null,
+        pickedBy: { id: "client-a", label: "Ana" },
+        selectionKind: "edited",
+      },
+    ]);
+
+    renderGrid({
+      initialEntries: entries,
+      initialQuota: computeQuota(7, 0, {
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
+        originalPhotoPriceCopSnapshot: 2_000,
+      }),
+      initialCounter: {
+        group: 7,
+        viewer: { yours: 2, shared: 1, toSend: 4 },
+        people: [{ userId: "client-a", label: "Ana", units: 3 }],
+        unattributed: 0,
+      },
+      rollingDelivery: true,
+    });
+
+    expect(counterText()).toContain("seleccionadas 7");
+    expect(screen.getByRole("button", { name: "Enviar 4 fotos" })).toBeDefined();
+    // The tray still renders only what the entries say: 3, never 7.
+    expect(screen.getByText("3", { selector: "section span" })).toBeDefined();
+  });
+});

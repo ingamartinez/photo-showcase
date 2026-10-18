@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { NextRequest } from "next/server";
 import type { Session } from "next-auth";
 
 // Epic #239 / task #242 — the three admin per-client selection actions
@@ -27,15 +28,16 @@ vi.mock("@/lib/selection-events", () => ({
 }));
 
 vi.mock("@/lib/db", async () => {
-  const { assets, galleries, galleryClients, users } = await import("@/lib/db/schema");
+  const { assets, assetPicks, galleries, galleryClients, users } = await import("@/lib/db/schema");
   const { createFakeDb } = await import("@/test-support/fake-db");
-  const fake = createFakeDb([galleries, galleryClients, assets, users]);
+  const fake = createFakeDb([galleries, galleryClients, assets, assetPicks, users]);
   return {
     db: Object.assign(fake, {
       __rows: {
         galleries: fake.__tables.get(galleries)!,
         galleryClients: fake.__tables.get(galleryClients)!,
         assets: fake.__tables.get(assets)!,
+        assetPicks: fake.__tables.get(assetPicks)!,
         users: fake.__tables.get(users)!,
       },
     }),
@@ -43,7 +45,13 @@ vi.mock("@/lib/db", async () => {
 });
 
 type Row = Record<string, unknown>;
-type Rows = { galleries: Row[]; galleryClients: Row[]; assets: Row[]; users: Row[] };
+type Rows = {
+  galleries: Row[];
+  galleryClients: Row[];
+  assets: Row[];
+  assetPicks: Row[];
+  users: Row[];
+};
 
 async function rows(): Promise<Rows> {
   const { db } = (await import("@/lib/db")) as unknown as { db: { __rows: Rows } };
@@ -89,15 +97,35 @@ function member(galleryId: string, userId: string, overrides: Row = {}): Row {
   };
 }
 
-function asset(id: string, galleryId: string, billedTo: string | null, kind = "edited"): Row {
+function asset(
+  id: string,
+  galleryId: string,
+  billedTo: string | null,
+  kind = "edited",
+  overrides: Row = {},
+): Row {
   return {
     id,
     galleryId,
     isSelected: billedTo !== null,
     billedTo,
     selectedAt: billedTo ? T0 : null,
+    requestedAt: billedTo ? T0 : null,
+    billedAt: billedTo ? T0 : null,
     selectionKind: kind,
+    finalKey: null,
+    ...overrides,
   };
+}
+
+function pick(
+  assetId: string,
+  galleryId: string,
+  userId: string,
+  kind = "edited",
+  submittedAt: Date | null = T0,
+): Row {
+  return { assetId, galleryId, userId, kind, pickedAt: T0, submittedAt };
 }
 
 function gallery(id: string, overrides: Row = {}): Row {
@@ -130,6 +158,14 @@ async function seed(opts: { g1Status?: string } = {}) {
     asset("free", G1, null),
     asset("x-a", G2, A),
     asset("x-b", G2, B),
+  );
+  // A claim is a SUBMITTED pick since epic #250: one per claimed asset above.
+  r.assetPicks.push(
+    pick("a1", G1, A),
+    pick("a2", G1, A, "original"),
+    pick("b1", G1, B),
+    pick("x-a", G2, A),
+    pick("x-b", G2, B),
   );
   r.users.push({ id: A, email: "a@example.com" }, { id: B, email: "b@example.com" });
 }
@@ -625,5 +661,345 @@ describe.each(ACTIONS)("%s — lock order", (name) => {
 
     expect(result.status).not.toBe("error");
     expect(db.__log[0]).toBe("for:update");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Epic #250 S5 (#260) — the hazards. Every assertion below is about a state
+// the pre-S5 admin write left behind.
+// ---------------------------------------------------------------------------
+
+/** The four `asset_picks` invariants of the epic, asserted inline (the
+ * orchestrator's allowed edit surfaces exclude a shared test helper). */
+function expectPickInvariants(r: Rows, galleryId = G1) {
+  const claimed = new Map(r.assets.map((a) => [a.id, a]));
+  for (const p of r.assetPicks.filter((row) => row.galleryId === galleryId)) {
+    const asset = claimed.get(p.assetId as string)!;
+    if (p.submittedAt !== null) {
+      // (i) no submitted pick on an unclaimed asset.
+      expect(asset.isSelected).toBe(true);
+    }
+    if (asset.isSelected && asset.billedTo !== null) {
+      // (ii) the holder has a submitted pick on it.
+      expect(
+        r.assetPicks.some(
+          (other) =>
+            other.assetId === asset.id &&
+            other.userId === asset.billedTo &&
+            other.submittedAt !== null,
+        ),
+      ).toBe(true);
+    }
+  }
+  for (const asset of r.assets.filter((row) => row.galleryId === galleryId)) {
+    if (asset.isSelected) continue;
+    // (iii) unclaimed means every claim field is null.
+    expect(asset).toMatchObject({
+      billedTo: null,
+      billedAt: null,
+      requestedAt: null,
+      selectedAt: null,
+    });
+  }
+}
+
+async function emptyRows(): Promise<Rows> {
+  const r = await rows();
+  for (const list of Object.values(r)) list.length = 0;
+  r.galleries.push(gallery(G1, { allowsOriginalSelection: true }));
+  r.galleryClients.push(member(G1, A), member(G1, B), member(G1, C));
+  r.users.push(
+    { id: A, name: "Ana", email: "a@example.com" },
+    { id: B, name: null, email: "b@example.com" },
+    { id: C, name: "Caro", email: "c@example.com" },
+  );
+  return r;
+}
+
+describe("hazard 1 — remove-picks leaves no joined pick on an unclaimed asset", () => {
+  it("transfers X to the other picker, unclaims Y, and B's pick survives untouched", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const r = await emptyRows();
+    r.assets.push(asset("x", G1, A), asset("y", G1, A));
+    r.assetPicks.push(pick("x", G1, A), pick("x", G1, B), pick("y", G1, A));
+    const bPick = structuredClone(r.assetPicks.find((p) => p.userId === B)!);
+    const { removeGalleryClientPicks } = await import("./actions");
+
+    const result = await removeGalleryClientPicks({ status: "idle" }, form(A));
+
+    expect(result.status).toBe("done");
+    expect(r.assets.find((a) => a.id === "x")).toMatchObject({
+      isSelected: true,
+      billedTo: B,
+      billedAt: T0,
+      selectionKind: "edited",
+    });
+    expect(r.assets.find((a) => a.id === "y")).toMatchObject({
+      isSelected: false,
+      billedTo: null,
+      billedAt: null,
+      requestedAt: null,
+      selectedAt: null,
+    });
+    expect(r.assetPicks.find((p) => p.userId === B)).toEqual(bPick);
+    expectPickInvariants(r);
+  });
+
+  it("answers B's NEXT real PATCH with 409 already_requested — the state that used to 500", async () => {
+    // Review of #260, W5: the plan's §9.1 row H1 asks for the REAL PATCH, not a
+    // direct `derivePickStatus` call. The removal action and the route share
+    // this file's one fake db, so the whole hazard is driven end to end: A's
+    // picks are removed, X transfers to B, and B then calls the route.
+    authMock.mockResolvedValue(adminSession());
+    const r = await emptyRows();
+    const X = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaa1";
+    r.assets.push(asset(X, G1, A));
+    r.assetPicks.push(pick(X, G1, A), pick(X, G1, B));
+    const { removeGalleryClientPicks } = await import("./actions");
+    await removeGalleryClientPicks({ status: "idle" }, form(A));
+    expect(r.assets.find((row) => row.id === X)).toMatchObject({ isSelected: true, billedTo: B });
+
+    authMock.mockResolvedValue({
+      user: { id: B, role: "client", email: "b@example.com" },
+      expires: "2099-01-01T00:00:00.000Z",
+    } as Session);
+    const { PATCH } = await import("@/app/api/assets/[assetId]/selection/route");
+    const response = await PATCH(
+      new NextRequest(`http://localhost:3300/api/assets/${X}/selection`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ selected: false }),
+      }),
+      { params: Promise.resolve({ assetId: X }) },
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "already_requested" });
+  });
+
+  it("never bills a DEGRADED picker when the holder is removed (submittedAt null carries no claim)", async () => {
+    // Review of #260, C2/M2, the action end of it: if an unsubmitted pick were
+    // fed to the resolution as if submitted, the unit would land on B — who
+    // never submitted — and B's cart pick would silently become a billed one.
+    authMock.mockResolvedValue(adminSession());
+    const r = await emptyRows();
+    r.assets.push(asset("x", G1, A));
+    r.assetPicks.push(pick("x", G1, A), pick("x", G1, B, "edited", null));
+    const { removeGalleryClientPicks } = await import("./actions");
+
+    const result = await removeGalleryClientPicks({ status: "idle" }, form(A));
+
+    expect(result.status).toBe("done");
+    expect(r.assets.find((row) => row.id === "x")).toMatchObject({
+      isSelected: false,
+      billedTo: null,
+      billedAt: null,
+      selectedAt: null,
+      requestedAt: null,
+    });
+    expect(r.assetPicks.find((row) => row.userId === B)).toMatchObject({
+      kind: "edited",
+      submittedAt: null,
+    });
+    expectPickInvariants(r);
+  });
+
+  it("hands the unit to the SUBMITTER, never to a remaining picker who did not submit", async () => {
+    // Same clause, the comparator's end: a `submittedAt: null` reaching the
+    // arrival sort is `.getTime()` on null — a 500 in production.
+    authMock.mockResolvedValue(adminSession());
+    const r = await emptyRows();
+    r.assets.push(asset("x", G1, A));
+    r.assetPicks.push(
+      pick("x", G1, A),
+      pick("x", G1, B, "edited", null),
+      pick("x", G1, C, "edited", new Date(T0.getTime() + 1000)),
+    );
+    const { removeGalleryClientPicks } = await import("./actions");
+
+    const result = await removeGalleryClientPicks({ status: "idle" }, form(A));
+
+    expect(result.status).toBe("done");
+    expect(r.assets.find((row) => row.id === "x")).toMatchObject({
+      isSelected: true,
+      billedTo: C,
+      billedAt: T0,
+    });
+    expect(r.assetPicks.find((row) => row.userId === B)).toMatchObject({ submittedAt: null });
+    expectPickInvariants(r);
+  });
+});
+
+describe("hazard 2 — an unlock never touches picks (decision 10's semantics)", () => {
+  it("leaves every asset_picks row deep-equal, keeps gatePickEdit's already_requested, and lets a NEW pick claim", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const r = await emptyRows();
+    Object.assign(
+      r.galleryClients.find((m) => m.userId === A)!,
+      {
+        selectionLockedAt: T0,
+        selectionSubmittedAt: T0,
+      },
+    );
+    r.assets.push(asset("s1", G1, A), asset("s2", G1, A, "original"), asset("free", G1, null));
+    r.assetPicks.push(pick("s1", G1, A), pick("s2", G1, A, "original"));
+    const picksBefore = structuredClone(r.assetPicks);
+    const { unlockGalleryClientSelection } = await import("./actions");
+
+    const unlocked = await unlockGalleryClientSelection({ status: "idle" }, form(A));
+
+    expect(unlocked.status).toBe("done");
+    expect(r.assetPicks).toEqual(picksBefore);
+    const { gatePickEdit } = await import("@/lib/pick-resolution");
+    expect(gatePickEdit("billed", "edited", { type: "remove" })).toEqual({
+      ok: false,
+      error: "already_requested",
+    });
+
+    // A NEW pick still claims, so the unlock is not a dead end.
+    r.assetPicks.push(pick("free", G1, A, "edited", null));
+    const { claimCart } = await import("@/lib/pick-claims");
+    const { db } = (await import("@/lib/db")) as unknown as {
+      db: { transaction: <T>(fn: (tx: never) => Promise<T>) => Promise<T> };
+    };
+    await db.transaction((tx) =>
+      claimCart(tx, r.galleries[0] as never, A, new Date("2026-10-18T10:00:00Z")),
+    );
+    expect(r.assets.find((a) => a.id === "free")).toMatchObject({
+      isSelected: true,
+      billedTo: A,
+    });
+    expectPickInvariants(r);
+  });
+
+  it("the GALLERY-WIDE unlock (gallery-wide unlock is the same rule) also leaves picks deep-equal", async () => {
+    // `unlockGalleryClientSelection` is the per-client action; the gallery-wide
+    // unlock clears every membership row and likewise never writes a pick.
+    // This is the same fixture as above, exercised through the per-client
+    // action for C, whose picks are A's: nothing of A's may move.
+    authMock.mockResolvedValue(adminSession());
+    const r = await emptyRows();
+    Object.assign(
+      r.galleryClients.find((m) => m.userId === C)!,
+      {
+        selectionLockedAt: T0,
+        selectionSubmittedAt: T0,
+      },
+    );
+    r.assets.push(asset("s1", G1, A));
+    r.assetPicks.push(pick("s1", G1, A));
+    const before = structuredClone(r.assetPicks);
+    const { unlockGalleryClientSelection } = await import("./actions");
+
+    await unlockGalleryClientSelection({ status: "idle" }, form(C));
+
+    expect(r.assetPicks).toEqual(before);
+  });
+});
+
+describe("hazard 3 — an admin lock CLAIMS the cart (decision 18)", () => {
+  it("claims a free asset, escalates an original, joins an edited one, and reports the delta", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const r = await emptyRows();
+    r.assets.push(asset("x", G1, null), asset("y", G1, B, "original"), asset("z", G1, B));
+    r.assetPicks.push(
+      pick("x", G1, A, "edited", null),
+      pick("y", G1, A, "edited", null),
+      pick("z", G1, A, "edited", null),
+      pick("y", G1, B, "original"),
+      pick("z", G1, B, "edited"),
+    );
+    const { lockGalleryClientSelection } = await import("./actions");
+
+    const result = await lockGalleryClientSelection({ status: "idle" }, form(A));
+
+    expect(result.status).toBe("done");
+    expect(r.assets.find((a) => a.id === "x")).toMatchObject({ isSelected: true, billedTo: A });
+    const y = r.assets.find((a) => a.id === "y")!;
+    expect(y).toMatchObject({ isSelected: true, billedTo: A, selectionKind: "edited" });
+    expect((y.billedAt as Date).getTime()).toBeGreaterThan(T0.getTime());
+    expect(r.assets.find((a) => a.id === "z")).toMatchObject({ isSelected: true, billedTo: B });
+    expect(r.assetPicks.filter((p) => p.userId === A).every((p) => p.submittedAt !== null)).toBe(
+      true,
+    );
+    expect(r.galleryClients.find((m) => m.userId === A)).toMatchObject({
+      selectionLockedBy: "admin",
+    });
+    expectPickInvariants(r);
+
+    // Before: A holds nothing, B holds y and z. After: A holds x and y, B holds z.
+    expect(result.delta?.people.map((person) => person.userId).sort()).toEqual([A, B]);
+    expect(result.delta?.people.find((person) => person.userId === A)?.before.extras).toBe(0);
+    expect(result.delta?.people.find((person) => person.userId === A)?.after.extras).toBe(2);
+    expect(result.delta?.people.find((person) => person.userId === B)?.after.extras).toBe(1);
+    expect(result.delta?.people.find((person) => person.userId === A)?.label).toBe("Ana");
+    expect(result.pickOutcomes).toEqual({
+      claimed: 1,
+      escalated: 1,
+      joined: 1,
+      escalationBlocked: 0,
+    });
+  });
+
+  it("still locks somebody whose cart is empty, claiming nothing", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const r = await emptyRows();
+    const { lockGalleryClientSelection } = await import("./actions");
+
+    const result = await lockGalleryClientSelection({ status: "idle" }, form(C));
+
+    expect(result.status).toBe("done");
+    expect(r.assets).toEqual([]);
+    expect(result.pickOutcomes).toEqual({
+      claimed: 0,
+      escalated: 0,
+      joined: 0,
+      escalationBlocked: 0,
+    });
+  });
+});
+
+describe("hazard 4 — unclaiming clears billed_at", () => {
+  it("leaves every claim column null when the only picker is removed", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const r = await emptyRows();
+    r.assets.push(asset("x", G1, A));
+    r.assetPicks.push(pick("x", G1, A));
+    const { removeGalleryClientPicks } = await import("./actions");
+
+    await removeGalleryClientPicks({ status: "idle" }, form(A));
+
+    expect(r.assets[0]).toMatchObject({
+      isSelected: false,
+      billedTo: null,
+      billedAt: null,
+      selectedAt: null,
+      requestedAt: null,
+    });
+    expectPickInvariants(r);
+  });
+});
+
+describe("hazard 5 — a final freezes the kind, and the holder is re-elected", () => {
+  it.each([
+    // Decision 15: B's edited pick must NOT raise the kind over a final.
+    ["with a final", "final/x.jpg", "edited"],
+    ["without a final, B's pick original", null, "original"],
+  ])("keeps the resolved kind when the holder leaves (%s)", async (_label, finalKey, kind) => {
+    authMock.mockResolvedValue(adminSession());
+    const r = await emptyRows();
+    r.assets.push(asset("x", G1, A, "original", { finalKey }));
+    r.assetPicks.push(pick("x", G1, A, "original"), pick("x", G1, B, kind as string));
+    const { removeGalleryClientPicks } = await import("./actions");
+
+    await removeGalleryClientPicks({ status: "idle" }, form(A));
+
+    expect(r.assets[0]).toMatchObject({
+      isSelected: true,
+      billedTo: B,
+      selectionKind: "original",
+      billedAt: T0,
+    });
+    expectPickInvariants(r);
   });
 });

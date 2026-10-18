@@ -1,10 +1,13 @@
-// PATCH /api/assets/[assetId]/selection — a CLIENT may act only on their OWN
-// pick of one asset (insert it, remove it, or set its type). Since epic #250
-// S4 (#259) this route NEVER writes `assets`: `assets` carries the RESOLVED,
+// PATCH /api/assets/[assetId]/selection — a CLIENT acts only on their OWN pick
+// of one asset (insert it, remove it, or set its type); an ADMIN acts on ONE
+// client's pick, named by `actingClientId` in the body (decision 12, task
+// #260). A client PATCH NEVER writes `assets`: it carries the RESOLVED,
 // single-unit truth of money and delivery, owned by submit/admin paths, while
 // `asset_picks` carries "who wants what". That separation is what makes
-// decision 7 structural — a client PATCH cannot move a billed unit, so it
-// cannot raise anyone's surcharge.
+// decision 7 structural for a client — their PATCH cannot move a billed unit,
+// so it cannot raise anyone's surcharge. The ADMIN path is the deliberate
+// exception: it re-resolves the asset, and the response carries the
+// before/after (`delta`) so the money it moved is visible.
 //
 // THE OPERATION, per the request body (task #206's union is unchanged):
 //   - `selected: true`  — insert the caller's pick (`kind: selectionKind ??
@@ -29,12 +32,22 @@
 //
 // GATES, all before any write, in order:
 //   1. session (401)                 6. `SELECTION_LOCKED_STATUSES` (409)
-//   2. UUID (400)                    7. admin -> `admin_cannot_pick` (409,
-//   3. body (400)                       until S5 builds "a nombre de un cliente")
-//   4. ownership (403/404)           8. caller's per-client lock (409)
-//   5. client visibility (404)       9. `originals_not_allowed` (409)
-//                                   10. the pick gate (`already_requested` /
-//                                       `pick_degraded` / `asset_not_selected`)
+//   2. UUID (400)                    7. admin without `actingClientId` ->
+//   3. body (400)                       `admin_cannot_pick` (409); a CLIENT
+//   4. ownership (403/404)              sending `actingClientId` -> 400
+//   5. client visibility (404)        8. caller's per-client lock (409, client)
+//                                     9. `originals_not_allowed` (409)
+//                                    10. the pick gate (`already_requested` /
+//                                        `pick_degraded` / `asset_not_selected`)
+//
+// The ADMIN branch then runs `actOnBehalf` (pick-claims.ts) in one transaction
+// under the gallery row lock: it refuses a non-`proofing` gallery
+// (`gallery_not_submittable`), a removed/unknown member
+// (`acting_client_not_member`) and a type-only body with no pick
+// (`asset_not_selected`), claims or re-resolves exactly ONE asset, and settles
+// the gallery. `gatePickEdit` is deliberately NOT applied — decision 12 exempts
+// the admin from decision 7, and this is the per-photo correction tool that
+// makes an admin removal survivable.
 //
 // `pick_locked` and `pick_not_yours` (task #249) are DELETED. Both protected
 // somebody else's row in `assets`; once a request can only address its own
@@ -57,6 +70,7 @@ import { isGalleryVisibleToClient } from "@/lib/galleries";
 import { getClientLock } from "@/lib/gallery-client-locks";
 import { computeQuota } from "@/lib/quota";
 import { claimFromAsset, derivePickStatus, gatePickEdit } from "@/lib/pick-resolution";
+import { actOnBehalf } from "@/lib/pick-claims";
 import type { PickStatus } from "@/lib/pick-resolution";
 import { notifySelectionChanged } from "@/lib/selection-events";
 
@@ -72,6 +86,9 @@ const bodySchema = z
   .object({
     selected: z.boolean().optional(),
     selectionKind: z.enum(["edited", "original"]).optional(),
+    // Decision 12 — the admin writes ON BEHALF OF this client. Users ids are
+    // text; same shape as `galleryClientSelectionSchema.clientId`.
+    actingClientId: z.string().trim().min(1).optional(),
   })
   // At least one of the two — an empty `{}` body does nothing and is refused
   // rather than silently treated as a no-op 200, matching this route's own
@@ -151,14 +168,17 @@ export const PATCH = withApiSession(async function PATCH(
     return errorResponse("gallery_locked", 409);
   }
 
-  // Gate 7 — an admin PATCH is refused until S5 (#260) builds "write on
-  // behalf of a client". An admin cannot insert a pick (no membership row, so
-  // the `asset_picks_membership_fk` fails) and decision 12 forbids admin
-  // picks; keeping the legacy admin `assets` write would create "submitted
-  // pick on an unclaimed asset", which `derivePickStatus` throws on. So the
-  // admin is refused, in the same shape as `admin_cannot_submit`.
-  if (isAdmin) {
+  // Gate 7 — decision 12. An admin has no pick and no membership row (so the
+  // `asset_picks_membership_fk` would refuse an insert anyway); they act ON
+  // BEHALF of a named client, or not at all. A CLIENT sending `actingClientId`
+  // is refused loudly: ignoring it would let a buggy UI believe it acted for
+  // somebody else.
+  const { selected, selectionKind, actingClientId } = bodyResult.data;
+  if (isAdmin && !actingClientId) {
     return errorResponse("admin_cannot_pick", 409);
+  }
+  if (!isAdmin && actingClientId) {
+    return errorResponse("invalid_body", 400);
   }
 
   // Gate 8 — the caller's own per-client lock. A submitted client may not
@@ -168,14 +188,93 @@ export const PATCH = withApiSession(async function PATCH(
     return errorResponse("client_selection_locked", 409);
   }
 
-  const { selected, selectionKind } = bodyResult.data;
-
   // Gate 9 — task #214: refuse anything that would set `selectionKind` to
   // `"original"` unless the gallery allows it. Covers both the atomic
   // "select AND mark original" combo and the type-only branch, using the same
   // 409 shape the other state-conflict gates use.
   if (selectionKind === "original" && !gallery.allowsOriginalSelection) {
     return errorResponse("originals_not_allowed", 409);
+  }
+
+  // The on-behalf branch (decision 12) hands the whole write to
+  // `actOnBehalf`: one transaction, gallery lock first, then the pick and the
+  // resolution. It never touches `session.user.id` as a pick owner.
+  if (isAdmin && actingClientId) {
+    const onBehalf = await db.transaction((tx) =>
+      actOnBehalf(tx, gallery.id, asset.id, actingClientId, { selected, selectionKind }),
+    );
+    if (!onBehalf.ok) return errorResponse(onBehalf.error, 409);
+
+    if (onBehalf.wrote) {
+      void notifySelectionChanged(gallery.id).catch(() => {});
+    }
+
+    const siblings = await db
+      .select({
+        id: assets.id,
+        isSelected: assets.isSelected,
+        selectedAt: assets.selectedAt,
+        billedTo: assets.billedTo,
+        selectionKind: assets.selectionKind,
+        requestedAt: assets.requestedAt,
+        billedAt: assets.billedAt,
+      })
+      .from(assets)
+      .where(eq(assets.galleryId, gallery.id));
+    const current = siblings.find((row) => row.id === asset.id);
+    if (!current) return errorResponse("asset_not_found", 404);
+    const selectedSiblings = siblings.filter((row) => row.isSelected);
+    const selectedOriginal = selectedSiblings.filter(
+      (row) => row.selectionKind === "original",
+    ).length;
+    const quota = computeQuota(selectedSiblings.length - selectedOriginal, selectedOriginal, {
+      includedPhotosSnapshot: gallery.includedPhotosSnapshot,
+      extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
+      extraPhotoPriceTiersSnapshot: gallery.extraPhotoPriceTiersSnapshot,
+      originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,
+    });
+    const billedLabel = current.billedTo === null ? null : await pickerLabel(current.billedTo);
+    const labels: Record<string, string> = {};
+    for (const person of onBehalf.delta.people) {
+      labels[person.userId] = (await pickerLabel(person.userId)) ?? person.userId;
+    }
+
+    return NextResponse.json({
+      asset: {
+        id: current.id,
+        isSelected: current.isSelected,
+        selectedAt: current.selectedAt ? current.selectedAt.toISOString() : null,
+        pickedBy:
+          current.billedTo !== null && billedLabel !== null
+            ? { id: current.billedTo, label: billedLabel }
+            : null,
+        selectionKind: current.selectionKind,
+        requestedAt: current.requestedAt ? current.requestedAt.toISOString() : null,
+      },
+      pick: onBehalf.pick
+        ? {
+            assetId: onBehalf.pick.assetId,
+            kind: onBehalf.pick.kind,
+            pickedAt: onBehalf.pick.pickedAt.toISOString(),
+            submittedAt: onBehalf.pick.submittedAt ? onBehalf.pick.submittedAt.toISOString() : null,
+            status: derivePickStatus(
+              { userId: actingClientId, submittedAt: onBehalf.pick.submittedAt },
+              claimFromAsset(current),
+            ),
+          }
+        : null,
+      quota,
+      actingClientId,
+      pickOutcome: onBehalf.pickOutcome,
+      ...(onBehalf.counts ? { pickOutcomes: onBehalf.counts } : {}),
+      delta: {
+        ...onBehalf.delta,
+        people: onBehalf.delta.people.map((person) => ({
+          ...person,
+          label: labels[person.userId] ?? person.userId,
+        })),
+      },
+    });
   }
 
   // The caller's OWN pick, by the composite PK. This is the only row any

@@ -45,7 +45,12 @@ vi.mock("@/lib/db", async () => {
 type Row = Record<string, unknown>;
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
-const PEOPLE = ["client-a", "client-b", "client-c"] as const;
+// Epic #250 decision 13: a gallery closes once EVERY active member is done,
+// so the walk needs one member who never acts. Without `client-d` the third
+// submit would close the gallery and every later step would answer
+// `gallery_not_submittable`, silently starving the anti-vacuity counters.
+const PEOPLE = ["client-a", "client-b", "client-c", "client-d"] as const;
+const ACTORS = ["client-a", "client-b", "client-c"] as const;
 
 // Valid UUIDs: both routes validate their path id with `z.uuid()`.
 const ASSET_IDS = [
@@ -401,7 +406,7 @@ describe("decision 7 through the routes — seeded random walk (D7-b)", () => {
         vi.useFakeTimers({ toFake: ["Date"] });
         vi.setSystemTime(clock);
 
-        const actor = PEOPLE[Math.floor(rng() * PEOPLE.length)]!;
+        const actor = ACTORS[Math.floor(rng() * ACTORS.length)]!;
         const before = attributeQuota(units(db.__rows.assets), snapshot);
         const assetsBefore = structuredClone(db.__rows.assets);
         const message = `seed=${SEED + run} step=${step}`;

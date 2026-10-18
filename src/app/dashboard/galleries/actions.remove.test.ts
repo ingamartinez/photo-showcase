@@ -33,15 +33,20 @@ vi.mock("@/lib/selection-events", () => ({
 // The shared in-memory double (src/test-support/fake-db.ts) — filters for real
 // off eq()/isNull()/and(), supports `transaction()` and `for("update")`.
 vi.mock("@/lib/db", async () => {
-  const { galleries, galleryClients } = await import("@/lib/db/schema");
+  const { assets, assetPicks, galleries, galleryClients } = await import("@/lib/db/schema");
   const { createFakeDb } = await import("@/test-support/fake-db");
-  const fake = createFakeDb([galleries, galleryClients]);
+  // `asset_picks` and `assets` are registered so that (a) the settle's cart
+  // read works and (b) "this action never touches `assets`" is still a
+  // meaningful claim rather than an artifact of a fake that would throw.
+  const fake = createFakeDb([galleries, galleryClients, assets, assetPicks]);
   // Test-only escape hatch, not part of the real `db` shape.
   return {
     db: Object.assign(fake, {
       __rows: {
         galleries: fake.__tables.get(galleries)!,
         galleryClients: fake.__tables.get(galleryClients)!,
+        assets: fake.__tables.get(assets)!,
+        assetPicks: fake.__tables.get(assetPicks)!,
       },
     }),
   };
@@ -51,7 +56,7 @@ type Row = Record<string, unknown>;
 
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
-    db: { __rows: { galleries: Row[]; galleryClients: Row[] } };
+    db: { __rows: { galleries: Row[]; galleryClients: Row[]; assets: Row[]; assetPicks: Row[] } };
   };
   return db;
 }
@@ -109,6 +114,8 @@ beforeEach(async () => {
   const db = await seededDb();
   db.__rows.galleries.length = 0;
   db.__rows.galleryClients.length = 0;
+  db.__rows.assets.length = 0;
+  db.__rows.assetPicks.length = 0;
   db.__rows.galleries.push(galleryRow());
   db.__rows.galleryClients.push(
     {
@@ -384,6 +391,47 @@ describe("removeGalleryClient — never touches asset attribution", () => {
   });
 });
 
+// Epic #250 decision 17 — carts die with the membership, submitted picks stay.
+describe("removeGalleryClient — decision 17 (carts)", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+  });
+
+  const pick = (assetId: string, userId: string, submittedAt: Date | null) => ({
+    assetId,
+    galleryId: GALLERY_ID,
+    userId,
+    kind: "edited",
+    pickedAt: new Date("2026-10-15T10:00:00.000Z"),
+    submittedAt,
+  });
+
+  it("deletes the removed person's CART picks and keeps their submitted ones, to their name", async () => {
+    const db = await seededDb();
+    const submittedAt = new Date("2026-10-15T10:00:00.000Z");
+    db.__rows.assetPicks.push(
+      pick("cart-1", CLIENT_A, null),
+      pick("cart-2", CLIENT_A, null),
+      pick("billed", CLIENT_A, submittedAt),
+      pick("other-cart", CLIENT_B, null),
+    );
+    const { removeGalleryClient } = await import("./actions");
+
+    await expect(
+      removeGalleryClient(
+        { status: "idle" },
+        formDataWith({ galleryId: GALLERY_ID, clientId: CLIENT_A }),
+      ),
+    ).resolves.toEqual({ status: "removed" });
+
+    expect(db.__rows.assetPicks.map((p) => p.assetId).sort()).toEqual(["billed", "other-cart"]);
+    expect(db.__rows.assetPicks.find((p) => p.assetId === "billed")).toMatchObject({
+      userId: CLIENT_A,
+      submittedAt,
+    });
+  });
+});
+
 // Epic #239 — removal must re-settle the gallery's per-client lock state.
 describe("removeGalleryClient — settles the gallery's lock status (epic #239)", () => {
   const LOCKED_AT = new Date("2026-10-15T10:00:00.000Z");
@@ -407,15 +455,35 @@ describe("removeGalleryClient — settles the gallery's lock status (epic #239)"
     );
   }
 
+  // Decision 13: the member left behind is DONE by having SUBMITTED, even
+  // though they are not locked — the state every order-semantic submit leaves.
   it("moves proofing -> selected when the removed client was the only one still choosing", async () => {
-    await lockMember(CLIENT_A);
     const db = await seededDb();
+    const row = db.__rows.galleryClients.find((r) => r.userId === CLIENT_A)!;
+    row.selectionSubmittedAt = LOCKED_AT;
 
     await expect(remove(CLIENT_B)).resolves.toEqual({ status: "removed" });
 
     expect(db.__rows.galleries[0]).toMatchObject({ status: "selected" });
     expect(notifySelectionChangedMock).toHaveBeenCalledWith(GALLERY_ID);
     expect(revalidatePathMock).toHaveBeenCalledWith("/galleries/abc123");
+  });
+
+  it("does NOT close the gallery when the member left behind still has a cart", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.find((r) => r.userId === CLIENT_A)!.selectionSubmittedAt = LOCKED_AT;
+    db.__rows.assetPicks.push({
+      assetId: "asset-a",
+      galleryId: GALLERY_ID,
+      userId: CLIENT_A,
+      kind: "edited",
+      pickedAt: LOCKED_AT,
+      submittedAt: null,
+    });
+
+    await expect(remove(CLIENT_B)).resolves.toEqual({ status: "removed" });
+
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
   });
 
   it("keeps the gallery in proofing when the client left behind is still choosing", async () => {

@@ -141,6 +141,98 @@ export function submitPick(
   return { type: "joined", claim };
 }
 
+/** One submitted pick still standing on an asset AFTER an admin's change.
+ * `reresolveClaim` only needs these three fields: who, what they asked for,
+ * and when they asked (the arrival tie-break). */
+export type SubmittedPick = {
+  userId: string;
+  kind: SelectionKind;
+  submittedAt: Date;
+};
+
+/** `(submittedAt, userId)` ascending, code-unit on the id — the pick-level
+ * analogue of `compareArrival` (quota-attribution.ts). Deterministic, and the
+ * id tie-break never depends on the locale. */
+function compareSubmittedAt(a: SubmittedPick, b: SubmittedPick): number {
+  const diff = a.submittedAt.getTime() - b.submittedAt.getTime();
+  if (diff !== 0) return diff < 0 ? -1 : 1;
+  if (a.userId === b.userId) return 0;
+  return a.userId < b.userId ? -1 : 1;
+}
+
+function earliest(
+  picks: readonly SubmittedPick[],
+  predicate: (pick: SubmittedPick) => boolean,
+): SubmittedPick {
+  return [...picks].filter(predicate).sort(compareSubmittedAt)[0]!;
+}
+
+/**
+ * Epic #250, task #260 (S5) — THE pure per-asset rule for an ADMIN change to
+ * somebody's submitted picks: what the asset's claim becomes once those picks
+ * are gone (or retyped). This is the only definition of that transition;
+ * `pick-plans.ts` applies it, and the dashboard preview and the executed write
+ * both go through it, so they cannot drift.
+ *
+ * Decisions this encodes, in the order the rules run:
+ *
+ * 1. An UNCLAIMED asset with a submitted pick is the contradiction
+ *    `derivePickStatus` throws on. New claims only ever come from
+ *    `claimCart`, so an admin re-resolution that would produce this state is a
+ *    caller bug and THROWS rather than inventing a silent status.
+ * 2. A legacy unit (`billedTo === null`, the "Sin registro" census bucket) is
+ *    returned untouched. Its basis is not in `asset_picks`, so re-resolution
+ *    has no business adding or removing one.
+ * 3. No submitted pick left -> the asset is unclaimed. The caller clears the
+ *    dependent columns; this function only says "nobody holds it".
+ * 4. The kind is `edited` iff SOME remaining submitted pick is edited
+ *    (decision 3), except while the asset has a final: decision 15 freezes it
+ *    in BOTH directions then, because the file was produced against that kind.
+ * 5. The holder:
+ *    - a RAISE (`original -> edited`) is an escalation: it goes to the
+ *      earliest edited pick and RE-ARRIVES (`billedAt = ctx.arrival`), the
+ *      same semantics as a client escalation (`pick-claims.ts`), so no third
+ *      party loses an included slot;
+ *    - otherwise the current holder keeps the unit while their own pick is
+ *      still there and still compatible (same kind, or frozen by a final);
+ *    - otherwise it TRANSFERS to the earliest picker of the resolved kind,
+ *      KEEPING `billedAt`: a transfer does not create a new unit, so it stays
+ *      in its arrival slot and only the two people change.
+ */
+export function reresolveClaim(
+  current: AssetClaim,
+  submitted: readonly SubmittedPick[],
+  ctx: { hasFinal: boolean; arrival: Date },
+): AssetClaim {
+  if (!current.claimed) {
+    if (submitted.length === 0) return { claimed: false };
+    throw new Error("pick-resolution: submitted pick on an unclaimed asset");
+  }
+  if (current.billedTo === null) return current;
+  if (submitted.length === 0) return { claimed: false };
+
+  const resolved: SelectionKind = submitted.some((pick) => pick.kind === "edited")
+    ? "edited"
+    : "original";
+  const kind: SelectionKind = ctx.hasFinal ? current.kind : resolved;
+
+  if (current.kind === "original" && kind === "edited") {
+    const winner = earliest(submitted, (pick) => pick.kind === "edited");
+    return { claimed: true, kind, billedTo: winner.userId, billedAt: ctx.arrival };
+  }
+
+  const holderPick = submitted.find((pick) => pick.userId === current.billedTo);
+  if (holderPick && (ctx.hasFinal || holderPick.kind === kind)) {
+    return { claimed: true, kind, billedTo: current.billedTo, billedAt: current.billedAt };
+  }
+
+  // A final freezes the KIND, not the holder: if the holder left, the unit has
+  // to land on somebody who still has a pick.
+  const candidates = ctx.hasFinal ? submitted : submitted.filter((pick) => pick.kind === kind);
+  const winner = earliest(candidates, () => true);
+  return { claimed: true, kind, billedTo: winner.userId, billedAt: current.billedAt };
+}
+
 /** The gallery's latest non-null `billed_at`, for `arrivalAfter`. */
 export function latestBilledAt(billedAts: readonly (Date | null)[]): Date | null {
   let latest: Date | null = null;

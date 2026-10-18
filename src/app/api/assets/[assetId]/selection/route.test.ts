@@ -989,3 +989,278 @@ describe("SELECTION_LOCKED_STATUSES — single shared definition (task #58)", ()
     expect(SELECTION_LOCKED_STATUSES).toBe(ASSET_MUTATION_BLOCKED_STATUSES);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Epic #250 S5 (#260), decision 12 — the admin writes ON BEHALF of one client.
+// ---------------------------------------------------------------------------
+describe("PATCH — on behalf of a client (decision 12)", () => {
+  const CLIENT_C = "client-c";
+  const CLIENT_D = "client-d";
+  const T0 = new Date("2026-07-03T10:00:00.000Z");
+
+  async function seedMembers(userIds: string[] = ["client-a", "client-b", CLIENT_C]) {
+    const db = await seededDb();
+    for (const userId of userIds) {
+      db.__rows.galleryClients.push({
+        galleryId: GALLERY_A_ID,
+        userId,
+        removedAt: null,
+        selectionLockedAt: null,
+        selectionSubmittedAt: null,
+        selectionLockedBy: null,
+      });
+      db.__rows.users.push({ id: userId, name: userId, email: `${userId}@example.com` });
+    }
+    return db;
+  }
+
+  async function patchAsAdmin(assetId: string, body: Record<string, unknown>) {
+    authMock.mockResolvedValue(adminSession());
+    const { PATCH } = await import("./route");
+    const response = await PATCH(requestBody(assetId, body), paramsFor(assetId));
+    return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+  }
+
+  /** The epic's four `asset_picks` invariants, asserted inline. */
+  async function expectInvariants() {
+    const db = await seededDb();
+    for (const pick of db.__rows.assetPicks) {
+      const asset = db.__rows.assets.find((candidate) => candidate.id === pick.assetId)!;
+      if (pick.submittedAt !== null) expect(asset.isSelected).toBe(true);
+      if (asset.isSelected && asset.billedTo !== null) {
+        expect(
+          db.__rows.assetPicks.some(
+            (other) =>
+              other.assetId === asset.id &&
+              other.userId === asset.billedTo &&
+              other.submittedAt !== null,
+          ),
+        ).toBe(true);
+      }
+    }
+    for (const asset of db.__rows.assets) {
+      if (asset.isSelected) continue;
+      expect(asset).toMatchObject({ billedTo: null, billedAt: null, requestedAt: null });
+    }
+  }
+
+  it("O1 — inserts C's pick and claims it in the same request (the photo se reclama en el acto)", async () => {
+    await seedMembers();
+
+    const result = await patchAsAdmin(ASSET_1_ID, { selected: true, actingClientId: CLIENT_C });
+
+    expect(result.status).toBe(200);
+    expect(result.body.actingClientId).toBe(CLIENT_C);
+    expect(result.body.pickOutcome).toBe("claimed");
+    const db = await seededDb();
+    const pick = db.__rows.assetPicks.find((p) => p.assetId === ASSET_1_ID)!;
+    expect(pick).toMatchObject({ userId: CLIENT_C });
+    expect(pick.submittedAt).toBeInstanceOf(Date);
+    expect(db.__rows.assets[0]).toMatchObject({ isSelected: true, billedTo: CLIENT_C });
+    expect(result.body.delta).toBeDefined();
+    await expectInvariants();
+  });
+
+  it("O2 — an on-behalf edited pick escalates A's original claim to C", async () => {
+    const db = await seedMembers();
+    db.__rows.assets[0] = claimed({
+      selectionKind: "original",
+      billedTo: "client-a",
+      billedAt: T0,
+    });
+    db.__rows.assetPicks.push(
+      pickRow(ASSET_1_ID, "client-a", { kind: "original", submittedAt: T0 }),
+    );
+
+    const result = await patchAsAdmin(ASSET_1_ID, { selected: true, actingClientId: CLIENT_C });
+
+    expect(result.status).toBe(200);
+    expect(db.__rows.assets[0]).toMatchObject({
+      isSelected: true,
+      billedTo: CLIENT_C,
+      selectionKind: "edited",
+    });
+    await expectInvariants();
+  });
+
+  it("O3 — claims ONLY the asset named, leaving the rest of C's cart in the cart", async () => {
+    const db = await seedMembers();
+    db.__rows.assets.push(assetRow({ id: ASSET_2_ID, sortOrder: 1 }));
+    db.__rows.assetPicks.push(pickRow(ASSET_1_ID, CLIENT_C), pickRow(ASSET_2_ID, CLIENT_C));
+
+    const result = await patchAsAdmin(ASSET_1_ID, { selected: true, actingClientId: CLIENT_C });
+
+    expect(result.status).toBe(200);
+    expect(db.__rows.assets.find((a) => a.id === ASSET_1_ID)).toMatchObject({
+      isSelected: true,
+      billedTo: CLIENT_C,
+    });
+    expect(db.__rows.assets.find((a) => a.id === ASSET_2_ID)).toMatchObject({ isSelected: false });
+    expect(db.__rows.assetPicks.find((p) => p.assetId === ASSET_2_ID)!.submittedAt).toBeNull();
+    await expectInvariants();
+  });
+
+  it("O4 — deselecting C's billed pick transfers the unit to A and keeps billedAt", async () => {
+    const db = await seedMembers();
+    db.__rows.assets[0] = claimed({ billedTo: CLIENT_C, billedAt: T0 });
+    db.__rows.assetPicks.push(
+      pickRow(ASSET_1_ID, CLIENT_C, { submittedAt: T0 }),
+      pickRow(ASSET_1_ID, "client-a", { submittedAt: new Date(T0.getTime() + 1000) }),
+    );
+
+    const result = await patchAsAdmin(ASSET_1_ID, { selected: false, actingClientId: CLIENT_C });
+
+    expect(result.status).toBe(200);
+    expect(result.body.pickOutcome).toBe("removed");
+    expect(db.__rows.assetPicks.some((p) => p.userId === CLIENT_C)).toBe(false);
+    expect(db.__rows.assets[0]).toMatchObject({
+      isSelected: true,
+      billedTo: "client-a",
+      billedAt: T0,
+    });
+    await expectInvariants();
+  });
+
+  it("O5 — retyping a submitted pick re-resolves the asset", async () => {
+    const db = await seedMembers();
+    db.__rows.assets[0] = claimed({
+      billedTo: "client-a",
+      selectionKind: "original",
+      billedAt: T0,
+    });
+    db.__rows.assetPicks.push(
+      pickRow(ASSET_1_ID, "client-a", { kind: "original", submittedAt: T0 }),
+    );
+
+    const result = await patchAsAdmin(ASSET_1_ID, {
+      selectionKind: "edited",
+      actingClientId: "client-a",
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.body.pickOutcome).toBe("reresolved");
+    expect(db.__rows.assets[0]).toMatchObject({
+      isSelected: true,
+      billedTo: "client-a",
+      selectionKind: "edited",
+    });
+    await expectInvariants();
+  });
+
+  it("O5b — retyping A's submitted pick to original hands the edited unit to B (rule 5)", async () => {
+    // Review of #260, C2/M16, the on-behalf twin: A holds X `edited` and B
+    // joined `edited`. When the admin retypes A's pick to `original`, A no
+    // longer asks for the unit, so the resolution must TRANSFER it to B and
+    // keep `billedAt` — not leave A billed for a unit A stopped asking for.
+    const db = await seedMembers();
+    db.__rows.assets[0] = claimed({ billedTo: "client-a", billedAt: T0 });
+    db.__rows.assetPicks.push(
+      pickRow(ASSET_1_ID, "client-a", { submittedAt: T0 }),
+      pickRow(ASSET_1_ID, "client-b", { submittedAt: new Date(T0.getTime() + 1000) }),
+    );
+
+    const result = await patchAsAdmin(ASSET_1_ID, {
+      selectionKind: "original",
+      actingClientId: "client-a",
+    });
+
+    expect(result.status).toBe(200);
+    expect(result.body.pickOutcome).toBe("reresolved");
+    expect(db.__rows.assets[0]).toMatchObject({
+      isSelected: true,
+      billedTo: "client-b",
+      selectionKind: "edited",
+      billedAt: T0,
+    });
+    expect(db.__rows.assetPicks.find((pick) => pick.userId === "client-a")).toMatchObject({
+      kind: "original",
+    });
+    await expectInvariants();
+  });
+
+  it("O6 — a CLIENT sending actingClientId is refused with 400 and writes nothing", async () => {
+    await seededDb();
+    authMock.mockResolvedValue(clientASession());
+    const { PATCH } = await import("./route");
+
+    const response = await PATCH(
+      requestBody(ASSET_1_ID, { selected: true, actingClientId: "client-b" }),
+      paramsFor(ASSET_1_ID),
+    );
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_body" });
+    const db = await seededDb();
+    expect(db.__rows.assetPicks).toEqual([]);
+  });
+
+  it("O7 — a removed or unknown member is refused with acting_client_not_member", async () => {
+    const db = await seedMembers();
+    db.__rows.galleryClients.find((m) => m.userId === CLIENT_C)!.removedAt = new Date();
+    authMock.mockResolvedValue(adminSession());
+    const { PATCH } = await import("./route");
+    const { NextRequest } = await import("next/server");
+    const request = new NextRequest(`http://localhost:3300/api/assets/${ASSET_1_ID}/selection`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ selected: true, actingClientId: CLIENT_C }),
+    });
+
+    const response = await PATCH(request, paramsFor(ASSET_1_ID));
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "acting_client_not_member" });
+  });
+
+  it("O8 — a selected gallery is refused with gallery_locked, even for the admin", async () => {
+    const db = await seedMembers();
+    db.__rows.galleries[0]!.status = "selected";
+
+    const result = await patchAsAdmin(ASSET_1_ID, { selected: true, actingClientId: CLIENT_C });
+
+    expect(result.status).toBe(409);
+    expect(result.body).toEqual({ error: "gallery_locked" });
+    expect(db.__rows.assetPicks).toEqual([]);
+  });
+
+  it("O8b — a DRAFT gallery (admin-visible) is refused with gallery_not_submittable", async () => {
+    const db = await seedMembers();
+    db.__rows.galleries[0]!.status = "draft";
+
+    const result = await patchAsAdmin(ASSET_1_ID, { selected: true, actingClientId: CLIENT_C });
+
+    expect(result.status).toBe(409);
+    expect(result.body).toEqual({ error: "gallery_not_submittable" });
+    expect(db.__rows.assetPicks).toEqual([]);
+  });
+
+  it("O9 — originals_not_allowed still applies to the admin", async () => {
+    const db = await seedMembers();
+    db.__rows.galleries[0]!.allowsOriginalSelection = false;
+
+    const result = await patchAsAdmin(ASSET_1_ID, {
+      selected: true,
+      selectionKind: "original",
+      actingClientId: CLIENT_C,
+    });
+
+    expect(result.status).toBe(409);
+    expect(result.body).toEqual({ error: "originals_not_allowed" });
+    expect(db.__rows.assetPicks).toEqual([]);
+  });
+
+  it("O10 — claiming C's last cart pick can close the gallery (decision 13 settles)", async () => {
+    const db = await seedMembers([CLIENT_C, CLIENT_D]);
+    // Both members have submitted before; only C has one new cart pick.
+    for (const userId of [CLIENT_C, CLIENT_D]) {
+      db.__rows.galleryClients.find((m) => m.userId === userId)!.selectionSubmittedAt = T0;
+    }
+    db.__rows.assetPicks.push(pickRow(ASSET_1_ID, CLIENT_C, { submittedAt: null }));
+
+    const result = await patchAsAdmin(ASSET_1_ID, { selected: true, actingClientId: CLIENT_C });
+
+    expect(result.status).toBe(200);
+    expect(db.__rows.galleries[0]).toMatchObject({ status: "selected" });
+    await expectInvariants();
+  });
+});

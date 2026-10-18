@@ -169,14 +169,22 @@ export function ProofLightbox({
         </p>
       }
       centerAction={
-        /* `.btn.btn--primary.btn--wide` when picked, the plain `.btn` outline
+        /* ONE element, not a fragment (task #266). `<PhotoViewer>`'s row is
+           `grid-cols-[auto_1fr_auto]` — exactly three cells, a contract it
+           shares with the flash gallery, so the fix belongs here. A fragment
+           creates no DOM node, so its children became grid ITEMS: the button
+           landed in column 2, the status line in column 3, and the next arrow
+           wrapped onto row 2. `min-w-0` because a `1fr` cell otherwise keeps
+           its min-content width and the button could not shrink its label.
+
+           `.btn.btn--primary.btn--wide` when picked, the plain `.btn` outline
            when not. PICKED IS NEVER COLOUR ALONE: a ✓ glyph (shape), the
            label "Elegida" (wording) and a filled block (figure/ground);
            `aria-pressed` carries it to assistive tech. The accessible name is
            the visible label, NOT the tile's "Seleccionar: IMG_0001.JPG", so
            `getByRole("button", { name })` is not ambiguous while the tile is
            still mounted behind the dialog. */
-        <>
+        <div className="min-w-0">
           <button
             type="button"
             onClick={() => onToggleSelection(asset.id, !isOwnPick)}
@@ -198,7 +206,7 @@ export function ProofLightbox({
           {statusLine && (
             <p className="text-fg-mute mt-2 text-center text-xs leading-relaxed">{statusLine}</p>
           )}
-        </>
+        </div>
       }
       footerExtras={
         <>

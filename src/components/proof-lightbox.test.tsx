@@ -1076,3 +1076,74 @@ describe("ProofLightbox — the owner's copy set (S7)", () => {
     ).toBeNull();
   });
 });
+
+// Epic #250 S11 — the owner's screenshot: on the C5 state the button split over
+// two lines, the status line sat to its RIGHT and the next arrow dropped UNDER
+// the previous one. Cause was structural, not cosmetic: `centerAction` was a
+// fragment with two children, so `<PhotoViewer>`'s
+// `grid-cols-[auto_1fr_auto]` row received FOUR grid items (fragment creates no
+// node) and wrapped the third. The row's three-cell contract is the viewer's
+// and is correct — it is shared with the flash gallery — so the fix is one cell
+// on this side, and this test pins that, not pixels.
+describe("ProofLightbox — the action row is three cells (S11)", () => {
+  const A = { id: "client-a", label: "Ana" };
+  const B = { id: "client-b", label: "Beto" };
+  const sent = "2026-10-17T12:00:00.000Z";
+
+  it("puts the pick button and its status line in ONE cell, so the arrows stay in the same row", () => {
+    // The exact reported state: somebody else already asked for the photo and
+    // the viewer has no pick of their own (C5) — the only state that renders a
+    // button AND a line with this shape.
+    renderLightbox({
+      assets: assetsFor(1),
+      index: 0,
+      viewerId: A.id,
+      entryById: {
+        a1: {
+          assetId: "a1",
+          claim: {
+            claimedAt: sent,
+            resolvedKind: "edited" as const,
+            billedTo: B,
+            charge: "included" as const,
+          },
+          picks: [
+            {
+              userId: B.id,
+              label: B.label,
+              kind: "edited",
+              pickedAt: sent,
+              submittedAt: sent,
+              state: "billed",
+            },
+          ],
+        },
+      },
+    });
+
+    const prev = screen.getByRole("button", { name: "Foto anterior" });
+    const next = screen.getByRole("button", { name: "Foto siguiente" });
+    const button = screen.getByRole("button", { name: "Elegir esta foto" });
+    const line = screen.getByText(/Ya la pidió/);
+
+    // The row IS the grid: prev and next share one parent, and that parent
+    // must hold exactly three element children — two arrows and one cell.
+    const row = prev.parentElement;
+    expect(row).not.toBeNull();
+    expect(next.parentElement).toBe(row);
+    expect(row!.children).toHaveLength(3);
+
+    // The pick control is not itself a cell of the row: it lives one level
+    // down, which is what keeps the row at three cells.
+    expect(button.parentElement).not.toBe(row);
+    expect(Array.from(row!.children)).toContain(button.parentElement);
+
+    // And the status line shares that one cell with the button instead of
+    // taking the third column for itself.
+    expect(line.parentElement).toBe(button.parentElement);
+
+    // `min-w-0`: without it the `1fr` cell keeps its min-content width and the
+    // button cannot shrink below the label's intrinsic width.
+    expect(button.parentElement!.className).toContain("min-w-0");
+  });
+});

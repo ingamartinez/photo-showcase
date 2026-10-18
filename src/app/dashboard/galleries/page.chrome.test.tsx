@@ -76,6 +76,9 @@ function gallery(overrides: Partial<GalleryWithDetails> = {}): GalleryWithDetail
     includedPhotosSnapshot: 13,
     extraPhotoPriceCopSnapshot: 5_000,
     photoCount: 24,
+    // Epic #250 (#263): zero by default — a gallery with no claimed photo
+    // without a final is not waiting on anybody, whatever its status says.
+    pendingWorkCount: 0,
     ...overrides,
   };
 }
@@ -196,7 +199,7 @@ describe("GalleriesPage chrome", () => {
   //
   // And it has to hold in a list long enough to actually scroll — one row
   // proves nothing (see the ticket's own wording).
-  it("distinguishes the one 'selected' row from 23 others, without relying on colour", async () => {
+  it("distinguishes the one waiting-on-YOU row from 23 others, without relying on colour", async () => {
     const galleries = Array.from({ length: 24 }, (_, i) =>
       gallery({
         id: `g${i}`,
@@ -205,6 +208,7 @@ describe("GalleriesPage chrome", () => {
         status: i === 12 ? "selected" : "proofing",
         selectionSubmittedAt: i === 12 ? new Date("2026-07-28") : null,
         photoCount: 10,
+        pendingWorkCount: i === 12 ? 4 : 0,
       }),
     );
     getGalleriesWithDetailsMock.mockResolvedValue(galleries);
@@ -261,10 +265,15 @@ describe("GalleriesPage chrome", () => {
   // that is absent. Both numbers here are counted off the very rows rendered,
   // so this asserts they AGREE with the list rather than merely that they
   // render.
+  //
+  // Task #263 fix round (C1): the fixture mixes a `selected` row WITH work and
+  // a `proofing` row WITH work, so the two candidate predicates disagree on
+  // the tally (2 under `pendingWorkCount`, 1 under `status === "selected"`).
+  // Without that disagreement this test could not tell them apart.
   it("summarises the list with counts taken from the rows themselves", async () => {
     getGalleriesWithDetailsMock.mockResolvedValue([
-      gallery({ id: "g1", title: "Uno", status: "selected" }),
-      gallery({ id: "g2", title: "Dos", status: "selected" }),
+      gallery({ id: "g1", title: "Uno", status: "selected", pendingWorkCount: 2 }),
+      gallery({ id: "g2", title: "Dos", status: "proofing", pendingWorkCount: 1 }),
       gallery({ id: "g3", title: "Tres", status: "draft" }),
     ]);
 
@@ -274,6 +283,42 @@ describe("GalleriesPage chrome", () => {
     expect(rowsIn(container)).toHaveLength(3);
     expect(screen.getByText(/3 galerías en total/)).toBeDefined();
     expect(screen.getByText(/2 selecciones esperando/)).toBeDefined();
+  });
+
+  // Epic #250, decisions 10+11, task #263: a submit no longer locks, so work
+  // arrives while the gallery is still `proofing` — and a `selected` gallery
+  // whose finals are all uploaded is waiting on nobody. The count and the
+  // row's own words are keyed on `pendingWorkCount`, NOT on the status badge,
+  // so the page's "the tally is the subset whose row says so" invariant holds.
+  //
+  // THE FIXTURE IS THE PROOF (task #263 fix round, C1). Two `proofing` rows
+  // with work plus one `selected` row without means the status-based predicate
+  // answers 1 while `pendingWorkCount` answers 2 — so the tally assertion
+  // below can actually tell them apart. The previous fixture (one proofing row
+  // with work, one selected row without) gave 1 under BOTH predicates and
+  // stayed green with the old predicate restored.
+  it("counts and emphasises a PROOFING row with pending work, and not a selected one without", async () => {
+    getGalleriesWithDetailsMock.mockResolvedValue([
+      gallery({ id: "g1", title: "Boda uno", status: "proofing", pendingWorkCount: 3 }),
+      gallery({ id: "g2", title: "Boda dos", status: "proofing", pendingWorkCount: 1 }),
+      gallery({ id: "g3", title: "Boda tres", status: "selected", pendingWorkCount: 0 }),
+    ]);
+
+    const element = await GalleriesPage();
+    const { container } = render(element);
+
+    const [proofing, second, selected] = rowsIn(container);
+    expect(proofing.textContent).toContain("esperando tu revisión");
+    expect(second.textContent).toContain("esperando tu revisión");
+    expect(selected.textContent).not.toContain("esperando tu revisión");
+    // The badge text itself is unchanged — it is still the status.
+    expect(within(selected).getByText("Selección enviada")).toBeDefined();
+    expect(within(proofing).getByText("En pruebas")).toBeDefined();
+    // ...and the summary agrees with the ROWS, not with the statuses: TWO of
+    // the three galleries wait on the photographer. `status === "selected"`
+    // would say 1 here, and "1" is asserted absent to keep it that way.
+    expect(screen.getByText(/2 selecciones esperando/)).toBeDefined();
+    expect(screen.queryByText(/1 selección esperando/)).toBeNull();
   });
 
   it("says nothing about pending selections when none are waiting", async () => {

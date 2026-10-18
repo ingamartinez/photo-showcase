@@ -29,14 +29,17 @@
 // for a type. See that file's own header comment.
 import "server-only";
 
-import { inArray } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import { db } from "@/lib/db";
-import { users } from "@/lib/db/schema";
-import { getSelectionLockSnapshot, type DbExecutor } from "@/lib/gallery-client-locks";
+import { galleryClients, users } from "@/lib/db/schema";
+import type { Gallery } from "@/lib/db/schema";
 import { readPickState } from "@/lib/pick-claims";
+import { getSelectionLockSnapshot, type DbExecutor } from "@/lib/gallery-client-locks";
+
 import { claimFromAsset, derivePickStatus } from "@/lib/pick-resolution";
 import { attributeQuota } from "@/lib/quota-attribution";
-import { unitsOf, type AssetRow, type PickRow } from "@/lib/pick-plans";
+import { previewClientActions, unitsOf, type AssetRow, type PickRow } from "@/lib/pick-plans";
+import { type ClientPersonTally } from "@/lib/client-selection-state";
 import {
   UNATTRIBUTED_PICKER_LABEL,
   type SelectionClaim,
@@ -236,4 +239,186 @@ async function labelsFor(
     .from(users)
     .where(inArray(users.id, [...ids]));
   return new Map(found.map((user) => [user.id, user.name ?? user.email]));
+}
+
+// ---------------------------------------------------------------------------
+// Epic #250, task #263 (S8) — the ADMIN dashboard's read of the same state.
+//
+// ONE read, two consumers: the per-client rows (their four-number tally and
+// the before/after preview of the lock and of remove-picks) and the
+// selected-photos list (per-person filtering and attribution). It is built on
+// the SAME `readPickState` + `buildGallerySelection` the client surfaces use,
+// so the dashboard's per-person numbers and the client's own counter cannot
+// disagree — `gallery-selection.test.ts` asserts `partitionByPerson` equals
+// `buildGallerySelection({ subjectId: m }).counter.viewer` for every member.
+// ---------------------------------------------------------------------------
+
+/** One row of `gallery_clients` as the dashboard needs it. */
+export type DashboardMember = {
+  userId: string;
+  lockedAt: Date | null;
+  submittedAt: Date | null;
+};
+
+/** One person's tally, labelled. `label` is `name ?? email` (the app-wide
+ * fallback) for EVERY picker and holder, removed members included: a removed
+ * member's submitted picks stay attributed to them (decision 17), and a bare
+ * id in a before/after row would be unreadable. */
+export type DashboardPerson = ClientPersonTally & { userId: string; label: string };
+
+export type DashboardSelection = {
+  entries: SelectionEntry[];
+  quota: QuotaResult;
+  people: DashboardPerson[];
+  /** `userId -> name ?? email`, the same map the deltas label themselves
+   * with. */
+  labels: Record<string, string>;
+  /** The before/after of the two money actions, per ACTIVE member, from the
+   * same planners the actions execute (`previewClientActions`). */
+  previewByClient: Record<
+    string,
+    { lock: AttributionDeltaShape; removePicks: AttributionDeltaShape }
+  >;
+  /** The gallery's ACTIVE members (removedAt IS NULL), in the DB's order. */
+  members: DashboardMember[];
+};
+
+/** The shape `previewClientActions` returns, named so this module does not
+ * have to re-export `pick-plans`' `AttributionDelta`. */
+type AttributionDeltaShape = ReturnType<typeof previewClientActions>["lock"];
+
+/**
+ * The pure part: one tally per person, off the SAME entries the client
+ * surfaces render. `billed` -> "pedidas" (the unit is billed to them),
+ * `joined` -> "compartidas", `cart`/`degraded` -> "por enviar", and a
+ * `billed` pick whose asset already has a final -> "editadas".
+ *
+ * The state comes from `derivePickStatus`, computed once in
+ * `buildGallerySelection` — this function never re-derives it, which is what
+ * keeps it in step with the client's own counter.
+ */
+export function partitionByPerson(
+  entries: readonly SelectionEntry[],
+  rows: readonly AssetRow[],
+): Map<string, ClientPersonTally> {
+  const hasFinalByAsset = new Map(rows.map((row) => [row.id, row.finalKey !== null]));
+  const tally = new Map<string, ClientPersonTally>();
+
+  for (const entry of entries) {
+    const hasFinal = hasFinalByAsset.get(entry.assetId) ?? false;
+    for (const pick of entry.picks) {
+      const person =
+        tally.get(pick.userId) ??
+        ({ yours: 0, shared: 0, edited: 0, toSend: 0 } satisfies ClientPersonTally);
+      tally.set(pick.userId, person);
+      if (pick.state === "billed") {
+        person.yours += 1;
+        if (hasFinal) person.edited += 1;
+      } else if (pick.state === "joined") {
+        person.shared += 1;
+      } else {
+        // `cart` AND `degraded`: a degraded pick is still "por enviar" until
+        // its owner submits (decision 19 — submitting an all-degraded cart is
+        // valid), and it is what keeps the gallery from auto-closing
+        // (decision 13).
+        person.toSend += 1;
+      }
+    }
+  }
+
+  return tally;
+}
+
+/** The gallery columns this read needs. `GalleryDetail` satisfies it
+ * structurally; nothing here reads the live `package` row. */
+export type DashboardSelectionGallery = Pick<
+  Gallery,
+  | "id"
+  | "allowsOriginalSelection"
+  | "includedPhotosSnapshot"
+  | "extraPhotoPriceCopSnapshot"
+  | "extraPhotoPriceTiersSnapshot"
+  | "originalPhotoPriceCopSnapshot"
+>;
+
+/**
+ * The whole admin read, in ONE read-only, repeatable-read transaction — the
+ * same isolation `getGallerySelection` takes, for the same reason: a submit or
+ * an admin removal landing between the two selects can produce a state
+ * `derivePickStatus` throws on.
+ *
+ * The per-client preview is computed AT RENDER time. If another write lands
+ * before the admin confirms, the executed `delta` the action answers with is
+ * the truth (the component renders it in place of the preview) — the preview
+ * never blocks.
+ */
+export async function getDashboardSelection(
+  gallery: DashboardSelectionGallery,
+): Promise<DashboardSelection> {
+  // The same four frozen columns `quotaSnapshotOf` reads, rebuilt here because
+  // this read holds a `GalleryDetail` (a page-level projection), not a full
+  // `Gallery` row — and the live `package` row is never consulted either way.
+  const terms = {
+    includedPhotosSnapshot: gallery.includedPhotosSnapshot,
+    extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
+    extraPhotoPriceTiersSnapshot: gallery.extraPhotoPriceTiersSnapshot,
+    originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,
+  };
+
+  return db.transaction(
+    async (tx) => {
+      const { rows, picks } = await readPickState(tx, gallery.id);
+      const labels = await labelsFor(tx, rows, picks);
+      const memberRows = await tx
+        .select({
+          userId: galleryClients.userId,
+          lockedAt: galleryClients.selectionLockedAt,
+          submittedAt: galleryClients.selectionSubmittedAt,
+        })
+        .from(galleryClients)
+        .where(and(eq(galleryClients.galleryId, gallery.id), isNull(galleryClients.removedAt)));
+
+      const { entries, quota } = buildGallerySelection({
+        rows,
+        picks,
+        labels,
+        terms,
+        subjectId: null,
+      });
+      const partition = partitionByPerson(entries, rows);
+      const labelRecord = Object.fromEntries(labels) as Record<string, string>;
+
+      // One `now` for every preview: the four arrivals must not be able to
+      // interleave into an order the admin never sees.
+      const now = new Date();
+      const previewByClient: DashboardSelection["previewByClient"] = {};
+      for (const member of memberRows) {
+        previewByClient[member.userId] = previewClientActions(
+          rows,
+          picks,
+          member.userId,
+          now,
+          terms,
+          labelRecord,
+          { allowsOriginal: gallery.allowsOriginalSelection },
+        );
+      }
+
+      return {
+        entries,
+        quota,
+        people: [...partition]
+          .map(([userId, person]) => ({
+            userId,
+            label: labels.get(userId) ?? UNATTRIBUTED_PICKER_LABEL,
+            ...person,
+          }))
+          .sort((a, b) => (a.userId < b.userId ? -1 : a.userId > b.userId ? 1 : 0)),
+        labels: labelRecord,
+        previewByClient,
+        members: memberRows,
+      };
+    },
+    { isolationLevel: "repeatable read", accessMode: "read only" },
+  );
 }

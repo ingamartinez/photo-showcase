@@ -1003,3 +1003,120 @@ describe("hazard 5 — a final freezes the kind, and the holder is re-elected", 
     expectPickInvariants(r);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Epic #250, task #263 (S8) — PREVIEW == WRITE.
+//
+// The dashboard shows the admin a before/after before they confirm either
+// money-affecting per-person action. That preview is only honest if it is the
+// same function the write executes, so this block seeds one state, asks
+// `previewClientActions` what would happen, runs the REAL server action, and
+// requires the action's own `state.delta` — computed from the rows it actually
+// wrote — to deep-equal the preview. A preview that recomputed the money with
+// different maths (or previewed a cart pick as if it were already claimed)
+// fails here, at the numbers.
+//
+// The fixture is the plan's two-person case: Ana bills X (edited), Y (edited)
+// and W (original, no final); Beto joined X and has Z and W in his cart.
+// ---------------------------------------------------------------------------
+describe("preview == write (task #263)", () => {
+  const TERMS = {
+    includedPhotosSnapshot: 1,
+    extraPhotoPriceCopSnapshot: 5_000,
+    extraPhotoPriceTiersSnapshot: null,
+    originalPhotoPriceCopSnapshot: 2_000,
+  };
+
+  async function seedParityFixture() {
+    authMock.mockResolvedValue(adminSession());
+    const r = await emptyRows();
+    const row = r.galleries[0]!;
+    Object.assign(row, TERMS);
+    r.assets.push(
+      asset("x", G1, A, "edited"),
+      asset("y", G1, A, "edited"),
+      asset("w", G1, A, "original"),
+      asset("z", G1, null),
+    );
+    r.assetPicks.push(
+      pick("x", G1, A),
+      pick("y", G1, A),
+      pick("w", G1, A, "original"),
+      pick("x", G1, B),
+      pick("z", G1, B, "edited", null),
+      pick("w", G1, B, "edited", null),
+    );
+    return r;
+  }
+
+  /** The preview, from the SAME rows and the SAME four frozen terms the action
+   * will read — `readPickState` + `quotaSnapshotOf` are the action's own
+   * readers, not a test-local reconstruction. */
+  async function previewFor(userId: string) {
+    const { readPickState, quotaSnapshotOf } = await import("@/lib/pick-claims");
+    const { previewClientActions } = await import("@/lib/pick-plans");
+    const r = await rows();
+    const galleryRow = r.galleries.find((candidate) => candidate.id === G1)!;
+    const state = await readPickState((await import("@/lib/db")).db as never, G1);
+    const labels = Object.fromEntries(
+      r.users.map((user) => [user.id as string, (user.name ?? user.email) as string]),
+    );
+    return previewClientActions(
+      state.rows,
+      state.picks,
+      userId,
+      new Date(),
+      quotaSnapshotOf(galleryRow as never),
+      labels,
+      { allowsOriginal: galleryRow.allowsOriginalSelection !== false },
+    );
+  }
+
+  it("lockGalleryClientSelection's answered delta deep-equals the preview", async () => {
+    const r = await seedParityFixture();
+    const preview = await previewFor(B);
+
+    const { lockGalleryClientSelection } = await import("./actions");
+    const result = await lockGalleryClientSelection({ status: "idle" }, form(B));
+
+    // PARITY FIRST: a preview recomputed with different maths fails HERE.
+    expect(result.status).toBe("done");
+    expect(result.delta?.gallery).toEqual(preview.lock.gallery);
+    expect(result.delta?.people).toEqual(preview.lock.people);
+    expect(result.delta?.unattributed).toEqual(preview.lock.unattributed);
+    expect(
+      [...(result.delta?.assets ?? [])].sort((a, b) => (a.assetId < b.assetId ? -1 : 1)),
+    ).toEqual([...preview.lock.assets].sort((a, b) => (a.assetId < b.assetId ? -1 : 1)));
+
+    // ...and the preview is not vacuous: Beto's cart really does move money.
+    expect(preview.lock.gallery.before.surchargeCop).toBe(7_000);
+    expect(preview.lock.gallery.after.surchargeCop).toBe(15_000);
+    expect(preview.lock.assets.map((change) => change.op).sort()).toEqual(["claim", "escalate"]);
+    expectPickInvariants(r);
+  });
+
+  it("removeGalleryClientPicks' answered delta deep-equals the preview", async () => {
+    const r = await seedParityFixture();
+    const preview = await previewFor(A);
+
+    const { removeGalleryClientPicks } = await import("./actions");
+    const result = await removeGalleryClientPicks({ status: "idle" }, form(A));
+
+    // PARITY FIRST: same reason as the lock case above.
+    expect(result.status).toBe("done");
+    expect(result.delta?.gallery).toEqual(preview.removePicks.gallery);
+    expect(result.delta?.people).toEqual(preview.removePicks.people);
+    expect(result.delta?.unattributed).toEqual(preview.removePicks.unattributed);
+    expect(
+      [...(result.delta?.assets ?? [])].sort((a, b) => (a.assetId < b.assetId ? -1 : 1)),
+    ).toEqual([...preview.removePicks.assets].sort((a, b) => (a.assetId < b.assetId ? -1 : 1)));
+
+    // ...and the preview is not vacuous: X transfers, Y and W unclaim.
+    expect(preview.removePicks.assets.map((change) => change.op).sort()).toEqual([
+      "transfer",
+      "unclaim",
+      "unclaim",
+    ]);
+    expectPickInvariants(r);
+  });
+});

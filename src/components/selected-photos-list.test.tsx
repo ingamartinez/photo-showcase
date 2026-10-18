@@ -13,7 +13,10 @@ function makeItem(
   originalFilename: string,
   selectionKind: SelectedPhotoListItem["selectionKind"] = "edited",
 ): SelectedPhotoListItem {
-  return { id, originalFilename, selectionKind };
+  // `pickers` is required since epic #250/#263 (a photo can have several
+  // people who asked for it); this file's cases are about ordering, copying
+  // and the empty state, so an empty list is the honest default here.
+  return { id, originalFilename, selectionKind, pickers: [] };
 }
 
 // Opens the collapsible so its <ol>/buttons are reachable the same way a

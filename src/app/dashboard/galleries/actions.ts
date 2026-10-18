@@ -1325,7 +1325,7 @@ export async function unlockSelection(
       status: "unlocked_email_failed",
       message:
         "Desbloqueamos la selección, pero no encontramos clientes a quién avisar por correo. " +
-        "Avisale por otro medio (WhatsApp / llamada).",
+        "Avísale por otro medio (WhatsApp / llamada).",
     };
   }
   if (failedEmails.length > 0) {
@@ -1333,7 +1333,7 @@ export async function unlockSelection(
       status: "unlocked_email_failed",
       message:
         `Desbloqueamos la selección, pero no pudimos avisarle por correo a: ${failedEmails.join(", ")}. ` +
-        "Avisale por otro medio (WhatsApp / llamada).",
+        "Avísale por otro medio (WhatsApp / llamada).",
     };
   }
   return { status: "unlocked" };
@@ -1597,7 +1597,7 @@ export async function deliverGallery(
       status: "delivered_email_failed",
       message:
         "Entregamos la galería, pero no encontramos clientes a quién avisar por correo. " +
-        "Avisale por otro medio (WhatsApp / llamada).",
+        "Avísale por otro medio (WhatsApp / llamada).",
     };
   }
   if (failedEmails.length > 0) {
@@ -1605,7 +1605,7 @@ export async function deliverGallery(
       status: "delivered_email_failed",
       message:
         `Entregamos la galería, pero no pudimos avisarle por correo a: ${failedEmails.join(", ")}. ` +
-        "Avisale por otro medio (WhatsApp / llamada).",
+        "Avísale por otro medio (WhatsApp / llamada).",
     };
   }
   return { status: "delivered" };
@@ -1892,7 +1892,7 @@ export async function attachGalleryClients(
       status: "attached_email_failed",
       message:
         `Agregamos al cliente, pero no pudimos enviarle el correo de acceso a: ${failedEmails.join(", ")}. ` +
-        "Avisale por otro medio (WhatsApp / llamada).",
+        "Avísale por otro medio (WhatsApp / llamada).",
     };
   }
 
@@ -2056,7 +2056,7 @@ export async function resendGalleryAccessEmail(
       status: "throttled",
       message:
         `Ya le reenviaste el correo a ${membership.email} varias veces en poco tiempo. ` +
-        "Esperá unos minutos antes de volver a intentar.",
+        "Espera unos minutos antes de volver a intentar.",
     };
   }
 
@@ -2082,7 +2082,7 @@ export async function resendGalleryAccessEmail(
     if (!(error instanceof AuthError)) throw error;
     return {
       status: "resend_email_failed",
-      message: `No pudimos reenviarle el correo a ${membership.email}. Intentá de nuevo en un rato.`,
+      message: `No pudimos reenviarle el correo a ${membership.email}. Intenta de nuevo en un rato.`,
     };
   }
 
@@ -2481,7 +2481,7 @@ export async function unlockGalleryClientSelection(
       status: "done_email_failed",
       message:
         "Desbloqueamos la selección, pero no encontramos el correo de esa persona. " +
-        "Avisale por otro medio (WhatsApp / llamada).",
+        "Avísale por otro medio (WhatsApp / llamada).",
     };
   }
   try {
@@ -2498,7 +2498,7 @@ export async function unlockGalleryClientSelection(
       status: "done_email_failed",
       message:
         `Desbloqueamos la selección, pero no pudimos avisarle por correo a: ${user.email}. ` +
-        "Avisale por otro medio (WhatsApp / llamada).",
+        "Avísale por otro medio (WhatsApp / llamada).",
     };
   }
   return { status: "done", message: "Desbloqueamos la selección y le avisamos por correo." };

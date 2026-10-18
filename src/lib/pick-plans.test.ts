@@ -18,6 +18,8 @@ import {
   planOriginalsOff,
   planRemovePicks,
   planReresolve,
+  previewClientActions,
+  unitsOf,
   type AssetRow,
   type PickRow,
 } from "@/lib/pick-plans";
@@ -431,5 +433,138 @@ describe("attributionDelta", () => {
 
     expect(delta.unattributed?.before.included).toBe(1);
     expect(delta.unattributed?.after.included).toBe(0);
+  });
+});
+
+// Task #263 (S8) — the admin's BEFORE/AFTER preview. `previewClientActions`
+// must be the same planners the two writes execute (`claimCart` for the lock,
+// `removeGalleryClientPicks` for the picks), because the whole point of this
+// block existing is that the dashboard cannot show one number and write
+// another. The parity against the real server actions lives in
+// src/app/dashboard/galleries/actions.client-selection.test.ts; this suite
+// pins the plans themselves.
+describe("previewClientActions — the admin lock and remove-picks preview", () => {
+  // Two people, and every ownership relation the preview has to get right:
+  //  X  Ana billed, edited, arrived first. Beto JOINED on it.
+  //  Y  Ana billed, edited.
+  //  W  Ana billed, ORIGINAL, no final. Beto has it in his CART as edited.
+  //  Z  unclaimed. Beto has it in his CART.
+  // A preview that recomputes the money with different maths — or that
+  // previews a cart pick as already claimed — cannot produce these numbers.
+  const rows = [
+    assetRow("x", { isSelected: true, billedTo: A, billedAt: t(1), selectedAt: t(1) }),
+    assetRow("y", { isSelected: true, billedTo: A, billedAt: t(2), selectedAt: t(2) }),
+    assetRow("w", {
+      isSelected: true,
+      selectionKind: "original",
+      billedTo: A,
+      billedAt: t(3),
+      selectedAt: t(3),
+    }),
+    assetRow("z"),
+  ];
+  const picks = [
+    pickRow("x", A, { submittedAt: t(1) }),
+    pickRow("y", A, { submittedAt: t(2) }),
+    pickRow("w", A, { kind: "original", submittedAt: t(3) }),
+    pickRow("x", B, { submittedAt: t(4) }),
+    pickRow("z", B, { submittedAt: null }),
+    pickRow("w", B, { submittedAt: null }),
+  ];
+  const NOW = t(9);
+  const labels = { [A]: "Ana", [B]: "Beto" };
+
+  it("previews the lock as claiming the free cart pick AND escalating the original, with both holders' shares", () => {
+    const { lock } = previewClientActions(rows, picks, B, NOW, FLAT, labels, {
+      allowsOriginal: true,
+    });
+
+    // Beto's cart: Z claimed, W escalated Ana -> Beto (decision 3/15).
+    expect(lock.assets).toEqual(
+      expect.arrayContaining([
+        { assetId: "z", op: "claim" },
+        { assetId: "w", op: "escalate" },
+      ]),
+    );
+    const ana = lock.people.find((person) => person.userId === A)!;
+    const beto = lock.people.find((person) => person.userId === B)!;
+    expect(ana.label).toBe("Ana");
+    // Ana loses the original unit (2000) and keeps one included + one extra.
+    expect(ana.before.originals).toBe(1);
+    expect(ana.after.originals).toBe(0);
+    expect(ana.before.surchargeCop - ana.after.surchargeCop).toBe(2_000);
+    // Beto gains exactly two units.
+    expect(beto.before.included + beto.before.extras + beto.before.originals).toBe(0);
+    expect(beto.after.included + beto.after.extras + beto.after.originals).toBe(2);
+    expect(beto.after.surchargeCop).toBe(10_000);
+    // The gallery's own totals are the same maths, not a second one.
+    expect(lock.gallery.before.surchargeCop).toBe(7_000);
+    expect(lock.gallery.after.surchargeCop).toBe(15_000);
+  });
+
+  it("previews remove-picks as transferring X to the other submitter and unclaiming what nobody else sent", () => {
+    const { removePicks } = previewClientActions(rows, picks, A, NOW, FLAT, labels, {
+      allowsOriginal: true,
+    });
+
+    expect(removePicks.assets).toEqual(
+      expect.arrayContaining([
+        { assetId: "x", op: "transfer" },
+        { assetId: "y", op: "unclaim" },
+        // W's only other pick is a CART pick — it never carried a claim, so
+        // removing Ana's leaves the asset unclaimed rather than billing Beto.
+        { assetId: "w", op: "unclaim" },
+      ]),
+    );
+    const beto = removePicks.people.find((person) => person.userId === B)!;
+    expect(beto.before.included).toBe(0);
+    expect(beto.after.included).toBe(1);
+  });
+
+  // The epic's money invariant (S3), carried into the preview: Σ people +
+  // unattributed equals the gallery total, BEFORE and AFTER, and the preview's
+  // own `gallery` numbers are exactly those two attributions. Recomputed here
+  // from the planner's output, so a preview that summed its deltas instead of
+  // its shares (unchanged people are omitted from `people` on purpose) fails.
+  it("keeps Σ people + unattributed equal to the gallery surcharge, before and after", async () => {
+    const { attributeQuota } = await import("@/lib/quota-attribution");
+    const sumOf = (state: readonly AssetRow[]) => {
+      const attribution = attributeQuota(unitsOf(state), FLAT);
+      const people = attribution.people.reduce((total, person) => total + person.surchargeCop, 0);
+      return { people, unattributed: attribution.unattributed.surchargeCop };
+    };
+
+    const before = sumOf(rows);
+    expect(before.people + before.unattributed).toBe(7_000);
+
+    const { lock } = previewClientActions(rows, picks, B, NOW, FLAT, labels, {
+      allowsOriginal: true,
+    });
+    const lockPlan = planCartClaim(
+      rows,
+      picks.filter((pick) => pick.userId === B && pick.submittedAt === null),
+      B,
+      NOW,
+      { allowsOriginal: true },
+    );
+    const afterLock = sumOf(applyPlanToRows(rows, lockPlan.assetChanges));
+    expect(afterLock.people + afterLock.unattributed).toBe(lock.gallery.after.surchargeCop);
+    // The preview's `gallery.after` IS the real attribution of the state the
+    // plan produces — not a number the preview summed on its own.
+    const realAfter = attributeQuota(unitsOf(applyPlanToRows(rows, lockPlan.assetChanges)), FLAT);
+    expect(lock.gallery.after).toEqual(realAfter.quota);
+    expect(lock.gallery.before).toEqual(attributeQuota(unitsOf(rows), FLAT).quota);
+
+    const { removePicks } = previewClientActions(rows, picks, A, NOW, FLAT, labels, {
+      allowsOriginal: true,
+    });
+    const removePlan = planRemovePicks(rows, picks, A, NOW);
+    const afterRemove = sumOf(applyPlanToRows(rows, removePlan.assetChanges));
+    expect(afterRemove.people).toBe(
+      removePicks.people.reduce((total, person) => total + person.after.surchargeCop, 0),
+    );
+    expect(afterRemove.people + afterRemove.unattributed).toBe(
+      removePicks.gallery.after.surchargeCop,
+    );
   });
 });

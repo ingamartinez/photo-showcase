@@ -440,3 +440,87 @@ export function attributionDeltaBetween(
   }
   return delta;
 }
+
+/**
+ * What <AllowsOriginalSelectionControl>'s confirmation shows: the gallery's
+ * quota before the switch goes off, and after — the same `computeQuota` the
+ * write lands.
+ *
+ * THE POINT IS THE PLANNER, NOT THE ARITHMETIC (task #263, fix round, W1).
+ * `updateAllowsOriginalSelection` (actions.ts) runs `planOriginalsOff` and
+ * applies its `assetChanges`; that plan skips TWO kinds of claimed original —
+ * one that already has a final (decision 15, re-labelling a produced file is
+ * forbidden) and a LEGACY unit with no recorded holder (`billedTo === null`,
+ * `reresolveClaim`'s rule 2). A preview that counts the skips itself gets one
+ * of the two wrong, which is exactly what happened: it promised the legacy
+ * unit as reverted while the write left it `original`. So the numbers below
+ * are `attributionDelta` over the plan — one definition of "what turns off"
+ * for the dialog and the write.
+ *
+ * `picks` are NOT a parameter: re-kind-ing a pick row changes no `assets` row,
+ * so the money is a function of the asset rows alone (`planOriginalsOff`
+ * returns the pick rewrites for the caller to apply; they move nothing).
+ */
+export type OriginalsOffPreview = {
+  before: AttributionDelta["gallery"]["before"];
+  after: AttributionDelta["gallery"]["after"];
+};
+
+export function previewOriginalsOff(
+  rows: readonly AssetRow[],
+  now: Date,
+  snapshot: Parameters<typeof attributeQuota>[1],
+  labels: Readonly<Record<string, string | null | undefined>> = {},
+): OriginalsOffPreview {
+  const delta = attributionDelta(rows, planOriginalsOff(rows, [], now), snapshot, labels);
+  return { before: delta.gallery.before, after: delta.gallery.after };
+}
+
+/**
+ * The before/after the dashboard shows BEFORE the admin confirms either of the
+ * two money-affecting per-person actions (epic #250, task #263):
+ *
+ *   - `lock`      — `lockGalleryClientSelection`, which claims that person's
+ *                   cart (decision 18). Same planner the write runs:
+ *                   `planCartClaim`, the one `claimCart` executes.
+ *   - `removePicks` — `removeGalleryClientPicks`, which deletes every pick of
+ *                   that person and re-resolves the assets that lose a
+ *                   submitted one. Same planner the write runs:
+ *                   `planRemovePicks`, the one `removeGalleryClientPicks`
+ *                   executes.
+ *
+ * THE PARITY IS THE POINT. The preview and the write call the same function
+ * on the same rows, and the executed delta comes from `attributionDeltaBetween`
+ * over the rows the write actually produced — so "what it said would happen"
+ * and "what happened" cannot be two pieces of maths. `pick-plans.test.ts` and
+ * `actions.client-selection.test.ts` (the parity suite) pin that.
+ *
+ * `opts.allowsOriginal` mirrors `claimCart`'s own coercion: an `original` cart
+ * pick in a gallery that no longer allows originals is previewed as the
+ * `edited` pick the lock will actually resolve.
+ */
+export function previewClientActions(
+  rows: readonly AssetRow[],
+  picks: readonly PickRow[],
+  userId: string,
+  now: Date,
+  snapshot: Parameters<typeof attributeQuota>[1],
+  labels: Readonly<Record<string, string | null | undefined>> = {},
+  opts: { allowsOriginal: boolean },
+): { lock: AttributionDelta; removePicks: AttributionDelta } {
+  const cartPicks = picks.filter((pick) => pick.userId === userId && pick.submittedAt === null);
+  return {
+    lock: attributionDelta(
+      rows,
+      planCartClaim(rows, cartPicks, userId, now, { allowsOriginal: opts.allowsOriginal }),
+      snapshot,
+      labels,
+    ),
+    removePicks: attributionDelta(
+      rows,
+      planRemovePicks(rows, picks, userId, now),
+      snapshot,
+      labels,
+    ),
+  };
+}

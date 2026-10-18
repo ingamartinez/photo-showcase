@@ -23,7 +23,13 @@ vi.mock("@/lib/db", async () => {
 
 import { db } from "@/lib/db";
 import { assetPicks, assets, galleryClients, users } from "@/lib/db/schema";
-import { buildGallerySelection, getGallerySelection } from "@/lib/gallery-selection";
+import {
+  buildGallerySelection,
+  getDashboardSelection,
+  getGallerySelection,
+  partitionByPerson,
+  type DashboardSelectionGallery,
+} from "@/lib/gallery-selection";
 import { unitsOf, type AssetRow, type PickRow } from "@/lib/pick-plans";
 import { computeQuota } from "@/lib/quota";
 import { attributeQuota } from "@/lib/quota-attribution";
@@ -673,4 +679,170 @@ it("charge comes straight from attributeQuota's units", () => {
     ["a3", "extra"],
     ["a4", "original"],
   ]);
+});
+
+// ---------------------------------------------------------------------------
+// Epic #250, task #263 (S8) — the dashboard's per-person read.
+//
+// `partitionByPerson` is the ONLY place the dashboard's four numbers are
+// computed, and it is computed off the same `buildGallerySelection` entries
+// the client surfaces render. The first block proves it agrees with the
+// client's own counter for every member; the second covers the read itself,
+// carrying over the two cases that used to live in
+// `galleries.client-selections.test.ts` (deleted by this task) — one tally per
+// ACTIVE member, and an edited count that is per person, not per gallery.
+// ---------------------------------------------------------------------------
+
+const DASHBOARD_TERMS: DashboardSelectionGallery = {
+  id: GALLERY,
+  allowsOriginalSelection: true,
+  ...TERMS,
+};
+
+describe("partitionByPerson — the dashboard and the client counter agree", () => {
+  it("equals buildGallerySelection({subjectId: m}).counter.viewer for every member", () => {
+    seedTwoPeople();
+
+    const entries = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: null,
+    }).entries;
+    const partition = partitionByPerson(entries, assetRows() as AssetRow[]);
+
+    for (const subject of ["ana", "beto", "caro"] as const) {
+      const viewer = buildGallerySelection({
+        rows: assetRows() as AssetRow[],
+        picks: pickRows() as PickRow[],
+        labels: labelsOf(userRows() as never),
+        terms: TERMS,
+        subjectId: subject,
+      }).counter.viewer!;
+      const person = partition.get(subject) ?? { yours: 0, shared: 0, edited: 0, toSend: 0 };
+
+      expect({ yours: person.yours, shared: person.shared, toSend: person.toSend }).toEqual(viewer);
+    }
+  });
+
+  it("counts an EDITED unit per person, off that person's billed picks only", () => {
+    // Two people, finals on only SOME of each one's units. A count taken over
+    // the whole gallery, or credited to the wrong person, cannot pass.
+    assetRows().push(
+      asset({
+        id: "ana1",
+        isSelected: true,
+        billedTo: "ana",
+        billedAt: new Date(1),
+        finalKey: "final/ana1.jpg",
+      }),
+      asset({ id: "ana2", isSelected: true, billedTo: "ana", billedAt: new Date(2) }),
+      asset({
+        id: "beto1",
+        isSelected: true,
+        billedTo: "beto",
+        billedAt: new Date(3),
+        finalKey: "final/beto1.jpg",
+      }),
+      asset({ id: "beto2", isSelected: true, billedTo: "beto", billedAt: new Date(4) }),
+      asset({ id: "beto3", isSelected: true, billedTo: "beto", billedAt: new Date(5) }),
+    );
+    pickRows().push(
+      pick({ assetId: "ana1", userId: "ana" }),
+      pick({ assetId: "ana2", userId: "ana" }),
+      pick({ assetId: "ana1", userId: "beto" }),
+      pick({ assetId: "beto1", userId: "beto" }),
+      pick({ assetId: "beto2", userId: "beto" }),
+      pick({ assetId: "beto3", userId: "beto" }),
+      // A cart pick is "por enviar", never "pedida".
+      pick({ assetId: "ana2", userId: "caro", submittedAt: null }),
+    );
+
+    const entries = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: null,
+    }).entries;
+    const partition = partitionByPerson(entries, assetRows() as AssetRow[]);
+
+    expect(partition.get("ana")).toEqual({ yours: 2, shared: 0, edited: 1, toSend: 0 });
+    // Beto holds three units (one with a final) and is joined on Ana's first.
+    expect(partition.get("beto")).toEqual({ yours: 3, shared: 1, edited: 1, toSend: 0 });
+    // A degraded cart pick is still "por enviar" (decision 19).
+    expect(partition.get("caro")).toEqual({ yours: 0, shared: 0, edited: 0, toSend: 1 });
+  });
+});
+
+describe("getDashboardSelection", () => {
+  it("reads in one read-only, repeatable-read transaction", async () => {
+    seedTwoPeople();
+    const spy = vi.spyOn(fake, "transaction");
+
+    await getDashboardSelection(DASHBOARD_TERMS);
+
+    expect(spy).toHaveBeenCalledWith(expect.any(Function), {
+      isolationLevel: "repeatable read",
+      accessMode: "read only",
+    });
+  });
+
+  it("returns one tally + preview per ACTIVE member, and never one for a removed member", async () => {
+    seedTwoPeople();
+    memberRows().push(
+      {
+        galleryId: GALLERY,
+        userId: "ana",
+        removedAt: null,
+        selectionLockedAt: null,
+        selectionSubmittedAt: new Date(1),
+        selectionLockedBy: null,
+      },
+      {
+        galleryId: GALLERY,
+        userId: "beto",
+        removedAt: new Date(2),
+        selectionLockedAt: new Date(2),
+        selectionSubmittedAt: null,
+        selectionLockedBy: "admin",
+      },
+    );
+
+    const view = await getDashboardSelection(DASHBOARD_TERMS);
+
+    expect(view.members.map((member) => member.userId)).toEqual(["ana"]);
+    expect(Object.keys(view.previewByClient)).toEqual(["ana"]);
+    // Ana is billed on a1 and a2 (one included, one extra under TERMS).
+    expect(view.people.find((person) => person.userId === "ana")).toMatchObject({
+      label: "Ana Pérez",
+      yours: 2,
+      shared: 0,
+    });
+  });
+
+  it("labels a REMOVED holder instead of leaving a bare id in the before/after", async () => {
+    // Decision 17: a removed member's submitted picks stay attributed to them.
+    // `labelsFor` must therefore name every picker/holder, not only the active
+    // ones — otherwise the delta would read "caro: …" with a uuid.
+    assetRows().push(
+      asset({ id: "gone1", isSelected: true, billedTo: "caro", billedAt: new Date(1) }),
+    );
+    pickRows().push(pick({ assetId: "gone1", userId: "caro" }));
+    memberRows().push({
+      galleryId: GALLERY,
+      userId: "caro",
+      removedAt: new Date(2),
+      selectionLockedAt: null,
+      selectionSubmittedAt: null,
+      selectionLockedBy: null,
+    });
+
+    const view = await getDashboardSelection(DASHBOARD_TERMS);
+
+    expect(view.labels.caro).toBe("Caro Gil");
+    expect(view.people.find((person) => person.userId === "caro")?.label).toBe("Caro Gil");
+    expect(view.members.map((member) => member.userId)).not.toContain("caro");
+  });
 });

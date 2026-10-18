@@ -1,9 +1,9 @@
 // The tuteo guard (Q8, task #262; the ADMIN half is task #263). The UI must
 // never drift back to voseo: "Toca", "puedes", "escríbele", "Tú", "Avisale",
-// "agregá", "seleccioná", "entregás". This reads the shipped files (not the
-// tests, not `design/`) and fails on the voseo forms. Comments are stripped
-// first so the historical discussion in a header comment cannot trip a rule
-// about COPY.
+// "agregá", "seleccioná", "entregás", "Esperá", "Intentá". This reads the
+// shipped files (not the tests, not `design/`) and fails on the voseo forms.
+// Comments are stripped first so the historical discussion in a header comment
+// cannot trip a rule about COPY.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -46,7 +46,7 @@ const ADMIN_FILES = [
 //     back in: the mock's own sentence-initial "Tocá una foto…"
 //     (client.html:714) and "¿Enviás estas 3?" (:844).
 const VOSEO =
-  /(?<!\p{L})(podés|tocá|escribile|enviás|querés|tenés|vos|sacala|arrepentís|elegí|mirá|avisale|agregá|seleccioná|copiala|considerá|entregás)(?!\p{L})/iu;
+  /(?<!\p{L})(podés|tocá|escribile|enviás|querés|tenés|vos|sacala|arrepentís|elegí|mirá|avisale|agregá|seleccioná|copiala|considerá|entregás|esperá|intentá)(?!\p{L})/iu;
 
 /** Removes `//` line comments and `/* … *\/` block comments, leaving string
  * literals untouched enough for this purpose. */
@@ -84,6 +84,13 @@ describe("client copy is tuteo, never voseo", () => {
     expect("copiala a mano".match(VOSEO)?.[0]).toBe("copiala");
     expect("Considerá exports más livianos".match(VOSEO)?.[0]).toBe("Considerá");
     expect("cuando entregás toda la galería".match(VOSEO)?.[0]).toBe("entregás");
+    // The two forms that survived the first round of this guard (task #263,
+    // finding W3): the resend throttle said "Esperá unos minutos…" and the
+    // send-failure said "Intentá de nuevo en un rato.", both in `actions.ts`,
+    // a file this guard already listed — so the guard was green on copy it
+    // did not actually protect.
+    expect("Esperá unos minutos antes de volver a intentar".match(VOSEO)?.[0]).toBe("Esperá");
+    expect("Intentá de nuevo en un rato".match(VOSEO)?.[0]).toBe("Intentá");
 
     // And it does not fire on the tuteo forms it exists to protect.
     expect("Toca una foto para verla grande".match(VOSEO)).toBeNull();
@@ -94,6 +101,8 @@ describe("client copy is tuteo, never voseo", () => {
     expect("selecciona la lista y cópiala a mano".match(VOSEO)).toBeNull();
     expect("Considera exports más livianos".match(VOSEO)).toBeNull();
     expect("cuando entregas toda la galería".match(VOSEO)).toBeNull();
+    expect("Espera unos minutos antes de volver a intentar".match(VOSEO)).toBeNull();
+    expect("Intenta de nuevo en un rato".match(VOSEO)).toBeNull();
     // Regional "acá" is not voseo.
     expect("las que elijan van a aparecer acá".match(VOSEO)).toBeNull();
   });

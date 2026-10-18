@@ -4,6 +4,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { AllowsOriginalSelectionControl } from "./allows-original-selection-control";
 import type { UpdateAllowsOriginalSelectionState } from "@/app/dashboard/galleries/actions";
+import { previewOriginalsOff, type AssetRow } from "@/lib/pick-plans";
 
 const updateAllowsOriginalSelectionMock =
   vi.fn<
@@ -19,6 +20,43 @@ vi.mock("@/app/dashboard/galleries/actions", () => ({
 }));
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
+const NOW = new Date("2026-10-18T00:00:00Z");
+
+// The gallery terms this control's numbers are priced with — the frozen
+// snapshots the page hands the planner.
+const TERMS = {
+  includedPhotosSnapshot: 13,
+  extraPhotoPriceCopSnapshot: 5_000,
+  extraPhotoPriceTiersSnapshot: null,
+  originalPhotoPriceCopSnapshot: 2_000,
+};
+
+/** One `assets` row as `planOriginalsOff` sees it. `billedTo` defaults to a
+ * real holder because a claimed unit normally has one; the LEGACY row
+ * (`billedTo: null`) is opted into explicitly below. */
+function asset(id: string, selectionKind: "edited" | "original", extra: Partial<AssetRow> = {}) {
+  return {
+    id,
+    isSelected: true,
+    selectionKind,
+    billedTo: "u1",
+    billedAt: null,
+    finalKey: null,
+    selectedAt: null,
+    requestedAt: null,
+    ...extra,
+  } satisfies AssetRow;
+}
+
+const edited = (count: number) =>
+  Array.from({ length: count }, (_unused, index) => asset(`e${index}`, "edited"));
+
+const originals = (count: number, extra: (index: number) => Partial<AssetRow> = () => ({})) =>
+  Array.from({ length: count }, (_unused, index) => asset(`o${index}`, "original", extra(index)));
+
+/** The prop the page passes: the SAME planner `updateAllowsOriginalSelection`
+ * runs, so what this suite proves is what the dialog will really promise. */
+const preview = (rows: AssetRow[]) => previewOriginalsOff(rows, NOW, TERMS);
 
 afterEach(() => {
   cleanup();
@@ -31,13 +69,7 @@ describe("AllowsOriginalSelectionControl — switch is OFF", () => {
       <AllowsOriginalSelectionControl
         galleryId={GALLERY_ID}
         allowsOriginalSelection={false}
-        includedPhotosSnapshot={13}
-        extraPhotoPriceCopSnapshot={5_000}
-        extraPhotoPriceTiersSnapshot={null}
-        originalPhotoPriceCopSnapshot={2_000}
-        selectedEditedCount={0}
-        selectedOriginalCount={0}
-        frozenOriginalCount={0}
+        originalsOff={preview([])}
       />,
     );
 
@@ -52,13 +84,7 @@ describe("AllowsOriginalSelectionControl — switch is OFF", () => {
       <AllowsOriginalSelectionControl
         galleryId={GALLERY_ID}
         allowsOriginalSelection={false}
-        includedPhotosSnapshot={13}
-        extraPhotoPriceCopSnapshot={5_000}
-        extraPhotoPriceTiersSnapshot={null}
-        originalPhotoPriceCopSnapshot={2_000}
-        selectedEditedCount={0}
-        selectedOriginalCount={0}
-        frozenOriginalCount={0}
+        originalsOff={preview([])}
       />,
     );
 
@@ -79,13 +105,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, nothing to reset", ()
       <AllowsOriginalSelectionControl
         galleryId={GALLERY_ID}
         allowsOriginalSelection={true}
-        includedPhotosSnapshot={13}
-        extraPhotoPriceCopSnapshot={5_000}
-        extraPhotoPriceTiersSnapshot={null}
-        originalPhotoPriceCopSnapshot={2_000}
-        selectedEditedCount={5}
-        selectedOriginalCount={0}
-        frozenOriginalCount={0}
+        originalsOff={preview(edited(5))}
       />,
     );
 
@@ -102,13 +122,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, nothing to reset", ()
       <AllowsOriginalSelectionControl
         galleryId={GALLERY_ID}
         allowsOriginalSelection={true}
-        includedPhotosSnapshot={13}
-        extraPhotoPriceCopSnapshot={5_000}
-        extraPhotoPriceTiersSnapshot={null}
-        originalPhotoPriceCopSnapshot={2_000}
-        selectedEditedCount={5}
-        selectedOriginalCount={0}
-        frozenOriginalCount={0}
+        originalsOff={preview(edited(5))}
       />,
     );
 
@@ -131,13 +145,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
       <AllowsOriginalSelectionControl
         galleryId={GALLERY_ID}
         allowsOriginalSelection={true}
-        includedPhotosSnapshot={13}
-        extraPhotoPriceCopSnapshot={5_000}
-        extraPhotoPriceTiersSnapshot={null}
-        originalPhotoPriceCopSnapshot={2_000}
-        selectedEditedCount={12}
-        selectedOriginalCount={3}
-        frozenOriginalCount={0}
+        originalsOff={preview([...edited(12), ...originals(3)])}
       />,
     );
 
@@ -160,13 +168,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
       <AllowsOriginalSelectionControl
         galleryId={GALLERY_ID}
         allowsOriginalSelection={true}
-        includedPhotosSnapshot={13}
-        extraPhotoPriceCopSnapshot={5_000}
-        extraPhotoPriceTiersSnapshot={null}
-        originalPhotoPriceCopSnapshot={2_000}
-        selectedEditedCount={12}
-        selectedOriginalCount={3}
-        frozenOriginalCount={0}
+        originalsOff={preview([...edited(12), ...originals(3)])}
       />,
     );
 
@@ -187,13 +189,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
       <AllowsOriginalSelectionControl
         galleryId={GALLERY_ID}
         allowsOriginalSelection={true}
-        includedPhotosSnapshot={13}
-        extraPhotoPriceCopSnapshot={5_000}
-        extraPhotoPriceTiersSnapshot={null}
-        originalPhotoPriceCopSnapshot={2_000}
-        selectedEditedCount={12}
-        selectedOriginalCount={1}
-        frozenOriginalCount={0}
+        originalsOff={preview([...edited(12), ...originals(1)])}
       />,
     );
 
@@ -215,13 +211,12 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
       <AllowsOriginalSelectionControl
         galleryId={GALLERY_ID}
         allowsOriginalSelection={true}
-        includedPhotosSnapshot={13}
-        extraPhotoPriceCopSnapshot={5_000}
-        extraPhotoPriceTiersSnapshot={null}
-        originalPhotoPriceCopSnapshot={2_000}
-        selectedEditedCount={12}
-        selectedOriginalCount={3}
-        frozenOriginalCount={1}
+        originalsOff={preview([
+          ...edited(12),
+          ...originals(3, (index) =>
+            index === 0 ? { finalKey: "galleries/g1/finals/o0.jpg" } : {},
+          ),
+        ])}
       />,
     );
 
@@ -239,6 +234,44 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
     ).toBeDefined();
   });
 
+  // Task #263 fix round (W1). `planOriginalsOff` skips TWO kinds of claimed
+  // original: one with a final (decision 15) and a LEGACY one with no recorded
+  // holder (`reresolveClaim` rule 2 — never invent or remove the basis of a
+  // legacy unit). The first fix counted only the final-frozen ones, so the
+  // dialog promised the legacy unit as reverted while the write left it
+  // `original`. The numbers below are the planner's, by construction: only ONE
+  // of the three originals reverts.
+  it("does not promise the LEGACY original with no holder as reverted either", async () => {
+    const user = userEvent.setup();
+    const rows = [
+      ...edited(12),
+      ...originals(3, (index) =>
+        index === 0
+          ? { finalKey: "galleries/g1/finals/o0.jpg" }
+          : index === 1
+            ? { billedTo: null }
+            : {},
+      ),
+    ];
+    render(
+      <AllowsOriginalSelectionControl
+        galleryId={GALLERY_ID}
+        allowsOriginalSelection={true}
+        originalsOff={preview(rows)}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Deshabilitar selección de originales" }));
+    const dialog = await screen.findByRole("dialog");
+
+    // 12 + 1 = 13 edited, 2 still original (frozen + legacy).
+    // computeQuota(13, 2, {13, 5000, 2000}): extras 0, 2 originales -> 4.000.
+    expect(
+      within(dialog).getByText("Al confirmar: 13 editadas · 2 originales · recargo $ 4.000"),
+    ).toBeDefined();
+    expect(within(dialog).getByText(/1 foto original ya elegida vuelve a editada/)).toBeDefined();
+  });
+
   it("only submits the action after the admin clicks confirm inside the dialog", async () => {
     updateAllowsOriginalSelectionMock.mockResolvedValue({ status: "updated" });
     const user = userEvent.setup();
@@ -246,13 +279,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
       <AllowsOriginalSelectionControl
         galleryId={GALLERY_ID}
         allowsOriginalSelection={true}
-        includedPhotosSnapshot={13}
-        extraPhotoPriceCopSnapshot={5_000}
-        extraPhotoPriceTiersSnapshot={null}
-        originalPhotoPriceCopSnapshot={2_000}
-        selectedEditedCount={12}
-        selectedOriginalCount={3}
-        frozenOriginalCount={0}
+        originalsOff={preview([...edited(12), ...originals(3)])}
       />,
     );
 
@@ -280,13 +307,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
       <AllowsOriginalSelectionControl
         galleryId={GALLERY_ID}
         allowsOriginalSelection={true}
-        includedPhotosSnapshot={13}
-        extraPhotoPriceCopSnapshot={5_000}
-        extraPhotoPriceTiersSnapshot={null}
-        originalPhotoPriceCopSnapshot={2_000}
-        selectedEditedCount={12}
-        selectedOriginalCount={3}
-        frozenOriginalCount={0}
+        originalsOff={preview([...edited(12), ...originals(3)])}
       />,
     );
 

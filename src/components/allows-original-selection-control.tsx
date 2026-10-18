@@ -38,9 +38,15 @@
 // never be re-labelled (the file was produced against that kind), so
 // `planOriginalsOff` SKIPS it and the write leaves it original. The preview
 // was therefore promising a number the server would not deliver, on the one
-// screen whose whole job is to show the money before it moves. `after` is now
-// computed from the surviving split by the SAME `computeQuota` (never from a
-// constant), with the final-frozen originals kept aside.
+// screen whose whole job is to show the money before it moves.
+//
+// THE FIRST FIX (same task) THEN RE-DERIVED THE RULE HERE, and got a second
+// skip wrong: `planOriginalsOff` also skips a LEGACY original with no recorded
+// holder (`billedTo === null`), while the page counted only the final-frozen
+// ones. So this component no longer computes anything: it renders
+// `originalsOff`, which is `attributionDelta(rows, planOriginalsOff(...))` —
+// the SAME planner `updateAllowsOriginalSelection` executes (`actions.ts`).
+// The money in the dialog and the money the write lands are one definition.
 import { useActionState, useState } from "react";
 import {
   Dialog,
@@ -55,37 +61,21 @@ import {
   type UpdateAllowsOriginalSelectionState,
 } from "@/app/dashboard/galleries/actions";
 import { formatCop } from "@/lib/format";
-import { computeQuota } from "@/lib/quota";
+import type { OriginalsOffPreview } from "@/lib/pick-plans";
 
 const initialState: UpdateAllowsOriginalSelectionState = { status: "idle" };
 
 export function AllowsOriginalSelectionControl({
   galleryId,
   allowsOriginalSelection,
-  includedPhotosSnapshot,
-  extraPhotoPriceCopSnapshot,
-  extraPhotoPriceTiersSnapshot,
-  originalPhotoPriceCopSnapshot,
-  // The SAME split the page already derived from `gallery.assets`
-  // (page.tsx's own `selectedEditedCount`/`selectedOriginalCount`, task
-  // #210's precedent) — never recomputed here. This component never counts
-  // assets itself.
-  selectedEditedCount,
-  selectedOriginalCount,
-  frozenOriginalCount,
+  // The SAME before/after the server action will produce, from the same
+  // planner (`previewOriginalsOff`, `@/lib/pick-plans`) — never recomputed
+  // here, and never re-derived from a count of "what looks revertible".
+  originalsOff,
 }: {
   galleryId: string;
   allowsOriginalSelection: boolean;
-  includedPhotosSnapshot: number;
-  extraPhotoPriceCopSnapshot: number;
-  extraPhotoPriceTiersSnapshot: { minExtras: number; priceCop: number }[] | null;
-  originalPhotoPriceCopSnapshot: number;
-  selectedEditedCount: number;
-  selectedOriginalCount: number;
-  /** Of `selectedOriginalCount`, the ones that already have an uploaded final
-   * and therefore CANNOT revert (decision 15). Computed on the page from the
-   * same `gallery.assets` array as the two counts above. */
-  frozenOriginalCount: number;
+  originalsOff: OriginalsOffPreview;
 }) {
   const [open, setOpen] = useState(false);
   const [state, formAction, pending] = useActionState(updateAllowsOriginalSelection, initialState);
@@ -94,29 +84,16 @@ export function AllowsOriginalSelectionControl({
   // ONLY case that needs the confirmation dialog — see this file's header
   // comment. Turning ON, or turning OFF with nothing to reset, submits the
   // plain form directly.
-  const needsConfirmation = allowsOriginalSelection && selectedOriginalCount > 0;
+  const before = originalsOff.before;
+  const after = originalsOff.after;
+  const needsConfirmation = allowsOriginalSelection && before.selectedOriginal > 0;
 
-  // BOTH rows come from `computeQuota()` (src/lib/quota.ts), the SAME
-  // pattern <EditGalleryTermsDialog> uses and for the identical reason: this
-  // component never subtracts or multiplies anything itself. `before` is the
-  // gallery's REAL current split; `after` simulates the reset the server is
-  // about to apply — every original pick becomes an edited one, so the
-  // edited count absorbs it and originals drops to 0.
-  const before = computeQuota(selectedEditedCount, selectedOriginalCount, {
-    includedPhotosSnapshot,
-    extraPhotoPriceCopSnapshot,
-    extraPhotoPriceTiersSnapshot,
-    originalPhotoPriceCopSnapshot,
-  });
-  // `rekindlable` = the originals the action will really rewrite; the frozen
-  // ones stay charged at the original tariff.
-  const rekindlableOriginalCount = Math.max(0, selectedOriginalCount - frozenOriginalCount);
-  const after = computeQuota(selectedEditedCount + rekindlableOriginalCount, frozenOriginalCount, {
-    includedPhotosSnapshot,
-    extraPhotoPriceCopSnapshot,
-    extraPhotoPriceTiersSnapshot,
-    originalPhotoPriceCopSnapshot,
-  });
+  // The originals the action will REALLY revert: whatever the plan left
+  // behind stays original and stays charged at the original tariff (a
+  // final-frozen one, or a legacy unit with no holder). Derived from the
+  // planner's own two counts, so it cannot disagree with the "Al confirmar"
+  // row next to it.
+  const rekindlableOriginalCount = Math.max(0, before.selectedOriginal - after.selectedOriginal);
 
   const statusMessage =
     state.status === "error" ? (
@@ -204,9 +181,9 @@ export function AllowsOriginalSelectionControl({
           </DialogHeader>
 
           {/* The exact before/after shape the owner asked for, textual: "N
-              fotos vuelven a editada · el recargo baja de $ X a $ Y" — same
-              `computeQuota`-only-reads discipline <EditGalleryTermsDialog>
-              already follows. */}
+              fotos vuelven a editada · el recargo baja de $ X a $ Y". Both
+              rows are the planner's own output (`previewOriginalsOff`), so the
+              two numbers differ only by what the write will really change. */}
           <div className="border-line-2 rounded-[6px] border p-3 text-sm">
             <p className="text-fg-dim">
               Hoy: {before.selectedEdited} editada{before.selectedEdited === 1 ? "" : "s"} ·{" "}

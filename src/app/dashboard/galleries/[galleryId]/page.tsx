@@ -36,6 +36,7 @@ import {
   type ClientPersonTally,
 } from "@/lib/client-selection-state";
 import { getDashboardSelection } from "@/lib/gallery-selection";
+import { previewOriginalsOff } from "@/lib/pick-plans";
 
 export const metadata: Metadata = {
   title: "Galería",
@@ -199,12 +200,39 @@ export default async function GalleryDetailPage({
   ).length;
   const selectedEditedCount = selectedCount - selectedOriginalCount;
   // Task #263 — decision 15: an original that already has a final can never be
-  // re-labelled, so <AllowsOriginalSelectionControl>'s "Al confirmar" needs to
-  // know how many of `selectedOriginalCount` are frozen. Same array, same
-  // "filter one already-fetched array" rule as the split above.
-  const frozenOriginalCount = gallery.assets.filter(
-    (asset) => asset.isSelected && asset.selectionKind === "original" && asset.finalKey !== null,
-  ).length;
+  // re-labelled, and neither can a LEGACY unit with no recorded holder
+  // (`planOriginalsOff` skips both, because `reresolveClaim`'s rule 2 forbids
+  // moving a unit that has no basis). <AllowsOriginalSelectionControl>'s "Al
+  // confirmar" therefore cannot be derived here from a count of what looks
+  // revertible: that is the drift this fix round closed. It comes from
+  // `previewOriginalsOff`, which runs the SAME planner
+  // `updateAllowsOriginalSelection` executes — one definition for the dialog
+  // and the write.
+  //
+  // The rows are the same already-fetched `gallery.assets` array the split
+  // above reads (no second query). `planOriginalsOff` reads only `isSelected`,
+  // `selectionKind`, `billedTo` and `finalKey`, so the arrival stamps it never
+  // touches are `null` here — `GalleryDetailAsset` does not carry them, and the
+  // gallery totals are counts and prices, not an ordering.
+  const originalsOff = previewOriginalsOff(
+    gallery.assets.map((asset) => ({
+      id: asset.id,
+      isSelected: asset.isSelected,
+      selectionKind: asset.selectionKind,
+      billedTo: asset.billedTo ?? null,
+      billedAt: null,
+      finalKey: asset.finalKey,
+      selectedAt: null,
+      requestedAt: asset.requestedAt ?? null,
+    })),
+    new Date(),
+    {
+      includedPhotosSnapshot: gallery.includedPhotosSnapshot,
+      extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
+      extraPhotoPriceTiersSnapshot: gallery.extraPhotoPriceTiersSnapshot,
+      originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,
+    },
+  );
   // Task #216 — the same `gallery.assets` filter as `selectedCount` above,
   // not a second read of a different shape: only `id`/`originalFilename`/
   // `selectionKind` survive the map, so <SelectedPhotosList> can never reach
@@ -556,19 +584,15 @@ export default async function GalleryDetailPage({
                 <SelectionTrayModeControl>'s own layout card below: the owner
                 was explicit that this decides money (whether a client can
                 even see the cheaper "original" tariff), not presentation.
-                Same `selectedEditedCount`/`selectedOriginalCount` split as
-                the dialog above — never recomputed a third time. */}
+                Its "Al confirmar" numbers come from `previewOriginalsOff`
+                (`@/lib/pick-plans`) — the SAME planner the server action
+                executes — so the dialog cannot promise a reset the write will
+                not perform. */}
             <div className="border-line-2 mt-3 border-t pt-3">
               <AllowsOriginalSelectionControl
                 galleryId={gallery.id}
                 allowsOriginalSelection={gallery.allowsOriginalSelection}
-                includedPhotosSnapshot={gallery.includedPhotosSnapshot}
-                extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}
-                extraPhotoPriceTiersSnapshot={gallery.extraPhotoPriceTiersSnapshot}
-                originalPhotoPriceCopSnapshot={gallery.originalPhotoPriceCopSnapshot}
-                selectedEditedCount={selectedEditedCount}
-                selectedOriginalCount={selectedOriginalCount}
-                frozenOriginalCount={frozenOriginalCount}
+                originalsOff={originalsOff}
               />
             </div>
 

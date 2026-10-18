@@ -17,6 +17,12 @@ import userEvent from "@testing-library/user-event";
 import type { Session } from "next-auth";
 import GalleryDetailPage from "./page";
 import type { GalleryDetail } from "@/lib/galleries";
+import {
+  attributionDelta,
+  planOriginalsOff,
+  previewOriginalsOff,
+  type AssetRow,
+} from "@/lib/pick-plans";
 
 const requireAdminMock = vi.fn<() => Promise<Session>>();
 vi.mock("@/lib/auth-guards", () => ({ requireAdmin: () => requireAdminMock() }));
@@ -457,6 +463,85 @@ describe("GalleryDetailPage chrome", () => {
         .getAllByRole("listitem")
         .map((li) => li.querySelector("[data-testid=photo-filename]")?.textContent),
     ).toEqual(["BETO_JOINED.jpg"]);
+  });
+
+  // Task #263 fix round (W2): `pickers` is SUBMITTED-only on purpose — a
+  // `degraded` pick is on a photo somebody else already holds and has not been
+  // sent yet. So it must not make that person findable under their name on a
+  // photo they never ordered, and it must not inflate the row's "+N". Without
+  // this, widening the page's filter to "everybody who touched it" would ship
+  // green: the ".filter(() => true)" mutation stayed at 54 passed before it.
+  it("leaves a DEGRADED pick out of the person filter and out of +N", async () => {
+    const listed = (id: string, name: string, billedTo: string) => ({
+      id,
+      originalFilename: name,
+      proofKey: `galleries/g1/proofs/${id}.webp`,
+      proofWidth: 1600,
+      proofHeight: 1067,
+      isSelected: true,
+      sortOrder: 0,
+      finalKey: null,
+      isEdited: false,
+      selectionKind: "edited" as const,
+      isExtra: false,
+      deliveredFor: null,
+      billedTo,
+    });
+    const iso = new Date("2026-10-12T15:00:00Z").toISOString();
+    const pick = (userId: string, label: string, state: "billed" | "degraded") => ({
+      userId,
+      label,
+      kind: "edited" as const,
+      pickedAt: iso,
+      submittedAt: iso,
+      state,
+    });
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        status: "proofing",
+        clients: [
+          { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+          { id: "u2", name: "Beto Gómez", email: "beto@example.com" },
+        ],
+        assets: [listed("p1", "ANA_OWN.jpg", "u1"), listed("p2", "ANA_AND_BETO.jpg", "u1")],
+      }),
+    );
+    getDashboardSelectionMock.mockResolvedValue({
+      quota: { selected: 2, surchargeCop: 0 },
+      labels: {},
+      previewByClient: {},
+      people: [],
+      members: [],
+      entries: [
+        { assetId: "p1", claim: null, picks: [pick("u1", "Ana Pérez", "billed")] },
+        {
+          assetId: "p2",
+          claim: null,
+          // Beto only has a DEGRADED pick here — he asked for a photo Ana
+          // already holds, and nothing of his was sent.
+          picks: [pick("u1", "Ana Pérez", "billed"), pick("u2", "Beto Gómez", "degraded")],
+        },
+      ],
+    });
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+    const details = screen.getByText(/^Fotos seleccionadas/).closest("details")!;
+    const rowFor = (filename: string) =>
+      within(details)
+        .getAllByRole("listitem")
+        .find((li) => li.querySelector("[data-testid=photo-filename]")?.textContent === filename)!;
+
+    expect(within(details).getAllByRole("listitem")).toHaveLength(2);
+    // The row names the HOLDER and counts nobody else: Beto's degraded pick
+    // carries no unit, so there is no second person to count.
+    expect(rowFor("ANA_AND_BETO.jpg").textContent).toContain("Ana Pérez");
+    expect(rowFor("ANA_AND_BETO.jpg").textContent).not.toContain("+1");
+
+    // ...and Beto's filter finds nothing at all: the list is empty and the
+    // summary says so, rather than listing a photo he never ordered.
+    await userEvent.selectOptions(screen.getByLabelText("Persona"), "u2");
+    expect(within(details).queryAllByRole("listitem")).toHaveLength(0);
+    expect(details.querySelector("summary")?.textContent).toBe("Fotos seleccionadas (0)");
   });
 
   it("does not show the per-client panel on a draft gallery", async () => {
@@ -1256,6 +1341,134 @@ describe("GalleryDetailPage — the allows-original-selection control reflects t
   });
 });
 
+// Task #263 fix round (W1) — THE DIALOG AND THE WRITE MUST BE ONE DEFINITION.
+// `updateAllowsOriginalSelection` runs `planOriginalsOff` and applies its
+// `assetChanges`. That planner skips TWO kinds of claimed original:
+//
+//   - one that already has a final (decision 15: a produced file is never
+//     re-labelled), and
+//   - a LEGACY unit with no recorded holder (`reresolveClaim` rule 2: never
+//     invent or remove the basis of a legacy unit).
+//
+// The first fix at #263 counted only the first kind, so the dialog promised a
+// reversion the write would not perform. This block renders the REAL page off
+// REAL asset rows and compares what the dialog says to what the planner — the
+// function the action executes — says they will become.
+describe("GalleryDetailPage — the disable-originals preview IS the write's plan (task #263)", () => {
+  const NOW = new Date("2026-10-18T00:00:00Z");
+  const TERMS = {
+    includedPhotosSnapshot: 13,
+    extraPhotoPriceCopSnapshot: 5_000,
+    extraPhotoPriceTiersSnapshot: null,
+    originalPhotoPriceCopSnapshot: 2_000,
+  };
+
+  const row = (
+    id: string,
+    selectionKind: "edited" | "original",
+    extra: Partial<AssetRow> = {},
+  ) => ({
+    id,
+    originalFilename: `${id}.JPG`,
+    proofKey: `galleries/g1/proofs/${id}.webp`,
+    proofWidth: 1600,
+    proofHeight: 1067,
+    isSelected: true,
+    sortOrder: 0,
+    finalKey: null,
+    isEdited: false,
+    selectionKind,
+    isExtra: false,
+    deliveredFor: null,
+    billedTo: "u1" as string | null,
+    ...extra,
+  });
+
+  // 12 edited + 3 originals: one already has a final, one is a legacy unit
+  // with no holder, one is an ordinary revertible original.
+  const assets = [
+    ...Array.from({ length: 12 }, (_unused, index) => row(`e${index}`, "edited")),
+    row("o0", "original", { finalKey: "galleries/g1/finals/o0.jpg" }),
+    row("o1", "original", { billedTo: null }),
+    row("o2", "original"),
+  ];
+
+  // The rows exactly as the page builds them for `previewOriginalsOff`.
+  const plannerRows: AssetRow[] = assets.map((asset) => ({
+    id: asset.id,
+    isSelected: asset.isSelected,
+    selectionKind: asset.selectionKind,
+    billedTo: asset.billedTo ?? null,
+    billedAt: null,
+    finalKey: asset.finalKey,
+    selectedAt: null,
+    requestedAt: null,
+  }));
+
+  it("reports only the original the action will really rewrite, not the frozen or the legacy one", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        status: "selected",
+        allowsOriginalSelection: true,
+        ...TERMS,
+        assets,
+      }),
+    );
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Deshabilitar selección de originales" }));
+    const dialog = await screen.findByRole("dialog");
+
+    // Today: 12 edited + 3 originals -> 6.000 in originals.
+    expect(
+      within(dialog).getByText("Hoy: 12 editadas · 3 originales · recargo $ 6.000"),
+    ).toBeDefined();
+    // Only ONE reverts: 12 + 1 = 13 edited, 2 still original (frozen + legacy),
+    // 2 x 2.000 = 4.000. The old `frozenOriginalCount` rule would say 14/1 and
+    // $ 7.000 here.
+    expect(
+      within(dialog).getByText("Al confirmar: 13 editadas · 2 originales · recargo $ 4.000"),
+    ).toBeDefined();
+    expect(within(dialog).getByText(/1 foto original ya elegida vuelve a editada/)).toBeDefined();
+  });
+
+  it("renders the SAME before/after `attributionDelta(planOriginalsOff(...))` produces — the parity the write relies on", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        status: "selected",
+        allowsOriginalSelection: true,
+        ...TERMS,
+        assets,
+      }),
+    );
+
+    const plan = planOriginalsOff(plannerRows, [], NOW);
+    const delta = attributionDelta(plannerRows, plan, TERMS);
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Deshabilitar selección de originales" }));
+    const dialog = await screen.findByRole("dialog");
+
+    const after = delta.gallery.after;
+    const money = (amountCop: number) => `$ ${amountCop.toLocaleString("es-CO")}`;
+    expect(
+      within(dialog).getByText(
+        `Al confirmar: ${after.selectedEdited} editadas · ${after.selectedOriginal} originales · recargo ${money(after.surchargeCop)}`,
+      ),
+    ).toBeDefined();
+    // ...and the plan really rewrites exactly one asset (the ordinary one).
+    expect(plan.assetChanges.map((change) => change.assetId)).toEqual(["o2"]);
+
+    // The page's own prop is the same function of the same rows: one planner,
+    // two call sites (`previewOriginalsOff` here, `planOriginalsOff` in the
+    // action).
+    const preview = previewOriginalsOff(plannerRows, NOW, TERMS);
+    expect(preview).toEqual({ before: delta.gallery.before, after: delta.gallery.after });
+  });
+});
+
 // Task #231 — the wiring seam for the volume scale. Both client components
 // below default to nothing: a page that hands them `null` instead of the
 // gallery's own scale type-checks, and (before this block) broke no test —
@@ -1280,6 +1493,11 @@ describe("GalleryDetailPage — the frozen volume scale reaches its consumers (t
     selectionKind,
     isExtra: false,
     deliveredFor: null,
+    // Task #263 — a claimed unit has a recorded holder. It matters to the
+    // disable-originals preview below: `planOriginalsOff` (the planner the
+    // WRITE runs) never rewrites a LEGACY unit with `billedTo === null`, so a
+    // fixture without holders would describe two originals that stay put.
+    billedTo: "u1",
   });
   const tieredGallery = (editedCount: number, originalCount: number) =>
     galleryDetail({

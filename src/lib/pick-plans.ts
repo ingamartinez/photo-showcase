@@ -442,6 +442,41 @@ export function attributionDeltaBetween(
 }
 
 /**
+ * What <AllowsOriginalSelectionControl>'s confirmation shows: the gallery's
+ * quota before the switch goes off, and after — the same `computeQuota` the
+ * write lands.
+ *
+ * THE POINT IS THE PLANNER, NOT THE ARITHMETIC (task #263, fix round, W1).
+ * `updateAllowsOriginalSelection` (actions.ts) runs `planOriginalsOff` and
+ * applies its `assetChanges`; that plan skips TWO kinds of claimed original —
+ * one that already has a final (decision 15, re-labelling a produced file is
+ * forbidden) and a LEGACY unit with no recorded holder (`billedTo === null`,
+ * `reresolveClaim`'s rule 2). A preview that counts the skips itself gets one
+ * of the two wrong, which is exactly what happened: it promised the legacy
+ * unit as reverted while the write left it `original`. So the numbers below
+ * are `attributionDelta` over the plan — one definition of "what turns off"
+ * for the dialog and the write.
+ *
+ * `picks` are NOT a parameter: re-kind-ing a pick row changes no `assets` row,
+ * so the money is a function of the asset rows alone (`planOriginalsOff`
+ * returns the pick rewrites for the caller to apply; they move nothing).
+ */
+export type OriginalsOffPreview = {
+  before: AttributionDelta["gallery"]["before"];
+  after: AttributionDelta["gallery"]["after"];
+};
+
+export function previewOriginalsOff(
+  rows: readonly AssetRow[],
+  now: Date,
+  snapshot: Parameters<typeof attributeQuota>[1],
+  labels: Readonly<Record<string, string | null | undefined>> = {},
+): OriginalsOffPreview {
+  const delta = attributionDelta(rows, planOriginalsOff(rows, [], now), snapshot, labels);
+  return { before: delta.gallery.before, after: delta.gallery.after };
+}
+
+/**
  * The before/after the dashboard shows BEFORE the admin confirms either of the
  * two money-affecting per-person actions (epic #250, task #263):
  *

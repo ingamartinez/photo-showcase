@@ -2056,7 +2056,7 @@ export async function resendGalleryAccessEmail(
       status: "throttled",
       message:
         `Ya le reenviaste el correo a ${membership.email} varias veces en poco tiempo. ` +
-        "Esperá unos minutos antes de volver a intentar.",
+        "Espera unos minutos antes de volver a intentar.",
     };
   }
 
@@ -2082,7 +2082,7 @@ export async function resendGalleryAccessEmail(
     if (!(error instanceof AuthError)) throw error;
     return {
       status: "resend_email_failed",
-      message: `No pudimos reenviarle el correo a ${membership.email}. Intentá de nuevo en un rato.`,
+      message: `No pudimos reenviarle el correo a ${membership.email}. Intenta de nuevo en un rato.`,
     };
   }
 

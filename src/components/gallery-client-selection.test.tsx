@@ -47,19 +47,47 @@ const TERMS = {
 };
 
 // What the page would have computed at render from `previewByClient` — the
-// SAME planner the action executes. Ana claims one cart photo: her first unit
-// is included, the second is an extra.
+// SAME planner the action executes. THREE parties, deliberately (task #263 fix
+// round, C2): the block's job is to show WHO moves and what the gallery's own
+// total does, so the fixture has to make a preview that renders only the first
+// person, hides the "Sin registro" bucket, or mislabels the gallery surcharge
+// fail somewhere.
+//
+// The numbers hold the S3 invariant on BOTH sides — Σ people + "Sin registro"
+// = Σ the gallery's own surcharge:
+//   before: Ana 2.000 (1 original) + unattr 5.000 (1 extra)          = 7.000
+//   after:  Beto 10.000 (2 extras)                                   = 10.000
+// Ana loses her original, Beto takes two extras, and the legacy bucket moves
+// from the extra slot into the included one.
 const DELTA: AttributionDelta = {
-  gallery: { before: computeQuota(1, 0, TERMS), after: computeQuota(2, 0, TERMS) },
+  gallery: { before: computeQuota(2, 1, TERMS), after: computeQuota(3, 0, TERMS) },
   people: [
     {
       userId: "u1",
       label: "Ana Pérez",
-      before: share({ included: 1 }),
-      after: share({ included: 1, extras: 1, extrasSurchargeCop: 5_000, surchargeCop: 5_000 }),
+      before: share({
+        included: 1,
+        originals: 1,
+        originalsSurchargeCop: 2_000,
+        surchargeCop: 2_000,
+      }),
+      after: share(),
+    },
+    {
+      userId: "u2",
+      label: "Beto Gómez",
+      before: share(),
+      after: share({ extras: 2, extrasSurchargeCop: 10_000, surchargeCop: 10_000 }),
     },
   ],
-  assets: [{ assetId: "a9", op: "claim" }],
+  unattributed: {
+    before: share({ extras: 1, extrasSurchargeCop: 5_000, surchargeCop: 5_000 }),
+    after: share({ included: 1 }),
+  },
+  assets: [
+    { assetId: "a1", op: "unclaim" },
+    { assetId: "a2", op: "claim" },
+  ],
 };
 const PREVIEW = { lock: DELTA, removePicks: DELTA };
 
@@ -246,21 +274,47 @@ describe("per-client selection — actions", () => {
     expect(unlockMock).not.toHaveBeenCalled();
   });
 
-  it("the lock confirmation shows each affected person's BEFORE and AFTER", async () => {
+  // Task #263 fix round (C2): the fixture carries two people plus an
+  // `unattributed` bucket, and every line is asserted — the first person only,
+  // a dropped "Sin registro" block, or the wrong gallery surcharge each
+  // redden this now.
+  it("the lock confirmation shows every affected person's BEFORE and AFTER, the legacy bucket, and the gallery total", async () => {
     const user = userEvent.setup();
     renderRow(OPEN, "proofing", { preview: PREVIEW });
     await openMenu(user);
     await user.click(screen.getByRole("menuitem", { name: "Bloquear selección" }));
 
-    expect(screen.getByText("Ana Pérez")).toBeDefined();
+    // es-CO puts a non-breaking space after "$" — normalize before comparing.
+    const textOf = (element: Element) => (element.textContent ?? "").replace(/\u00a0/g, " ");
+    const personBlock = (label: string) => {
+      const block = screen
+        .getAllByTestId("delta-person")
+        .find((element) => textOf(element).includes(label));
+      expect(block).toBeDefined();
+      return block!;
+    };
+
+    // BOTH people, each with their own Hoy/Al confirmar pair.
+    const ana = textOf(personBlock("Ana Pérez"));
+    expect(ana).toContain("Hoy: 1 incluida · 0 extras · 1 original · recargo $ 2.000");
+    expect(ana).toContain("Al confirmar: 0 incluidas · 0 extras · 0 originales · recargo $ 0");
+
+    const beto = textOf(personBlock("Beto Gómez"));
+    expect(beto).toContain("Hoy: 0 incluidas · 0 extras · 0 originales · recargo $ 0");
+    expect(beto).toContain(
+      "Al confirmar: 0 incluidas · 2 extras · 0 originales · recargo $ 10.000",
+    );
+
+    // The legacy bucket, when it really moves (decision 17's "Sin registro").
+    const legacy = textOf(screen.getByTestId("delta-unattributed"));
+    expect(legacy).toContain("Sin registro");
+    expect(legacy).toContain("Hoy: 0 incluidas · 1 extra · 0 originales · recargo $ 5.000");
+    expect(legacy).toContain("Al confirmar: 1 incluida · 0 extras · 0 originales · recargo $ 0");
+
+    // The gallery's own surcharge, before -> after, both values.
     expect(
-      screen.getByText("Hoy: 1 incluida · 0 extras · 0 originales · recargo $ 0"),
+      screen.getByText(/Recargo de la galería: Hoy \$ 7\.000 · Al confirmar \$ 10\.000/),
     ).toBeDefined();
-    expect(
-      screen.getByText("Al confirmar: 1 incluida · 1 extra · 0 originales · recargo $ 5.000"),
-    ).toBeDefined();
-    // The gallery's own surcharge, before -> after.
-    expect(screen.getByText(/Recargo de la galería: Hoy/)).toBeDefined();
   });
 
   it("Cancelar leaves the cart alone", async () => {
@@ -326,8 +380,10 @@ describe("per-client selection — actions", () => {
     expect(executed.getAttribute("role")).toBe("status");
     // es-CO puts a non-breaking space after "$", so compare on normalized text.
     const text = (executed.textContent ?? "").replace(/\u00a0/g, " ");
-    expect(text).toContain("Ana Pérez: 1 incluida · 1 extra · 0 originales · recargo $ 5.000");
-    expect(text).toContain("recargo de la galería $ 5.000");
+    expect(text).toContain("Ana Pérez: 0 incluidas · 0 extras · 0 originales · recargo $ 0");
+    expect(text).toContain("Beto Gómez: 0 incluidas · 2 extras · 0 originales · recargo $ 10.000");
+    expect(text).toContain("Sin registro: 1 incluida · 0 extras · 0 originales · recargo $ 0");
+    expect(text).toContain("recargo de la galería $ 10.000");
   });
 
   it("shows no executed delta for the unlock, which moves no money", async () => {

@@ -5,7 +5,7 @@ import { SelectionCounter } from "./selection-counter";
 import { computeQuota } from "@/lib/quota";
 import { formatCop } from "@/lib/format";
 import type { AttributionShare } from "@/lib/quota-attribution";
-import { ANA, BETO, counter, person } from "@/test-support/selection-fixtures";
+import { ANA, BETO, SARA, counter, person } from "@/test-support/selection-fixtures";
 
 // No `@/lib/format` mock needed: unlike `@/lib/galleries`, it has no
 // `server-only`/`@/lib/db` import for jsdom to choke on — see that module's
@@ -790,6 +790,113 @@ describe("SelectionCounter — per-person money (task #264)", () => {
         " ",
       ),
     );
+    expect(compact()).not.toContain("a tu nombre");
+  });
+
+  // Review round 2, CRITICAL — THE ZERO-SHARE GUARD. The compact row names the
+  // viewer's amount only when there IS an amount to name: a STRICTLY positive
+  // `share.surchargeCop`. "$ 0 a tu nombre" points at money the reader does not
+  // owe, so a zero viewer share keeps the gallery-wide wording the pre-#264
+  // bar already had. This is the FOLDED, MULTI-ROW case that separates it from
+  // the solo fallbacks above: two bill-holders, so the breakdown is on and the
+  // viewer's own row renders at zero — while somebody ELSE holds the money.
+  it("keeps the gallery-wide wording when the viewer's own share is $ 0 — never '$ 0 a tu nombre'", () => {
+    const compact = () =>
+      screen
+        .getByRole("button", { name: "Ver detalle" })
+        .parentElement?.textContent?.replace(/\s+/g, " ") ?? "";
+
+    const billsAreSomeoneElses = counter({
+      group: 5,
+      viewer: { yours: 2, shared: 0, toSend: 0 },
+      people: [
+        // The viewer holds units but no money: both picks are included.
+        person(ANA, 2),
+        // Beto's extras are the whole bill.
+        person(
+          BETO,
+          3,
+          share({ included: 1, extras: 2, extrasSurchargeCop: 10_000, surchargeCop: 10_000 }),
+        ),
+      ],
+    });
+
+    const { unmount } = render(
+      <SelectionCounter
+        quota={computeQuota(15, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={billsAreSomeoneElses}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+
+    // Positive controls: the breakdown IS on and the viewer's row IS there, at
+    // zero, so the assertions below are about the guard and not about a
+    // missing row or an unfolded bar.
+    expect(labels()).toEqual(["Tú", "Beto"]);
+    expect(amounts()).toEqual(["2 fotos · 0 extras · $ 0", "3 fotos · 2 extras · $ 10.000"]);
+    expect(screen.getByRole("button", { name: "Ver detalle" })).toBeDefined();
+
+    // No originals, extras > 0: the approved gallery-wide fallback.
+    expect(compact()).toContain("$ 10.000 en extras");
+    expect(compact()).not.toContain("a tu nombre");
+    unmount();
+
+    // With originals the fallback is the gallery's TOTAL, labelled "en total"
+    // (2 extras at 5.000 + 1 original at 2.000) — still not the viewer's zero.
+    const withOriginals = computeQuota(15, 1, SNAPSHOT);
+    expect(withOriginals.surchargeCop).toBe(12_000);
+    render(
+      <SelectionCounter
+        quota={withOriginals}
+        allowsOriginalSelection
+        counter={billsAreSomeoneElses}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+    expect(compact()).toContain(
+      `${formatCop(withOriginals.surchargeCop)} en total`.replace(/\s+/g, " "),
+    );
+    expect(compact()).not.toContain("a tu nombre");
+  });
+
+  // Review round 2 — the SPARSE wire the server actually sends: `people` lists
+  // the holders of units, so a viewer who holds nothing is simply absent, not
+  // present with zeros. The bar must still lead with "Tú · 0 fotos" (the
+  // pre-#264 behavior for a viewer with nothing picked) and must not turn that
+  // absence into a zero amount in the compact row.
+  it("gives an absent-from-`people` viewer a zero row without naming a zero amount", () => {
+    const compact = () =>
+      screen
+        .getByRole("button", { name: "Ver detalle" })
+        .parentElement?.textContent?.replace(/\s+/g, " ") ?? "";
+
+    render(
+      <SelectionCounter
+        quota={computeQuota(15, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={counter({
+          group: 3,
+          viewer: { yours: 0, shared: 0, toSend: 0 },
+          people: [
+            person(ANA, 2, share({ included: 2 })),
+            person(BETO, 1, share({ extras: 1, extrasSurchargeCop: 5_000, surchargeCop: 5_000 })),
+          ],
+        })}
+        viewerId={SARA.id}
+        collapsible
+      />,
+    );
+
+    // Sara is the viewer and is NOT in `people` — her name must never appear as
+    // somebody else's row — yet "Tú" is still there, at zero, first.
+    expect(labels()).toEqual(["Tú", "Ana", "Beto"]);
+    expect(amounts()[0]).toBe("0 fotos · 0 extras · $ 0");
+    expect(screen.queryByText("Sara")).toBeNull();
+
+    expect(compact()).toContain("$ 10.000 en extras");
     expect(compact()).not.toContain("a tu nombre");
   });
 

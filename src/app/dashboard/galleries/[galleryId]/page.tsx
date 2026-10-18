@@ -8,7 +8,6 @@ import {
   activeClientRuleViolation,
   formatGalleryStatus,
   formatSessionDate,
-  getGalleryClientSelections,
   getGalleryDetail,
   getGalleryUnlockAudit,
   isGalleryVisibleToClient,
@@ -31,7 +30,12 @@ import { SelectionTrayModeControl } from "@/components/selection-tray-mode-contr
 import { SelectedPhotosList } from "@/components/selected-photos-list";
 import { ExtrasPersonAssignment } from "@/components/extras-person-assignment";
 import type { Gallery } from "@/lib/db/schema";
-import { toClientSelectionView } from "@/lib/client-selection-state";
+import {
+  EMPTY_PERSON_TALLY,
+  toClientSelectionView,
+  type ClientPersonTally,
+} from "@/lib/client-selection-state";
+import { getDashboardSelection } from "@/lib/gallery-selection";
 
 export const metadata: Metadata = {
   title: "Galería",
@@ -130,32 +134,32 @@ export default async function GalleryDetailPage({
   // plainly (nothing shown at all, see below), not treat as missing data.
   const unlockAudit = await getGalleryUnlockAudit(gallery.id);
 
-  // Epic #239 (#242): per-client pick count + lock state, and who owns each
-  // pick. A draft has no picks to show, so its rows stay plain.
-  const clientSelections = await getGalleryClientSelections(gallery.id);
-  const selectionByClientId = new Map(
-    clientSelections.clients.map((selection) => [
-      selection.userId,
-      toClientSelectionView({
-        lockedAt: selection.lockedAt,
-        submittedAt: selection.submittedAt,
-        pickCount: selection.pickCount,
-        // Task #244: the per-person tally only exists under rolling delivery.
-        ...(gallery.rollingDelivery
-          ? {
-              order: {
-                requested: selection.requestedCount,
-                edited: selection.editedCount,
-                unsent: selection.unsentCount,
-              },
-            }
-          : {}),
-      }),
-    ]),
+  // Epic #250 (#263): ONE read for the per-person numbers, the attribution and
+  // the two before/after previews. It is `readPickState` + the same
+  // `buildGallerySelection` the client's own tray uses, so the dashboard and
+  // the client counter cannot disagree (see `partitionByPerson`'s test). A
+  // draft has no picks to show, so its rows stay plain.
+  const dashboardSelection = await getDashboardSelection(gallery);
+  const personByUserId = new Map(
+    dashboardSelection.people.map((person) => [person.userId, person]),
   );
-  const frozenPickerIds = clientSelections.clients
-    .filter((selection) => selection.lockedAt !== null)
-    .map((selection) => selection.userId);
+  const memberByUserId = new Map(
+    dashboardSelection.members.map((member) => [member.userId, member]),
+  );
+  const selectionByClientId = new Map(
+    gallery.clients.map((client) => {
+      const member = memberByUserId.get(client.id);
+      const person: ClientPersonTally = personByUserId.get(client.id) ?? EMPTY_PERSON_TALLY;
+      return [
+        client.id,
+        toClientSelectionView({
+          lockedAt: member?.lockedAt ?? null,
+          submittedAt: member?.submittedAt ?? null,
+          person,
+        }),
+      ];
+    }),
+  );
 
   // Task #92: the SAME question GET .../download-all's own pre-flight asks
   // ("how big would this gallery's zip be"), asked here instead so the
@@ -199,17 +203,36 @@ export default async function GalleryDetailPage({
   // `selectionKind` survive the map, so <SelectedPhotosList> can never reach
   // an R2 key even by accident (see that component's own header comment on
   // why this apartado is text-only).
+  // Task #263 — per-photo attribution. `pickers` is every person who SUBMITTED
+  // a pick on the photo (billed or joined), holder first: the person filter
+  // has to find a photo under the name of somebody who merely joined, which
+  // `selectedBy` alone could never do. A cart/degraded pick is deliberately
+  // NOT here — it is not sent yet (see <SelectedPhotosList>'s own comment).
+  // `hasFinal` is `finalKey !== null`, the deliver gate's own predicate.
+  const entryByAssetId = new Map(dashboardSelection.entries.map((entry) => [entry.assetId, entry]));
   const selectedPhotos = gallery.assets
     .filter((asset) => asset.isSelected)
     .map((asset) => ({
       id: asset.id,
-      selectedBy: clientSelections.pickOwnerByAssetId[asset.id] ?? null,
       originalFilename: asset.originalFilename,
       selectionKind: asset.selectionKind,
-      // Task #244 — what the photographer's work queue filters on.
-      isRequested: asset.requestedAt != null,
-      hasFinal: asset.isEdited && asset.finalKey !== null,
+      billedTo: asset.billedTo,
+      pickers: (entryByAssetId.get(asset.id)?.picks ?? [])
+        .filter((pick) => pick.state === "billed" || pick.state === "joined")
+        .map((pick) => pick.userId),
+      hasFinal: asset.finalKey !== null,
     }));
+  // The person filter's options: every ACTIVE client (the rows this page shows
+  // anyway) plus anybody who only appears as a picker/holder — a removed
+  // member's submitted picks stay attributed to them (decision 17), and they
+  // must still be findable in the list.
+  const selectedPhotoPeople = [
+    ...gallery.clients.map((client) => ({ id: client.id, label: client.name ?? client.email })),
+    ...Object.entries(dashboardSelection.labels)
+      .filter(([userId]) => !activeClientIds.has(userId))
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([userId, label]) => ({ id: userId, label })),
+  ];
   // Task #223 — the gifted extras, built off the SAME already-fetched
   // `gallery.assets` array as `selectedPhotos` above (no second query), and
   // narrowed the same way: id, filename and the attribution, never an R2 key.
@@ -355,12 +378,12 @@ export default async function GalleryDetailPage({
               was set up before the client record existed) and must read as a
               deliberate state, never as blank space. It is also the thing
               blocking publication, so the line says what to do next rather
-              than only reporting the absence — the "agregá" pointer lands
+              than only reporting the absence — the "agrega" pointer lands
               right above the attach form below. */}
           <div className="mt-4 flex flex-col gap-2">
             {gallery.clients.length === 0 ? (
               <p className="text-fg-mute text-sm">
-                Todavía sin cliente — agregá uno acá abajo para poder publicar la galería.
+                Todavía sin cliente — agrega uno acá abajo para poder publicar la galería.
               </p>
             ) : (
               gallery.clients.map((client) => (
@@ -373,6 +396,11 @@ export default async function GalleryDetailPage({
                   resendable={canResendAccess}
                   selection={
                     gallery.status === "draft" ? undefined : selectionByClientId.get(client.id)
+                  }
+                  preview={
+                    gallery.status === "draft"
+                      ? undefined
+                      : dashboardSelection.previewByClient[client.id]
                   }
                 />
               ))
@@ -547,7 +575,7 @@ export default async function GalleryDetailPage({
               <p className="text-danger mt-3 text-xs">
                 {archiveSize.status === "over"
                   ? `Los finales de esta galería pesan ${formatBytes(archiveSize.totalBytes)} — la descarga completa ya no va a funcionar (el límite ronda los 4 GB). Sube exports más livianos o coordina una entrega dividida.`
-                  : `Los finales de esta galería pesan ${formatBytes(archiveSize.totalBytes)} — la descarga completa no va a funcionar por encima de unos 4 GB. Considerá exports más livianos antes de que sea un problema.`}
+                  : `Los finales de esta galería pesan ${formatBytes(archiveSize.totalBytes)} — la descarga completa no va a funcionar por encima de unos 4 GB. Considera exports más livianos antes de que sea un problema.`}
               </p>
             )}
           </div>
@@ -632,15 +660,7 @@ export default async function GalleryDetailPage({
         </aside>
       </div>
 
-      <SelectedPhotosList
-        items={selectedPhotos}
-        frozenPickerIds={frozenPickerIds}
-        rollingDelivery={gallery.rollingDelivery}
-        people={gallery.clients.map((client) => ({
-          id: client.id,
-          label: client.name ?? client.email,
-        }))}
-      />
+      <SelectedPhotosList items={selectedPhotos} people={selectedPhotoPeople} />
 
       {/* Task #223 — only in `by-person` mode; see the component's own header
           for why offering this in `flat` mode would be asking for a decision

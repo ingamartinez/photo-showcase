@@ -42,6 +42,8 @@ describe("toClientSelectionView", () => {
   it("formats the submit date in the studio timezone, only for submitted", () => {
     expect(toClientSelectionView({ lockedAt: T, submittedAt: T, person })).toEqual({
       state: "submitted",
+      locked: true,
+      sent: true,
       pickCount: 2,
       person,
       submittedOn: "12/10/2026",
@@ -139,16 +141,16 @@ describe("clientLockActions", () => {
     expect(
       clientLockActions({
         galleryStatus: "proofing",
-        lockedAt: null,
-        submittedAt: null,
+        locked: false,
+        sent: false,
         pickCount: 1,
       }),
     ).toEqual({ canLock: true, canUnlock: false, canRemovePicks: true });
     expect(
       clientLockActions({
         galleryStatus: "selected",
-        lockedAt: T,
-        submittedAt: T,
+        locked: true,
+        sent: true,
         pickCount: 0,
       }),
     ).toEqual({ canLock: false, canUnlock: true, canRemovePicks: true });
@@ -161,8 +163,8 @@ describe("clientLockActions", () => {
     expect(
       clientLockActions({
         galleryStatus: "proofing",
-        lockedAt: null,
-        submittedAt: T,
+        locked: false,
+        sent: true,
         pickCount: 3,
       }),
     ).toEqual({ canLock: true, canUnlock: false, canRemovePicks: true });
@@ -172,16 +174,16 @@ describe("clientLockActions", () => {
     expect(
       clientLockActions({
         galleryStatus: "proofing",
-        lockedAt: T,
-        submittedAt: null,
+        locked: true,
+        sent: false,
         pickCount: 0,
       }).canRemovePicks,
     ).toBe(true);
     expect(
       clientLockActions({
         galleryStatus: "proofing",
-        lockedAt: null,
-        submittedAt: T,
+        locked: false,
+        sent: true,
         pickCount: 0,
       }).canRemovePicks,
     ).toBe(true);
@@ -190,7 +192,7 @@ describe("clientLockActions", () => {
   it("offers nothing outside proofing/selected", () => {
     for (const galleryStatus of ["draft", "delivered", "archived"] as const) {
       expect(
-        clientLockActions({ galleryStatus, lockedAt: null, submittedAt: null, pickCount: 3 }),
+        clientLockActions({ galleryStatus, locked: false, sent: false, pickCount: 3 }),
       ).toEqual({ canLock: false, canUnlock: false, canRemovePicks: false });
     }
   });

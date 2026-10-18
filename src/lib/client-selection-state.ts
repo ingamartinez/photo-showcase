@@ -79,6 +79,11 @@ export type ClientPersonTally = {
 
 export type ClientSelectionView = {
   state: ClientSelectionState;
+  /** `selection_locked_at IS NOT NULL` — the exact column both server actions
+   * gate on (`locked` offers "Desbloquear", unlocked offers "Bloquear"). */
+  locked: boolean;
+  /** `selection_submitted_at IS NOT NULL`. */
+  sent: boolean;
   /** Total picks of this person: `yours + shared + toSend`. Kept because the
    * "Quitar sus fotos elegidas" entry is offered off it. */
   pickCount: number;
@@ -108,6 +113,8 @@ export function toClientSelectionView(input: {
   });
   return {
     state,
+    locked: input.lockedAt !== null,
+    sent: input.submittedAt !== null,
     pickCount: input.person.yours + input.person.shared + input.person.toSend,
     person: input.person,
     submittedOn:
@@ -169,10 +176,10 @@ export type ClientLockActions = {
  * Which per-client buttons the dashboard offers.
  *
  * `canLock`/`canUnlock` are exactly the SERVER's own preconditions —
- * `lockGalleryClientSelection` refuses a member whose `lockedAt` is already
- * set (`actions.ts`), and `unlockGalleryClientSelection` refuses one whose
- * `lockedAt` is NULL. They are read off `lockedAt` alone, never off the
- * derived state: a submitted-but-unlocked member (the ordinary post-submit
+ * `lockGalleryClientSelection` refuses an already-locked member
+ * (`selection_locked_at IS NOT NULL`), and `unlockGalleryClientSelection`
+ * refuses one whose lock is NULL. They are read off that ONE column
+ * (`locked`), never off the derived state: a submitted-but-unlocked member (the ordinary post-submit
  * state since decision 10) has nothing to unlock, and their submitted picks
  * are immutable anyway (S5's answer to Q5), so "Desbloquear" is not offered.
  *
@@ -181,16 +188,16 @@ export type ClientLockActions = {
  */
 export function clientLockActions(input: {
   galleryStatus: Gallery["status"];
-  lockedAt: Date | null;
-  submittedAt: Date | null;
+  locked: boolean;
+  sent: boolean;
   pickCount: number;
 }): ClientLockActions {
   if (!isClientLockActionableStatus(input.galleryStatus)) {
     return { canLock: false, canUnlock: false, canRemovePicks: false };
   }
   return {
-    canLock: input.lockedAt === null,
-    canUnlock: input.lockedAt !== null,
-    canRemovePicks: input.pickCount > 0 || input.lockedAt !== null || input.submittedAt !== null,
+    canLock: !input.locked,
+    canUnlock: input.locked,
+    canRemovePicks: input.pickCount > 0 || input.locked || input.sent,
   };
 }

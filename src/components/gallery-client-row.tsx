@@ -64,6 +64,7 @@ import {
   useClientSelectionController,
 } from "@/components/gallery-client-selection";
 import type { ClientSelectionView } from "@/lib/client-selection-state";
+import type { AttributionDelta } from "@/lib/pick-plans";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -91,6 +92,7 @@ export function GalleryClientRow({
   removable,
   resendable,
   selection,
+  preview,
 }: {
   galleryId: string;
   client: { id: string; name: string | null; email: string };
@@ -100,6 +102,10 @@ export function GalleryClientRow({
   /** Epic #239 (#242): this person's pick count and lock state. Omitted = the
    * panel is not rendered (draft galleries). */
   selection?: ClientSelectionView;
+  /** Epic #250 (#263): this person's lock / remove-picks before/after, from
+   * `getDashboardSelection(...).previewByClient[client.id]`. Passed straight
+   * through — the row never computes money. */
+  preview?: { lock: AttributionDelta; removePicks: AttributionDelta };
 }) {
   const [removeState, removeFormAction, removePending] = useActionState(
     removeGalleryClient,
@@ -195,6 +201,7 @@ export function GalleryClientRow({
           clientId={client.id}
           galleryStatus={status}
           selection={selection}
+          preview={preview}
           controller={selectionController}
         />
       )}

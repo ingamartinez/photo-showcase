@@ -29,6 +29,16 @@
 // with a local mutation — see this task's own "Contexto verificado" for why
 // <GalleryWorkspace> is deliberately not the owner of this list.
 //
+// EPIC #250 (task #263) REMOVED TWO PROPS. `rollingDelivery` gated the work
+// queue, and decision 11 made the order semantics mandatory — the queue is
+// not a feature any more, it is what the list is for. `frozenPickerIds`
+// gated "only people who already sent", and under decision 10 a submit no
+// longer locks anybody, so every listed photo is claimed (a submitted pick is
+// what claims it) and nobody is "frozen" in that sense any more. What DID
+// change is attribution: a photo can have several pickers, so the person
+// filter reads `pickers` (submitted picks only — see that field's comment)
+// and the row names the BILLED holder plus how many others asked.
+//
 // Brand tokens (`border-line-2`, `text-fg-mute`, …), not `app-*`: this file
 // lives under `src/components/`, not `src/app/dashboard/**`, and epic #125's
 // ESLint rule (task #175) only allows `app-*` utilities inside that
@@ -40,14 +50,24 @@ import { compareByFilenameNatural } from "@/lib/natural-sort";
 
 export type SelectedPhotoListItem = {
   id: string;
-  /** `assets.selected_by` — who picked it (epic #239). Optional: callers that
-   * cannot attribute picks never get the per-person filter. */
-  selectedBy?: string | null;
+  /** `assets.selected_by` (`billedTo`) — whose unit it is, for display only.
+   * `null` for a legacy unit with no recorded holder ("Sin registro"). */
+  billedTo?: string | null;
   originalFilename: string;
   selectionKind: "edited" | "original";
-  /** Task #244 — rolling delivery: the client ORDERED this pick. */
-  isRequested?: boolean;
-  /** Task #244 — the edited final is already uploaded. */
+  /**
+   * Every person who SUBMITTED a pick on this photo (`billed` or `joined`),
+   * holder first (the entry order `buildGallerySelection` produces).
+   *
+   * DELIBERATELY submitted-only (task #263's weakest point, recorded where it
+   * is implemented): a `cart`/`degraded` pick is not sent yet — the same rule
+   * `selected-photos-list.tsx`'s predecessor used to exclude "por enviar"
+   * work — and the client's own tray is where unsent picks belong. The owner
+   * may later want "everything Beto touched"; this is a choice, not an
+   * oversight.
+   */
+  pickers: string[];
+  /** The edited final is already uploaded (`finalKey !== null`). */
   hasFinal?: boolean;
 };
 
@@ -75,36 +95,28 @@ const GROUP_LABELS: Record<SelectedPhotoListItem["selectionKind"], string> = {
  */
 export function SelectedPhotosList({
   items: allItems,
-  frozenPickerIds = [],
-  rollingDelivery = false,
   people = [],
 }: {
   items: SelectedPhotoListItem[];
-  /** Active clients whose selection is locked (they submitted, or the admin
-   * locked them) — their picks will not change, so the photographer can start
-   * editing them. Epic #239 (#242). */
-  frozenPickerIds?: string[];
-  /** Task #244 — rolling delivery: adds the work-queue filters below. */
-  rollingDelivery?: boolean;
-  /** Task #244 — the gallery's active clients, for the per-person filter. */
+  /** The people a photo can be filtered by, `name ?? email`. Shown as a filter
+   * only when there is more than one — a selector with one option decides
+   * nothing. */
   people?: { id: string; label: string }[];
 }) {
-  const [onlyFrozen, setOnlyFrozen] = useState(false);
   const [personId, setPersonId] = useState("");
   const [onlyPending, setOnlyPending] = useState(false);
   if (allItems.length === 0) return null;
 
-  const frozen = new Set(frozenPickerIds);
   // Display-only attribution (#245): unknown or null pickers just show no name.
   const labels = new Map(people.map((person) => [person.id, person.label]));
   const items = allItems
-    .filter((item) => !onlyFrozen || (item.selectedBy != null && frozen.has(item.selectedBy)))
-    .filter((item) => !rollingDelivery || personId === "" || item.selectedBy === personId)
-    // The photographer's work list: ORDERED and still without a final. Photos
-    // still "por enviar" are not work yet and never appear here.
-    .filter(
-      (item) => !rollingDelivery || !onlyPending || (item.isRequested === true && !item.hasFinal),
-    );
+    // Decision 1: several people can ask for the same photo, so "Beto's
+    // photos" includes the ones where Beto only JOINED somebody else's unit.
+    .filter((item) => personId === "" || item.pickers.includes(personId))
+    // The photographer's work list: claimed and still without a final — the
+    // deliver gate's own predicate (`is_selected AND final_key IS NULL`), the
+    // same one `getPendingSelectionCount` and <GalleryWorkspace> use.
+    .filter((item) => !onlyPending || !item.hasFinal);
 
   const edited = items
     .filter((item) => item.selectionKind === "edited")
@@ -126,45 +138,33 @@ export function SelectedPhotosList({
       <summary className="text-fg cursor-pointer text-sm font-medium">
         Fotos seleccionadas ({items.length})
       </summary>
-      {frozen.size > 0 && (
-        <label className="text-fg mt-4 flex min-h-11 items-center gap-2 text-sm lg:min-h-6">
+      <div className="mt-4 flex flex-wrap items-center gap-4">
+        {people.length > 1 && (
+          <label className="text-fg flex items-center gap-2 text-sm">
+            Persona
+            <select
+              value={personId}
+              onChange={(event) => setPersonId(event.target.value)}
+              className="border-line-2 text-fg rounded-[5px] border bg-transparent px-2 py-1 text-sm"
+            >
+              <option value="">Todas</option>
+              {people.map((person) => (
+                <option key={person.id} value={person.id}>
+                  {person.label}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
+        <label className="text-fg flex min-h-11 items-center gap-2 text-sm lg:min-h-6">
           <input
             type="checkbox"
-            checked={onlyFrozen}
-            onChange={(event) => setOnlyFrozen(event.target.checked)}
+            checked={onlyPending}
+            onChange={(event) => setOnlyPending(event.target.checked)}
           />
-          Solo de quienes ya enviaron o quedaron bloqueados
+          Pendientes de subir editada
         </label>
-      )}
-      {rollingDelivery && (
-        <div className="mt-4 flex flex-wrap items-center gap-4">
-          {people.length > 1 && (
-            <label className="text-fg flex items-center gap-2 text-sm">
-              Persona
-              <select
-                value={personId}
-                onChange={(event) => setPersonId(event.target.value)}
-                className="border-line-2 text-fg rounded-[5px] border bg-transparent px-2 py-1 text-sm"
-              >
-                <option value="">Todas</option>
-                {people.map((person) => (
-                  <option key={person.id} value={person.id}>
-                    {person.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-          )}
-          <label className="text-fg flex min-h-11 items-center gap-2 text-sm lg:min-h-6">
-            <input
-              type="checkbox"
-              checked={onlyPending}
-              onChange={(event) => setOnlyPending(event.target.checked)}
-            />
-            Pendientes de subir editada
-          </label>
-        </div>
-      )}
+      </div>
       <div className="mt-4 flex flex-col gap-6">
         {isMixed ? (
           <>
@@ -229,12 +229,16 @@ function PhotoGroup({
       </div>
       <ol className="text-fg list-decimal space-y-1 pl-5 font-mono text-xs">
         {items.map((item) => {
-          const who = item.selectedBy != null ? labels.get(item.selectedBy) : undefined;
+          const who = item.billedTo != null ? labels.get(item.billedTo) : undefined;
+          // "+N": how many OTHER people asked for the same photo. The billed
+          // holder is named; the rest are counted, because the row has to stay
+          // one line and the identities are the client tray's job (task #261).
+          const others = item.pickers.length > 1 ? ` +${item.pickers.length - 1}` : "";
           return (
             <li key={item.id}>
               <span data-testid="photo-filename">{item.originalFilename}</span>
               <span data-testid="photo-attribution" className="text-fg-mute ml-2 font-sans">
-                {who ? `${who} · ` : ""}
+                {who ? `${who}${others} · ` : ""}
                 {KIND_LABELS[item.selectionKind]}
               </span>
             </li>
@@ -248,7 +252,7 @@ function PhotoGroup({
       )}
       {copyState === "error" && (
         <p role="alert" className="text-danger mt-2 text-xs">
-          No se pudo copiar — seleccioná la lista y copiala a mano.
+          No se pudo copiar — selecciona la lista y cópiala a mano.
         </p>
       )}
     </div>

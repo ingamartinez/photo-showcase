@@ -37,6 +37,7 @@ describe("AllowsOriginalSelectionControl — switch is OFF", () => {
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={0}
         selectedOriginalCount={0}
+        frozenOriginalCount={0}
       />,
     );
 
@@ -57,6 +58,7 @@ describe("AllowsOriginalSelectionControl — switch is OFF", () => {
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={0}
         selectedOriginalCount={0}
+        frozenOriginalCount={0}
       />,
     );
 
@@ -83,6 +85,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, nothing to reset", ()
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={5}
         selectedOriginalCount={0}
+        frozenOriginalCount={0}
       />,
     );
 
@@ -105,6 +108,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, nothing to reset", ()
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={5}
         selectedOriginalCount={0}
+        frozenOriginalCount={0}
       />,
     );
 
@@ -133,6 +137,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={12}
         selectedOriginalCount={3}
+        frozenOriginalCount={0}
       />,
     );
 
@@ -161,6 +166,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={12}
         selectedOriginalCount={3}
+        frozenOriginalCount={0}
       />,
     );
 
@@ -187,6 +193,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={12}
         selectedOriginalCount={1}
+        frozenOriginalCount={0}
       />,
     );
 
@@ -194,6 +201,42 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
     const dialog = await screen.findByRole("dialog");
 
     expect(within(dialog).getByText(/1 foto original ya elegida vuelve a editada/)).toBeDefined();
+  });
+
+  // Task #263 / decision 15: an original that already has a final CANNOT be
+  // re-labelled (`planOriginalsOff` skips it), so "Al confirmar" must not
+  // promise a literal 0 originals. That literal was the pre-#263 bug — this
+  // case goes red against it (the old code would render "15 editadas · 0
+  // originales · recargo $ 10.000" here instead of "14 editadas · 1 original
+  // · recargo $ 7.000").
+  it("keeps the FINAL-FROZEN originals in the 'Al confirmar' row instead of hardcoding 0", async () => {
+    const user = userEvent.setup();
+    render(
+      <AllowsOriginalSelectionControl
+        galleryId={GALLERY_ID}
+        allowsOriginalSelection={true}
+        includedPhotosSnapshot={13}
+        extraPhotoPriceCopSnapshot={5_000}
+        extraPhotoPriceTiersSnapshot={null}
+        originalPhotoPriceCopSnapshot={2_000}
+        selectedEditedCount={12}
+        selectedOriginalCount={3}
+        frozenOriginalCount={1}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Deshabilitar selección de originales" }));
+    const dialog = await screen.findByRole("dialog");
+
+    // 2 of the 3 revert to edited (12 + 2 = 14), 1 stays original.
+    // computeQuota(14, 1, {13, 5000, 2000}): extras 1 -> 5.000 + 2.000 = 7.000.
+    expect(
+      within(dialog).getByText("Al confirmar: 14 editadas · 1 original · recargo $ 7.000"),
+    ).toBeDefined();
+    // ...and the sentence names only the two that really revert.
+    expect(
+      within(dialog).getByText(/2 fotos originales ya elegidas vuelven a editadas/),
+    ).toBeDefined();
   });
 
   it("only submits the action after the admin clicks confirm inside the dialog", async () => {
@@ -209,6 +252,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={12}
         selectedOriginalCount={3}
+        frozenOriginalCount={0}
       />,
     );
 
@@ -242,6 +286,7 @@ describe("AllowsOriginalSelectionControl — switch is ON, originals already pic
         originalPhotoPriceCopSnapshot={2_000}
         selectedEditedCount={12}
         selectedOriginalCount={3}
+        frozenOriginalCount={0}
       />,
     );
 

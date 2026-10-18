@@ -32,6 +32,15 @@
 // is 0) — an admin turning off a switch nobody has used yet does not need a
 // preview of a reset that changes zero assets; the plain form submits
 // directly, same as turning it on.
+//
+// TASK #263 (epic #250) FIXED "Al confirmar: … 0 originales". That zero was a
+// literal, and decision 15 says an `original` that already has a final can
+// never be re-labelled (the file was produced against that kind), so
+// `planOriginalsOff` SKIPS it and the write leaves it original. The preview
+// was therefore promising a number the server would not deliver, on the one
+// screen whose whole job is to show the money before it moves. `after` is now
+// computed from the surviving split by the SAME `computeQuota` (never from a
+// constant), with the final-frozen originals kept aside.
 import { useActionState, useState } from "react";
 import {
   Dialog,
@@ -63,6 +72,7 @@ export function AllowsOriginalSelectionControl({
   // assets itself.
   selectedEditedCount,
   selectedOriginalCount,
+  frozenOriginalCount,
 }: {
   galleryId: string;
   allowsOriginalSelection: boolean;
@@ -72,6 +82,10 @@ export function AllowsOriginalSelectionControl({
   originalPhotoPriceCopSnapshot: number;
   selectedEditedCount: number;
   selectedOriginalCount: number;
+  /** Of `selectedOriginalCount`, the ones that already have an uploaded final
+   * and therefore CANNOT revert (decision 15). Computed on the page from the
+   * same `gallery.assets` array as the two counts above. */
+  frozenOriginalCount: number;
 }) {
   const [open, setOpen] = useState(false);
   const [state, formAction, pending] = useActionState(updateAllowsOriginalSelection, initialState);
@@ -94,7 +108,10 @@ export function AllowsOriginalSelectionControl({
     extraPhotoPriceTiersSnapshot,
     originalPhotoPriceCopSnapshot,
   });
-  const after = computeQuota(selectedEditedCount + selectedOriginalCount, 0, {
+  // `rekindlable` = the originals the action will really rewrite; the frozen
+  // ones stay charged at the original tariff.
+  const rekindlableOriginalCount = Math.max(0, selectedOriginalCount - frozenOriginalCount);
+  const after = computeQuota(selectedEditedCount + rekindlableOriginalCount, frozenOriginalCount, {
     includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot,
     extraPhotoPriceTiersSnapshot,
@@ -178,11 +195,11 @@ export function AllowsOriginalSelectionControl({
               ¿Apagar la selección de originales?
             </DialogTitle>
             <DialogDescription className="text-fg-dim">
-              {selectedOriginalCount} foto{selectedOriginalCount === 1 ? "" : "s"} original
-              {selectedOriginalCount === 1 ? "" : "es"} ya elegida
-              {selectedOriginalCount === 1 ? "" : "s"} vuelve
-              {selectedOriginalCount === 1 ? "" : "n"} a editada
-              {selectedOriginalCount === 1 ? "" : "s"} — recién al confirmar, no antes.
+              {rekindlableOriginalCount} foto{rekindlableOriginalCount === 1 ? "" : "s"} original
+              {rekindlableOriginalCount === 1 ? "" : "es"} ya elegida
+              {rekindlableOriginalCount === 1 ? "" : "s"} vuelve
+              {rekindlableOriginalCount === 1 ? "" : "n"} a editada
+              {rekindlableOriginalCount === 1 ? "" : "s"} — recién al confirmar, no antes.
             </DialogDescription>
           </DialogHeader>
 
@@ -197,8 +214,9 @@ export function AllowsOriginalSelectionControl({
               recargo {formatCop(before.surchargeCop)}
             </p>
             <p className="text-fg mt-1">
-              Al confirmar: {after.selectedEdited} editada{after.selectedEdited === 1 ? "" : "s"} ·
-              0 originales · recargo {formatCop(after.surchargeCop)}
+              Al confirmar: {after.selectedEdited} editada{after.selectedEdited === 1 ? "" : "s"} ·{" "}
+              {after.selectedOriginal} original{after.selectedOriginal === 1 ? "" : "es"} · recargo{" "}
+              {formatCop(after.surchargeCop)}
             </p>
           </div>
 

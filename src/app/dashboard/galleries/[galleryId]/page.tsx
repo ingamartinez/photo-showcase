@@ -198,6 +198,13 @@ export default async function GalleryDetailPage({
     (asset) => asset.isSelected && asset.selectionKind === "original",
   ).length;
   const selectedEditedCount = selectedCount - selectedOriginalCount;
+  // Task #263 — decision 15: an original that already has a final can never be
+  // re-labelled, so <AllowsOriginalSelectionControl>'s "Al confirmar" needs to
+  // know how many of `selectedOriginalCount` are frozen. Same array, same
+  // "filter one already-fetched array" rule as the split above.
+  const frozenOriginalCount = gallery.assets.filter(
+    (asset) => asset.isSelected && asset.selectionKind === "original" && asset.finalKey !== null,
+  ).length;
   // Task #216 — the same `gallery.assets` filter as `selectedCount` above,
   // not a second read of a different shape: only `id`/`originalFilename`/
   // `selectionKind` survive the map, so <SelectedPhotosList> can never reach
@@ -561,6 +568,7 @@ export default async function GalleryDetailPage({
                 originalPhotoPriceCopSnapshot={gallery.originalPhotoPriceCopSnapshot}
                 selectedEditedCount={selectedEditedCount}
                 selectedOriginalCount={selectedOriginalCount}
+                frozenOriginalCount={frozenOriginalCount}
               />
             </div>
 

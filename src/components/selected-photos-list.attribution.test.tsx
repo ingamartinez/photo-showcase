@@ -8,17 +8,52 @@ afterEach(cleanup);
 
 // Task #245 — two pickers, both kinds, interleaved so that a row reading the
 // wrong picker/kind (an index-vs-index mix-up) cannot pass by coincidence.
+//
+// Task #263: the row is driven by `billedTo` (the unit's holder) plus the
+// LIST of people who asked. IMG_3 is Ana's unit that Beto joined, so it must
+// read "Ana +1" — reading `pickers[0]` or the joiner's name instead is the
+// bug this pins.
 const PEOPLE = [
   { id: "ana", label: "Ana" },
   { id: "beto", label: "beto@x.co" },
 ];
 const ITEMS: SelectedPhotoListItem[] = [
-  { id: "1", originalFilename: "IMG_1.JPG", selectionKind: "edited", selectedBy: "ana" },
-  { id: "2", originalFilename: "IMG_2.JPG", selectionKind: "original", selectedBy: "beto" },
-  { id: "3", originalFilename: "IMG_3.JPG", selectionKind: "edited", selectedBy: "beto" },
-  { id: "4", originalFilename: "IMG_4.JPG", selectionKind: "original", selectedBy: "ana" },
-  { id: "5", originalFilename: "IMG_5.JPG", selectionKind: "edited", selectedBy: null },
-  { id: "6", originalFilename: "IMG_6.JPG", selectionKind: "edited", selectedBy: "ghost" },
+  {
+    id: "1",
+    originalFilename: "IMG_1.JPG",
+    selectionKind: "edited",
+    billedTo: "ana",
+    pickers: ["ana"],
+  },
+  {
+    id: "2",
+    originalFilename: "IMG_2.JPG",
+    selectionKind: "original",
+    billedTo: "beto",
+    pickers: ["beto"],
+  },
+  {
+    id: "3",
+    originalFilename: "IMG_3.JPG",
+    selectionKind: "edited",
+    billedTo: "ana",
+    pickers: ["ana", "beto"],
+  },
+  {
+    id: "4",
+    originalFilename: "IMG_4.JPG",
+    selectionKind: "original",
+    billedTo: "ana",
+    pickers: ["ana"],
+  },
+  { id: "5", originalFilename: "IMG_5.JPG", selectionKind: "edited", billedTo: null, pickers: [] },
+  {
+    id: "6",
+    originalFilename: "IMG_6.JPG",
+    selectionKind: "edited",
+    billedTo: "ghost",
+    pickers: ["ghost"],
+  },
 ];
 
 describe("SelectedPhotosList — attribution (#245)", () => {
@@ -38,9 +73,11 @@ describe("SelectedPhotosList — attribution (#245)", () => {
     expect(rows).toEqual({
       "IMG_1.JPG": "Ana · Editada",
       "IMG_2.JPG": "beto@x.co · Original",
-      "IMG_3.JPG": "beto@x.co · Editada",
+      // Two people asked: the holder is named, the joiner is counted.
+      "IMG_3.JPG": "Ana +1 · Editada",
       "IMG_4.JPG": "Ana · Original",
       "IMG_5.JPG": "Editada",
+      // An unknown id never renders as a bare uuid.
       "IMG_6.JPG": "Editada",
     });
   });

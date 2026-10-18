@@ -242,7 +242,7 @@ const ACTIVE_CLIENT_RULE_MESSAGES: Record<ActiveClientRuleAction, string> = {
   // only where the condition lives.
   "remove-client":
     "No puedes quitar al último cliente activo de una galería que ya no está en borrador — " +
-    "agregá otro cliente antes de quitar este, o la galería queda sin nadie que pueda entrar.",
+    "agrega otro cliente antes de quitar este, o la galería queda sin nadie que pueda entrar.",
 };
 
 /**

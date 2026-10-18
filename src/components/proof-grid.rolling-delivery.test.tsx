@@ -374,9 +374,64 @@ describe("ProofGrid — rolling delivery (#244), now on universal order semantic
     expect(within(grid).getAllByText("Por enviar")).toHaveLength(1);
     expect(within(tray).getAllByText("Editada")).toHaveLength(1);
     const headings = Array.from(tray.querySelectorAll("p")).map((p) => p.textContent?.trim());
-    // a1 is readable, so it belongs to Pedidas even without a requested_at.
-    expect(headings).toContain("Por enviar (1)");
-    expect(headings).toContain("Pedidas (3)");
+    // Task #267 — this expectation USED to read "Por enviar (1)" / "Pedidas
+    // (3)", pinning the very exclusion the owner reported as a bug: a1's
+    // pick is unsent, so submit sends it, so it belongs to "Por enviar" even
+    // though its final is already readable. The readable tag survives (it
+    // still says "Editada", which is true and useful), but the SECTION is
+    // decided by whether the viewer still has to send, not by the final.
+    expect(headings).toContain("Por enviar (2)"); // a1 + a3
+    expect(headings).toContain("Pedidas (2)"); // a2 + a5
+  });
+
+  // Task #267 — the owner's live report, reproduced as a fixture: the
+  // counter says "4 por enviar", the button says "Enviar las 4", and the tray
+  // listed "Por enviar (2)". The two missing ones were unsent picks on assets
+  // that another client had already ordered and whose final was therefore
+  // readable — excluded from `unsent` by the readable check and folded into
+  // "Pedidas" (or, on a gallery with no claim at all, nowhere). The tray's
+  // group must hold EXACTLY what submit sends.
+  it("lists in 'Por enviar' every pick the Enviar button counts, readable finals included", () => {
+    const picks = [
+      pick("a1", ANA, null), // readable final, still unsent
+      pick("a2", ANA, null), // readable final, still unsent
+      pick("a3", ANA, null), // no final at all
+      pick("a4", ANA, null), // no final at all
+    ];
+    renderGrid({
+      initialPicks: picks,
+      initialAssets: [1, 2, 3, 4].map((n) => ({
+        id: `a${n}`,
+        originalFilename: `IMG_000${n}.JPG`,
+        proofWidth: 1600,
+        proofHeight: 1067,
+        isSelected: false,
+        proofUrl: `https://r2.example.com/proof-${n}`,
+        hasFinal: n === 1 || n === 2,
+        displayUrl: n === 1 || n === 2 ? `https://r2.example.com/display-${n}` : null,
+        isExtra: false,
+      })),
+      initialCounter: counterFor(picks, ANA.id),
+    });
+
+    const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+    const headings = Array.from(tray.querySelectorAll("p")).map((p) => p.textContent?.trim());
+    expect(headings).toContain("Por enviar (4)");
+    // Nothing is claimed yet, so there is no "Pedidas" section to fold them
+    // into — the pre-fix bug hid them outright in exactly this shape.
+    expect(headings.some((heading) => heading?.startsWith("Pedidas") ?? false)).toBe(false);
+    // One row per pick: no duplication into a second section either.
+    expect(within(tray).getAllByRole("listitem")).toHaveLength(4);
+
+    // The bar's own count is the server's `counter.viewer.toSend`; the tray
+    // header must agree with it, which is the whole point of the fix.
+    const counterLine = screen
+      .getByText(/entre todos/)
+      .closest("p")
+      ?.textContent?.replace(/\s+/g, " ")
+      .trim();
+    expect(counterLine).toContain("4 por enviar");
+    expect(screen.getByRole("button", { name: "Enviar las 4" })).toBeTruthy();
   });
 
   it("a client-submitted member never sees the classic enviada/cerrada copy, even with a stale viewerLock", () => {

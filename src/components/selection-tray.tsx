@@ -369,13 +369,22 @@ export function SelectionTray({
   // unsent cart carries `claim: null`) rendered NOWHERE, and gating the empty
   // state on `claimed.length` made the tray claim nobody had picked while the
   // viewer was looking at their own pick.
+  // Task #267 — this group is "exactly what submit sends", so it must NOT
+  // exclude assets whose final is already readable. Those picks ARE unsent
+  // asks (`submit-selection` claims them like any other), and the server's
+  // `counter.viewer.toSend` plus the "Enviar las N" button already count
+  // them; hiding them here made the tray list 2 of the 4 things the button
+  // was about to send. Flat mode still keeps each entry in ONE section because
+  // `requested` below subtracts `unsentIds`; by-person intentionally shows the
+  // same asset under both the viewer's "Por enviar" and the holder's row
+  // (task #262 finding 2 / owner decision 2026-10-17, unchanged by this fix).
   const unsent = useMemo(
     () =>
       entries.filter((entry) => {
         const own = viewerPickOf(entry, viewerId);
-        return own !== null && own.submittedAt === null && !readableAssetIds?.has(entry.assetId);
+        return own !== null && own.submittedAt === null;
       }),
-    [entries, viewerId, readableAssetIds],
+    [entries, viewerId],
   );
   const unsentIds = useMemo(() => new Set(unsent.map((entry) => entry.assetId)), [unsent]);
   // "Has picks" now means "has anything to render in the list", unsent

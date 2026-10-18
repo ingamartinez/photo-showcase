@@ -118,17 +118,33 @@ import { UNATTRIBUTED_PICKER_LABEL, type SelectionCounter } from "@/lib/selectio
 //
 // The second control lives INSIDE the bounded scroll region, not next to it:
 // expanding it grows that region's content, never the bar's own height, so
-// nothing below it moves. And the region stays `max-h-[40vh] overflow-y-auto`
-// at EVERY breakpoint (the old `lg:max-h-none lg:overflow-visible` is gone —
-// that is exactly what let the desktop detail become the wall the owner saw).
+// nothing below it moves.
 //
-// WHEN THE SECOND LEVEL EXISTS: only when more than one row actually HOLDS
-// UNITS — `showBreakdown` is looser than that, because it also turns on for
-// the viewer's own zero row next to a single holder (or next to a bucket of
-// legacy picks with no attribution). That shape has ONE bill-holder, so the
-// gallery total IS that holder's amount and there is no wall to break up; it
-// keeps this component's pre-#269 output byte for byte, exactly like the
-// rows <= 1 single-payer case. A single payer never learns a second control.
+// THE REGION'S HEIGHT IS ALLOCATED, NOT A CEILING (fix round 1, the review's
+// own measurement). A `max-h` only caps the box: below the cap it still sized
+// to its contents, so opening the total grew the fixed bar by 144px on a
+// phone and 104px on a desktop — the exact "pushing the content around" the
+// owner reported, just moved one level deeper. The multi-person detail is
+// therefore `h-[min(40vh,20rem)]` at EVERY breakpoint: a fixed, allocated
+// column of space whose height is a function of the viewport alone, never of
+// how many people are in it or whether the total is revealed. `overflow-y-auto`
+// + `overscroll-contain` keep the overflow inside that box. The old
+// `lg:max-h-none lg:overflow-visible` escape hatch stays gone — it is what let
+// the desktop detail grow into the wall the owner saw.
+//
+// WHEN THE SECOND LEVEL EXISTS: whenever the breakdown has more than one ROW
+// (`showBreakdown`), which is the same condition that renders the rows. The
+// fix round corrected this: the first cut also required more than one holder
+// of units, so a viewer at zero next to one holder saw two rows AND the whole
+// global block at once, with no control to open it — the single-wall defect
+// again, in the one shape that had been declared an exception. Rows <= 1 (the
+// single payer) still renders the pre-#264 detail unchanged: no rows, no
+// second control, no new vocabulary.
+//
+// The row-level exception is gone on purpose: two rows IS two questions, even
+// when only one of them carries money. A zero row is still information ("$ 0
+// a tu nombre" next to somebody else's bill), and the gallery total behind its
+// own control is what makes that readable.
 export type MoneyRow = {
   key: string;
   /** "Tú" for the viewer, the person's `name ?? email` otherwise, and
@@ -243,17 +259,24 @@ export function SelectionCounter({
 }) {
   const hasOriginals = allowsOriginalSelection && quota.originals > 0;
   // Task #264 — the breakdown, and the one condition that gates every bit of
-  // it: more than one row means more than one bill-holder, which is the ONLY
-  // situation in which "the gallery total" is not already the whole story.
+  // it: more than one ROW. Fix round 1 restored that literal reading — "more
+  // than one holder of units" is NOT the same condition, because the viewer's
+  // own zero row counts as a row, and conflating the two is exactly what hid
+  // the second level from a viewer at zero.
   const moneyRows = moneyRowsFor(counter, viewerId);
   const showBreakdown = moneyRows.length > 1;
-  // Task #269 — the second level is for a gallery with SEVERAL bill-holders,
-  // not merely several rows: `moneyRows` also carries the viewer's own zero
-  // row, which can be the only other row next to a single holder. One holder
-  // of units means the gallery total is that holder's own amount (this file's
-  // own pre-#264 rule), so there is nothing to hide behind a second control.
-  const unitHolders = moneyRows.filter((row) => row.units > 0).length;
-  const showTotalLevel = showBreakdown && unitHolders > 1;
+  // Task #269 (fix round) — the second level is gated by the SAME condition as
+  // the rows, and nothing else. A second predicate here ("more than one row
+  // actually holds units") is what let a two-row detail render its rows and
+  // its total in the same breath for a zero-unit viewer, with no control at
+  // all. One row stays the single-payer path: no rows, no second control.
+  const showTotalLevel = showBreakdown;
+  // Task #269 (fix round) — a CEILING is not an allocation: `max-h` still lets
+  // the box size to its children, so rows and the revealed total both changed
+  // the bar's height. The multi-person detail gets a fixed height instead, the
+  // same number at every breakpoint. The single-payer path keeps exactly what
+  // it rendered before this task.
+  const detailHeight = showBreakdown ? "h-[min(40vh,20rem)]" : "max-h-[40vh]";
   const viewerShare = moneyRows.find((row) => row.viewer)?.share;
   // Task #231 — the gallery's volume scale, when it has one. `quota` already
   // carries the unit price in force (`extraUnitPriceCop`); this only lists the
@@ -357,10 +380,12 @@ export function SelectionCounter({
         </p>
         <div
           id={detailId}
-          // Task #269 — bounded and internally scrollable at EVERY breakpoint.
-          // The old `lg:max-h-none lg:overflow-visible` is deliberately gone:
-          // that is what let the opened desktop detail grow into a wall.
-          className={`max-h-[40vh] overflow-y-auto overscroll-contain ${folded ? "max-lg:hidden" : ""}`}
+          // Task #269 (fix round) — a FIXED height at every breakpoint, so the
+          // bar's height never depends on how many rows there are or on whether
+          // the total is open, plus internal scrolling for whatever does not
+          // fit. `max-h` was the bug: it only capped the box, never allocated
+          // it. Single payer keeps its own (pre-#269) class untouched.
+          className={`${detailHeight} overflow-y-auto overscroll-contain ${folded ? "max-lg:hidden" : ""}`}
         >
           {/* Task #264 — people first, and (task #269) people ONLY: "Tú" leads
               and is emphasised; the amounts are the server's own shares. */}
@@ -383,8 +408,8 @@ export function SelectionCounter({
           )}
           {/* Task #269 — the second level, INSIDE the scroll region so that
               expanding it can never grow the bar or move the grid below it.
-              Only rendered when more than one person holds units: a single
-              bill-holder gets the pre-#264 detail unchanged, with no extra
+              Rendered whenever there are rows at all: a single-payer detail
+              has no rows and gets the pre-#264 block unchanged, with no extra
               control to explain. */}
           {showTotalLevel ? (
             <>

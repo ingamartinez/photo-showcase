@@ -1109,13 +1109,12 @@ describe("SelectionCounter — two-level money detail (task #269)", () => {
     expect(screen.queryByText("Entre todos")).toBeNull();
   });
 
-  it("keeps the combined detail when only one row actually holds units", () => {
-    // `moneyRows.length > 1` is NOT the same as "more than one bill-holder":
-    // the viewer's own zero row (and the legacy "Sin registro" bucket each
-    // count as one row. With exactly ONE holder of units the gallery total IS
-    // that holder's amount, so this stays the pre-#269 detail — the shape the
-    // proofing bar's own downstream tests (outside this slice's edit surface)
-    // pin as visible without a click.
+  it("gives a zero-unit viewer next to a single holder the two-level detail: two rows, no global block, and a total control", () => {
+    // Fix round 1 — the shape the first cut kept as an exception. `moneyRows`
+    // here has TWO displayed rows (the viewer's own zero row next to Beto) even
+    // though only Beto holds units. The second level is gated on the ROWS now:
+    // the global block must not share the rows' disclosure, or a two-row detail
+    // is the same wall with a different account holding the money.
     const quota = computeQuota(3, 0, SNAPSHOT);
     const { unmount } = render(
       <SelectionCounter
@@ -1132,12 +1131,28 @@ describe("SelectionCounter — two-level money detail (task #269)", () => {
     );
     fireEvent.click(toggle("Ver detalle"));
     expect(screen.getAllByRole("term").map((node) => node.textContent)).toEqual(["Tú", "Beto"]);
-    expect(screen.queryByRole("button", { name: /total de la galería|Ocultar total/ })).toBeNull();
-    expect(screen.getByText("Entre todos")).toBeDefined();
-    expect(screen.getByText(/^extras 0 × \$ 5\.000/)).toBeDefined();
+
+    // Rows only: the global block is ABSENT, not merely scrolled out of view.
+    expect(screen.queryByText("Entre todos")).toBeNull();
+    expect(screen.queryByText(/^extras/)).toBeNull();
+    expect(screen.queryByText(/no se cobra nada/)).toBeNull();
+
+    // ...and the control that reveals it exists, closed.
+    const total = toggle("Ver total de la galería");
+    expect(total.getAttribute("aria-expanded")).toBe("false");
+    const region = regionFor(total);
+    expect(region).not.toBeNull();
+    expect(region?.textContent).toBe("");
+
+    // Opening it reveals the gallery arithmetic INSIDE that same region.
+    fireEvent.click(total);
+    expect(region?.contains(screen.getByText("Entre todos"))).toBe(true);
+    expect(region?.contains(screen.getByText(/^extras 0 × \$ 5\.000/))).toBe(true);
+    expect(screen.getAllByRole("term")).toHaveLength(2);
     unmount();
 
-    // The same holds when the single holder is the unattributed bucket.
+    // The same holds when the single holder is the unattributed bucket: two
+    // rows ("Tú" + "Sin registro"), rows first, total behind its own control.
     render(
       <SelectionCounter
         quota={quota}
@@ -1156,12 +1171,23 @@ describe("SelectionCounter — two-level money detail (task #269)", () => {
       "Tú",
       "Sin registro",
     ]);
-    expect(screen.queryByRole("button", { name: /total de la galería|Ocultar total/ })).toBeNull();
-    expect(screen.getByText(/^extras 0 × \$ 5\.000/)).toBeDefined();
+    expect(screen.queryByText(/^extras 0 × \$ 5\.000/)).toBeNull();
+    const legacyTotal = toggle("Ver total de la galería");
+    const legacyRegion = regionFor(legacyTotal);
+    fireEvent.click(legacyTotal);
+    expect(legacyRegion?.contains(screen.getByText(/^extras 0 × \$ 5\.000/))).toBe(true);
   });
 
-  it("keeps the detail region bounded and internally scrollable at every breakpoint", () => {
-    render(
+  it("allocates a FIXED height to the multi-person detail — no `max-h`, no breakpoint override, unchanged when the total opens", () => {
+    // The review's own measurement of the first cut: `max-h-[40vh]` is a
+    // CEILING, so below it the box still sized to its contents — opening the
+    // total grew the bar 144px on a phone and 104px on a desktop. jsdom has no
+    // layout engine, so this test cannot measure pixels; what it CAN pin is the
+    // contract that makes the height content-independent in a browser: a
+    // `h-`-prefixed allocation (not `max-h-`) with no breakpoint variant, the
+    // same class string before and after the reveal, and the same class string
+    // for a longer list of people.
+    const { unmount } = render(
       <SelectionCounter
         quota={QUOTA()}
         allowsOriginalSelection
@@ -1172,22 +1198,55 @@ describe("SelectionCounter — two-level money detail (task #269)", () => {
     );
     fireEvent.click(toggle("Ver detalle"));
 
-    const region = regionFor(toggle("Ocultar detalle"));
-    const classes = region?.className ?? "";
-    expect(classes).toContain("max-h-[40vh]");
-    expect(classes).toContain("overflow-y-auto");
-    expect(classes).toContain("overscroll-contain");
+    const closedRegion = regionFor(toggle("Ocultar detalle"));
+    expect(closedRegion).not.toBeNull();
+    const classes = closedRegion?.className ?? "";
+    const tokens = classes.split(/\s+/).filter(Boolean);
+
+    // A height, allocated — and it is the only height rule in the class list,
+    // so no `lg:` (or any other breakpoint) variant can change it later.
+    expect(tokens.filter((token) => /(^|:)(h|max-h)-/.test(token))).toEqual([
+      "h-[min(40vh,20rem)]",
+    ]);
+    expect(tokens).toContain("overflow-y-auto");
+    expect(tokens).toContain("overscroll-contain");
     // The desktop escape hatch is exactly what turned the open detail into a
     // wall: with it, the region grew to its content at lg and up.
     expect(classes).not.toContain("lg:max-h-none");
     expect(classes).not.toContain("lg:overflow-visible");
 
-    // Both levels live INSIDE that one region, so expanding the second can
-    // only scroll this box — never grow the bar or move the grid below it.
-    const total = toggle("Ver total de la galería");
-    expect(region?.contains(total)).toBe(true);
-    fireEvent.click(total);
-    expect(region?.contains(screen.getByText("Entre todos"))).toBe(true);
+    // Revealing the total must not touch the box the bar is sized by: same
+    // element, and not one class added or removed.
+    fireEvent.click(toggle("Ver total de la galería"));
+    const openRegion = regionFor(toggle("Ocultar detalle"));
+    expect(openRegion).toBe(closedRegion);
+    expect(openRegion?.className).toBe(classes);
+    unmount();
+
+    // More people, same allocated height: only what scrolls inside changes.
+    render(
+      <SelectionCounter
+        quota={QUOTA()}
+        allowsOriginalSelection
+        counter={counter({
+          group: 9,
+          viewer: { yours: 3, shared: 0, toSend: 0 },
+          people: [
+            person(ANA, 3, ANA_SHARE),
+            person({ id: "client-b", label: "Beto" }, 1),
+            person({ id: "client-c", label: "Carla" }, 1),
+            person({ id: "client-d", label: "Diego" }, 1),
+            person({ id: "client-e", label: "Elena" }, 1),
+            person({ id: "client-f", label: "Fabián" }, 1),
+          ],
+        })}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+    fireEvent.click(toggle("Ver detalle"));
+    expect(screen.getAllByRole("term")).toHaveLength(6);
+    expect(regionFor(toggle("Ocultar detalle"))?.className).toBe(classes);
   });
 
   // The non-collapsible caller (`selected`, normal flow) shares the same

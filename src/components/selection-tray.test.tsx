@@ -872,6 +872,43 @@ describe("SelectionTray — by-person mode (task #204)", () => {
     expect(groupHeaderTexts(container)).not.toContain("Tú (1)");
   });
 
+  // Task #262 review, finding 2 — by-person does NOT dedupe across sections,
+  // and that is the owner-approved behaviour (2026-10-17), not an oversight.
+  // Rows are UNITS (approved Q5): an asset billed to Beto stays in Beto's
+  // row, including its "envió" marker, while the viewer's DEGRADED pick on it
+  // (decision 8: their own unsent ask on a photo somebody else already sent)
+  // belongs in their "Por enviar" group. The same asset in two people's rows
+  // is exactly what by-person mode is for. This test exists because the
+  // previous "one entry, once" filter made a1 vanish from Beto's row and the
+  // whole suite stayed green: delete it today and this goes RED.
+  it("keeps a degraded pick in BOTH the viewer's 'Por enviar' and the row of the person its unit is billed to", () => {
+    const degradedOnBeto = fixtureEntry("a1", { billedTo: { id: "client-b", label: "Beto" } }, [
+      fixturePick("client-b", "Beto", "billed"),
+      fixturePick("client-a", "Ana", "degraded"),
+    ]);
+    const { container } = renderTray({
+      mode: "by-person",
+      viewerId: "client-a",
+      entries: [degradedOnBeto],
+    });
+
+    // Beto really did send, so his row (and the "envió" marker) survives.
+    expect(groupHeaderTexts(container)).toEqual(["Por enviar (1)", "Beto (1)envió"]);
+
+    // Exactly ONE <li> per section — never two inside one section — and both
+    // sections hold the SAME asset: the billed unit under Beto, the viewer's
+    // degraded ask under "Por enviar".
+    const sections = [...container.querySelectorAll("p")]
+      .filter((p) => /\(\d+\)/.test(p.textContent ?? ""))
+      .map((p) => p.parentElement!.querySelectorAll("li"));
+    expect(sections).toHaveLength(2);
+    expect(sections.map((items) => items.length)).toEqual([1, 1]);
+    const renderedAssetSrcs = [...container.querySelectorAll("li img")].map((img) =>
+      img.getAttribute("src"),
+    );
+    expect(renderedAssetSrcs).toEqual(["https://r2.example.com/a1", "https://r2.example.com/a1"]);
+  });
+
   // Criterion 4 — the task's own named trap: the viewer's name ("Zoe
   // Restrepo") sorts LAST alphabetically against "Ana" and "Beto", so this
   // fails under plain alphabetical order and only passes if "viewer first"

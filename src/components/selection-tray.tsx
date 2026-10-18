@@ -412,19 +412,21 @@ export function SelectionTray({
   // owns. Recomputed on every `entries`/`viewerId` change — `useMemo` only to
   // avoid re-sorting on an unrelated re-render (a lightbox open/close, a
   // toggled `isStale`), not because the computation is expensive.
-  // The viewer's unsent picks are rendered in their OWN "Por enviar" group,
-  // under the same one-entry-once rule flat mode uses, so they are excluded
-  // from the per-picker groups here. In the plain case they are already
-  // absent from `claimed` (claim `null`); the filter only matters for a
-  // degraded pick the viewer holds on an asset somebody else's unit owns.
-  const groups = useMemo(
-    () =>
-      groupPicksByPicker(
-        claimed.filter((entry) => !unsentIds.has(entry.assetId)),
-        viewerId,
-      ),
-    [claimed, unsentIds, viewerId],
-  );
+  // By-person deliberately does NOT apply flat mode's one-entry-once rule
+  // here, and that asymmetry is the point (task #262 review, finding 2;
+  // owner decision 2026-10-17). Rows are UNITS, not picks (approved Q5): a
+  // sent unit billed to Beto stays in Beto's row — hiding it because the
+  // VIEWER also has an unsent ask on the same asset made a person who had
+  // already sent look like they had sent nothing, and dropped the row's
+  // "envió" marker with it. The viewer's own degraded pick (decision 8: an
+  // unsent ask on a photo somebody else already sent) still shows up in
+  // their "Por enviar" group, so the same asset plainly appears under two
+  // people — the thing by-person mode exists to show. Flat mode's own split
+  // below keeps the one-entry-once rule (`!unsentIds.has(...)`), because
+  // there the two sections are states of the SAME person's picks. The
+  // degraded-in-both-places state is pinned by the by-person test named
+  // "keeps a degraded pick in BOTH…".
+  const groups = useMemo(() => groupPicksByPicker(claimed, viewerId), [claimed, viewerId]);
 
   // `by-person`'s OWN height cap — a SEPARATE ref/state/effect from the flat
   // trio above, not a generalization of it. See this file's header comment

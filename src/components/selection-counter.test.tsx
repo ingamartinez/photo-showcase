@@ -1281,3 +1281,216 @@ describe("SelectionCounter — two-level money detail (task #269)", () => {
     expect(screen.getByText(/total \$ 12\.000/)).toBeDefined();
   });
 });
+
+// Task #270 — the owner's screenshot (2026-10-18): with the detail open, the
+// submit button floated at mid-height among the person rows, the rows wrapped
+// early, and "Ocultar detalle" sat clipped at the bottom edge. All three are
+// one defect — the detail lived in the bar's own flex row, as a sibling of
+// <SubmitSelectionPanel> — so the multi-person detail now floats ABOVE the
+// bar and the bar keeps a single compact row.
+//
+// THE HARNESS IS THE POINT, not scaffolding: `bottom-full` resolves against
+// the nearest positioned ancestor, and "the button is not in the panel" is
+// only meaningful with a button in the tree. Neither exists inside
+// <SelectionCounter>, so the test reproduces proof-grid.tsx's bar markup
+// (`fixed inset-x-0 bottom-0 z-40`, then the `mx-auto flex max-w-[1280px]
+// items-center justify-between` row, proof-grid.tsx:820-824) and puts a
+// stand-in in the submit slot. The assertions are about STRUCTURE — which
+// subtree the panel and the button live in — so they hold for any button
+// mounted in that slot; they never pretend to exercise
+// <SubmitSelectionPanel>'s own behaviour, which its tests already own.
+describe("SelectionCounter — the money detail floats above the bar (task #270)", () => {
+  type SelectionCounterSnapshot = NonNullable<Parameters<typeof SelectionCounter>[0]["counter"]>;
+
+  function share(overrides: Partial<AttributionShare> = {}): AttributionShare {
+    return {
+      included: 0,
+      extras: 0,
+      originals: 0,
+      extrasSurchargeCop: 0,
+      originalsSurchargeCop: 0,
+      surchargeCop: 0,
+      ...overrides,
+    };
+  }
+
+  const TERMS = {
+    includedPhotosSnapshot: 4,
+    extraPhotoPriceCopSnapshot: 5_000,
+    extraPhotoPriceTiersSnapshot: null,
+    originalPhotoPriceCopSnapshot: 2_000,
+  };
+  const QUOTA = () => computeQuota(6, 1, TERMS);
+
+  /** Two bill-holders: the only condition that opens the two-level detail, and
+   * therefore the panel. */
+  const twoHolders = () =>
+    counter({
+      group: 4,
+      viewer: { yours: 3, shared: 0, toSend: 0 },
+      people: [
+        person(
+          ANA,
+          3,
+          share({ included: 1, extras: 2, extrasSurchargeCop: 10_000, surchargeCop: 10_000 }),
+        ),
+        person(BETO, 1),
+      ],
+    });
+
+  const toggle = (name: string) => screen.getByRole("button", { name });
+  const regionFor = (button: HTMLElement) =>
+    document.getElementById(button.getAttribute("aria-controls") ?? "");
+  const tokensOf = (element: HTMLElement | null) =>
+    (element?.className ?? "").split(/\s+/).filter(Boolean);
+
+  function BarHarness({ snapshot }: { snapshot: SelectionCounterSnapshot }) {
+    return (
+      <div
+        data-testid="bar"
+        className="border-line-2 bg-bg/95 fixed inset-x-0 bottom-0 z-40 border-t px-4 backdrop-blur-md"
+      >
+        <div className="mx-auto flex max-w-[1280px] items-center justify-between gap-3 lg:flex-wrap">
+          <SelectionCounter
+            quota={QUOTA()}
+            allowsOriginalSelection
+            counter={snapshot}
+            viewerId={ANA.id}
+            collapsible
+          />
+          <div data-testid="submit-slot">
+            <button type="button">Enviar las 3</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  it("renders the multi-person detail as a panel positioned on the bar's own top edge, carrying the bar's surface", () => {
+    render(<BarHarness snapshot={twoHolders()} />);
+    fireEvent.click(toggle("Ver detalle"));
+
+    // Positive control first: the rows are really rendered in that panel.
+    expect(screen.getAllByRole("term").map((node) => node.textContent)).toEqual(["Tú", "Beto"]);
+
+    const panel = regionFor(toggle("Ocultar detalle"));
+    expect(panel).not.toBeNull();
+    const tokens = tokensOf(panel);
+
+    // Out of flow and anchored ABOVE the bar: `bottom-full` is
+    // `bottom: 100%` of the containing block, and `absolute` is what takes the
+    // panel out of the row so opening it cannot change the bar's height.
+    expect(tokens).toEqual(
+      expect.arrayContaining(["absolute", "bottom-full", "inset-x-0", "mx-auto", "max-w-[1280px]"]),
+    );
+    // The bar's own surface, reused rather than a new one.
+    expect(tokens).toEqual(
+      expect.arrayContaining(["bg-bg/95", "border-line-2", "border-t", "backdrop-blur-md"]),
+    );
+    // One height rule and it is the #269 allocation: fixed, breakpoint-free,
+    // and the only `h-`/`max-h-` token in the list.
+    expect(tokens.filter((token) => /(^|:)(h|max-h)-/.test(token))).toEqual([
+      "h-[min(40vh,20rem)]",
+    ]);
+    expect(tokens).toContain("overflow-y-auto");
+    expect(tokens).toContain("overscroll-contain");
+
+    // The containing block `bottom-full` resolves against is the BAR itself:
+    // nothing between the panel and the bar may establish one of its own, or
+    // the panel would float above the wrong box (jsdom applies no stylesheet,
+    // so — like the #269 height test — the contract is read off the classes).
+    const bar = screen.getByTestId("bar");
+    const BETWEEN = ["absolute", "relative", "fixed", "sticky"];
+    const ancestors: HTMLElement[] = [];
+    for (let node = panel?.parentElement; node && node !== bar; node = node.parentElement) {
+      ancestors.push(node);
+    }
+    expect(ancestors.length).toBeGreaterThan(0);
+    for (const ancestor of ancestors) {
+      expect(tokensOf(ancestor).filter((token) => BETWEEN.includes(token))).toEqual([]);
+    }
+  });
+
+  it("keeps the bar's single row: the submit button and the toggle are not inside the panel", () => {
+    render(<BarHarness snapshot={twoHolders()} />);
+    const bar = screen.getByTestId("bar");
+    const row = bar.firstElementChild as HTMLElement;
+    const submitSlot = screen.getByTestId("submit-slot");
+    const submit = screen.getByRole("button", { name: "Enviar las 3" });
+    const before = toggle("Ver detalle");
+    const closedPanel = regionFor(before);
+    expect(closedPanel).not.toBeNull();
+
+    fireEvent.click(before);
+
+    const open = toggle("Ocultar detalle");
+    const panel = regionFor(open);
+    // The disclosed region is the same element the toggle names before and
+    // after opening — the aria contract is untouched by the move.
+    expect(panel).toBe(closedPanel);
+
+    // The button is not in the panel, and the panel is not in the button's
+    // slot: they are branches of the same flex row, which is what keeps the
+    // button beside the headline instead of under the rows.
+    expect(panel?.contains(submit)).toBe(false);
+    expect(panel?.contains(submitSlot)).toBe(false);
+
+    // The counter's root is the button's SIBLING (its own flex item), and the
+    // panel hangs off that counter — so the panel can never widen or centre
+    // the button's column.
+    const counterRoot = panel?.parentElement?.parentElement as HTMLElement;
+    expect(counterRoot.parentElement).toBe(row);
+    expect(counterRoot.nextElementSibling).toBe(submitSlot);
+    expect(counterRoot.contains(open)).toBe(true);
+    expect(panel?.contains(open)).toBe(false);
+
+    // The row itself did not grow a second in-flow child: same two flex items
+    // and the same compact row before and after, so the bar's height is the
+    // one it has with the detail closed.
+    const compactRow = open.parentElement as HTMLElement;
+    const compactChildren = Array.from(compactRow.children);
+    expect(counterRoot.contains(compactRow)).toBe(true);
+    expect(compactRow.contains(panel)).toBe(false);
+    expect(Array.from(row.children)).toEqual([counterRoot, submitSlot]);
+    expect(Array.from(open.parentElement?.children ?? [])).toEqual(compactChildren);
+  });
+
+  it("leaves the single payer's detail inline — no panel, the pre-#270 class string byte for byte", () => {
+    const solo = counter({
+      group: 3,
+      viewer: { yours: 3, shared: 0, toSend: 0 },
+      people: [
+        person(ANA, 3, share({ included: 3, extras: 0, extrasSurchargeCop: 0, surchargeCop: 0 })),
+      ],
+    });
+
+    render(<BarHarness snapshot={solo} />);
+
+    const closed = regionFor(toggle("Ver detalle"));
+    expect(closed?.className).toBe("max-h-[40vh] overflow-y-auto overscroll-contain max-lg:hidden");
+
+    fireEvent.click(toggle("Ver detalle"));
+    const open = regionFor(toggle("Ocultar detalle"));
+    expect(open?.className).toBe("max-h-[40vh] overflow-y-auto overscroll-contain");
+    expect(screen.queryByRole("term")).toBeNull();
+    // Nothing of the panel: a single payer's detail stays in the bar's column.
+    for (const token of ["absolute", "bottom-full", "max-w-[1280px]", "bg-bg/95"]) {
+      expect(tokensOf(open)).not.toContain(token);
+    }
+  });
+
+  it("keeps the non-collapsible caller inline too — there is no bar there to float above", () => {
+    render(
+      <SelectionCounter
+        quota={QUOTA()}
+        allowsOriginalSelection
+        counter={twoHolders()}
+        viewerId={ANA.id}
+      />,
+    );
+
+    const region = screen.getAllByRole("term")[0]?.closest("dl")?.parentElement;
+    expect(region?.className).toBe("h-[min(40vh,20rem)] overflow-y-auto overscroll-contain");
+    expect(screen.getAllByRole("term")).toHaveLength(2);
+  });
+});

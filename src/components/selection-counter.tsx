@@ -145,6 +145,34 @@ import { UNATTRIBUTED_PICKER_LABEL, type SelectionCounter } from "@/lib/selectio
 // when only one of them carries money. A zero row is still information ("$ 0
 // a tu nombre" next to somebody else's bill), and the gallery total behind its
 // own control is what makes that readable.
+//
+// TASK #270 — THE DETAIL LEAVES THE BAR'S COLUMN. #269 fixed the detail's
+// HEIGHT but left it in the flow, as a second child of the counter inside the
+// bar's flex row next to <SubmitSelectionPanel>. The owner's screenshot
+// (2026-10-18) showed what that costs: the row is `items-center`, so the
+// submit button was centred vertically against a panel a fifth of the screen
+// tall — "Enviar las N" floated mid-height among the person rows; the rows
+// only ever got the counter's own column width, so they wrapped early; and
+// "Ocultar detalle" sat clipped at the bottom edge of the screen.
+//
+// So the multi-person detail is a PANEL ABOVE THE BAR, not a block inside it.
+// The region that already existed becomes `absolute bottom-full inset-x-0`,
+// anchored to the bar's own fixed box, centred at `max-w-[1280px]`, carrying
+// the bar's own surface (same bg/border/blur utilities — no new tokens) and
+// the same allocated `h-[min(40vh,20rem)]` with internal scroll. Being out of
+// flow is the whole fix: the bar keeps exactly one compact row — headline,
+// running amount, toggle, submit — at the height it has with the detail
+// closed, and opening the detail moves the submit button by nothing at all.
+//
+// WHAT IT DELIBERATELY DOES NOT CHANGE. The single payer (rows <= 1) renders
+// the pre-#270 inline detail byte for byte: no panel, no positioning classes,
+// same `max-h-[40vh]` string. And the non-collapsible caller (`selected`, in
+// the normal document flow) keeps its inline fixed-height block too: there is
+// no fixed bar there for a panel to float above, so `absolute bottom-full`
+// would anchor to whatever positioned ancestor happened to be further up the
+// page. Both disclosures keep their own `aria-controls`/`aria-expanded`
+// contracts untouched — the region IS the panel, so `aria-controls` still
+// names exactly the thing the toggle shows and hides.
 export type MoneyRow = {
   key: string;
   /** "Tú" for the viewer, the person's `name ?? email` otherwise, and
@@ -301,6 +329,32 @@ export function SelectionCounter({
   // one never silently closes the other.
   const [totalOpen, setTotalOpen] = useState(false);
   const totalId = useId();
+  // Task #270 — the multi-person detail floats ABOVE the bar instead of
+  // sharing its row. Gated on BOTH conditions on purpose: `showBreakdown` is
+  // the defect the owner reported (somebody else's money in the column), and
+  // `collapsible` is what makes this counter the sticky bar at all — the
+  // `selected` view has no bar to float above (see this file's header
+  // comment). Either one alone would move the detail somewhere it does not
+  // belong.
+  const floatsAboveBar = showBreakdown && collapsible;
+  // The bar's own surface, reused verbatim: bg, hairline and blur are the
+  // ones <ProofGrid> puts on the bar (proof-grid.tsx's `bg-bg/95 border-t
+  // backdrop-blur-md`), plus the same horizontal rhythm so the rows line up
+  // with the headline above them. `bottom-full` is what makes it sit ON the
+  // bar's top edge with no gap and no height contribution.
+  const panelClasses =
+    "border-line-2 bg-bg/95 absolute inset-x-0 bottom-full z-10 mx-auto max-w-[1280px] border-t px-4 py-3 backdrop-blur-md min-[620px]:px-7 lg:px-12";
+  // Assembled as a list so the non-floating branches keep the pre-#270 class
+  // string exactly (single payer: `max-h-[40vh]`; multi-person without a bar:
+  // `h-[min(40vh,20rem)]`), with no dangling separator either way.
+  const detailClasses = [
+    floatsAboveBar ? panelClasses : "",
+    detailHeight,
+    "overflow-y-auto overscroll-contain",
+    folded ? "max-lg:hidden" : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
   // The compact row's amount. Without originals the surcharge IS the extras
   // amount; with originals `surchargeCop` is the TOTAL of both tariffs, so it
   // gets an honest "en total" label (and shows even at 0 extras).
@@ -385,7 +439,11 @@ export function SelectionCounter({
           // the total is open, plus internal scrolling for whatever does not
           // fit. `max-h` was the bug: it only capped the box, never allocated
           // it. Single payer keeps its own (pre-#269) class untouched.
-          className={`${detailHeight} overflow-y-auto overscroll-contain ${folded ? "max-lg:hidden" : ""}`}
+          // Task #270 — and when this counter IS the sticky bar with more than
+          // one row, this same element is the panel above it: `detailClasses`
+          // adds the absolute positioning, so the fixed height allocates space
+          // over the photos instead of inside the bar's row.
+          className={detailClasses}
         >
           {/* Task #264 — people first, and (task #269) people ONLY: "Tú" leads
               and is emphasised; the amounts are the server's own shares. */}

@@ -303,10 +303,15 @@ describe("GalleryDetailPage chrome", () => {
   // Review finding on task #94: every fixture in this file used to carry a
   // single client, so the plural rendering page.tsx's own comment describes
   // ("Task #94: a gallery can have several clients now — one line per
-  // client") had never actually been rendered with more than one. This
-  // proves it for real: a SECOND client gets its OWN `<p>`, not squashed
-  // into the first one.
-  it("renders one line per client when a gallery has several", async () => {
+  // client") had never actually been rendered with more than one.
+  //
+  // Task #273 re-expressed it: the row's identity is now name OVER email as
+  // two stacked nodes (design/system/dashboard.html:934-935), so "both are
+  // `<p>`" no longer discriminates anything. The criterion the test's own
+  // comment states — one CELL per client, never both clients in one node — is
+  // what is asserted now: the name and the email are distinct nodes in the
+  // same `<li>`, name first, and each client gets its own cell.
+  it("renders one cell per client, with the name stacked over the email, when a gallery has several", async () => {
     getGalleryDetailMock.mockResolvedValue(
       galleryDetail({
         clients: [
@@ -319,15 +324,19 @@ describe("GalleryDetailPage chrome", () => {
     const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
     render(element);
 
-    const anaLine = screen.getByText(/Ana Pérez/);
-    const betoLine = screen.getByText(/Beto Gómez/);
-    expect(anaLine).toBeDefined();
-    expect(betoLine).toBeDefined();
-    // Two DISTINCT paragraphs, not one client's name/email crammed next to
-    // the other's inside a single node.
-    expect(anaLine).not.toBe(betoLine);
-    expect(anaLine.tagName).toBe("P");
-    expect(betoLine.tagName).toBe("P");
+    const anaName = screen.getByText("Ana Pérez");
+    const anaEmail = screen.getByText("ana@example.com");
+    const betoName = screen.getByText("Beto Gómez");
+    // Stacked: the name and the email are separate nodes, name first…
+    expect(anaName).not.toBe(anaEmail);
+    expect(
+      anaName.compareDocumentPosition(anaEmail) & Node.DOCUMENT_POSITION_FOLLOWING,
+    ).toBeTruthy();
+    // …inside ONE cell per client, never both clients in one node.
+    const anaCell = anaName.closest("li");
+    expect(anaCell).not.toBeNull();
+    expect(anaCell?.contains(anaEmail)).toBe(true);
+    expect(betoName.closest("li")).not.toBe(anaCell);
   });
 
   // Epic #239 (#242), re-expressed for epic #250/#263: each client row shows
@@ -1557,5 +1566,113 @@ describe("GalleryDetailPage — the frozen volume scale reaches its consumers (t
     expect(within(dialog).getByText(/recargo \$ 43\.000/)).toBeDefined();
     // After: 18 edited -> 5 extras x 13.000 = 65.000.
     expect(within(dialog).getByText(/recargo \$ 65\.000/)).toBeDefined();
+  });
+});
+
+// Task #273: the client list is a GRID capped at two rows, with the surplus
+// behind a "Ver todos (n)" disclosure. jsdom has no layout and no CSS cascade,
+// so this describe stubs the ONE value the list reads — the resolved
+// `grid-template-columns` of its `<ul>` — and delegates every other computed
+// property to jsdom's real implementation, because Testing Library's own
+// role-visibility check reads `display` through the same function.
+//
+// The first test here, with NO stub at all, is the sentinel: unmeasured must
+// mean "render every row, show no toggle". It is also what keeps every other
+// test in this file green, since none of them can measure either.
+describe("GalleryDetailPage — client grid collapse (task #273)", () => {
+  let tracks = "";
+
+  function stubGrid(value: string) {
+    tracks = value;
+    // No resize is fired in these tests — the column count's re-measurement
+    // is proven directly in gallery-client-list.test.tsx. This stub exists so
+    // the list observes something instead of falling back to unmeasured.
+    vi.stubGlobal(
+      "ResizeObserver",
+      class {
+        observe() {}
+        unobserve() {}
+        disconnect() {}
+      },
+    );
+    const real = window.getComputedStyle.bind(window);
+    vi.spyOn(window, "getComputedStyle").mockImplementation((element, pseudo) => {
+      const style = real(element, pseudo);
+      if (!(element instanceof HTMLUListElement)) return style;
+      return new Proxy(style, {
+        get: (target, property) => {
+          if (property === "gridTemplateColumns") return tracks;
+          const computed = Reflect.get(target, property);
+          return typeof computed === "function" ? computed.bind(target) : computed;
+        },
+      }) as CSSStyleDeclaration;
+    });
+  }
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.restoreAllMocks();
+    tracks = "";
+  });
+
+  const SEVEN_CLIENTS = Array.from({ length: 7 }, (_unused, index) => ({
+    id: `u${index + 1}`,
+    name: `Cliente ${index + 1}`,
+    email: `cliente${index + 1}@example.com`,
+  }));
+
+  // The sentinel, through the real page: no ResizeObserver and no stylesheet
+  // (so `gridTemplateColumns` is ""), which is exactly jsdom's situation. The
+  // page must render all seven clients and no toggle rather than clamping to
+  // an invented column count.
+  it("renders every client, with no 'Ver todos', when the grid cannot be measured", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({ status: "proofing", clients: SEVEN_CLIENTS }),
+    );
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+
+    for (const client of SEVEN_CLIENTS) {
+      expect(screen.getByRole("button", { name: `Acciones para ${client.name}` })).toBeDefined();
+    }
+    expect(screen.queryByRole("button", { name: /Ver todos|Mostrar menos/ })).toBeNull();
+  });
+
+  // Three columns => six clients in two rows, the seventh behind the toggle.
+  it("collapses to two grid rows and keeps the attach form reachable", async () => {
+    const { default: userEvent } = await import("@testing-library/user-event");
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({ status: "proofing", clients: SEVEN_CLIENTS }),
+    );
+    getClientsForPickerMock.mockResolvedValue([
+      { id: "u8", name: "Cliente 8", email: "cliente8@example.com" },
+    ]);
+    stubGrid("300px 300px 300px");
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+    const user = userEvent.setup();
+
+    // Scoped to the client list: the page also renders the state stepper and
+    // the package's price tiers as lists.
+    const list = screen.getByRole("list", { name: "Clientes de la galería" });
+    expect(within(list).getAllByRole("listitem")).toHaveLength(6);
+    expect(screen.queryByRole("button", { name: "Acciones para Cliente 7" })).toBeNull();
+
+    const toggle = screen.getByRole("button", { name: "Ver todos (1)" });
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    expect(toggle.getAttribute("aria-controls")).toBe(list.id);
+
+    // Role queries exclude hidden subtrees, so resolving this button IS the
+    // reachability proof: the attach form is a sibling AFTER the list, never
+    // inside the collapsible region.
+    expect(screen.getByRole("button", { name: "Agregar" })).toBeDefined();
+
+    await user.click(toggle);
+
+    expect(within(list).getAllByRole("listitem")).toHaveLength(7);
+    expect(screen.getByRole("button", { name: "Acciones para Cliente 7" })).toBeDefined();
+    expect(
+      screen.getByRole("button", { name: "Mostrar menos" }).getAttribute("aria-expanded"),
+    ).toBe("true");
   });
 });

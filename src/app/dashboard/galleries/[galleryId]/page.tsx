@@ -22,6 +22,7 @@ import { GalleryWorkspace } from "@/components/gallery-workspace";
 import { PublishGalleryButton } from "@/components/publish-gallery-button";
 import { UnlockSelectionPanel } from "@/components/unlock-selection-panel";
 import { GalleryClientRow } from "@/components/gallery-client-row";
+import { GalleryClientList } from "@/components/gallery-client-list";
 import { AttachGalleryClientsForm } from "@/components/attach-gallery-clients-form";
 import { EditGalleryTermsDialog } from "@/components/edit-gallery-terms-dialog";
 import { AllowsOriginalSelectionControl } from "@/components/allows-original-selection-control";
@@ -337,8 +338,8 @@ export default async function GalleryDetailPage({
           `flex justify-between` layout, which put the publish/unlock
           actions in the SAME visual column as the package/quota `<dl>` — see
           the reference panel further down for where those facts moved. */}
-      <div className="flex flex-col gap-8 lg:flex-row lg:items-start lg:justify-between lg:gap-10">
-        <div className="min-w-0 lg:max-w-[32rem] lg:flex-1">
+      <div className="flex flex-col gap-8 lg:flex-row lg:items-start lg:gap-5">
+        <div className="min-w-0 lg:flex-1">
           <h1 className="text-fg max-w-[24ch] text-2xl leading-tight font-medium tracking-[-0.015em] text-balance">
             {gallery.title}
           </h1>
@@ -414,31 +415,48 @@ export default async function GalleryDetailPage({
               deliberate state, never as blank space. It is also the thing
               blocking publication, so the line says what to do next rather
               than only reporting the absence — the "agrega" pointer lands
-              right above the attach form below. */}
-          <div className="mt-4 flex flex-col gap-2">
+              right above the attach form below.
+
+              Task #273: the rows below are a measured 2-row GRID
+              (<GalleryClientList>), not a stack — it counts its own resolved
+              columns and hides the surplus rows with `hidden`, so they are
+              neither focusable nor announced, while each row stays MOUNTED
+              and keeps its own `useActionState`. Everything about WHICH
+              affordances a row may offer (`removable`, `resendable`,
+              `selection`, `preview`) is still computed here, on the server;
+              the list only places the already-built elements. The attach form
+              stays OUTSIDE the list on purpose: it must remain reachable
+              while the list is collapsed (it is where #100's "agrega uno acá
+              abajo" points), and inside a grid cell its own height would
+              inflate one of the two visible rows. */}
+          <div className="mt-4">
             {gallery.clients.length === 0 ? (
               <p className="text-fg-mute text-sm">
                 Todavía sin cliente — agrega uno acá abajo para poder publicar la galería.
               </p>
             ) : (
-              gallery.clients.map((client) => (
-                <GalleryClientRow
-                  key={client.id}
-                  galleryId={gallery.id}
-                  client={client}
-                  status={gallery.status}
-                  removable={canRemoveAnyClient}
-                  resendable={canResendAccess}
-                  selection={
-                    gallery.status === "draft" ? undefined : selectionByClientId.get(client.id)
-                  }
-                  preview={
-                    gallery.status === "draft"
-                      ? undefined
-                      : dashboardSelection.previewByClient[client.id]
-                  }
-                />
-              ))
+              <GalleryClientList
+                items={gallery.clients.map((client) => ({
+                  id: client.id,
+                  row: (
+                    <GalleryClientRow
+                      galleryId={gallery.id}
+                      client={client}
+                      status={gallery.status}
+                      removable={canRemoveAnyClient}
+                      resendable={canResendAccess}
+                      selection={
+                        gallery.status === "draft" ? undefined : selectionByClientId.get(client.id)
+                      }
+                      preview={
+                        gallery.status === "draft"
+                          ? undefined
+                          : dashboardSelection.previewByClient[client.id]
+                      }
+                    />
+                  ),
+                }))}
+              />
             )}
           </div>
 

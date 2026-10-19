@@ -192,8 +192,16 @@ handle="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys
 tab="$(printf '%s' "$json"    | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["terminal"]["tabId"])')"
 [ -n "$handle" ] || { echo "orca returned no terminal handle: $json" >&2; exit 1; }
 
-printf 'seat=%s\nagent=%s\nterminal=%s\ntab=%s\nmodel=%s/%s\nthinking=%s\ntools=%s\ncontract=%s\noutput=%s\n' \
-  "$seat" "$agent_name" "$handle" "$tab" "$provider" "$model" "$thinking" "$tools" "$contract" "$output"
+handoff="$(printf 'seat=%s\nagent=%s\nterminal=%s\ntab=%s\nmodel=%s/%s\nthinking=%s\ntools=%s\ncontract=%s\noutput=%s\n' \
+  "$seat" "$agent_name" "$handle" "$tab" "$provider" "$model" "$thinking" "$tools" "$contract" "$output")"
+printf '%s\n' "$handoff"
+
+# The handoff is printed BEFORE the blocking wait, and a caller that is interrupted mid-wait
+# (Ctrl-C, an agent harness aborting the command, a dropped SSH) never receives those lines: the
+# terminal is then orphaned with nothing on disk saying which seat it is or who started it. The
+# file is written first, so an interrupted run is always recoverable by reading it back. Same
+# content, same keys — `sed -n 's/^terminal=//p' "$output.handoff"` is the recovery path.
+printf '%s\n' "$handoff" > "$output.handoff"
 
 [ "$do_wait" -eq 1 ] || exit 0
 
@@ -212,7 +220,13 @@ while :; do
   now="$(date +%s)"
   [ "$now" -ge "$deadline" ] && break
   ticks=$(( ticks + 1 ))
-  [ $(( ticks % 15 )) -eq 0 ] && echo "… waiting for $agent ($(( now - started ))s)" >&2
+  # `$agent_name`, not `$agent`: the shell runs under `set -u`, so the wrong name is an
+  # immediate fatal error on the FIRST progress tick (~30s), which killed the launcher while
+  # the seat it had just started kept running in its terminal. An `if` rather than `a && b`
+  # so a non-progress tick cannot be mistaken for a failed command.
+  if [ $(( ticks % 15 )) -eq 0 ]; then
+    echo "… waiting for $agent_name ($(( now - started ))s)" >&2
+  fi
   sleep 2
 done
 
@@ -240,6 +254,8 @@ if [ "$status" = "ok" ] && [ "$do_keep_open" -eq 0 ]; then
   fi
 fi
 
-printf 'status=%s\noutput-bytes=%s\ncleanup=%s\n' "$status" "${bytes:-0}" "$cleanup"
+# Appended to the handoff file, never replacing it: an interrupted run leaves the file with the
+# seat identity and no status, which is itself the signal that nobody read the delivery.
+printf 'status=%s\noutput-bytes=%s\ncleanup=%s\n' "$status" "${bytes:-0}" "$cleanup" | tee -a "$output.handoff"
 
 [ "$status" = "ok" ] || exit 1

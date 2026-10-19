@@ -1,9 +1,15 @@
 "use client";
 
-// One row per ACTIVE client on the gallery detail page (task #97) — renders
-// the same "name · email" line #94 already established, plus a two-step
-// "Quitar" affordance for the removal action and, since task #101, a
-// "Reenviar acceso" affordance for the resend action.
+// One row per ACTIVE client on the gallery detail page (task #97), plus a
+// two-step "Quitar" affordance for the removal action and, since task #101,
+// a "Reenviar acceso" affordance for the resend action.
+//
+// Task #273 changed the identity line from the "name · email" single
+// truncated line #94 established to name stacked OVER email
+// (design/system/dashboard.html:934-935), and the email is never truncated
+// (`break-all`, mock :387) so it reads complete in a ~210px grid cell and its
+// full text stays in the DOM for screen readers. A client with no name shows
+// only the email — not the email twice.
 //
 // Task #133 (epic #125's mobile-first note): the row used to expose "Quitar"
 // and "Reenviar acceso" as two adjacent, ~11px text buttons — "intocables con
@@ -49,7 +55,27 @@
 // `role="menuitem"` element, never a `<button type="submit">`, so it cannot
 // sit inside a `<form>` and rely on native submission the way the OLD
 // standalone button did.
-import { useActionState, useRef, useState } from "react";
+//
+// THE MENU MUST NOT OUTLIVE ITS ROW (task #273, review round 1). Task #273's
+// list hides the surplus rows by putting `hidden` on the `<li>` IT owns, and
+// this menu is portalled into `document.body` (`dropdown-menu.tsx`:
+// `DropdownMenuPrimitive.Portal`), so `display: none` never reached it: a
+// menu opened on a row that a narrower viewport pushed behind "Ver todos"
+// stayed open, keyboard-focusable and in the accessibility tree, and could
+// still fire "Reenviar acceso" for a client who was no longer on screen.
+// Unmounting rows would have fixed it too, and would have thrown away every
+// row's `useActionState` — the guarantee the hide-instead-of-unmount choice
+// exists to protect. Hiding the portal with CSS would have fixed the pixels
+// and left the exact defect. So the LIST tells the ROW it is hidden and the
+// row closes its own menu: coordination, not masking.
+import {
+  createContext,
+  useActionState,
+  useContext,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import {
   removeGalleryClient,
   resendGalleryAccessEmail,
@@ -71,6 +97,26 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+
+/** Whether the `<li>` that contains this row is currently hidden, published
+ * by `GalleryClientList` — the component that owns that `<li>`.
+ *
+ * A CONTEXT, because the list receives each row as an ALREADY-BUILT element
+ * (`items: { id, row }`, built server-side with every server-computed prop
+ * applied) and so cannot pass it a new prop; a render prop was ruled out by
+ * the same shape (it would have to cross the server/client boundary).
+ *
+ * `focusDisclosure` is the focus hand-off: when a row hides while it owns the
+ * menu, Radix would return focus to a trigger that is now `display: none`, so
+ * the row asks the list to put focus on the disclosure that just hid it.
+ *
+ * The default value is "visible, nothing to hand off", so a row rendered on
+ * its own — every existing test in `gallery-client-row.test.tsx` — behaves
+ * exactly as it did before this context existed. */
+export const GalleryClientRowVisibilityContext = createContext<{
+  hidden: boolean;
+  focusDisclosure: () => void;
+}>({ hidden: false, focusDisclosure: () => {} });
 
 const initialRemoveState: RemoveGalleryClientState = { status: "idle" };
 const initialResendState: ResendGalleryAccessEmailState = { status: "idle" };
@@ -117,6 +163,43 @@ export function GalleryClientRow({
   );
   const [confirming, setConfirming] = useState(false);
   const resendFormRef = useRef<HTMLFormElement>(null);
+  const rowRef = useRef<HTMLDivElement>(null);
+  // `open` is CONTROLLED (it was uncontrolled before task #273's review round
+  // 1) for exactly one reason: the list can then force it closed the moment
+  // this row is hidden, which unmounts the portal and takes its items out of
+  // the focus order and the accessibility tree. `onOpenChange` still keeps the
+  // `!rowIsHidden` guard so a forced close can never leave the menu armed to
+  // pop open again on expand.
+  const [actionsOpen, setActionsOpen] = useState(false);
+  const { hidden: rowIsHidden, focusDisclosure } = useContext(GalleryClientRowVisibilityContext);
+  const actionsMenuOpen = actionsOpen && !rowIsHidden;
+
+  // Adjusting state during RENDER, which is React's own documented pattern for
+  // "this state is invalid now that the input changed". Doing it in an effect
+  // would paint one frame with the orphaned menu still mounted (and trip
+  // `react-hooks/set-state-in-effect`). This is what stops a forced close from
+  // leaving the menu armed to pop open again when the row is expanded.
+  if (rowIsHidden && actionsOpen) setActionsOpen(false);
+
+  // `useLayoutEffect`, not `useEffect`: it has to read `document.activeElement`
+  // BEFORE the browser's layout drops focus off a `display: none` subtree,
+  // which is the whole point of it.
+  //
+  // The menu direction needs no code here: `actionsMenuOpen` above is false the
+  // moment the row is hidden, so the portal unmounts in that same commit and
+  // `onCloseAutoFocus` below (see `DropdownMenuContent`) hands focus to the
+  // disclosure instead of letting Radix return it to a hidden trigger.
+  //
+  // This effect is the INLINE direction: if focus was on one of this row's own
+  // controls (an open "Quitar → Confirmar", say) it is on a `display: none`
+  // element as of this commit. Read it now, while it is still there, and move
+  // it to the control that hid the row rather than letting it fall to `<body>`.
+  useLayoutEffect(() => {
+    if (!rowIsHidden) return;
+    const active = document.activeElement;
+    if (active === null || !rowRef.current?.contains(active)) return;
+    focusDisclosure();
+  }, [rowIsHidden, focusDisclosure]);
   // Epic #239 (#242): lock / unlock / remove-picks share one controller; its
   // entries live in the ⋯ menu below, its state line and prompts inline.
   const selectionController = useClientSelectionController();
@@ -124,7 +207,7 @@ export function GalleryClientRow({
   if (removeState.status === "removed") {
     return (
       <p className="text-fg-mute text-sm line-through decoration-1">
-        {client.name ?? client.email} · {client.email} — quitado.
+        {client.name ? `${client.name} · ${client.email}` : client.email} — quitado.
       </p>
     );
   }
@@ -134,17 +217,26 @@ export function GalleryClientRow({
   const hasActions = resendable || removable || hasSelectionActions;
 
   return (
-    <div className="border-line-2 flex flex-col gap-2 rounded-[6px] border py-1.5 pr-1.5 pl-3">
+    // `h-full` so bordered boxes sharing a grid row (task #273) are equally
+    // tall: a stretched grid item has a definite height, so it resolves.
+    <div
+      ref={rowRef}
+      className="border-line-2 flex h-full flex-col gap-2 rounded-[6px] border py-1.5 pr-1.5 pl-3"
+    >
       <div className="flex min-h-11 items-center justify-between gap-3 lg:min-h-8">
-        <p className="min-w-0 truncate text-sm">
-          {displayName} · <span className="text-fg-mute">{client.email}</span>
-        </p>
+        <div className="min-w-0">
+          {client.name && <p className="text-sm break-words">{client.name}</p>}
+          <p className="text-fg-mute text-xs break-all">{client.email}</p>
+        </div>
 
         {/* `.client-item__more`, design/system/dashboard.html:388-393 — the
             ONE 44px control this row exposes; everything it opens is a full-
             width menu row, not a second small target. */}
         {hasActions && (
-          <DropdownMenu>
+          <DropdownMenu
+            open={actionsMenuOpen}
+            onOpenChange={(open) => setActionsOpen(open && !rowIsHidden)}
+          >
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
@@ -154,7 +246,21 @@ export function GalleryClientRow({
                 <span aria-hidden="true">⋯</span>
               </button>
             </DropdownMenuTrigger>
-            <DropdownMenuContent align="end">
+            <DropdownMenuContent
+              align="end"
+              // Radix's default is to return focus to the trigger when the
+              // menu closes. When the menu closed because its ROW was hidden,
+              // that trigger is `display: none` and cannot take focus, so the
+              // best case is that focus silently falls to `<body>` — a
+              // keyboard user stranded mid-page. Prevent the restore and land
+              // on the disclosure instead: it is still there, it is what hid
+              // the row, and it is the way back.
+              onCloseAutoFocus={(event) => {
+                if (!rowIsHidden) return;
+                event.preventDefault();
+                focusDisclosure();
+              }}
+            >
               {selection && hasSelectionActions && (
                 <ClientSelectionMenuItems
                   galleryStatus={status}

@@ -56,8 +56,12 @@ next-env.d.ts
 *.nef
 *.arw
 
-# SDD skill-registry cache (regenerated locally)
-.atl/*.cache.json
+# SDD skill-registry state. Local, machine-specific and self-regenerating: the registry rewrites
+# its own heading to match the directory it runs in (it renamed itself "photo-showcase" ->
+# "skipjack" when refreshed from an agent worktree), and it embeds absolute paths of whatever
+# skills happen to be installed on that machine. Tracked once, it turned "git status" dirty in
+# every worktree and failed `format:check` on a file nobody edits by hand.
+.atl/
 
 # Design working files (IG-sourced references, screenshots, raw crops) — not app code.
 # EXCEPT the design-system mocks: they are the approved visual source of truth for

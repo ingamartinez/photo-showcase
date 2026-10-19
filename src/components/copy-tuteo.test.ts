@@ -25,10 +25,17 @@ const CLIENT_FILES = [
 // drifted to voseo in seven places ("Avisale") plus five more in the slices
 // this one touches. Same rule, same regex; these are the files that render the
 // admin's copy. `routes`/`api` are deliberately absent: they are JSON, not UI.
+//
+// Task #273 added both gallery-client files: the list is new admin copy ("Ver
+// todos (n)" / "Mostrar menos" / its `aria-label`), and the row is edited by
+// the same slice. A new file carrying admin copy must join this list IN THE
+// SLICE THAT ADDS IT — otherwise the guard silently stops covering it.
 const ADMIN_FILES = [
   "src/lib/client-selection-state.ts",
   "src/lib/galleries.ts",
   "src/components/gallery-client-selection.tsx",
+  "src/components/gallery-client-row.tsx",
+  "src/components/gallery-client-list.tsx",
   "src/components/selected-photos-list.tsx",
   "src/components/rolling-delivery-control.tsx",
   "src/app/dashboard/galleries/[galleryId]/page.tsx",

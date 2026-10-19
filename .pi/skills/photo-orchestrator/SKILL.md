@@ -40,6 +40,10 @@ Never infer an ID from creation order. Read it.
                  unverifiable-behind-login gap is written into the body.
 ```
 
+Every step that launches a seat ends in `seat-status.sh --wait <output>`, and every turn begins with
+`seat-status.sh` — see "You cannot be notified" below. A step is never "in flight" in your memory:
+it is whatever the handoff files say when you look.
+
 Explore is optional when the task body already fixes the how. It is mandatory for unfamiliar
 modules, multi-area slices, and ambiguous traps.
 
@@ -82,6 +86,43 @@ cat "$output"
   with the findings, never a resumed one.
 - To re-prompt a seat that is still running, use `orca terminal send --terminal <handle> --text
 "…" --enter` — but a new seat is the normal path.
+
+### You cannot be notified. Reconcile, don't remember.
+
+A seat has no way to tell you it finished. pi is turn-based and its `bash` tool has no
+run-in-background-and-callback; the `agent_settled` extension event is about pi's own run, not about
+some other terminal writing a file. Nothing will ever wake you because a seat wrote its output.
+
+This is not a theory. It has already cost a run: the implement seat delivered at 01:23 and the
+owner found it hours later, because the only thing watching for it was a `--wait` call that had been
+interrupted. The seat was fine. The protocol was the defect.
+
+So there are exactly two rules, and the second exists because the first cannot be trusted:
+
+1. **A seat step ends in the blocking wait, not in "I will check later".**
+   ```bash
+   scripts/photo/seats/seat-status.sh --wait <the path printed as output=> --timeout-ms 1800000
+   ```
+   Exit `0` delivered, `3` empty/gone (a failure), `4` timed out — a checkpoint, not a failure.
+   Keep the wait inside ONE bash call so the result lands in your context instead of in a tab.
+2. **Every turn starts by reconciling, and never by remembering.**
+   ```bash
+   scripts/photo/seats/seat-status.sh
+   ```
+   `delivered` means a seat is finished and NOBODY HAS READ IT — read it now. `empty` means it
+   finished and wrote nothing, which is a failure, not an empty success: re-prompt a NEW seat once.
+   `gone` means its terminal died with no delivery. `settled` means a completed launcher already
+   recorded the outcome.
+
+Why two rules and not one: an interrupted or aborted wait is normal — a Ctrl-C, an owner's question,
+a harness that kills the command. The wait is an optimisation for latency; the reconciliation is the
+safety net. Because `start-seat.sh` writes `<output>.handoff` **before** it blocks, an interrupted
+run still leaves the seat's identity on disk, so a turn that begins with rule 2 loses nothing no
+matter how the previous one ended.
+
+Close what has been read: `seat-status.sh --close-settled` closes the tabs of delivered and empty
+seats, and never touches a running one. A leftover tab cannot be found later by its seat name,
+because pi rewrites the title.
 
 ### What each prompt must carry
 

@@ -158,6 +158,16 @@ and `SEAT_MEMORY=1`.
 So memory belongs to the orchestrator: a plan, a verdict or a discovery worth keeping is persisted
 by it, with `project: "photo-showcase"` passed explicitly.
 
+**The seats' file is the pipe, not the archive.** Seats hand work back through the `mktemp` path the
+launcher mints — it exists before the seat starts (so `status=empty` is a real failure), every attempt
+gets its own path (so a retry cannot overwrite the attempt you are diagnosing), and it needs no
+server. What changes is durability: `$TMPDIR` is cleared on reboot, so anything that has to outlive
+the slice — the approved plan, the review verdict, the ship report with its unverifiable criteria —
+is upserted into Engram by the orchestrator under `photo-showcase/slice-<id>/plan|review|ship`.
+Moving the handoff itself into Engram was considered and rejected: the readiness signal would become
+a search, retries would collide on the topic key, and a seat would need write access to the store the
+orchestrator owns.
+
 `figma` warns at startup when the desktop app is not running. That is noise, not a failure: the
 other two still connect.
 

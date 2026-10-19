@@ -91,6 +91,31 @@ repository-relative paths or narrow globs, one per line, plus the directories wh
 are authorized. Never `.`, never the repository root, never an absolute path. If the plan does
 not name paths precisely enough, ask the owner rather than widening the surface.
 
+## The file is the pipe, Engram is the archive
+
+Seats hand you work through the file the launcher mints. Keep it that way, for reasons that are
+about the transport, not about taste:
+
+- the file exists **before** the seat starts, so "empty" is a real failure signal and `status`
+  means something;
+- every attempt gets its own path, so retrying a seat cannot overwrite the attempt you are still
+  diagnosing;
+- it needs no server, so a seat can deliver while Engram is down or unregistered.
+
+Engram is where the artifacts that **outlive the slice** go, and persisting them is your job, not
+the seat's — a seat that wrote memory would be a second writer to a store you own. After the owner
+approves a plan, and after a review returns a verdict:
+
+```
+mem_save(project: "photo-showcase", type: "architecture",
+         topic_key: "photo-showcase/slice-<id>/plan",   # or /review, /ship
+         title: "Slice <id> approved plan", content: <the file's content>)
+```
+
+The topic key upserts, so a slice reviewed twice keeps one record — the latest — while the files
+stay per-attempt. Save the ship report when the slice closes, including the acceptance criteria
+nobody could verify live: that is the part you will want to find in six weeks.
+
 ## Parallel slices
 
 One Orca worktree per lane, one seat per step, same launcher with `--worktree <selector>`. Read

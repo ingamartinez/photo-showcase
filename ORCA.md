@@ -188,6 +188,39 @@ credentials the machine already has — `openai` draws on the ChatGPT subscripti
 own API key. Delete the file and search breaks again; the extension reads it per call, so no restart
 is needed to switch.
 
+## Permissions
+
+`pi-permission-system` (a pi package) enforces `.pi/agent/pi-permissions.jsonc` for every pi session
+in this repository — orchestrator and seats alike, since a seat starts in the same worktree.
+
+**Posture: allow by default.** OpenCode's lane was permissive and this keeps that shape; what it
+adds is a hard floor under the rules this repository already stated in prose:
+
+| Denied                                                                   | Why                                                                  |
+| ------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| anything containing `--no-verify`                                        | `AGENTS.md`: hooks are the gate                                      |
+| `kanban-md edit … --body`                                                | the board is appended, never rewritten (`--append-body` still works) |
+| `git push --force`                                                       | branches rebase onto `main`, they are not forced over it             |
+| `sudo`, `rm -rf --no-preserve-root`, literal `rm -rf /` and `rm -rf ~/*` | unrecoverable outside the repo                                       |
+
+**Deny, never `ask`.** Nobody is watching a seat's terminal: an `ask` there is a hung seat and a
+burned slice, not a safety net. The policy therefore has no `ask` rules at all, and the two rules that
+could have produced a false positive are deliberately narrow (`rm -rf /tmp/…` stays allowed — the
+literal `rm -rf /` rule is an exact match rather than a wildcard).
+
+Verified by running the commands rather than reading the config: `git commit --no-verify -m probe`
+is blocked with the matched pattern (`*--no-verify*`) both in a `pi -p` session and inside a real
+review seat (`verdict=BLOCKED`), while `kanban-md edit … --append-body` and `rm -rf /tmp/junk` still
+pass.
+
+**What it does not enforce is per-role policy.** OpenCode's coordinator denied _itself_ `edit`; here
+the policy is per-repository, so a project-wide edit deny would also disarm the implement seat. Role
+discipline stays in the skill and the contracts. If role-level enforcement is ever wanted, this
+extension supports per-agent frontmatter at `.pi/agent/agents/<name>.md`, activated by an
+`<active_agent name="…">` tag in the system prompt — the seats could carry that tag in their
+contracts, while the orchestrator would need a launch wrapper, because pi has no agent picker at
+startup.
+
 ## Worktrees
 
 Seats run **in the worktree the orchestrator is in** (`--worktree active`). There is no per-lane

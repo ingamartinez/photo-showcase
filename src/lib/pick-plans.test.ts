@@ -10,6 +10,7 @@ import { createFakeDb } from "@/test-support/fake-db";
 import type { DbTransaction } from "@/lib/gallery-client-locks";
 import type { GalleryQuotaSnapshot } from "@/lib/quota";
 import { claimCart } from "@/lib/pick-claims";
+import { attributeQuota, shareFor } from "@/lib/quota-attribution";
 import {
   applyPlanToRows,
   attributionDelta,
@@ -19,6 +20,7 @@ import {
   planRemovePicks,
   planReresolve,
   previewClientActions,
+  projectCartSubmit,
   unitsOf,
   type AssetRow,
   type PickRow,
@@ -225,6 +227,64 @@ describe("planCartClaim — parity with the executed claimCart (preview == write
     expect(seedsWithJoin).toBeGreaterThan(0);
     expect(seedsWithBlockedEscalation).toBeGreaterThan(0);
     expect(seedsWithKindFix).toBeGreaterThan(0);
+  });
+});
+
+describe("projectCartSubmit — parity with the executed submit (projection == write)", () => {
+  it("projects exactly what the executed submit will do, with the projection's now BEHIND the claim's", async () => {
+    // The sheet reads at t(7); the submit lands at t(8). `arrivalAfter` makes
+    // both arrivals strictly newer than every `billed_at`, so the ARRIVAL
+    // POSITION — the thing that decides included slots — is identical even
+    // though the dates differ. If the projection used different maths (its
+    // own counts, its own quota, the live package price), one of these
+    // assertions goes red on some seed.
+    let seedsWithPass = 0;
+    let seedsWithAlreadyRequested = 0;
+
+    for (let seed = 1; seed <= 200; seed += 1) {
+      const { rows, picks, allowsOriginal } = randomState(seed);
+      const cart = picks.filter((pick) => pick.userId === C && pick.submittedAt === null);
+      const projection = projectCartSubmit(rows, picks, C, t(7), FLAT, { allowsOriginal });
+      if (projection.passToYou > 0) seedsWithPass += 1;
+      if (projection.alreadyRequested > 0) seedsWithAlreadyRequested += 1;
+
+      const fake = createFakeDb([assets, assetPicks]);
+      fake.__tables.get(assets)!.push(...rows.map((row) => ({ ...row })));
+      fake.__tables.get(assetPicks)!.push(...picks.map((row) => ({ ...row })));
+      const gallery = { id: G, allowsOriginalSelection: allowsOriginal } as Gallery;
+      const result = await claimCart(fake as unknown as DbTransaction, gallery, C, t(8));
+
+      const stored = fake.__tables.get(assets)! as unknown as AssetRow[];
+      const attributed = attributeQuota(unitsOf(stored), FLAT);
+
+      expect({ seed, passToYou: projection.passToYou, newUnits: result.newUnits }).toEqual({
+        seed,
+        passToYou: result.newUnits,
+        newUnits: result.newUnits,
+      });
+      expect({
+        seed,
+        alreadyRequested: projection.alreadyRequested,
+        requested: result.counts.joined + result.counts.escalationBlocked,
+      }).toEqual({
+        seed,
+        alreadyRequested: result.counts.joined + result.counts.escalationBlocked,
+        requested: result.counts.joined + result.counts.escalationBlocked,
+      });
+      expect({ seed, after: projection.after }).toEqual({
+        seed,
+        after: shareFor(attributed, C),
+      });
+      expect({ seed, extraUnitPriceCop: projection.extraUnitPriceCop }).toEqual({
+        seed,
+        extraUnitPriceCop: attributed.quota.extraUnitPriceCop,
+      });
+      expect(projection.passToYou + projection.alreadyRequested).toBe(cart.length);
+    }
+
+    // The two branches both have to occur or the loop above is two no-ops.
+    expect(seedsWithPass).toBeGreaterThan(0);
+    expect(seedsWithAlreadyRequested).toBeGreaterThan(0);
   });
 });
 

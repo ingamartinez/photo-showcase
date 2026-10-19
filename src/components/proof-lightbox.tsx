@@ -116,6 +116,10 @@ export function ProofLightbox({
   const ownUnsent = ownPick !== null && ownPick.submittedAt === null;
   const ownSentBilled = isOwnSent && billedTo?.id === viewerId;
   const ownSentJoined = isOwnSent && billedTo !== null && billedTo.id !== viewerId;
+  // Task #268 — the escalation line follows the pick's EFFECTIVE kind, the
+  // same coercion `planCartClaim` applies: with originals OFF every `original`
+  // pick is submitted as `edited`, so an unsent original can still escalate.
+  const effectiveKind = allowsOriginalSelection ? selectionKind : "edited";
 
   let statusLine: ReactNode = null;
   if (ownSentBilled) {
@@ -133,6 +137,21 @@ export function ProofLightbox({
   } else if (claim && billedTo === null) {
     // Legacy unit with no attribution (closed galleries only).
     statusLine = <>Ya está pedida</>;
+  } else if (
+    ownUnsent &&
+    claim &&
+    billedTo &&
+    billedTo.id !== viewerId &&
+    claim.canEscalate &&
+    effectiveKind === "edited"
+  ) {
+    // Task #268 — the unit is somebody else's ORIGINAL with no final yet, and
+    // this pick would escalate it. State the consequence before the send.
+    statusLine = (
+      <>
+        <b>{billedTo.label}</b> la pidió original · si la envías editada, pasa a tu nombre
+      </>
+    );
   } else if (ownUnsent && claim && billedTo) {
     statusLine = (
       <>

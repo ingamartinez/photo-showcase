@@ -228,7 +228,9 @@ export const PATCH = withApiSession(async function PATCH(
     if (!current) return errorResponse("asset_not_found", 404);
     // The same builder the GET route and the page use, with the ACTING
     // CLIENT as the subject (decision 12: the admin acts as that person).
-    const view = await getGallerySelection(gallery.id, quotaSnapshotOf(gallery), actingClientId);
+    const view = await getGallerySelection(gallery.id, quotaSnapshotOf(gallery), actingClientId, {
+      allowsOriginal: gallery.allowsOriginalSelection !== false,
+    });
     const billedLabel = current.billedTo === null ? null : await pickerLabel(current.billedTo);
     const labels: Record<string, string> = {};
     for (const person of onBehalf.delta.people) {
@@ -413,7 +415,9 @@ export const PATCH = withApiSession(async function PATCH(
   // The same builder the GET route and the page use. A client PATCH never
   // writes `assets`, so the quota and every claim are unchanged — this is
   // simply the one definition of the numbers, not a second computation.
-  const view = await getGallerySelection(gallery.id, quotaSnapshotOf(gallery), session.user.id);
+  const view = await getGallerySelection(gallery.id, quotaSnapshotOf(gallery), session.user.id, {
+    allowsOriginal: gallery.allowsOriginalSelection !== false,
+  });
 
   const billedLabel = current.billedTo === null ? null : await pickerLabel(current.billedTo);
 

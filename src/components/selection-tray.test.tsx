@@ -35,6 +35,7 @@ function entryFor(pick: SelectionPick): SelectionEntry {
       resolvedKind: pick.selectionKind,
       billedTo: pick.pickedBy,
       charge: "included",
+      canEscalate: false,
     },
     picks: pick.pickedBy
       ? [
@@ -1260,6 +1261,7 @@ describe("SelectionTray — compact chrome (task #236)", () => {
               resolvedKind: "edited",
               billedTo: null,
               charge: "included",
+              canEscalate: false,
             },
             // Exactly what the domain emits for this shape: the unit has no
             // billed holder, so a submitted pick on it resolves to "joined"

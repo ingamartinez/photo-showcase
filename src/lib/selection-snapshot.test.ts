@@ -60,6 +60,7 @@ function entry(assetId: string, userId: string | null, submittedAt: string | nul
             resolvedKind: "edited",
             billedTo: { id: userId, label: userId },
             charge: "included",
+            canEscalate: false,
           },
     picks:
       userId === null

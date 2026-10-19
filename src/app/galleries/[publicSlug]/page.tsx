@@ -227,6 +227,10 @@ export default async function ClientGalleryPage({
       originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,
     },
     subjectId,
+    // Task #268 — the projection mirrors `claimCart`'s own coercion rule, so
+    // an `original` cart pick in a gallery that no longer allows originals is
+    // projected as the `edited` pick the submit will actually resolve.
+    { allowsOriginal: gallery.allowsOriginalSelection !== false },
   );
 
   // Epic #250 S7 — the admin's acting subject (decision 12). `getGalleryClients`

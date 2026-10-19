@@ -15,6 +15,7 @@ import type { ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
 import { emptyShare } from "@/lib/quota-attribution";
 import type { SelectionEntry, SelectionKind } from "@/lib/selection-snapshot";
+import { emptyProjection } from "@/test-support/selection-fixtures";
 
 type SelectionPick = {
   assetId: string;
@@ -92,6 +93,7 @@ function entryFor(pick: SelectionPick): SelectionEntry {
             resolvedKind: pick.selectionKind,
             billedTo: pick.pickedBy,
             charge: "included",
+            canEscalate: false,
           },
     picks: pick.pickedBy
       ? [
@@ -121,6 +123,7 @@ function counterFor(picks: SelectionPick[], viewerId: string) {
       yours: own.filter((pick) => pick.requestedAt !== null).length,
       shared: 0,
       toSend: own.filter((pick) => pick.requestedAt === null).length,
+      projection: emptyProjection(),
     },
     // Task #264 — this fixture is about delivery/order state, not money; the
     // required share is the all-zero one, produced by the same module the
@@ -252,7 +255,6 @@ describe("ProofGrid — rolling delivery (#244), now on universal order semantic
   });
 
   it("submitting orders the por-enviar photos WITHOUT locking: the grid stays interactive and the order is shown", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const afterPicks = PICKS.map((p) =>
       p.assetId === "a3" ? { ...p, requestedAt: ORDERED_AT } : p,
     );
@@ -286,6 +288,7 @@ describe("ProofGrid — rolling delivery (#244), now on universal order semantic
 
     const user = userEvent.setup();
     await user.click(screen.getByRole("button", { name: "Enviar la foto" }));
+    await user.click(screen.getByRole("button", { name: "Sí, enviar la foto" }));
 
     await waitFor(() => expect(screen.getAllByText(/Último envío:/).length).toBeGreaterThan(0));
     // a3 is now ordered (frozen); the unpicked a6 and Beto's por-enviar a4 are
@@ -298,7 +301,6 @@ describe("ProofGrid — rolling delivery (#244), now on universal order semantic
   });
 
   it("an idempotent already_submitted 200 (nothing stamped) does NOT mark the por-enviar photos as ordered", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.stubGlobal(
       "fetch",
       vi.fn((url: string) => {
@@ -331,6 +333,7 @@ describe("ProofGrid — rolling delivery (#244), now on universal order semantic
     await act(async () => {
       fireEvent.click(screen.getByRole("button", { name: "Enviar la foto" }));
     });
+    fireEvent.click(screen.getByRole("button", { name: "Sí, enviar la foto" }));
 
     await waitFor(() =>
       expect(screen.getByRole("button", { name: "Enviar la foto" })).toBeTruthy(),

@@ -14,7 +14,15 @@ import { ProofGrid } from "./proof-grid";
 import type { ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
 import type { SelectionEntry } from "@/lib/selection-snapshot";
-import { ANA, BETO, SARA, counter, entry, pick } from "@/test-support/selection-fixtures";
+import {
+  ANA,
+  BETO,
+  SARA,
+  counter,
+  entry,
+  pick,
+  emptyProjection,
+} from "@/test-support/selection-fixtures";
 import { emptyShare } from "@/lib/quota-attribution";
 
 const A = ANA.id;
@@ -302,7 +310,7 @@ describe("ProofGrid — the six viewer-relative tile rows (D11 §2)", () => {
       entries: [entry("a3", null, [pick(A, ANA.label, "cart")])],
       counterData: counter({
         group: 15,
-        viewer: { yours: 4, shared: 2, toSend: 3 },
+        viewer: { yours: 4, shared: 2, toSend: 3, projection: emptyProjection() },
         people: [
           // Task #264 — required per-person money; this test is about the
           // four NUMBERS, so the shares are the all-zero ones.
@@ -321,7 +329,10 @@ describe("ProofGrid — the six viewer-relative tile rows (D11 §2)", () => {
     // branch; `yours: 2` does not).
     renderGrid({
       entries: [entry("a3", null, [pick(A, ANA.label, "cart")])],
-      counterData: counter({ group: 0, viewer: { yours: 2, shared: 1, toSend: 0 } }),
+      counterData: counter({
+        group: 0,
+        viewer: { yours: 2, shared: 1, toSend: 0, projection: emptyProjection() },
+      }),
     });
 
     expect(counterLineText()).toBe("2 tuyas · 1 compartida · 0 por enviar · 0 entre todos");
@@ -330,7 +341,10 @@ describe("ProofGrid — the six viewer-relative tile rows (D11 §2)", () => {
     // And the singular "1 tuya" on its own.
     renderGrid({
       entries: [entry("a3", null, [pick(A, ANA.label, "cart")])],
-      counterData: counter({ group: 1, viewer: { yours: 1, shared: 2, toSend: 1 } }),
+      counterData: counter({
+        group: 1,
+        viewer: { yours: 1, shared: 2, toSend: 1, projection: emptyProjection() },
+      }),
     });
 
     expect(counterLineText()).toBe("1 tuya · 2 compartidas · 1 por enviar · 1 entre todos");

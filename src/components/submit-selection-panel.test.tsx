@@ -83,42 +83,86 @@ describe("SubmitSelectionPanel — send button (C9)", () => {
   });
 });
 
-describe("SubmitSelectionPanel — C10 confirmation", () => {
-  it("states the send is irreversible, points to the photographer and explains the shared board", async () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-    vi.stubGlobal("fetch", vi.fn());
+describe("SubmitSelectionPanel — the confirmation sheet (task #268)", () => {
+  it("opens the sheet on click and issues no request until confirmed", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
     const user = userEvent.setup();
 
     render(<SubmitSelectionPanel {...base} unsentCount={3} />);
     await user.click(screen.getByRole("button", { name: "Enviar las 3" }));
 
-    expect(confirmSpy).toHaveBeenCalledTimes(1);
-    const message = confirmSpy.mock.calls[0]?.[0] as string;
-    expect(message).toContain("¿Envías estas 3?");
-    expect(message).toContain("Lo que envíes ya no lo puedes sacar tú");
-    expect(message).toContain("escríbele a tu fotógrafo");
-    expect(message).toContain("Puedes seguir eligiendo y enviar más después");
-    expect(message).toContain("Si alguien envía la misma antes que tú, queda a su nombre");
-    expect(message).toContain("la selección se cierra sola");
-    // Cancelled -> never issues the request.
-    expect(fetch).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeDefined();
+    expect(screen.getByRole("button", { name: "Sí, enviar las 3" })).toBeDefined();
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
-  it("uses the singular question for one photo", async () => {
-    const confirmSpy = vi.spyOn(window, "confirm").mockReturnValue(false);
-    vi.stubGlobal("fetch", vi.fn());
+  it("sends exactly once when the sheet's confirm button is clicked", async () => {
+    const fetchMock = vi.fn(() =>
+      Promise.resolve(
+        jsonResponse(200, {
+          status: "submitted",
+          quota: computeQuota(3, 0, SNAPSHOT),
+          submittedAt: "2026-07-28T12:00:00.000Z",
+          gallerySelected: false,
+          requestedCount: 3,
+        }),
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<SubmitSelectionPanel {...base} unsentCount={3} />);
+    await user.click(screen.getByRole("button", { name: "Enviar las 3" }));
+    await user.click(screen.getByRole("button", { name: "Sí, enviar las 3" }));
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/submit-selection", {
+      method: "POST",
+    });
+  });
+
+  it("closes on Escape without a POST and returns focus to the trigger", async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal("fetch", fetchMock);
+    const user = userEvent.setup();
+
+    render(<SubmitSelectionPanel {...base} unsentCount={2} />);
+    const trigger = screen.getByRole("button", { name: "Enviar las 2" });
+    await user.click(trigger);
+    await user.keyboard("{Escape}");
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(screen.queryByRole("dialog")).toBeNull();
+    expect(document.activeElement).toBe(trigger);
+  });
+
+  it("never calls window.confirm — the native dialog is gone, not bypassed", async () => {
+    const confirmSpy = vi.spyOn(window, "confirm");
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(() =>
+        Promise.resolve(
+          jsonResponse(200, {
+            status: "submitted",
+            quota: computeQuota(1, 0, SNAPSHOT),
+            submittedAt: "2026-07-28T12:00:00.000Z",
+          }),
+        ),
+      ),
+    );
     const user = userEvent.setup();
 
     render(<SubmitSelectionPanel {...base} unsentCount={1} />);
     await user.click(screen.getByRole("button", { name: "Enviar la foto" }));
+    await user.click(screen.getByRole("button", { name: "Sí, enviar la foto" }));
 
-    expect(confirmSpy.mock.calls[0]?.[0] as string).toContain("¿Envías esta foto?");
+    expect(confirmSpy).not.toHaveBeenCalled();
   });
 });
 
 describe("SubmitSelectionPanel — server outcomes", () => {
   it("POSTs to the submit route and reports the outcome once confirmed", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     const submittedQuota = computeQuota(15, 0, SNAPSHOT);
     const fetchMock = vi.fn(() =>
       Promise.resolve(
@@ -144,6 +188,7 @@ describe("SubmitSelectionPanel — server outcomes", () => {
       />,
     );
     await user.click(screen.getByRole("button", { name: "Enviar las 2" }));
+    await user.click(screen.getByRole("button", { name: "Sí, enviar las 2" }));
 
     expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/submit-selection", {
       method: "POST",
@@ -159,7 +204,6 @@ describe("SubmitSelectionPanel — server outcomes", () => {
   });
 
   it("shows a specific message when the server refuses an empty selection", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.stubGlobal(
       "fetch",
       vi.fn(() => Promise.resolve(jsonResponse(400, { error: "empty_selection" }))),
@@ -168,6 +212,7 @@ describe("SubmitSelectionPanel — server outcomes", () => {
 
     render(<SubmitSelectionPanel {...base} unsentCount={1} />);
     await user.click(screen.getByRole("button", { name: "Enviar la foto" }));
+    await user.click(screen.getByRole("button", { name: "Sí, enviar la foto" }));
 
     await vi.waitFor(() =>
       expect(screen.getByText("Elige al menos una foto antes de enviar.")).toBeDefined(),
@@ -175,7 +220,6 @@ describe("SubmitSelectionPanel — server outcomes", () => {
   });
 
   it("shows the server's admin refusal as a sentence, not the generic error", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.stubGlobal(
       "fetch",
       vi.fn(() => Promise.resolve(jsonResponse(409, { error: "admin_cannot_submit" }))),
@@ -184,6 +228,7 @@ describe("SubmitSelectionPanel — server outcomes", () => {
 
     render(<SubmitSelectionPanel {...base} unsentCount={1} />);
     await user.click(screen.getByRole("button", { name: "Enviar la foto" }));
+    await user.click(screen.getByRole("button", { name: "Sí, enviar la foto" }));
 
     expect(
       await screen.findByText("El envío de la selección es solo para clientes."),
@@ -191,7 +236,6 @@ describe("SubmitSelectionPanel — server outcomes", () => {
   });
 
   it("shows a generic retry message on a server failure and never calls onSubmitted", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.stubGlobal(
       "fetch",
       vi.fn(() => Promise.resolve(jsonResponse(502, { error: "submission_failed" }))),
@@ -201,6 +245,7 @@ describe("SubmitSelectionPanel — server outcomes", () => {
 
     render(<SubmitSelectionPanel {...base} onSubmitted={onSubmitted} unsentCount={1} />);
     await user.click(screen.getByRole("button", { name: "Enviar la foto" }));
+    await user.click(screen.getByRole("button", { name: "Sí, enviar la foto" }));
 
     await vi.waitFor(() =>
       expect(
@@ -211,7 +256,6 @@ describe("SubmitSelectionPanel — server outcomes", () => {
   });
 
   it("shows a connection error message when fetch itself rejects", async () => {
-    vi.spyOn(window, "confirm").mockReturnValue(true);
     vi.stubGlobal(
       "fetch",
       vi.fn(() => Promise.reject(new TypeError("network unreachable"))),
@@ -220,6 +264,7 @@ describe("SubmitSelectionPanel — server outcomes", () => {
 
     render(<SubmitSelectionPanel {...base} unsentCount={1} />);
     await user.click(screen.getByRole("button", { name: "Enviar la foto" }));
+    await user.click(screen.getByRole("button", { name: "Sí, enviar la foto" }));
 
     await vi.waitFor(() => expect(screen.getByText("No se pudo conectar.")).toBeDefined());
   });

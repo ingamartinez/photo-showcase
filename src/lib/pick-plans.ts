@@ -21,7 +21,7 @@ import {
   submitPick,
 } from "@/lib/pick-resolution";
 import type { AssetClaim, SubmittedPick } from "@/lib/pick-resolution";
-import type { SelectionKind } from "@/lib/selection-snapshot";
+import type { SelectionKind, SubmitProjection } from "@/lib/selection-snapshot";
 import { attributeQuota, shareFor } from "@/lib/quota-attribution";
 import type { AttributionShare, ClaimedUnit } from "@/lib/quota-attribution";
 
@@ -278,6 +278,59 @@ export function planOriginalsOff(
     assetChanges,
     arrival: assetChanges.length === 0 ? null : arrival,
     pickRewrites,
+  };
+}
+
+/**
+ * What the SUBJECT's own "Enviar" button will do, from the SAME planner the
+ * submit executes (`pick-claims.ts` calls `planCartClaim`). The confirmation
+ * sheet states this before the irreversible moment; if it computed its own
+ * counts or its own money it could disagree with the write, which is exactly
+ * the defect this function exists to prevent. `pick-plans.test.ts`'s parity
+ * test runs the projection and the executed `claimCart` over the same random
+ * states.
+ *
+ * Per person, not gallery-wide (OQ1): `after` is the subject's own share after
+ * the plan, priced by the attribution's single `computeQuota` call. The extra
+ * unit price comes from that same attribution's `quota` rather than from
+ * `after.extras` (which can be 0) or the live package row (which is not what
+ * a frozen gallery charges).
+ *
+ * `passToYou = claimed + escalated` is exactly `claimCart`'s `newUnits`;
+ * `alreadyRequested = joined + escalationBlocked`. Their sum is the cart.
+ */
+export function projectCartSubmit(
+  rows: readonly AssetRow[],
+  picks: readonly PickRow[],
+  userId: string,
+  now: Date,
+  snapshot: Parameters<typeof attributeQuota>[1],
+  opts: { allowsOriginal: boolean },
+): SubmitProjection {
+  // A cart pick on an asset ALREADY billed to this same person is a read-time
+  // contradiction: `submitPick` throws "submitter is already billed" if such a
+  // pick is ever stamped, and the PATCH gate can produce it on a legacy claim
+  // with no pick of its own. The projection must not turn that state into a
+  // 500 on every page read, so it is left out of the plan (its submit cannot
+  // move anything anyway). Every normal cart — the parity test's and
+  // production's — has no such row.
+  const cartPicks = picks.filter(
+    (pick) =>
+      pick.userId === userId &&
+      pick.submittedAt === null &&
+      !rows.some((row) => row.id === pick.assetId && row.isSelected && row.billedTo === userId),
+  );
+  const plan = planCartClaim(rows, cartPicks, userId, now, opts);
+  const afterAttribution = attributeQuota(
+    unitsOf(applyPlanToRows(rows, plan.assetChanges)),
+    snapshot,
+  );
+
+  return {
+    passToYou: plan.counts.claimed + plan.counts.escalated,
+    alreadyRequested: plan.counts.joined + plan.counts.escalationBlocked,
+    after: shareFor(afterAttribution, userId),
+    extraUnitPriceCop: afterAttribution.quota.extraUnitPriceCop,
   };
 }
 

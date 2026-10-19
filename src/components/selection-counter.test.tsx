@@ -1383,10 +1383,9 @@ describe("SelectionCounter — the money detail floats above the bar (task #270)
     expect(tokens).toEqual(
       expect.arrayContaining(["absolute", "bottom-full", "inset-x-0", "mx-auto", "max-w-[1280px]"]),
     );
-    // The bar's own surface, reused rather than a new one.
-    expect(tokens).toEqual(
-      expect.arrayContaining(["bg-bg/95", "border-line-2", "border-t", "backdrop-blur-md"]),
-    );
+    // The bar's own surface, reused rather than a new one — except the
+    // background, which task #271 made opaque (asserted in full below).
+    expect(tokens).toEqual(expect.arrayContaining(["bg-bg", "border-line-2", "border-t"]));
     // One height rule and it is the #269 allocation: fixed, breakpoint-free,
     // and the only `h-`/`max-h-` token in the list.
     expect(tokens.filter((token) => /(^|:)(h|max-h)-/.test(token))).toEqual([
@@ -1455,6 +1454,53 @@ describe("SelectionCounter — the money detail floats above the bar (task #270)
     expect(Array.from(open.parentElement?.children ?? [])).toEqual(compactChildren);
   });
 
+  it("keeps the bar's border and rhythm but paints the panel opaque — no /95 alpha, no backdrop blur (task #271)", () => {
+    render(<BarHarness snapshot={twoHolders()} />);
+    fireEvent.click(toggle("Ver detalle"));
+
+    // Positive control: the rows are in the panel, so the classes below are
+    // read off the element the owner actually saw bleed the page through.
+    expect(screen.getAllByRole("term").map((node) => node.textContent)).toEqual(["Tú", "Beto"]);
+    const panel = regionFor(toggle("Ocultar detalle"));
+    expect(panel).not.toBeNull();
+    const tokens = tokensOf(panel);
+
+    // SOLID background, and only the solid one: the alpha modifier is what
+    // let "Descargar" and the upload hint show through the rows.
+    expect(tokens).toContain("bg-bg");
+    expect(tokens.filter((token) => token.startsWith("bg-") && token.includes("/"))).toEqual([]);
+    // No backdrop filter at all — `backdrop-blur-md` on a solid background
+    // would be dead weight at best and is the other half of the same defect.
+    expect(tokens.filter((token) => token.startsWith("backdrop-"))).toEqual([]);
+
+    // Opacity is the ONLY thing that changed: the border and the rest of the
+    // panel's treatment (position, padding, the #269 allocated height, the
+    // internal scroll) are still there, so this did not become a layout fix.
+    expect(tokens).toEqual(
+      expect.arrayContaining([
+        "border-line-2",
+        "border-t",
+        "absolute",
+        "bottom-full",
+        "inset-x-0",
+        "mx-auto",
+        "max-w-[1280px]",
+        "px-4",
+        "py-3",
+        "min-[620px]:px-7",
+        "lg:px-12",
+        "h-[min(40vh,20rem)]",
+        "overflow-y-auto",
+        "overscroll-contain",
+      ]),
+    );
+
+    // And the BAR keeps its own treatment: the panel being opaque must not
+    // tempt anyone to flatten the bar's translucent surface too.
+    const barTokens = tokensOf(screen.getByTestId("bar"));
+    expect(barTokens).toEqual(expect.arrayContaining(["bg-bg/95", "backdrop-blur-md"]));
+  });
+
   it("leaves the single payer's detail inline — no panel, the pre-#270 class string byte for byte", () => {
     const solo = counter({
       group: 3,
@@ -1474,7 +1520,7 @@ describe("SelectionCounter — the money detail floats above the bar (task #270)
     expect(open?.className).toBe("max-h-[40vh] overflow-y-auto overscroll-contain");
     expect(screen.queryByRole("term")).toBeNull();
     // Nothing of the panel: a single payer's detail stays in the bar's column.
-    for (const token of ["absolute", "bottom-full", "max-w-[1280px]", "bg-bg/95"]) {
+    for (const token of ["absolute", "bottom-full", "max-w-[1280px]", "bg-bg", "bg-bg/95"]) {
       expect(tokensOf(open)).not.toContain(token);
     }
   });

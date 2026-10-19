@@ -26,10 +26,21 @@ CREATE INDEX "asset_picks_gallery_user_idx" ON "asset_picks" USING btree ("galle
 --   guard -> insert picks -> release carts -> billed_at -> decision-20 unlock.
 -- ===========================================================================
 
--- 4.1 Guard: refuse instead of guessing. Each bucket was empty in the S1
--- census; the backup at deploy time is newer, so if a bucket reappears the
--- migration aborts the deploy for manual resolution (decision 9's own
+-- 4.1 Guard: refuse instead of guessing. Each REFUSING bucket was empty in
+-- the S1 census; the backup at deploy time is newer, so if a bucket reappears
+-- the migration aborts the deploy for manual resolution (decision 9's own
 -- default) rather than silently doing the wrong thing.
+--
+-- One census bucket was NOT empty in production and is deliberately accepted:
+-- `cart_finals` -- a selected photo in an open gallery that has a final but no
+-- requested_at stamp. The classic flow does not stamp requested_at on picks
+-- made after the client submits, so the S1 census read this bucket as empty
+-- while production drifted (gallery 08c2005b, umapanela.col - pasarela,
+-- selected 2026-10-17 after the 2026-10-15 submit). Owner decision 2026-10-19:
+-- "umapanela ya pidió y se le entregaron" -- a photo with a final IS an order.
+-- 4.2's final branch backfills these as SUBMITTED picks, so 4.3 never releases
+-- them and the delivered order is preserved. The count is reported for the
+-- deploy log; it is not a refusal.
 DO $$
 DECLARE
   orphan_pickers integer;
@@ -76,9 +87,14 @@ BEGIN
     AND g."status" IN ('selected', 'delivered', 'archived')
     AND COALESCE(gc."selection_submitted_at", g."selection_submitted_at", a."selected_at") IS NULL;
 
-  IF orphan_pickers + removed_open + undated + cart_finals + closed_carts > 0 THEN
-    RAISE EXCEPTION 'asset_picks backfill refused: % picks by a non-member (admin/D9), % open-gallery picks by a removed member, % picks with no timestamp, % cart photos that already have a final, % closed-gallery picks with no submission stamp',
-      orphan_pickers, removed_open, undated, cart_finals, closed_carts;
+  RAISE NOTICE 'asset_picks backfill: % selected photos in open galleries have a final without a requested_at stamp; backfilled as submitted picks (owner decision 2026-10-19)',
+    cart_finals;
+
+  -- cart_finals is intentionally NOT part of this refusal sum (see 4.1's
+  -- header). The other four buckets must still abort the deploy.
+  IF orphan_pickers + removed_open + undated + closed_carts > 0 THEN
+    RAISE EXCEPTION 'asset_picks backfill refused: % picks by a non-member (admin/D9), % open-gallery picks by a removed member, % picks with no timestamp, % closed-gallery picks with no submission stamp',
+      orphan_pickers, removed_open, undated, closed_carts;
   END IF;
 END $$;
 --> statement-breakpoint
@@ -104,6 +120,12 @@ SELECT
       THEN gc."selection_locked_at"
     WHEN gc."selection_locked_at" IS NOT NULL
       THEN COALESCE(gc."selection_submitted_at", gc."selection_locked_at")
+    -- Owner decision 2026-10-19: a final proves the studio produced the photo,
+    -- so this is an order even without a requested_at stamp. Placed after the
+    -- requested_at/lock branches (those are more specific) and before
+    -- ELSE NULL (which would turn it into a cart 4.3 then releases).
+    WHEN a."final_key" IS NOT NULL
+      THEN COALESCE(a."selected_at", gc."selection_submitted_at", g."selection_submitted_at")
     ELSE NULL
   END
 FROM "assets" a

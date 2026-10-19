@@ -192,8 +192,16 @@ handle="$(printf '%s' "$json" | python3 -c 'import json,sys; print(json.load(sys
 tab="$(printf '%s' "$json"    | python3 -c 'import json,sys; print(json.load(sys.stdin)["result"]["terminal"]["tabId"])')"
 [ -n "$handle" ] || { echo "orca returned no terminal handle: $json" >&2; exit 1; }
 
-printf 'seat=%s\nagent=%s\nterminal=%s\ntab=%s\nmodel=%s/%s\nthinking=%s\ntools=%s\ncontract=%s\noutput=%s\n' \
-  "$seat" "$agent_name" "$handle" "$tab" "$provider" "$model" "$thinking" "$tools" "$contract" "$output"
+handoff="$(printf 'seat=%s\nagent=%s\nterminal=%s\ntab=%s\nmodel=%s/%s\nthinking=%s\ntools=%s\ncontract=%s\noutput=%s\n' \
+  "$seat" "$agent_name" "$handle" "$tab" "$provider" "$model" "$thinking" "$tools" "$contract" "$output")"
+printf '%s\n' "$handoff"
+
+# The handoff is printed BEFORE the blocking wait, and a caller that is interrupted mid-wait
+# (Ctrl-C, an agent harness aborting the command, a dropped SSH) never receives those lines: the
+# terminal is then orphaned with nothing on disk saying which seat it is or who started it. The
+# file is written first, so an interrupted run is always recoverable by reading it back. Same
+# content, same keys — `sed -n 's/^terminal=//p' "$output.handoff"` is the recovery path.
+printf '%s\n' "$handoff" > "$output.handoff"
 
 [ "$do_wait" -eq 1 ] || exit 0
 
@@ -246,6 +254,8 @@ if [ "$status" = "ok" ] && [ "$do_keep_open" -eq 0 ]; then
   fi
 fi
 
-printf 'status=%s\noutput-bytes=%s\ncleanup=%s\n' "$status" "${bytes:-0}" "$cleanup"
+# Appended to the handoff file, never replacing it: an interrupted run leaves the file with the
+# seat identity and no status, which is itself the signal that nobody read the delivery.
+printf 'status=%s\noutput-bytes=%s\ncleanup=%s\n' "$status" "${bytes:-0}" "$cleanup" | tee -a "$output.handoff"
 
 [ "$status" = "ok" ] || exit 1

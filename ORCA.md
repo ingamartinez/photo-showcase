@@ -24,13 +24,13 @@ when the task calls for orchestration; the explicit command is there when you wa
 
 The orchestrator never writes code, and it is the only actor that moves board columns.
 
-| Step           | Seat                   | Provider / model                  | Thinking | Tools                  |
-| -------------- | ---------------------- | --------------------------------- | -------- | ---------------------- |
-| Map the slice  | `photo-explore-seat`   | `llm-gateway/gpt-6-luna`          | medium   | `read,bash`            |
-| Decide the how | `photo-plan-seat`      | `claude-bridge/claude-opus-5-5`   | high     | `read,bash`            |
-| Implement      | `photo-implement-seat` | `llm-gateway/deepseek-v4.1-flash` | medium   | `read,bash,edit,write` |
-| Review         | `photo-review-seat`    | `claude-bridge/claude-opus-5-5`   | high     | `read,bash`            |
-| Ship           | `photo-ship-seat`      | `llm-gateway/deepseek-v4.1-flash` | medium   | `read,bash`            |
+| Step           | Seat                   | Provider / model                       | Thinking | Tools                  |
+| -------------- | ---------------------- | -------------------------------------- | -------- | ---------------------- |
+| Map the slice  | `photo-explore-seat`   | `llm-gateway/deepseek-v4.1-flash-1017` | medium   | `read,bash`            |
+| Decide the how | `photo-plan-seat`      | `claude-bridge/claude-opus-5-5`        | high     | `read,bash`            |
+| Implement      | `photo-implement-seat` | `llm-gateway/deepseek-v4.1-flash-1017` | medium   | `read,bash,edit,write` |
+| Review         | `photo-review-seat`    | `openai/gpt-6.1-sol`                   | high     | `read,bash`            |
+| Ship           | `photo-ship-seat`      | `llm-gateway/deepseek-v4.1-flash-1017` | medium   | `read,bash`            |
 
 Overrides without editing the script: `SEAT_PROVIDER`, `SEAT_MODEL`, `SEAT_THINKING`,
 `SEAT_TIMEOUT_MS`.
@@ -44,9 +44,16 @@ is pi too.
 
 Consequences worth knowing:
 
-- The `claude-bridge` seats draw on the **Claude subscription quota**, not per-token billing.
-  Opus runs are not unlimited; the plan and review seats are the two that use them.
-- The `llm-gateway` seats are ordinary API models with per-token billing.
+- The `claude-bridge` seat draws on the **Claude subscription quota**, not per-token billing. Opus
+  runs are not unlimited; the plan seat is the only one that uses it.
+- The `openai/gpt-6.1-sol` review seat is served by the **ChatGPT account** credential, which is
+  entitlement-limited: it is one of the models that account actually serves, while most others are
+  rejected with `400 "… not supported when using Codex with a ChatGPT account"`. Do not swap it for
+  another `openai/*` model without probing it first.
+- The `llm-gateway` seats are ordinary API models with per-token billing. Its **premium tier**
+  (`gpt-5.4`, `gpt-5.5`, `claude-opus-5-5` through the gateway) returns `402 weekly allowance` on the
+  lite plan once the allowance is spent — which is why plan runs on `claude-bridge` and not on
+  `llm-gateway/claude-opus-5-5`.
 - `pi auth check` reports `invalid`/`invalid_state` for `claude-bridge` even when it works, because
   it only understands built-in providers. The launcher therefore requires the provider to exist in
   pi's catalog and treats a non-ready auth state as a warning.

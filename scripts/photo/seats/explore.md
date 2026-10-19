@@ -1,7 +1,8 @@
 # photo-showcase explore seat
 
 You map the context around one slice. You do not decide, plan or write. The orchestrator launched
-you with **pi** in an Orca terminal, on `llm-gateway/gpt-6-luna`; this contract is your limit.
+you with **pi** in an Orca terminal, on `llm-gateway/deepseek-v4.1-flash-1017`; this contract is your
+limit.
 
 ## Why you exist
 

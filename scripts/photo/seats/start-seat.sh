@@ -75,7 +75,7 @@ done
 case "$seat" in
   explore)
     agent_name="photo-explore-seat"
-    provider="${SEAT_PROVIDER:-llm-gateway}";  model="${SEAT_MODEL:-gpt-6-luna}"
+    provider="${SEAT_PROVIDER:-llm-gateway}";  model="${SEAT_MODEL:-deepseek-v4.1-flash-1017}"
     thinking="${SEAT_THINKING:-medium}";       tools="read,bash"
     ;;
   plan)
@@ -85,17 +85,17 @@ case "$seat" in
     ;;
   implement)
     agent_name="photo-implement-seat"
-    provider="${SEAT_PROVIDER:-llm-gateway}";   model="${SEAT_MODEL:-deepseek-v4.1-flash}"
+    provider="${SEAT_PROVIDER:-llm-gateway}";   model="${SEAT_MODEL:-deepseek-v4.1-flash-1017}"
     thinking="${SEAT_THINKING:-medium}";        tools="read,bash,edit,write"
     ;;
   review)
     agent_name="photo-review-seat"
-    provider="${SEAT_PROVIDER:-claude-bridge}"; model="${SEAT_MODEL:-claude-opus-5-5}"
+    provider="${SEAT_PROVIDER:-openai}";        model="${SEAT_MODEL:-gpt-6.1-sol}"
     thinking="${SEAT_THINKING:-high}";          tools="read,bash"
     ;;
   ship)
     agent_name="photo-ship-seat"
-    provider="${SEAT_PROVIDER:-llm-gateway}";   model="${SEAT_MODEL:-deepseek-v4.1-flash}"
+    provider="${SEAT_PROVIDER:-llm-gateway}";   model="${SEAT_MODEL:-deepseek-v4.1-flash-1017}"
     thinking="${SEAT_THINKING:-medium}";        tools="read,bash"
     ;;
   *)

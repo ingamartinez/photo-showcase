@@ -301,6 +301,15 @@ describe("GalleryClientList — a hidden row's open menu (review round 1)", () =
 
   const RESUMEN_REENVIO = "Le reenviamos el enlace de acceso a cliente7@example.com.";
 
+  /** The `<li>` the list owns for one client — the element that carries
+   * `hidden`. `getByText` (unlike the role queries) still matches inside a
+   * hidden subtree, so this works on both sides of the resize. */
+  function rowFor(name: string) {
+    const row = screen.getByText(name).closest("li");
+    if (!row) throw new Error(`renders no <li> for ${name}`);
+    return row;
+  }
+
   /** Client 7's own state: a completed resend (a `useActionState` result that
    * only a MOUNTED row keeps) plus an open inline confirmation. Both are the
    * things a collapse must not throw away. */
@@ -325,7 +334,7 @@ describe("GalleryClientList — a hidden row's open menu (review round 1)", () =
     // Four columns x two rows holds all eight: nothing hidden, no toggle, and
     // client 7 is on screen — where the reviewer's repro opens its menu.
     expect(rows()).toHaveLength(8);
-    expect(rows()[7]?.hidden).toBe(false);
+    expect(rowFor("Cliente 7").hidden).toBe(false);
     expect(screen.queryByRole("button", { name: /Ver todos/ })).toBeNull();
 
     await seedClient7State(user);
@@ -339,7 +348,7 @@ describe("GalleryClientList — a hidden row's open menu (review round 1)", () =
     tracks = "300px 300px 300px";
     act(() => fireResize());
 
-    expect(rows()[7]?.hidden).toBe(true);
+    expect(rowFor("Cliente 7").hidden).toBe(true);
 
     // The portal is GONE, not merely parented to a hidden `<li>` — all three
     // of these read the live document, where an orphaned menu would be.
@@ -369,7 +378,7 @@ describe("GalleryClientList — a hidden row's open menu (review round 1)", () =
     // reopen by itself.
     await user.click(toggle);
 
-    expect(rows()[7]?.hidden).toBe(false);
+    expect(rowFor("Cliente 7").hidden).toBe(false);
     expect(screen.getByText(RESUMEN_REENVIO)).toBeDefined();
     expect(screen.getByRole("button", { name: "Confirmar" })).toBeDefined();
     expect(screen.queryByRole("menu")).toBeNull();
@@ -397,7 +406,7 @@ describe("GalleryClientList — a hidden row's open menu (review round 1)", () =
     tracks = "300px 300px 300px";
     act(() => fireResize());
 
-    expect(rows()[7]?.hidden).toBe(true);
+    expect(rowFor("Cliente 7").hidden).toBe(true);
     const toggle = screen.getByRole("button", { name: "Ver todos (2)" });
     expect(document.activeElement).toBe(toggle);
 

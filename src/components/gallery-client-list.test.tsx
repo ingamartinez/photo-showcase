@@ -299,11 +299,25 @@ describe("GalleryClientList — a hidden row's open menu (review round 1)", () =
     });
   }
 
-  it("closes the menu a column reduction orphans, hands focus to the disclosure, and keeps that row's own state", async () => {
+  const RESUMEN_REENVIO = "Le reenviamos el enlace de acceso a cliente7@example.com.";
+
+  /** Client 7's own state: a completed resend (a `useActionState` result that
+   * only a MOUNTED row keeps) plus an open inline confirmation. Both are the
+   * things a collapse must not throw away. */
+  async function seedClient7State(user: ReturnType<typeof userEvent.setup>) {
     resendGalleryAccessEmailMock.mockResolvedValue({
       status: "resent",
-      message: "Le reenviamos el enlace de acceso a cliente7@example.com.",
+      message: RESUMEN_REENVIO,
     });
+    await user.click(screen.getByRole("button", { name: "Acciones para Cliente 7" }));
+    await user.click(screen.getByRole("menuitem", { name: "Reenviar acceso" }));
+    await screen.findByRole("status");
+    await user.click(screen.getByRole("button", { name: "Acciones para Cliente 7" }));
+    await user.click(screen.getByRole("menuitem", { name: "Quitar" }));
+    expect(screen.getByRole("button", { name: "Confirmar" })).toBeDefined();
+  }
+
+  it("closes the menu a column reduction orphans, hands focus to the disclosure, and keeps that row's own state", async () => {
     stubGrid("300px 300px 300px 300px");
     const user = userEvent.setup();
     render(<GalleryClientList items={realClientRows(8)} />);
@@ -314,14 +328,7 @@ describe("GalleryClientList — a hidden row's open menu (review round 1)", () =
     expect(rows()[7]?.hidden).toBe(false);
     expect(screen.queryByRole("button", { name: /Ver todos/ })).toBeNull();
 
-    // Give client 7 state of its own that only a MOUNTED row can keep: a
-    // resent result and an open inline confirmation.
-    await user.click(screen.getByRole("button", { name: "Acciones para Cliente 7" }));
-    await user.click(screen.getByRole("menuitem", { name: "Reenviar acceso" }));
-    await screen.findByRole("status");
-    await user.click(screen.getByRole("button", { name: "Acciones para Cliente 7" }));
-    await user.click(screen.getByRole("menuitem", { name: "Quitar" }));
-    expect(screen.getByRole("button", { name: "Confirmar" })).toBeDefined();
+    await seedClient7State(user);
 
     // Leave the menu OPEN: the exact state the review reproduced the defect in.
     await user.click(screen.getByRole("button", { name: "Acciones para Cliente 7" }));
@@ -363,13 +370,42 @@ describe("GalleryClientList — a hidden row's open menu (review round 1)", () =
     await user.click(toggle);
 
     expect(rows()[7]?.hidden).toBe(false);
-    expect(
-      screen.getByText("Le reenviamos el enlace de acceso a cliente7@example.com."),
-    ).toBeDefined();
+    expect(screen.getByText(RESUMEN_REENVIO)).toBeDefined();
     expect(screen.getByRole("button", { name: "Confirmar" })).toBeDefined();
     expect(screen.queryByRole("menu")).toBeNull();
     expect(
       screen.getByRole("button", { name: "Acciones para Cliente 7" }).getAttribute("aria-expanded"),
     ).toBe("false");
+  });
+
+  // The SAME defect one layer in: this row's own controls are ordinary
+  // descendants, so `hidden` does reach them — but the control that had focus
+  // is `display: none` as of that commit, and the browser drops focus to
+  // `<body>` rather than keeping it on something invisible. Read from a layout
+  // effect, before layout takes focus away, and handed to the disclosure.
+  it("hands focus over when a row that owns the focused control is hidden, and keeps that row mounted", async () => {
+    stubGrid("300px 300px 300px 300px");
+    const user = userEvent.setup();
+    render(<GalleryClientList items={realClientRows(8)} />);
+
+    await seedClient7State(user);
+
+    const confirm = screen.getByRole("button", { name: "Confirmar" });
+    act(() => confirm.focus());
+    expect(document.activeElement).toBe(confirm);
+
+    tracks = "300px 300px 300px";
+    act(() => fireResize());
+
+    expect(rows()[7]?.hidden).toBe(true);
+    const toggle = screen.getByRole("button", { name: "Ver todos (2)" });
+    expect(document.activeElement).toBe(toggle);
+
+    // Hidden, not unmounted: the confirmation is still there — just not
+    // reachable — and comes back exactly as it was.
+    expect(screen.queryByRole("button", { name: "Confirmar" })).toBeNull();
+    await user.click(toggle);
+    expect(screen.getByRole("button", { name: "Confirmar" })).toBeDefined();
+    expect(screen.getByText(RESUMEN_REENVIO)).toBeDefined();
   });
 });

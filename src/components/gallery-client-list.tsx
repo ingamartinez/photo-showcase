@@ -132,9 +132,30 @@ export function GalleryClientList({
   // guaranteed to exist whenever a row can be hidden: rows are only hidden
   // while `collapsed`, and `overflow` is both what hides them and what renders
   // this button, so the callback can never point at nothing.
+  //
+  // TWO PATHS, ONE DESTINATION, because the request arrives at two different
+  // moments. (a) A row's own `useLayoutEffect` runs BEFORE this list has
+  // attached the toggle's ref — React runs child effects first and attaches
+  // this sibling's ref later in the same commit — so focusing directly there
+  // would be a silent no-op; the request bumps a counter and the list's own
+  // layout effect, which runs after its children with refs attached, focuses
+  // before paint. (b) A menu that unmounts calls back AFTER the commit, when
+  // the ref is attached; focusing immediately keeps the hand-off in the same
+  // task instead of leaving focus nowhere for a tick.
+  const [focusRequest, setFocusRequest] = useState(0);
   const focusDisclosure = useCallback(() => {
-    toggleRef.current?.focus();
+    if (toggleRef.current) {
+      toggleRef.current.focus();
+      return;
+    }
+    setFocusRequest((count) => count + 1);
   }, []);
+
+  useLayoutEffect(() => {
+    // Zero means "nobody asked": mounting the list must never steal focus.
+    if (focusRequest === 0) return;
+    toggleRef.current?.focus();
+  }, [focusRequest]);
 
   return (
     <div className="flex flex-col items-start gap-2">

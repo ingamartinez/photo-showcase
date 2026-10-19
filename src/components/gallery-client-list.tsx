@@ -46,10 +46,23 @@
 // accepted cost: a `role="status"` result that arrives while its row is
 // hidden is not announced, and is simply visible again on expand.
 //
+// `hidden` ON THE `<li>` DOES NOT REACH THE ROW'S PORTALLED MENU (review round
+// 1). The row's "Acciones" menu renders into `document.body` via Radix's
+// `Portal`, so a menu left OPEN on a row that a narrower viewport pushed
+// behind the toggle survived its row being hidden: still on screen, still
+// focusable, still announced, still able to fire "Reenviar acceso" for a
+// client nobody can see. Unmounting rows would fix that and lose the
+// `useActionState` guarantee above; hiding the portal with CSS would fix the
+// pixels only. So each `<li>` also publishes its visibility through
+// `GalleryClientRowVisibilityContext`, and the row closes its own menu and
+// hands focus back here — coordination between the two components, which is
+// the one fix that keeps hide-instead-of-unmount intact.
+//
 // The accept/reject decisions behind this shape (keep the attach form
 // outside, don't move "+ Agregar cliente" into the grid) belong to the page
 // and to task #273's own body, not here.
-import { useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useId, useLayoutEffect, useRef, useState, type ReactNode } from "react";
+import { GalleryClientRowVisibilityContext } from "@/components/gallery-client-row";
 
 /** A resolved track as browsers serialize a used `grid-template-columns`
  * value: `"300px 300px 300px"`. */
@@ -83,6 +96,7 @@ export function GalleryClientList({
   // below without scrolling past every client first.
   const [collapsed, setCollapsed] = useState(true);
   const listRef = useRef<HTMLUListElement>(null);
+  const toggleRef = useRef<HTMLButtonElement>(null);
   const listId = useId();
 
   // `useLayoutEffect`, not `useEffect`: on client-side navigation into this
@@ -113,6 +127,15 @@ export function GalleryClientList({
   const hiddenCount = items.length - visibleCount;
   const overflow = hiddenCount > 0;
 
+  // Where a row hands focus when it is hidden out from under the keyboard
+  // user — see the portal paragraph in this file's header. The toggle is
+  // guaranteed to exist whenever a row can be hidden: rows are only hidden
+  // while `collapsed`, and `overflow` is both what hides them and what renders
+  // this button, so the callback can never point at nothing.
+  const focusDisclosure = useCallback(() => {
+    toggleRef.current?.focus();
+  }, []);
+
   return (
     <div className="flex flex-col items-start gap-2">
       {/* `grid-cols-1` at the base is deliberate rather than redundant: the
@@ -134,11 +157,21 @@ export function GalleryClientList({
         aria-label="Clientes de la galería"
         className="grid w-full grid-cols-1 gap-2 lg:grid-cols-[repeat(auto-fill,minmax(190px,1fr))]"
       >
-        {items.map(({ id, row }, index) => (
-          <li key={id} hidden={overflow && collapsed && index >= visibleCount} className="min-w-0">
-            {row}
-          </li>
-        ))}
+        {items.map(({ id, row }, index) => {
+          const rowIsHidden = overflow && collapsed && index >= visibleCount;
+          return (
+            <li key={id} hidden={rowIsHidden} className="min-w-0">
+              {/* The `hidden` attribute above cannot reach a menu the row
+                  portals into `document.body`, so the row is also told it was
+                  hidden and closes its own menu (review round 1). */}
+              <GalleryClientRowVisibilityContext.Provider
+                value={{ hidden: rowIsHidden, focusDisclosure }}
+              >
+                {row}
+              </GalleryClientRowVisibilityContext.Provider>
+            </li>
+          );
+        })}
       </ul>
 
       {overflow && (
@@ -148,6 +181,7 @@ export function GalleryClientList({
         // pointer floor (epic #125's rule from #129).
         <button
           type="button"
+          ref={toggleRef}
           onClick={() => setCollapsed((current) => !current)}
           aria-expanded={!collapsed}
           aria-controls={listId}

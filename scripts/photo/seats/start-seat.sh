@@ -212,7 +212,13 @@ while :; do
   now="$(date +%s)"
   [ "$now" -ge "$deadline" ] && break
   ticks=$(( ticks + 1 ))
-  [ $(( ticks % 15 )) -eq 0 ] && echo "… waiting for $agent ($(( now - started ))s)" >&2
+  # `$agent_name`, not `$agent`: the shell runs under `set -u`, so the wrong name is an
+  # immediate fatal error on the FIRST progress tick (~30s), which killed the launcher while
+  # the seat it had just started kept running in its terminal. An `if` rather than `a && b`
+  # so a non-progress tick cannot be mistaken for a failed command.
+  if [ $(( ticks % 15 )) -eq 0 ]; then
+    echo "… waiting for $agent_name ($(( now - started ))s)" >&2
+  fi
   sleep 2
 done
 

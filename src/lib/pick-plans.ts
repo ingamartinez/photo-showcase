@@ -75,6 +75,27 @@ export type CartClaimCounts = {
   escalationBlocked: number;
 };
 
+/**
+ * A cart pick on an asset ALREADY billed to the same person is already
+ * satisfied: there is no unit left for it to move, and `submitPick` would
+ * throw ("submitter is already billed") if it were resolved. Production has
+ * none of these rows; the state is reachable when the PATCH gate retypes a
+ * legacy claim that carries no pick of its own, and it must neither 500 a
+ * read nor make the sheet offer to send something the write cannot execute.
+ *
+ * ONE predicate, read by the planner (the write and the projection both run
+ * `planCartClaim`) and by the counters (`partitionByPerson` and the viewer
+ * partition), so the sheet, the counter and the bar agree that such a pick
+ * plans nothing and is not "por enviar".
+ */
+export function isSelfBilledCartPick(
+  row: { isSelected: boolean; billedTo: string | null } | undefined,
+  userId: string,
+  hasSentPick: boolean,
+): boolean {
+  return !hasSentPick && row !== undefined && row.isSelected && row.billedTo === userId;
+}
+
 function claimsEqual(a: AssetClaim, b: AssetClaim): boolean {
   if (!a.claimed || !b.claimed) return a.claimed === b.claimed;
   return (
@@ -156,6 +177,9 @@ export function planCartClaim(
   for (const pick of ordered) {
     const row = rows.find((candidate) => candidate.id === pick.assetId);
     if (!row) throw new Error(`pick-plans: cart pick references unknown asset ${pick.assetId}`);
+    // Already satisfied by the viewer's own claim: the WRITE and the
+    // projection must both plan nothing for it (see `isSelfBilledCartPick`).
+    if (isSelfBilledCartPick(row, userId, pick.submittedAt !== null)) continue;
     const kind: SelectionKind =
       !opts.allowsOriginal && pick.kind === "original" ? "edited" : pick.kind;
     if (kind !== pick.kind) pickKindFixes.push(pick.assetId);
@@ -297,7 +321,10 @@ export function planOriginalsOff(
  * a frozen gallery charges).
  *
  * `passToYou = claimed + escalated` is exactly `claimCart`'s `newUnits`;
- * `alreadyRequested = joined + escalationBlocked`. Their sum is the cart.
+ * `alreadyRequested = joined + escalationBlocked`. Their sum is the cart,
+ * MINUS the picks `planCartClaim` treats as already satisfied (a cart pick on
+ * an asset this same person is already billed for), which plan nothing in the
+ * write either.
  */
 export function projectCartSubmit(
   rows: readonly AssetRow[],
@@ -307,19 +334,11 @@ export function projectCartSubmit(
   snapshot: Parameters<typeof attributeQuota>[1],
   opts: { allowsOriginal: boolean },
 ): SubmitProjection {
-  // A cart pick on an asset ALREADY billed to this same person is a read-time
-  // contradiction: `submitPick` throws "submitter is already billed" if such a
-  // pick is ever stamped, and the PATCH gate can produce it on a legacy claim
-  // with no pick of its own. The projection must not turn that state into a
-  // 500 on every page read, so it is left out of the plan (its submit cannot
-  // move anything anyway). Every normal cart — the parity test's and
-  // production's — has no such row.
-  const cartPicks = picks.filter(
-    (pick) =>
-      pick.userId === userId &&
-      pick.submittedAt === null &&
-      !rows.some((row) => row.id === pick.assetId && row.isSelected && row.billedTo === userId),
-  );
+  // The self-billed cart pick (an unsent pick on an asset this person is
+  // already billed for) is filtered inside `planCartClaim`, where the WRITE
+  // also sees it — not here, or the projection and the submit would disagree
+  // about what the same cart does.
+  const cartPicks = picks.filter((pick) => pick.userId === userId && pick.submittedAt === null);
   const plan = planCartClaim(rows, cartPicks, userId, now, opts);
   const afterAttribution = attributeQuota(
     unitsOf(applyPlanToRows(rows, plan.assetChanges)),

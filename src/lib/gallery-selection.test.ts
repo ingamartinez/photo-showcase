@@ -22,7 +22,7 @@ vi.mock("@/lib/db", async () => {
 });
 
 import { db } from "@/lib/db";
-import { assetPicks, assets, galleryClients, users } from "@/lib/db/schema";
+import { assetPicks, assets, galleryClients, users, type Gallery } from "@/lib/db/schema";
 import {
   buildGallerySelection,
   getDashboardSelection,
@@ -30,6 +30,7 @@ import {
   partitionByPerson,
   type DashboardSelectionGallery,
 } from "@/lib/gallery-selection";
+import { claimCart } from "@/lib/pick-claims";
 import { unitsOf, type AssetRow, type PickRow } from "@/lib/pick-plans";
 import { computeQuota, type GalleryQuotaSnapshot } from "@/lib/quota";
 import { attributeQuota, type AttributionShare } from "@/lib/quota-attribution";
@@ -898,6 +899,73 @@ describe("buildGallerySelection — the submit projection (task #268)", () => {
     expect(projection.passToYou).toBe(0);
     expect(projection.alreadyRequested).toBe(0);
     expect(projection.after).toEqual(current);
+  });
+
+  it("treats an unsent pick on an asset the same person is already billed for as already satisfied", async () => {
+    // Reachable through the PATCH gate on a legacy claim that carries no pick
+    // of its own: Ana holds X, and Ana also has an UNSENT pick on X. Resolving
+    // it would throw "submitter is already billed", so the WRITE must plan
+    // nothing — and the counter and the projection must not pretend there is
+    // something to send. Production has no such row; the policy is ours.
+    const at = new Date("2026-10-01T12:00:00.000Z");
+    assetRows().push(
+      asset({
+        id: "x",
+        isSelected: true,
+        selectionKind: "edited",
+        billedTo: "ana",
+        billedAt: at,
+        selectedAt: at,
+      }),
+    );
+    pickRows().push(pick({ assetId: "x", userId: "ana", submittedAt: null }));
+
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: "ana",
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
+    });
+
+    // Nothing is "por enviar", and the sheet projects nothing moving.
+    expect(view.counter.viewer!.toSend).toBe(0);
+    expect(view.counter.viewer!.projection).toMatchObject({
+      passToYou: 0,
+      alreadyRequested: 0,
+    });
+    // The dashboard's per-person tally reads the SAME policy: nobody has
+    // anything "por enviar".
+    const partition = partitionByPerson(view.entries, assetRows() as AssetRow[]);
+    const totalToSend = [...partition.values()].reduce((sum, person) => sum + person.toSend, 0);
+    expect(totalToSend).toBe(0);
+    expect(partition.get("ana")?.toSend ?? 0).toBe(0);
+
+    // The write the sheet confirms must not throw, and must change no
+    // attribution. Step 1 still stamps the pick (it resolves to a `billed`
+    // one), but the asset diff is empty.
+    const before = attributeQuota(unitsOf(assetRows() as AssetRow[]), TERMS);
+    const gallery = { id: GALLERY, allowsOriginalSelection: true } as Gallery;
+    const result = await claimCart(
+      fake as unknown as Parameters<typeof claimCart>[0],
+      gallery,
+      "ana",
+      PROJECTION_NOW,
+    );
+
+    expect(result.newUnits).toBe(0);
+    expect(result.counts).toEqual({
+      claimed: 0,
+      escalated: 0,
+      joined: 0,
+      escalationBlocked: 0,
+    });
+    const after = attributeQuota(unitsOf(assetRows() as AssetRow[]), TERMS);
+    expect(after.people).toEqual(before.people);
+    expect(after.quota).toEqual(before.quota);
+    expect(assetRows()[0]!.billedTo).toBe("ana");
   });
 });
 

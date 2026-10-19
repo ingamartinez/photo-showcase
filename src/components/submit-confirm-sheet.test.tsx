@@ -116,12 +116,15 @@ describe("SubmitConfirmSheet — the recap", () => {
     expect(labelledBy).not.toBeNull();
     expect(document.getElementById(labelledBy!)?.textContent).toBe("¿Envías estas 5?");
     expect(describedBy).not.toBeNull();
-    expect(document.getElementById(describedBy!)?.textContent).toContain(
-      "Lo que envíes ya no lo puedes sacar tú.",
-    );
-    expect(document.getElementById(describedBy!)?.textContent).toContain(
-      "escríbele a tu fotógrafo",
-    );
+    const description = document.getElementById(describedBy!)?.textContent ?? "";
+    expect(description).toContain("Lo que envíes ya no lo puedes sacar tú.");
+    expect(description).toContain("escríbele a tu fotógrafo");
+    // The three promises C10 made in the native confirm, carried over whole
+    // (task #268 review, finding 3): continuing to pick, the shared board, and
+    // the gallery closing on its own.
+    expect(description).toContain("Puedes seguir eligiendo y enviar más después");
+    expect(description).toContain("Si alguien envía la misma antes que tú, queda a su nombre");
+    expect(description).toContain("la selección se cierra sola");
   });
 });
 

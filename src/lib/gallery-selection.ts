@@ -39,6 +39,7 @@ import { getSelectionLockSnapshot, type DbExecutor } from "@/lib/gallery-client-
 import { claimFromAsset, derivePickStatus } from "@/lib/pick-resolution";
 import { attributeQuota, shareFor } from "@/lib/quota-attribution";
 import {
+  isSelfBilledCartPick,
   previewClientActions,
   projectCartSubmit,
   unitsOf,
@@ -173,8 +174,13 @@ export function buildGallerySelection(input: {
     let shared = 0;
     let toSend = 0;
     for (const entry of entries) {
+      // The same row the partition uses: a cart pick on an asset this person
+      // is already billed for plans nothing (it is filtered inside
+      // `planCartClaim`), so it is not "por enviar" either.
+      const row = rowsById.get(entry.assetId);
       for (const pick of entry.picks) {
         if (pick.userId !== subjectId) continue;
+        if (isSelfBilledCartPick(row, pick.userId, pick.submittedAt !== null)) continue;
         if (pick.state === "billed") yours += 1;
         else if (pick.state === "joined") shared += 1;
         else toSend += 1;
@@ -341,11 +347,17 @@ export function partitionByPerson(
   rows: readonly AssetRow[],
 ): Map<string, ClientPersonTally> {
   const hasFinalByAsset = new Map(rows.map((row) => [row.id, row.finalKey !== null]));
+  const rowByAsset = new Map(rows.map((row) => [row.id, row]));
   const tally = new Map<string, ClientPersonTally>();
 
   for (const entry of entries) {
     const hasFinal = hasFinalByAsset.get(entry.assetId) ?? false;
+    const row = rowByAsset.get(entry.assetId);
     for (const pick of entry.picks) {
+      // Same predicate the planner and the viewer counter use: an unsent pick
+      // on an asset already billed to its own picker moves nothing, so it is
+      // not a pick anyone has to send.
+      if (isSelfBilledCartPick(row, pick.userId, pick.submittedAt !== null)) continue;
       const person =
         tally.get(pick.userId) ??
         ({ yours: 0, shared: 0, edited: 0, toSend: 0 } satisfies ClientPersonTally);

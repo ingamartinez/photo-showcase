@@ -30,6 +30,7 @@ import type { Session } from "next-auth";
 import { db } from "@/lib/db";
 import ClientGalleryPage from "./page";
 import { emptyShare } from "@/lib/quota-attribution";
+import { emptyProjection } from "@/test-support/selection-fixtures";
 
 const authMock = vi.fn();
 vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
@@ -62,7 +63,7 @@ vi.mock("@/lib/gallery-selection", async () => {
         }),
         counter: {
           group: 0,
-          viewer: { yours: 0, shared: 0, toSend: 0 },
+          viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
           people: [],
           unattributed: 0,
           unattributedShare: emptyShare(),

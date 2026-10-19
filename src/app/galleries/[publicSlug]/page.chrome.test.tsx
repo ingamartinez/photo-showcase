@@ -19,6 +19,7 @@ import ClientGalleryPage from "./page";
 import type { GalleryDetail } from "@/lib/galleries";
 import { computeQuota, type GalleryQuotaSnapshot } from "@/lib/quota";
 import { emptyShare } from "@/lib/quota-attribution";
+import { emptyProjection } from "@/test-support/selection-fixtures";
 
 // Epic #250 S7 — the admin banner mounts <ActingClientSelect>, which reads the
 // router. A plain render in jsdom has no app-router context, so stub the two
@@ -249,7 +250,12 @@ function viewFor(picks: LegacyPick[], terms: GalleryQuotaSnapshot = DEFAULT_TERM
     quota,
     counter: {
       group: picks.length,
-      viewer: { yours: counts.get("client-a") ?? 0, shared: 0, toSend: 0 },
+      viewer: {
+        yours: counts.get("client-a") ?? 0,
+        shared: 0,
+        toSend: 0,
+        projection: emptyProjection(),
+      },
       // Task #264 — these fixtures predate the per-person money wire; the
       // required share is the all-zero one, from the same module the server
       // uses.
@@ -395,6 +401,7 @@ describe("ClientGalleryPage chrome", () => {
         "g1",
         expect.objectContaining({ includedPhotosSnapshot: 13 }),
         "client-a",
+        { allowsOriginal: false },
       );
     });
 

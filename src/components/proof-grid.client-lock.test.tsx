@@ -18,6 +18,7 @@ import type { GalleryStatus, ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
 import { emptyShare } from "@/lib/quota-attribution";
 import type { SelectionEntry, SelectionKind, ViewerLock } from "@/lib/selection-snapshot";
+import { emptyProjection } from "@/test-support/selection-fixtures";
 
 const TERMS = {
   includedPhotosSnapshot: 13,
@@ -49,6 +50,7 @@ function entryFor(pick: FixturePick): SelectionEntry {
       resolvedKind: pick.kind ?? "edited",
       billedTo: pick.pickedBy,
       charge: "included",
+      canEscalate: false,
     },
     picks: [
       {
@@ -82,6 +84,7 @@ function counterFor(picks: FixturePick[], viewerId: string) {
       yours: picks.filter((pick) => pick.pickedBy.id === viewerId && pick.submitted).length,
       shared: 0,
       toSend: picks.filter((pick) => pick.pickedBy.id === viewerId && !pick.submitted).length,
+      projection: emptyProjection(),
     },
     people: [...counts].map(([userId, { label, units }]) => ({
       userId,
@@ -333,7 +336,6 @@ describe("ProofGrid — per-person state after S6", () => {
 
   describe("submit", () => {
     it("does not latch a local lock: a send asks for a fresh snapshot and follows the server", async () => {
-      vi.spyOn(window, "confirm").mockReturnValue(true);
       const fetchMock = vi.fn((url: string) => {
         if (url.endsWith("/submit-selection")) {
           return Promise.resolve(
@@ -359,6 +361,7 @@ describe("ProofGrid — per-person state after S6", () => {
       await act(async () => {
         fireEvent.click(screen.getByRole("button", { name: /^Enviar/ }));
       });
+      fireEvent.click(screen.getByRole("button", { name: /^Sí, enviar/ }));
 
       expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/submit-selection", {
         method: "POST",
@@ -369,7 +372,6 @@ describe("ProofGrid — per-person state after S6", () => {
     });
 
     it("shows the gallery-wide 'tiene acceso' state when the server says it closed", async () => {
-      vi.spyOn(window, "confirm").mockReturnValue(true);
       const fetchMock = vi.fn((url: string) => {
         if (url.endsWith("/submit-selection")) {
           return Promise.resolve(
@@ -401,6 +403,7 @@ describe("ProofGrid — per-person state after S6", () => {
       await act(async () => {
         fireEvent.click(screen.getByRole("button", { name: /^Enviar/ }));
       });
+      fireEvent.click(screen.getByRole("button", { name: /^Sí, enviar/ }));
 
       await vi.waitFor(() => expect(screen.getByText(/tiene acceso/)).toBeDefined());
       expect(screen.queryByRole("button", { name: /^Enviar/ })).toBeNull();

@@ -10,6 +10,7 @@ import { createFakeDb } from "@/test-support/fake-db";
 import type { DbTransaction } from "@/lib/gallery-client-locks";
 import type { GalleryQuotaSnapshot } from "@/lib/quota";
 import { claimCart } from "@/lib/pick-claims";
+import { attributeQuota, shareFor } from "@/lib/quota-attribution";
 import {
   applyPlanToRows,
   attributionDelta,
@@ -19,6 +20,7 @@ import {
   planRemovePicks,
   planReresolve,
   previewClientActions,
+  projectCartSubmit,
   unitsOf,
   type AssetRow,
   type PickRow,
@@ -35,6 +37,21 @@ const FLAT: GalleryQuotaSnapshot = {
   includedPhotosSnapshot: 1,
   extraPhotoPriceCopSnapshot: 5_000,
   extraPhotoPriceTiersSnapshot: null,
+  originalPhotoPriceCopSnapshot: 2_000,
+};
+
+// The same snapshot with a volume scale on top. `minExtras: 1` mirrors the flat
+// price on purpose, so a test that sees a unit price OTHER than
+// `extraPhotoPriceCopSnapshot` is proof a volume tier applied — not that the
+// first tier happened to differ.
+const TIERED: GalleryQuotaSnapshot = {
+  includedPhotosSnapshot: 1,
+  extraPhotoPriceCopSnapshot: 5_000,
+  extraPhotoPriceTiersSnapshot: [
+    { minExtras: 1, priceCop: 5_000 },
+    { minExtras: 2, priceCop: 4_000 },
+    { minExtras: 3, priceCop: 3_000 },
+  ],
   originalPhotoPriceCopSnapshot: 2_000,
 };
 
@@ -225,6 +242,163 @@ describe("planCartClaim — parity with the executed claimCart (preview == write
     expect(seedsWithJoin).toBeGreaterThan(0);
     expect(seedsWithBlockedEscalation).toBeGreaterThan(0);
     expect(seedsWithKindFix).toBeGreaterThan(0);
+  });
+});
+
+describe("projectCartSubmit — parity with the executed submit (projection == write)", () => {
+  /** Project at t(7), execute the SAME cart at t(8), and hand back the stored
+   * post-submit rows. Both snapshot tests below compare against those rows, so
+   * FLAT and TIERED cannot drift apart. */
+  async function projectionParity(seed: number, snapshot: GalleryQuotaSnapshot) {
+    const { rows, picks, allowsOriginal } = randomState(seed);
+    const cart = picks.filter((pick) => pick.userId === C && pick.submittedAt === null);
+    const projection = projectCartSubmit(rows, picks, C, t(7), snapshot, { allowsOriginal });
+
+    const fake = createFakeDb([assets, assetPicks]);
+    fake.__tables.get(assets)!.push(...rows.map((row) => ({ ...row })));
+    fake.__tables.get(assetPicks)!.push(...picks.map((row) => ({ ...row })));
+    const gallery = { id: G, allowsOriginalSelection: allowsOriginal } as Gallery;
+    const result = await claimCart(fake as unknown as DbTransaction, gallery, C, t(8));
+    const stored = fake.__tables.get(assets)! as unknown as AssetRow[];
+
+    return { cart, projection, result, stored };
+  }
+
+  it("agrees under a TIERED snapshot too, at the volume price not the flat fallback", async () => {
+    let seedsWithVolumePrice = 0;
+
+    for (let seed = 1; seed <= 200; seed += 1) {
+      const { projection, result, stored } = await projectionParity(seed, TIERED);
+      const attributed = attributeQuota(unitsOf(stored), TIERED);
+
+      expect({ seed, after: projection.after }).toEqual({ seed, after: shareFor(attributed, C) });
+      expect({ seed, extraUnitPriceCop: projection.extraUnitPriceCop }).toEqual({
+        seed,
+        extraUnitPriceCop: attributed.quota.extraUnitPriceCop,
+      });
+      expect({ seed, passToYou: projection.passToYou, newUnits: result.newUnits }).toEqual({
+        seed,
+        passToYou: result.newUnits,
+        newUnits: result.newUnits,
+      });
+
+      // Non-vacuity: if no seed reached a volume tier, every assertion above
+      // would also pass at the flat fallback, and the price would be untested.
+      if (
+        projection.after.extras > 0 &&
+        projection.extraUnitPriceCop !== TIERED.extraPhotoPriceCopSnapshot
+      ) {
+        seedsWithVolumePrice += 1;
+      }
+    }
+
+    expect(seedsWithVolumePrice).toBeGreaterThan(0);
+  });
+
+  it("crosses a volume tier ON the submit, with a legacy unit holding the included slot", async () => {
+    // The legacy unit (billedTo/billedAt null) sorts FIRST, so it consumes the
+    // one included slot and both dated claims are already extras. C's claim is
+    // the third extra, which moves the gallery from the 4.000 tier to the
+    // 3.000 one: the sheet must name 3.000, never the frozen flat 5.000.
+    const rows = [
+      assetRow("legacy", { isSelected: true, selectionKind: "edited" }),
+      assetRow("a", {
+        isSelected: true,
+        selectionKind: "edited",
+        billedTo: A,
+        billedAt: t(1),
+        selectedAt: t(1),
+      }),
+      assetRow("b", {
+        isSelected: true,
+        selectionKind: "edited",
+        billedTo: B,
+        billedAt: t(2),
+        selectedAt: t(2),
+      }),
+      assetRow("c1"),
+    ];
+    const picks = [
+      pickRow("a", A, { submittedAt: t(1) }),
+      pickRow("b", B, { submittedAt: t(2) }),
+      pickRow("c1", C, { pickedAt: t(3) }),
+    ];
+
+    const before = attributeQuota(unitsOf(rows), TIERED);
+    expect(before.quota.extraUnitPriceCop).toBe(4_000);
+
+    const projection = projectCartSubmit(rows, picks, C, t(7), TIERED, { allowsOriginal: true });
+    expect(projection.extraUnitPriceCop).toBe(3_000);
+    expect(projection.extraUnitPriceCop).not.toBe(TIERED.extraPhotoPriceCopSnapshot);
+
+    const fake = createFakeDb([assets, assetPicks]);
+    fake.__tables.get(assets)!.push(...rows.map((row) => ({ ...row })));
+    fake.__tables.get(assetPicks)!.push(...picks.map((row) => ({ ...row })));
+    const gallery = { id: G, allowsOriginalSelection: true } as Gallery;
+    await claimCart(fake as unknown as DbTransaction, gallery, C, t(8));
+
+    const stored = fake.__tables.get(assets)! as unknown as AssetRow[];
+    const attributed = attributeQuota(unitsOf(stored), TIERED);
+    expect(attributed.quota.extraUnitPriceCop).toBe(3_000);
+    expect(projection.after).toEqual(shareFor(attributed, C));
+    expect(projection.after.extras).toBe(1);
+    expect(projection.extraUnitPriceCop).toBe(attributed.quota.extraUnitPriceCop);
+  });
+
+  it("projects exactly what the executed submit will do, with the projection's now BEHIND the claim's", async () => {
+    // The sheet reads at t(7); the submit lands at t(8). `arrivalAfter` makes
+    // both arrivals strictly newer than every `billed_at`, so the ARRIVAL
+    // POSITION — the thing that decides included slots — is identical even
+    // though the dates differ. If the projection used different maths (its
+    // own counts, its own quota, the live package price), one of these
+    // assertions goes red on some seed.
+    let seedsWithPass = 0;
+    let seedsWithAlreadyRequested = 0;
+
+    for (let seed = 1; seed <= 200; seed += 1) {
+      const { rows, picks, allowsOriginal } = randomState(seed);
+      const cart = picks.filter((pick) => pick.userId === C && pick.submittedAt === null);
+      const projection = projectCartSubmit(rows, picks, C, t(7), FLAT, { allowsOriginal });
+      if (projection.passToYou > 0) seedsWithPass += 1;
+      if (projection.alreadyRequested > 0) seedsWithAlreadyRequested += 1;
+
+      const fake = createFakeDb([assets, assetPicks]);
+      fake.__tables.get(assets)!.push(...rows.map((row) => ({ ...row })));
+      fake.__tables.get(assetPicks)!.push(...picks.map((row) => ({ ...row })));
+      const gallery = { id: G, allowsOriginalSelection: allowsOriginal } as Gallery;
+      const result = await claimCart(fake as unknown as DbTransaction, gallery, C, t(8));
+
+      const stored = fake.__tables.get(assets)! as unknown as AssetRow[];
+      const attributed = attributeQuota(unitsOf(stored), FLAT);
+
+      expect({ seed, passToYou: projection.passToYou, newUnits: result.newUnits }).toEqual({
+        seed,
+        passToYou: result.newUnits,
+        newUnits: result.newUnits,
+      });
+      expect({
+        seed,
+        alreadyRequested: projection.alreadyRequested,
+        requested: result.counts.joined + result.counts.escalationBlocked,
+      }).toEqual({
+        seed,
+        alreadyRequested: result.counts.joined + result.counts.escalationBlocked,
+        requested: result.counts.joined + result.counts.escalationBlocked,
+      });
+      expect({ seed, after: projection.after }).toEqual({
+        seed,
+        after: shareFor(attributed, C),
+      });
+      expect({ seed, extraUnitPriceCop: projection.extraUnitPriceCop }).toEqual({
+        seed,
+        extraUnitPriceCop: attributed.quota.extraUnitPriceCop,
+      });
+      expect(projection.passToYou + projection.alreadyRequested).toBe(cart.length);
+    }
+
+    // The two branches both have to occur or the loop above is two no-ops.
+    expect(seedsWithPass).toBeGreaterThan(0);
+    expect(seedsWithAlreadyRequested).toBeGreaterThan(0);
   });
 });
 

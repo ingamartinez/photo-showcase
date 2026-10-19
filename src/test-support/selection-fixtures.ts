@@ -9,6 +9,7 @@ import type {
   SelectionEntryPick,
   SelectionKind,
   SelectionPickState,
+  SubmitProjection,
 } from "@/lib/selection-snapshot";
 import { emptyShare, type AttributionShare } from "@/lib/quota-attribution";
 
@@ -45,6 +46,7 @@ export function entry(
     billedTo: { id: string; label: string } | null;
     resolvedKind?: SelectionKind;
     charge?: "included" | "extra" | "original";
+    canEscalate?: boolean;
   } | null,
   picks: SelectionEntryPick[],
 ): SelectionEntry {
@@ -56,10 +58,18 @@ export function entry(
           resolvedKind: claim.resolvedKind ?? "edited",
           billedTo: claim.billedTo,
           charge: claim.charge ?? "included",
+          canEscalate: claim.canEscalate ?? false,
         }
       : null,
     picks,
   };
+}
+
+/** The all-zero projection, produced by the same module that produces every
+ * real one. The counter's viewer defaults to it, so a fixture that never
+ * models a cart still carries the required field. */
+export function emptyProjection(): SubmitProjection {
+  return { passToYou: 0, alreadyRequested: 0, after: emptyShare(), extraUnitPriceCop: 0 };
 }
 
 /** The server's four-number counter. Defaults describe a viewer with nothing
@@ -67,7 +77,7 @@ export function entry(
 export function counter(overrides: Partial<SelectionCounter> = {}): SelectionCounter {
   return {
     group: 0,
-    viewer: { yours: 0, shared: 0, toSend: 0 },
+    viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
     people: [],
     unattributed: 0,
     unattributedShare: emptyShare(),

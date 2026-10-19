@@ -843,6 +843,7 @@ export function ProofGrid({
                 rollingDelivery={rollingDelivery}
                 unsentCount={unsentCount}
                 lastSubmittedAt={viewerSubmittedAt}
+                projection={counter.viewer?.projection ?? null}
               />
             </div>
           </div>
@@ -871,6 +872,7 @@ export function ProofGrid({
             rollingDelivery={rollingDelivery}
             unsentCount={unsentCount}
             lastSubmittedAt={viewerSubmittedAt}
+            projection={counter.viewer?.projection ?? null}
           />
         </div>
       )}

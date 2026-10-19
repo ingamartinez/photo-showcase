@@ -5,34 +5,22 @@
 // same reason those two live together in the same render already
 // (proof-grid.tsx's own header comment).
 //
-// Confirmation step, deliberately a native `window.confirm()`: this mirrors
-// the ONE other irreversible, confirmation-gated action already in this
-// codebase (`<AssetTile>`'s delete, src/components/asset-tile.tsx) rather
-// than introducing a bespoke modal component for a single button. Task #147
-// re-examined this decision against the mock's own bottom-sheet confirmation
-// (design/system/client.html:840-872, `screen-enviar`) and kept it: the
-// sheet's CONTENT is what this task owns, and every fact it states —
-// irreversible, closes for everyone, extras settle outside the app — is
-// all carried by the C10 confirmation below; building a bespoke sheet
-// component to re-skin a dialog this codebase already has a working,
-// reviewed pattern for was judged not worth the risk this pass, given how
-// much of this same slice already touches the tray, the counter and the
-// grid's layout. Revisit if the owner wants a bottom-sheet's PIXELS
-// specifically, not just its words.
-//
-// The dialog's own text is the task's explicit acceptance criterion —
-// "states what happens next, including that extras are settled outside the
-// app" — spelled out plainly rather than assumed obvious. Task #147 widened
-// it to the per-send framing C10 below carries: this
-// button closes the selection for every client attached to the gallery
-// (task #94), not only the one tapping it, matching the mock's own warning
-// (client.html:858-863) without inventing presence data this app does not
-// have (no viewer list — selection-tray.tsx's own "NO PRESENCE" stance).
+// Confirmation step, since task #268 a real sheet (`<SubmitConfirmSheet>`)
+// instead of the native `window.confirm()` this component used to open. That
+// retires #147's deliberate native-dialog decision: the owner asked for the
+// mock's bottom sheet (`design/system/client.html:840-872`) AND for a
+// per-person projection, and a native dialog cannot show either. The sheet's
+// copy stays the C10 acceptance criterion — irreversible, send again later,
+// whoever sends a shared photo first gets the unit, the gallery closes on its
+// own — and adds the viewer's own "what happens to me" rows, computed by the
+// same planner the submit executes.
 //
 // This confirmation is UX, not the gate: `POST
 // /api/galleries/[galleryId]/submit-selection` re-checks everything itself
 // (empty selection, gallery status, ownership) regardless of what this
-// button ever shows — see that route's own header comment.
+// button ever shows — see that route's own header comment. The projection is
+// read-time and can go stale if somebody else submits first; that is accepted
+// staleness, never a block.
 //
 // The locked message deliberately says "tu fotógrafo ya tiene acceso a esta
 // selección", not "ya fue notificado" — the submit route's own notification
@@ -42,7 +30,9 @@
 // the admin dashboard regardless of the email); "was notified" would be a
 // claim this component cannot back up.
 import { useState } from "react";
+import { SubmitConfirmSheet } from "@/components/submit-confirm-sheet";
 import type { QuotaResult } from "@/lib/quota";
+import type { SubmitProjection } from "@/lib/selection-snapshot";
 
 export type SubmitSelectionOutcome = {
   quota: QuotaResult;
@@ -59,6 +49,7 @@ export type SubmitSelectionOutcome = {
 
 export function SubmitSelectionPanel({
   galleryId,
+  quota,
   isLocked,
   submittedAt,
   onSubmitted,
@@ -66,6 +57,7 @@ export function SubmitSelectionPanel({
   lockedByAdmin = false,
   isAdminPreview = false,
   unsentCount = 0,
+  projection = null,
 }: {
   galleryId: string;
   /** Still carried for the outcomes' type and for callers that shared the
@@ -99,12 +91,17 @@ export function SubmitSelectionPanel({
   /** Epic #250 S7 — the submit sends the viewer's own "por enviar"; the
    * button counts exactly those photos (decision 19). */
   unsentCount?: number;
+  /** Task #268 — what this viewer's submit will do, from the server's own
+   * `planCartClaim`. `null` only when there is no subject (defensive: no
+   * trigger is rendered then). */
+  projection?: SubmitProjection | null;
   /** Task #244 — kept on the wire; the tray owns "Último envío". */
   rollingDelivery?: boolean;
   lastSubmittedAt?: string | null;
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
 
   if (isLocked) {
     if (isGalleryLocked) {
@@ -142,19 +139,9 @@ export function SubmitSelectionPanel({
 
   async function handleSubmit() {
     if (pending) return;
-    // C10 — the owner-approved confirmation. It warns about the SEND: what is
-    // sent cannot be taken back by the client, sending again is allowed, and
-    // whoever sends a shared photo first gets the unit. Money is not quoted
-    // here any more (Q6 is S9's projection sheet); the fixed bar's counter is
-    // still on screen behind the native dialog.
-    const head = unsentCount === 1 ? "¿Envías esta foto?" : `¿Envías estas ${unsentCount}?`;
-    const confirmation = [
-      head,
-      "Lo que envíes ya no lo puedes sacar tú. Si te arrepientes, escríbele a tu fotógrafo.",
-      "Puedes seguir eligiendo y enviar más después. Si alguien envía la misma antes que tú, queda a su nombre. Cuando todos hayan enviado y no quede nada por enviar, la selección se cierra sola.",
-    ].join("\n\n");
-    if (!window.confirm(confirmation)) return;
-
+    // The sheet is closed BEFORE the POST (task #268): the pending state and
+    // the error live on the bar behind it, exactly where they were before.
+    setOpen(false);
     setPending(true);
     setError(null);
     try {
@@ -210,14 +197,27 @@ export function SubmitSelectionPanel({
           for this exact mock shape (that file's own comment on
           `.btn.btn--primary.btn--wide`), reused here rather than invented a
           second time. */}
-      <button
-        type="button"
-        onClick={() => void handleSubmit()}
-        disabled={pending || unsentCount === 0}
-        className="border-accent bg-accent hover:border-accent-2 hover:bg-accent-2 text-ink inline-flex min-h-11 items-center justify-center rounded-[3px] border px-3 text-sm font-semibold tracking-[0.02em] whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-12 lg:px-5"
-      >
-        {pending ? "Enviando…" : unsentCount === 1 ? "Enviar la foto" : `Enviar las ${unsentCount}`}
-      </button>
+      <SubmitConfirmSheet
+        open={open}
+        onOpenChange={setOpen}
+        unsentCount={unsentCount}
+        includedPhotos={quota.includedPhotosSnapshot}
+        projection={projection}
+        onConfirm={() => void handleSubmit()}
+        trigger={
+          <button
+            type="button"
+            disabled={pending || unsentCount === 0}
+            className="border-accent bg-accent hover:border-accent-2 hover:bg-accent-2 text-ink inline-flex min-h-11 items-center justify-center rounded-[3px] border px-3 text-sm font-semibold tracking-[0.02em] whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-12 lg:px-5"
+          >
+            {pending
+              ? "Enviando…"
+              : unsentCount === 1
+                ? "Enviar la foto"
+                : `Enviar las ${unsentCount}`}
+          </button>
+        }
+      />
       {error && (
         <p role="alert" className="text-danger text-sm">
           {error}

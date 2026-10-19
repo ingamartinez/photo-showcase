@@ -201,7 +201,9 @@ export const GET = withApiSession(async function GET(
     return errorResponse(viewAs.error, viewAs.error === "view_as_not_member" ? 404 : 400);
   }
 
-  const view = await getGallerySelection(gallery.id, quotaSnapshotOf(gallery), viewAs.subjectId);
+  const view = await getGallerySelection(gallery.id, quotaSnapshotOf(gallery), viewAs.subjectId, {
+    allowsOriginal: gallery.allowsOriginalSelection !== false,
+  });
 
   return NextResponse.json({
     status: gallery.status,

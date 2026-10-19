@@ -21,7 +21,7 @@ import {
   submitPick,
 } from "@/lib/pick-resolution";
 import type { AssetClaim, SubmittedPick } from "@/lib/pick-resolution";
-import type { SelectionKind } from "@/lib/selection-snapshot";
+import type { SelectionKind, SubmitProjection } from "@/lib/selection-snapshot";
 import { attributeQuota, shareFor } from "@/lib/quota-attribution";
 import type { AttributionShare, ClaimedUnit } from "@/lib/quota-attribution";
 
@@ -74,6 +74,27 @@ export type CartClaimCounts = {
   joined: number;
   escalationBlocked: number;
 };
+
+/**
+ * A cart pick on an asset ALREADY billed to the same person is already
+ * satisfied: there is no unit left for it to move, and `submitPick` would
+ * throw ("submitter is already billed") if it were resolved. Production has
+ * none of these rows; the state is reachable when the PATCH gate retypes a
+ * legacy claim that carries no pick of its own, and it must neither 500 a
+ * read nor make the sheet offer to send something the write cannot execute.
+ *
+ * ONE predicate, read by the planner (the write and the projection both run
+ * `planCartClaim`) and by the counters (`partitionByPerson` and the viewer
+ * partition), so the sheet, the counter and the bar agree that such a pick
+ * plans nothing and is not "por enviar".
+ */
+export function isSelfBilledCartPick(
+  row: { isSelected: boolean; billedTo: string | null } | undefined,
+  userId: string,
+  hasSentPick: boolean,
+): boolean {
+  return !hasSentPick && row !== undefined && row.isSelected && row.billedTo === userId;
+}
 
 function claimsEqual(a: AssetClaim, b: AssetClaim): boolean {
   if (!a.claimed || !b.claimed) return a.claimed === b.claimed;
@@ -156,6 +177,9 @@ export function planCartClaim(
   for (const pick of ordered) {
     const row = rows.find((candidate) => candidate.id === pick.assetId);
     if (!row) throw new Error(`pick-plans: cart pick references unknown asset ${pick.assetId}`);
+    // Already satisfied by the viewer's own claim: the WRITE and the
+    // projection must both plan nothing for it (see `isSelfBilledCartPick`).
+    if (isSelfBilledCartPick(row, userId, pick.submittedAt !== null)) continue;
     const kind: SelectionKind =
       !opts.allowsOriginal && pick.kind === "original" ? "edited" : pick.kind;
     if (kind !== pick.kind) pickKindFixes.push(pick.assetId);
@@ -278,6 +302,54 @@ export function planOriginalsOff(
     assetChanges,
     arrival: assetChanges.length === 0 ? null : arrival,
     pickRewrites,
+  };
+}
+
+/**
+ * What the SUBJECT's own "Enviar" button will do, from the SAME planner the
+ * submit executes (`pick-claims.ts` calls `planCartClaim`). The confirmation
+ * sheet states this before the irreversible moment; if it computed its own
+ * counts or its own money it could disagree with the write, which is exactly
+ * the defect this function exists to prevent. `pick-plans.test.ts`'s parity
+ * test runs the projection and the executed `claimCart` over the same random
+ * states.
+ *
+ * Per person, not gallery-wide (OQ1): `after` is the subject's own share after
+ * the plan, priced by the attribution's single `computeQuota` call. The extra
+ * unit price comes from that same attribution's `quota` rather than from
+ * `after.extras` (which can be 0) or the live package row (which is not what
+ * a frozen gallery charges).
+ *
+ * `passToYou = claimed + escalated` is exactly `claimCart`'s `newUnits`;
+ * `alreadyRequested = joined + escalationBlocked`. Their sum is the cart,
+ * MINUS the picks `planCartClaim` treats as already satisfied (a cart pick on
+ * an asset this same person is already billed for), which plan nothing in the
+ * write either.
+ */
+export function projectCartSubmit(
+  rows: readonly AssetRow[],
+  picks: readonly PickRow[],
+  userId: string,
+  now: Date,
+  snapshot: Parameters<typeof attributeQuota>[1],
+  opts: { allowsOriginal: boolean },
+): SubmitProjection {
+  // The self-billed cart pick (an unsent pick on an asset this person is
+  // already billed for) is filtered inside `planCartClaim`, where the WRITE
+  // also sees it — not here, or the projection and the submit would disagree
+  // about what the same cart does.
+  const cartPicks = picks.filter((pick) => pick.userId === userId && pick.submittedAt === null);
+  const plan = planCartClaim(rows, cartPicks, userId, now, opts);
+  const afterAttribution = attributeQuota(
+    unitsOf(applyPlanToRows(rows, plan.assetChanges)),
+    snapshot,
+  );
+
+  return {
+    passToYou: plan.counts.claimed + plan.counts.escalated,
+    alreadyRequested: plan.counts.joined + plan.counts.escalationBlocked,
+    after: shareFor(afterAttribution, userId),
+    extraUnitPriceCop: afterAttribution.quota.extraUnitPriceCop,
   };
 }
 

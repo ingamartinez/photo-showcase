@@ -22,7 +22,7 @@ vi.mock("@/lib/db", async () => {
 });
 
 import { db } from "@/lib/db";
-import { assetPicks, assets, galleryClients, users } from "@/lib/db/schema";
+import { assetPicks, assets, galleryClients, users, type Gallery } from "@/lib/db/schema";
 import {
   buildGallerySelection,
   getDashboardSelection,
@@ -30,6 +30,7 @@ import {
   partitionByPerson,
   type DashboardSelectionGallery,
 } from "@/lib/gallery-selection";
+import { claimCart } from "@/lib/pick-claims";
 import { unitsOf, type AssetRow, type PickRow } from "@/lib/pick-plans";
 import { computeQuota, type GalleryQuotaSnapshot } from "@/lib/quota";
 import { attributeQuota, type AttributionShare } from "@/lib/quota-attribution";
@@ -44,6 +45,8 @@ const memberRows = () => fake.__tables.get(galleryClients)!;
 
 const GALLERY = "11111111-1111-4111-8111-111111111111";
 const OTHER_GALLERY = "22222222-2222-4222-8222-222222222222";
+
+const PROJECTION_NOW = new Date("2026-10-18T12:00:00.000Z");
 
 const TERMS = {
   includedPhotosSnapshot: 2,
@@ -168,6 +171,8 @@ describe("buildGallerySelection — rows", () => {
       labels: labelsOf(userRows() as never),
       terms: TERMS,
       subjectId: "ana",
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
     });
 
     expect(view.entries.map((entry) => entry.assetId).sort()).toEqual([
@@ -188,6 +193,8 @@ describe("buildGallerySelection — rows", () => {
       labels: labelsOf(userRows() as never),
       terms: TERMS,
       subjectId: null,
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
     });
 
     const cart = view.entries.find((entry) => entry.assetId === "a5")!;
@@ -212,6 +219,8 @@ describe("buildGallerySelection — rows", () => {
       labels: labelsOf(userRows() as never),
       terms: TERMS,
       subjectId: "ana",
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
     });
 
     expect(view.entries[0]?.claim?.claimedAt).toBe("2026-10-02T09:00:00.000Z");
@@ -234,6 +243,8 @@ describe("buildGallerySelection — rows", () => {
       labels: new Map(),
       terms: TERMS,
       subjectId: "ana",
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
     });
 
     expect(view.entries[0]?.claim?.billedTo).toBeNull();
@@ -260,6 +271,8 @@ describe("buildGallerySelection — rows", () => {
       labels: labelsOf(userRows() as never),
       terms: TERMS,
       subjectId: "ana",
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
     });
 
     const states = Object.fromEntries(
@@ -308,6 +321,8 @@ describe("buildGallerySelection — rows", () => {
       labels: labelsOf(userRows() as never),
       terms: TERMS,
       subjectId: null,
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
     });
 
     expect(view.entries.map((entry) => entry.assetId)).toEqual([
@@ -330,6 +345,8 @@ describe("buildGallerySelection — rows", () => {
       labels: labelsOf(userRows() as never),
       terms: TERMS,
       subjectId: null,
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
     });
 
     const charges = Object.fromEntries(
@@ -370,6 +387,8 @@ describe("buildGallerySelection — rows", () => {
       labels: new Map(),
       terms,
       subjectId: null,
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
     });
 
     expect(view.quota).toEqual(computeQuota(4, 1, terms));
@@ -385,6 +404,8 @@ describe("buildGallerySelection — counter invariants", () => {
       labels: labelsOf(userRows() as never),
       terms: TERMS,
       subjectId: null,
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
     });
 
     expect(view.counter.viewer).toBeNull();
@@ -400,6 +421,8 @@ describe("buildGallerySelection — counter invariants", () => {
         labels: labelsOf(userRows() as never),
         terms: TERMS,
         subjectId: subject,
+        allowsOriginal: true,
+        now: PROJECTION_NOW,
       });
       const ownPicks = view.entries.flatMap((entry) =>
         entry.picks.filter((p) => p.userId === subject),
@@ -423,6 +446,8 @@ describe("buildGallerySelection — counter invariants", () => {
           labels: labelsOf(userRows() as never),
           terms: TERMS,
           subjectId: person.userId,
+          allowsOriginal: true,
+          now: PROJECTION_NOW,
         });
         expect(personView.counter.viewer!.yours).toBe(person.units);
       }
@@ -441,6 +466,8 @@ describe("buildGallerySelection — counter invariants", () => {
       labels: labelsOf(userRows() as never),
       terms: TERMS,
       subjectId: "beto",
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
     });
 
     expect(view.entries[0]?.claim?.billedTo).toEqual({ id: "beto", label: "beto@example.com" });
@@ -458,6 +485,8 @@ describe("buildGallerySelection — counter invariants", () => {
       labels: new Map(),
       terms: TERMS,
       subjectId: null,
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
     });
 
     expect(view.entries[0]?.picks[0]?.label).toBe("Sin registro");
@@ -471,6 +500,8 @@ describe("buildGallerySelection — counter invariants", () => {
       labels: labelsOf(userRows() as never),
       terms: TERMS,
       subjectId: "ana",
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
     });
 
     const serialized = JSON.stringify(view);
@@ -538,6 +569,8 @@ describe("buildGallerySelection — the per-person money wire (task #264)", () =
       labels: labelsOf(userRows() as never),
       terms,
       subjectId: "ana",
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
     });
 
     expect(view.quota.extras).toBe(2);
@@ -569,6 +602,8 @@ describe("buildGallerySelection — the per-person money wire (task #264)", () =
         labels: labelsOf(userRows() as never),
         terms,
         subjectId: "ana",
+        allowsOriginal: true,
+        now: PROJECTION_NOW,
       });
 
     const flat = settle(TERMS);
@@ -602,6 +637,8 @@ describe("buildGallerySelection — the per-person money wire (task #264)", () =
         labels: labelsOf(userRows() as never),
         terms: TERMS,
         subjectId: subject,
+        allowsOriginal: true,
+        now: PROJECTION_NOW,
       });
 
       // Every row: the money's unit count IS the row's count — the client
@@ -699,6 +736,8 @@ describe("buildGallerySelection — seeded property test", () => {
           labels: labelsOf(userRows() as never),
           terms: TERMS,
           subjectId: subject,
+          allowsOriginal: true,
+          now: PROJECTION_NOW,
         });
         // Task #264 — the money the browser receives still adds up to the
         // money it also receives as the gallery total, on every state.
@@ -729,12 +768,213 @@ describe("buildGallerySelection — seeded property test", () => {
   });
 });
 
+describe("buildGallerySelection — the submit projection (task #268)", () => {
+  // Ana holds an original with no final (X, escalable), an edited unit (Y) and
+  // an original WITH a final (W, frozen by decision 15). Beto has edited carts
+  // on all three plus a free asset (Z). What Beto's submit will do is: claim Z
+  // and escalate X under his name (2), join Y and be blocked on W (2).
+  function seedProjection() {
+    const at = (minute: number) => new Date(`2026-10-01T12:0${minute}:00.000Z`);
+    assetRows().push(
+      asset({
+        id: "x",
+        isSelected: true,
+        selectionKind: "original",
+        billedTo: "ana",
+        billedAt: at(0),
+        selectedAt: at(0),
+      }),
+      asset({
+        id: "y",
+        isSelected: true,
+        selectionKind: "edited",
+        billedTo: "ana",
+        billedAt: at(1),
+        selectedAt: at(1),
+      }),
+      asset({
+        id: "w",
+        isSelected: true,
+        selectionKind: "original",
+        billedTo: "ana",
+        billedAt: at(2),
+        selectedAt: at(2),
+        finalKey: "final/w.jpg",
+      }),
+      asset({ id: "z" }),
+    );
+    pickRows().push(
+      pick({ assetId: "x", userId: "ana", kind: "original" }),
+      pick({ assetId: "y", userId: "ana" }),
+      pick({ assetId: "w", userId: "ana", kind: "original" }),
+      pick({ assetId: "x", userId: "beto", submittedAt: null }),
+      pick({ assetId: "y", userId: "beto", submittedAt: null }),
+      pick({ assetId: "w", userId: "beto", submittedAt: null }),
+      pick({ assetId: "z", userId: "beto", submittedAt: null }),
+    );
+  }
+
+  it("projects the viewer's own claim/escalate/join/blocked counts, per person", () => {
+    seedProjection();
+
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: "beto",
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
+    });
+    const projection = view.counter.viewer!.projection;
+
+    expect(projection.passToYou).toBe(2);
+    expect(projection.alreadyRequested).toBe(2);
+    // Every cart pick resolves to exactly one of the two outcomes.
+    expect(projection.passToYou + projection.alreadyRequested).toBe(view.counter.viewer!.toSend);
+  });
+
+  it("prices the viewer's AFTER share with the same attribution as the write", () => {
+    seedProjection();
+    const rows = assetRows() as AssetRow[];
+    const picks = pickRows() as PickRow[];
+
+    const view = buildGallerySelection({
+      rows,
+      picks,
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: "beto",
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
+    });
+    const projection = view.counter.viewer!.projection;
+    // Beto after: Z included (first arrival among his units), X extra, Y
+    // joined (Ana's), W blocked (Ana's). One included + one extra.
+    expect(projection.after).toEqual({
+      included: 1,
+      extras: 1,
+      originals: 0,
+      extrasSurchargeCop: 5_000,
+      originalsSurchargeCop: 0,
+      surchargeCop: 5_000,
+    });
+    expect(projection.extraUnitPriceCop).toBe(5_000);
+  });
+
+  it("exposes canEscalate from the final's absence, and never for an edited unit", () => {
+    seedProjection();
+
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: "beto",
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
+    });
+    const escalation = Object.fromEntries(
+      view.entries.map((entry) => [entry.assetId, entry.claim?.canEscalate]),
+    );
+
+    expect(escalation).toEqual({ x: true, y: false, w: false, z: undefined });
+  });
+
+  it("projects zero counts and the CURRENT share when the viewer has no cart", () => {
+    seedProjection();
+
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: "ana",
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
+    });
+    const projection = view.counter.viewer!.projection;
+    const current = view.counter.people.find((person) => person.userId === "ana")!.share;
+
+    expect(projection.passToYou).toBe(0);
+    expect(projection.alreadyRequested).toBe(0);
+    expect(projection.after).toEqual(current);
+  });
+
+  it("treats an unsent pick on an asset the same person is already billed for as already satisfied", async () => {
+    // Reachable through the PATCH gate on a legacy claim that carries no pick
+    // of its own: Ana holds X, and Ana also has an UNSENT pick on X. Resolving
+    // it would throw "submitter is already billed", so the WRITE must plan
+    // nothing — and the counter and the projection must not pretend there is
+    // something to send. Production has no such row; the policy is ours.
+    const at = new Date("2026-10-01T12:00:00.000Z");
+    assetRows().push(
+      asset({
+        id: "x",
+        isSelected: true,
+        selectionKind: "edited",
+        billedTo: "ana",
+        billedAt: at,
+        selectedAt: at,
+      }),
+    );
+    pickRows().push(pick({ assetId: "x", userId: "ana", submittedAt: null }));
+
+    const view = buildGallerySelection({
+      rows: assetRows() as AssetRow[],
+      picks: pickRows() as PickRow[],
+      labels: labelsOf(userRows() as never),
+      terms: TERMS,
+      subjectId: "ana",
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
+    });
+
+    // Nothing is "por enviar", and the sheet projects nothing moving.
+    expect(view.counter.viewer!.toSend).toBe(0);
+    expect(view.counter.viewer!.projection).toMatchObject({
+      passToYou: 0,
+      alreadyRequested: 0,
+    });
+    // The dashboard's per-person tally reads the SAME policy: nobody has
+    // anything "por enviar".
+    const partition = partitionByPerson(view.entries, assetRows() as AssetRow[]);
+    const totalToSend = [...partition.values()].reduce((sum, person) => sum + person.toSend, 0);
+    expect(totalToSend).toBe(0);
+    expect(partition.get("ana")?.toSend ?? 0).toBe(0);
+
+    // The write the sheet confirms must not throw, and must change no
+    // attribution. Step 1 still stamps the pick (it resolves to a `billed`
+    // one), but the asset diff is empty.
+    const before = attributeQuota(unitsOf(assetRows() as AssetRow[]), TERMS);
+    const gallery = { id: GALLERY, allowsOriginalSelection: true } as Gallery;
+    const result = await claimCart(
+      fake as unknown as Parameters<typeof claimCart>[0],
+      gallery,
+      "ana",
+      PROJECTION_NOW,
+    );
+
+    expect(result.newUnits).toBe(0);
+    expect(result.counts).toEqual({
+      claimed: 0,
+      escalated: 0,
+      joined: 0,
+      escalationBlocked: 0,
+    });
+    const after = attributeQuota(unitsOf(assetRows() as AssetRow[]), TERMS);
+    expect(after.people).toEqual(before.people);
+    expect(after.quota).toEqual(before.quota);
+    expect(assetRows()[0]!.billedTo).toBe("ana");
+  });
+});
+
 describe("getGallerySelection", () => {
   it("reads in a read-only, repeatable-read transaction", async () => {
     seedTwoPeople();
     const spy = vi.spyOn(fake, "transaction");
 
-    await getGallerySelection(GALLERY, TERMS, "ana");
+    await getGallerySelection(GALLERY, TERMS, "ana", { allowsOriginal: true });
 
     expect(spy).toHaveBeenCalledWith(expect.any(Function), {
       isolationLevel: "repeatable read",
@@ -746,7 +986,7 @@ describe("getGallerySelection", () => {
     assetRows().push(asset({ id: "a1" }));
     userRows().length = 0;
 
-    const view = await getGallerySelection(GALLERY, TERMS, null);
+    const view = await getGallerySelection(GALLERY, TERMS, null, { allowsOriginal: true });
 
     expect(view.entries).toEqual([]);
     expect(fake.__log.filter((entry) => entry === "select").length).toBe(3);
@@ -768,7 +1008,7 @@ describe("getGallerySelection", () => {
       galleryId: OTHER_GALLERY,
     });
 
-    const view = await getGallerySelection(GALLERY, TERMS, "ana");
+    const view = await getGallerySelection(GALLERY, TERMS, "ana", { allowsOriginal: true });
 
     expect(view.entries.map((entry) => entry.assetId)).toEqual(["mine"]);
   });
@@ -794,7 +1034,7 @@ describe("getGallerySelection", () => {
       },
     );
 
-    const view = await getGallerySelection(GALLERY, TERMS, "ana");
+    const view = await getGallerySelection(GALLERY, TERMS, "ana", { allowsOriginal: true });
 
     expect(view.lock.viewerLock).toBeNull();
     expect(view.lock.viewerSubmittedAt).toBe(new Date(1).toISOString());
@@ -851,6 +1091,8 @@ describe("partitionByPerson — the dashboard and the client counter agree", () 
       labels: labelsOf(userRows() as never),
       terms: TERMS,
       subjectId: null,
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
     }).entries;
     const partition = partitionByPerson(entries, assetRows() as AssetRow[]);
 
@@ -861,10 +1103,15 @@ describe("partitionByPerson — the dashboard and the client counter agree", () 
         labels: labelsOf(userRows() as never),
         terms: TERMS,
         subjectId: subject,
+        allowsOriginal: true,
+        now: PROJECTION_NOW,
       }).counter.viewer!;
       const person = partition.get(subject) ?? { yours: 0, shared: 0, edited: 0, toSend: 0 };
 
-      expect({ yours: person.yours, shared: person.shared, toSend: person.toSend }).toEqual(viewer);
+      const { projection: _projection, ...viewerCounts } = viewer;
+      expect({ yours: person.yours, shared: person.shared, toSend: person.toSend }).toEqual(
+        viewerCounts,
+      );
     }
   });
 
@@ -907,6 +1154,8 @@ describe("partitionByPerson — the dashboard and the client counter agree", () 
       labels: labelsOf(userRows() as never),
       terms: TERMS,
       subjectId: null,
+      allowsOriginal: true,
+      now: PROJECTION_NOW,
     }).entries;
     const partition = partitionByPerson(entries, assetRows() as AssetRow[]);
 

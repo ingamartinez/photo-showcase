@@ -13,6 +13,7 @@ const CLIENT_FILES = [
   "src/components/proof-lightbox.tsx",
   "src/components/selection-tray.tsx",
   "src/components/submit-selection-panel.tsx",
+  "src/components/submit-confirm-sheet.tsx",
   "src/components/client-preview-banner.tsx",
   "src/components/acting-client-select.tsx",
   "src/components/use-shared-selection.ts",
@@ -120,8 +121,8 @@ describe("client copy is tuteo, never voseo", () => {
     expect(lede).toContain("Toca una foto para verla grande");
     expect(lede).toContain("Cada persona elige las suyas");
 
-    const panel = readFileSync("src/components/submit-selection-panel.tsx", "utf8");
-    expect(panel).toContain("Lo que envíes ya no lo puedes sacar tú");
-    expect(panel).toContain("escríbele a tu fotógrafo");
+    const sheet = readFileSync("src/components/submit-confirm-sheet.tsx", "utf8");
+    expect(sheet).toContain("Lo que envíes ya no lo puedes sacar tú");
+    expect(sheet).toContain("escríbele a tu fotógrafo");
   });
 });

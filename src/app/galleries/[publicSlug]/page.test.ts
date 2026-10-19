@@ -4,6 +4,7 @@ import ClientGalleryPage from "./page";
 import type { GalleryDetail } from "@/lib/galleries";
 import { computeQuota, type GalleryQuotaSnapshot } from "@/lib/quota";
 import { emptyShare } from "@/lib/quota-attribution";
+import { emptyProjection } from "@/test-support/selection-fixtures";
 
 // `import "server-only"` (transitively, via src/lib/auth-guards.ts and
 // src/lib/galleries.ts) only resolves inside a real Next.js bundle — see
@@ -208,7 +209,12 @@ function viewFor(
     quota,
     counter: {
       group: picks.length,
-      viewer: { yours: counts.get("client-a") ?? 0, shared: 0, toSend: 0 },
+      viewer: {
+        yours: counts.get("client-a") ?? 0,
+        shared: 0,
+        toSend: 0,
+        projection: emptyProjection(),
+      },
       people: [...counts].map(([userId, units]) => ({
         userId,
         label: picks.find((pick) => pick.pickedBy?.id === userId)?.pickedBy?.label ?? userId,
@@ -348,7 +354,9 @@ describe("ClientGalleryPage", () => {
 
     const tree = await ClientGalleryPage(paramsFor(SLUG));
 
-    expect(getGallerySelectionMock).toHaveBeenCalledWith("g1", DEFAULT_TERMS, "client-a");
+    expect(getGallerySelectionMock).toHaveBeenCalledWith("g1", DEFAULT_TERMS, "client-a", {
+      allowsOriginal: false,
+    });
     const found: Record<string, unknown>[] = [];
     const walk = (node: unknown): void => {
       if (!node || typeof node !== "object") return;
@@ -391,7 +399,9 @@ describe("ClientGalleryPage", () => {
     });
 
     expect(resolveViewAsMock).toHaveBeenCalledWith(expect.anything(), "g1", "client-b");
-    expect(getGallerySelectionMock).toHaveBeenCalledWith("g1", expect.any(Object), "client-b");
+    expect(getGallerySelectionMock).toHaveBeenCalledWith("g1", expect.any(Object), "client-b", {
+      allowsOriginal: false,
+    });
     const found: Record<string, unknown>[] = [];
     const walk = (node: unknown): void => {
       if (!node || typeof node !== "object") return;

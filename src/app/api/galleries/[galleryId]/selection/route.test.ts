@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import type { Session } from "next-auth";
 import { computeQuota, type GalleryQuotaSnapshot } from "@/lib/quota";
+import { emptyProjection } from "@/test-support/selection-fixtures";
 
 // `import "server-only"` (transitively, via src/lib/auth-guards.ts and
 // src/lib/galleries.ts) only resolves inside a real Next.js bundle — see
@@ -125,7 +126,7 @@ function view(
     quota: overrides.quota ?? computeQuota(0, 0, TERMS),
     counter: overrides.counter ?? {
       group: 0,
-      viewer: { yours: 0, shared: 0, toSend: 0 },
+      viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
       people: [],
       unattributed: 0,
     },
@@ -222,6 +223,7 @@ describe("GET /api/galleries/[galleryId]/selection — the guard", () => {
       GALLERY_ID,
       expect.any(Object),
       "client-a",
+      { allowsOriginal: true },
     );
   });
 
@@ -297,13 +299,14 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
           resolvedKind: "edited",
           billedTo: { id: "client-b", label: "Beto Ruiz" },
           charge: "included",
+          canEscalate: false,
         },
         picks: [],
       },
     ];
     const counter = {
       group: 1,
-      viewer: { yours: 0, shared: 0, toSend: 0 },
+      viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
       people: [{ userId: "client-b", label: "Beto Ruiz", units: 1 }],
       unattributed: 0,
     };
@@ -340,7 +343,7 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
     };
     const counter = {
       group: 4,
-      viewer: { yours: 3, shared: 0, toSend: 0 },
+      viewer: { yours: 3, shared: 0, toSend: 0, projection: emptyProjection() },
       people: [{ userId: "client-a", label: "Ana", units: 3, share: anaShare }],
       unattributed: 1,
       unattributedShare: legacyShare,
@@ -392,6 +395,7 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
         originalPhotoPriceCopSnapshot: 3_000,
       },
       "client-a",
+      { allowsOriginal: true },
     );
   });
 
@@ -539,6 +543,7 @@ describe("GET /api/galleries/[galleryId]/selection — view as (epic #250 S6)", 
       GALLERY_ID,
       expect.any(Object),
       "client-b",
+      { allowsOriginal: true },
     );
   });
 
@@ -561,6 +566,7 @@ describe("GET /api/galleries/[galleryId]/selection — view as (epic #250 S6)", 
       GALLERY_ID,
       expect.any(Object),
       "client-b",
+      { allowsOriginal: true },
     );
   });
 
@@ -621,7 +627,9 @@ describe("GET /api/galleries/[galleryId]/selection — view as (epic #250 S6)", 
     const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
 
     expect(response.status).toBe(200);
-    expect(getGallerySelectionMock).toHaveBeenCalledWith(GALLERY_ID, expect.any(Object), null);
+    expect(getGallerySelectionMock).toHaveBeenCalledWith(GALLERY_ID, expect.any(Object), null, {
+      allowsOriginal: true,
+    });
   });
 
   it("gives a client without the parameter their own id", async () => {
@@ -635,6 +643,7 @@ describe("GET /api/galleries/[galleryId]/selection — view as (epic #250 S6)", 
       GALLERY_ID,
       expect.any(Object),
       "client-a",
+      { allowsOriginal: true },
     );
   });
 });

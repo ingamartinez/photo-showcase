@@ -8,6 +8,7 @@ import type { GalleryStatus, ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
 import { emptyShare } from "@/lib/quota-attribution";
 import type { SelectionEntry } from "@/lib/selection-snapshot";
+import { emptyProjection } from "@/test-support/selection-fixtures";
 
 type SelectionPick = {
   assetId: string;
@@ -51,6 +52,7 @@ function entriesFor(picks: LegacyPick[]): SelectionEntry[] {
               resolvedKind: pick.selectionKind,
               billedTo: pick.pickedBy,
               charge: "included",
+              canEscalate: false,
             }
           : null,
       picks: pick.pickedBy
@@ -92,7 +94,7 @@ function counterFor(picks: LegacyPick[], viewerId: string) {
   }
   return {
     group,
-    viewer: { yours, shared, toSend },
+    viewer: { yours, shared, toSend, projection: emptyProjection() },
     people: [...units].map(([userId, count]) => ({
       userId,
       label: picks.find((pick) => pick.pickedBy?.id === userId)?.pickedBy?.label ?? userId,
@@ -139,6 +141,7 @@ function jsonResponse(status: number, body: unknown): Response {
               resolvedKind: asset.selectionKind ?? "edited",
               billedTo: asset.pickedBy ?? null,
               charge: "included",
+              canEscalate: false,
             },
             picks: asset.pickedBy
               ? [
@@ -530,7 +533,7 @@ describe("ProofGrid", () => {
       renderGrid({
         initialCounter: {
           group: 4,
-          viewer: { yours: 3, shared: 0, toSend: 0 },
+          viewer: { yours: 3, shared: 0, toSend: 0, projection: emptyProjection() },
           people: [
             { userId: "client-a", label: "Ana", units: 3, share: anaShare },
             { userId: "client-b", label: "Beto", units: 1, share: emptyShare() },
@@ -826,6 +829,7 @@ describe("ProofGrid", () => {
                 resolvedKind: "original",
                 billedTo: { id: "client-a", label: "Ana" },
                 charge: "included",
+                canEscalate: false,
               },
               picks: [
                 {
@@ -848,7 +852,7 @@ describe("ProofGrid", () => {
             },
             counter: {
               group: 1,
-              viewer: { yours: 0, shared: 0, toSend: 1 },
+              viewer: { yours: 0, shared: 0, toSend: 1, projection: emptyProjection() },
               people: [],
               unattributed: 0,
               unattributedShare: emptyShare(),
@@ -988,7 +992,6 @@ describe("ProofGrid", () => {
     });
 
     it("locks every toggle button and replaces the submit button with the confirmation message once a submission succeeds", async () => {
-      vi.spyOn(window, "confirm").mockReturnValue(true);
       const submittedQuota = {
         selected: 1,
         includedPhotosSnapshot: 13,
@@ -1021,6 +1024,7 @@ describe("ProofGrid", () => {
                   resolvedKind: "edited",
                   billedTo: { id: "client-a", label: "Ana" },
                   charge: "included",
+                  canEscalate: false,
                 },
                 picks: [
                   {
@@ -1036,7 +1040,7 @@ describe("ProofGrid", () => {
             ],
             counter: {
               group: 1,
-              viewer: { yours: 1, shared: 0, toSend: 0 },
+              viewer: { yours: 1, shared: 0, toSend: 0, projection: emptyProjection() },
               people: [{ userId: "client-a", label: "Ana", units: 1 }],
               unattributed: 0,
               unattributedShare: emptyShare(),
@@ -1073,6 +1077,7 @@ describe("ProofGrid", () => {
       });
 
       await user.click(screen.getByRole("button", { name: /^Enviar/ }));
+      await user.click(screen.getByRole("button", { name: /^Sí, enviar/ }));
 
       expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/submit-selection", {
         method: "POST",
@@ -2835,6 +2840,7 @@ describe("ProofGrid", () => {
                   resolvedKind: "edited",
                   billedTo: { id: "client-b", label: "Beto Ruiz" },
                   charge: "included",
+                  canEscalate: false,
                 },
                 picks: [
                   {
@@ -2850,7 +2856,7 @@ describe("ProofGrid", () => {
             ],
             counter: {
               group: 1,
-              viewer: { yours: 0, shared: 0, toSend: 0 },
+              viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
               people: [{ userId: "client-b", label: "Beto Ruiz", units: 1, share: emptyShare() }],
               unattributed: 0,
               unattributedShare: emptyShare(),
@@ -3084,7 +3090,7 @@ describe("ProofGrid — no surface recounts the selection (epic #250 S6)", () =>
       }),
       initialCounter: {
         group: 7,
-        viewer: { yours: 2, shared: 1, toSend: 4 },
+        viewer: { yours: 2, shared: 1, toSend: 4, projection: emptyProjection() },
         people: [{ userId: "client-a", label: "Ana", units: 3, share: emptyShare() }],
         unattributed: 0,
         unattributedShare: emptyShare(),

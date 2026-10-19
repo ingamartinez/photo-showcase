@@ -38,7 +38,14 @@ import { getSelectionLockSnapshot, type DbExecutor } from "@/lib/gallery-client-
 
 import { claimFromAsset, derivePickStatus } from "@/lib/pick-resolution";
 import { attributeQuota, shareFor } from "@/lib/quota-attribution";
-import { previewClientActions, unitsOf, type AssetRow, type PickRow } from "@/lib/pick-plans";
+import {
+  isSelfBilledCartPick,
+  previewClientActions,
+  projectCartSubmit,
+  unitsOf,
+  type AssetRow,
+  type PickRow,
+} from "@/lib/pick-plans";
 import { type ClientPersonTally } from "@/lib/client-selection-state";
 import {
   UNATTRIBUTED_PICKER_LABEL,
@@ -68,8 +75,14 @@ export function buildGallerySelection(input: {
   labels: ReadonlyMap<string, string>;
   terms: GalleryQuotaSnapshot;
   subjectId: string | null;
+  /** Task #268 — the same expression `claimCart` uses to decide whether an
+   * `original` cart pick is coerced: the projection must mirror the write. */
+  allowsOriginal: boolean;
+  /** One clock for the projection's arrival; the read-time value only needs to
+   * be after every `billed_at`, and `arrivalAfter` guarantees that. */
+  now: Date;
 }): Omit<GallerySelectionView, "lock"> {
-  const { rows, picks, labels, terms, subjectId } = input;
+  const { rows, picks, labels, terms, subjectId, allowsOriginal, now } = input;
 
   const attribution = attributeQuota(unitsOf(rows), terms);
   const unitById = new Map(attribution.units.map((unit) => [unit.assetId, unit]));
@@ -96,6 +109,7 @@ export function buildGallerySelection(input: {
           resolvedKind: row.selectionKind,
           billedTo: pickerFor(row.billedTo),
           charge: unitById.get(row.id)?.charge ?? "included",
+          canEscalate: row.selectionKind === "original" && row.finalKey === null,
         }
       : null;
 
@@ -160,14 +174,24 @@ export function buildGallerySelection(input: {
     let shared = 0;
     let toSend = 0;
     for (const entry of entries) {
+      // The same row the partition uses: a cart pick on an asset this person
+      // is already billed for plans nothing (it is filtered inside
+      // `planCartClaim`), so it is not "por enviar" either.
+      const row = rowsById.get(entry.assetId);
       for (const pick of entry.picks) {
         if (pick.userId !== subjectId) continue;
+        if (isSelfBilledCartPick(row, pick.userId, pick.submittedAt !== null)) continue;
         if (pick.state === "billed") yours += 1;
         else if (pick.state === "joined") shared += 1;
         else toSend += 1;
       }
     }
-    viewer = { yours, shared, toSend };
+    viewer = {
+      yours,
+      shared,
+      toSend,
+      projection: projectCartSubmit(rows, picks, subjectId, now, terms, { allowsOriginal }),
+    };
   }
 
   const counter: SelectionCounter = {
@@ -214,13 +238,29 @@ export async function getGallerySelection(
   galleryId: string,
   terms: GalleryQuotaSnapshot,
   subjectId: string | null,
+  opts: { allowsOriginal: boolean },
 ): Promise<GallerySelectionView> {
   return db.transaction(
     async (tx) => {
       const { rows, picks } = await readPickState(tx, galleryId);
       const labels = await labelsFor(tx, rows, picks);
       const lock = await getSelectionLockSnapshot(galleryId, subjectId, tx);
-      return { ...buildGallerySelection({ rows, picks, labels, terms, subjectId }), lock };
+      // One `now` for the projection, read inside the transaction like every
+      // other value. A write landing between this read and the submit is
+      // staleness, not parity: the sheet never blocks the write.
+      const now = new Date();
+      return {
+        ...buildGallerySelection({
+          rows,
+          picks,
+          labels,
+          terms,
+          subjectId,
+          allowsOriginal: opts.allowsOriginal,
+          now,
+        }),
+        lock,
+      };
     },
     { isolationLevel: "repeatable read", accessMode: "read only" },
   );
@@ -307,11 +347,17 @@ export function partitionByPerson(
   rows: readonly AssetRow[],
 ): Map<string, ClientPersonTally> {
   const hasFinalByAsset = new Map(rows.map((row) => [row.id, row.finalKey !== null]));
+  const rowByAsset = new Map(rows.map((row) => [row.id, row]));
   const tally = new Map<string, ClientPersonTally>();
 
   for (const entry of entries) {
     const hasFinal = hasFinalByAsset.get(entry.assetId) ?? false;
+    const row = rowByAsset.get(entry.assetId);
     for (const pick of entry.picks) {
+      // Same predicate the planner and the viewer counter use: an unsent pick
+      // on an asset already billed to its own picker moves nothing, so it is
+      // not a pick anyone has to send.
+      if (isSelfBilledCartPick(row, pick.userId, pick.submittedAt !== null)) continue;
       const person =
         tally.get(pick.userId) ??
         ({ yours: 0, shared: 0, edited: 0, toSend: 0 } satisfies ClientPersonTally);
@@ -383,19 +429,21 @@ export async function getDashboardSelection(
         .from(galleryClients)
         .where(and(eq(galleryClients.galleryId, gallery.id), isNull(galleryClients.removedAt)));
 
+      // One `now` for the projection AND every preview: the arrivals must not
+      // be able to interleave into an order the admin never sees.
+      const now = new Date();
       const { entries, quota } = buildGallerySelection({
         rows,
         picks,
         labels,
         terms,
         subjectId: null,
+        allowsOriginal: gallery.allowsOriginalSelection,
+        now,
       });
       const partition = partitionByPerson(entries, rows);
       const labelRecord = Object.fromEntries(labels) as Record<string, string>;
 
-      // One `now` for every preview: the four arrivals must not be able to
-      // interleave into an order the admin never sees.
-      const now = new Date();
       const previewByClient: DashboardSelection["previewByClient"] = {};
       for (const member of memberRows) {
         previewByClient[member.userId] = previewClientActions(

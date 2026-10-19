@@ -5,7 +5,14 @@ import { SelectionCounter } from "./selection-counter";
 import { computeQuota } from "@/lib/quota";
 import { formatCop } from "@/lib/format";
 import type { AttributionShare } from "@/lib/quota-attribution";
-import { ANA, BETO, SARA, counter, person } from "@/test-support/selection-fixtures";
+import {
+  ANA,
+  BETO,
+  SARA,
+  counter,
+  person,
+  emptyProjection,
+} from "@/test-support/selection-fixtures";
 
 // No `@/lib/format` mock needed: unlike `@/lib/galleries`, it has no
 // `server-only`/`@/lib/db` import for jsdom to choke on — see that module's
@@ -547,7 +554,7 @@ describe("SelectionCounter — per-person money (task #264)", () => {
   function threeHolders(overrides: Parameters<typeof counter>[0] = {}) {
     return counter({
       group: 7,
-      viewer: { yours: 3, shared: 0, toSend: 0 },
+      viewer: { yours: 3, shared: 0, toSend: 0, projection: emptyProjection() },
       people: [
         person(ANA, 3, ANA_SHARE),
         // Sorts BEFORE Beto only under a Spanish collation of the label, and
@@ -597,7 +604,7 @@ describe("SelectionCounter — per-person money (task #264)", () => {
         allowsOriginalSelection
         counter={counter({
           group: 2,
-          viewer: { yours: 0, shared: 0, toSend: 0 },
+          viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
           people: [person(ANA, 0), person(BETO, 2, share({ included: 2 }))],
         })}
         viewerId={ANA.id}
@@ -623,7 +630,7 @@ describe("SelectionCounter — per-person money (task #264)", () => {
     const quota = computeQuota(15, 0, SNAPSHOT);
     const solo = counter({
       group: 15,
-      viewer: { yours: 15, shared: 0, toSend: 0 },
+      viewer: { yours: 15, shared: 0, toSend: 0, projection: emptyProjection() },
       people: [
         person(
           ANA,
@@ -679,7 +686,7 @@ describe("SelectionCounter — per-person money (task #264)", () => {
   it("agrees with the person's own grammar: 1 foto · 1 extra · 1 original, never '1 fotos'", () => {
     const one = counter({
       group: 2,
-      viewer: { yours: 1, shared: 1, toSend: 0 },
+      viewer: { yours: 1, shared: 1, toSend: 0, projection: emptyProjection() },
       people: [
         person(ANA, 1, share({ extras: 1, extrasSurchargeCop: 5_000, surchargeCop: 5_000 })),
         person(BETO, 1, share({ originals: 1, originalsSurchargeCop: 2_000, surchargeCop: 2_000 })),
@@ -701,7 +708,7 @@ describe("SelectionCounter — per-person money (task #264)", () => {
 
     const many = counter({
       group: 4,
-      viewer: { yours: 2, shared: 1, toSend: 0 },
+      viewer: { yours: 2, shared: 1, toSend: 0, projection: emptyProjection() },
       people: [person(ANA, 2), person(BETO, 2, share({ originals: 2 }))],
     });
     render(
@@ -724,7 +731,7 @@ describe("SelectionCounter — per-person money (task #264)", () => {
   it("hides the originals segment per row when the switch is off, and when a share has none", () => {
     const withOriginals = counter({
       group: 2,
-      viewer: { yours: 1, shared: 1, toSend: 0 },
+      viewer: { yours: 1, shared: 1, toSend: 0, projection: emptyProjection() },
       people: [person(ANA, 1, BETO_SHARE), person(BETO, 1, BETO_SHARE)],
     });
 
@@ -746,7 +753,7 @@ describe("SelectionCounter — per-person money (task #264)", () => {
         allowsOriginalSelection
         counter={counter({
           group: 2,
-          viewer: { yours: 1, shared: 1, toSend: 0 },
+          viewer: { yours: 1, shared: 1, toSend: 0, projection: emptyProjection() },
           people: [person(ANA, 1), person(BETO, 1)],
         })}
         viewerId={ANA.id}
@@ -781,7 +788,7 @@ describe("SelectionCounter — per-person money (task #264)", () => {
         allowsOriginalSelection
         counter={counter({
           group: 15,
-          viewer: { yours: 15, shared: 0, toSend: 0 },
+          viewer: { yours: 15, shared: 0, toSend: 0, projection: emptyProjection() },
           people: [person(ANA, 15, ANA_SHARE)],
         })}
         viewerId={ANA.id}
@@ -812,7 +819,7 @@ describe("SelectionCounter — per-person money (task #264)", () => {
 
     const billsAreSomeoneElses = counter({
       group: 5,
-      viewer: { yours: 2, shared: 0, toSend: 0 },
+      viewer: { yours: 2, shared: 0, toSend: 0, projection: emptyProjection() },
       people: [
         // The viewer holds units but no money: both picks are included.
         person(ANA, 2),
@@ -883,7 +890,7 @@ describe("SelectionCounter — per-person money (task #264)", () => {
         allowsOriginalSelection
         counter={counter({
           group: 3,
-          viewer: { yours: 0, shared: 0, toSend: 0 },
+          viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
           people: [
             person(ANA, 2, share({ included: 2 })),
             person(BETO, 1, share({ extras: 1, extrasSurchargeCop: 5_000, surchargeCop: 5_000 })),
@@ -924,7 +931,7 @@ describe("SelectionCounter — per-person money (task #264)", () => {
         allowsOriginalSelection
         counter={counter({
           group: 2,
-          viewer: { yours: 1, shared: 1, toSend: 0 },
+          viewer: { yours: 1, shared: 1, toSend: 0, projection: emptyProjection() },
           people: [
             person(ANA, 1, share({ extras: 1, extrasSurchargeCop: 1_000, surchargeCop: 1_000 })),
             person(
@@ -993,7 +1000,7 @@ describe("SelectionCounter — two-level money detail (task #269)", () => {
   const twoHolders = () =>
     counter({
       group: 4,
-      viewer: { yours: 3, shared: 0, toSend: 0 },
+      viewer: { yours: 3, shared: 0, toSend: 0, projection: emptyProjection() },
       people: [person(ANA, 3, ANA_SHARE), person(BETO, 1)],
     });
 
@@ -1079,7 +1086,7 @@ describe("SelectionCounter — two-level money detail (task #269)", () => {
   it("keeps the single payer's detail exactly as it was — no rows, no second control", () => {
     const solo = counter({
       group: 15,
-      viewer: { yours: 15, shared: 0, toSend: 0 },
+      viewer: { yours: 15, shared: 0, toSend: 0, projection: emptyProjection() },
       people: [
         person(
           ANA,
@@ -1122,7 +1129,7 @@ describe("SelectionCounter — two-level money detail (task #269)", () => {
         allowsOriginalSelection
         counter={counter({
           group: 3,
-          viewer: { yours: 0, shared: 0, toSend: 0 },
+          viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
           people: [person(BETO, 3, share({ included: 3 }))],
         })}
         viewerId={ANA.id}
@@ -1159,7 +1166,7 @@ describe("SelectionCounter — two-level money detail (task #269)", () => {
         allowsOriginalSelection
         counter={counter({
           group: 2,
-          viewer: { yours: 0, shared: 0, toSend: 0 },
+          viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
           unattributed: 2,
         })}
         viewerId={ANA.id}
@@ -1240,7 +1247,7 @@ describe("SelectionCounter — two-level money detail (task #269)", () => {
         allowsOriginalSelection
         counter={counter({
           group: 9,
-          viewer: { yours: 3, shared: 0, toSend: 0 },
+          viewer: { yours: 3, shared: 0, toSend: 0, projection: emptyProjection() },
           people: [
             person(ANA, 3, ANA_SHARE),
             person({ id: "client-b", label: "Beto" }, 1),
@@ -1327,7 +1334,7 @@ describe("SelectionCounter — the money detail floats above the bar (task #270)
   const twoHolders = () =>
     counter({
       group: 4,
-      viewer: { yours: 3, shared: 0, toSend: 0 },
+      viewer: { yours: 3, shared: 0, toSend: 0, projection: emptyProjection() },
       people: [
         person(
           ANA,
@@ -1504,7 +1511,7 @@ describe("SelectionCounter — the money detail floats above the bar (task #270)
   it("leaves the single payer's detail inline — no panel, the pre-#270 class string byte for byte", () => {
     const solo = counter({
       group: 3,
-      viewer: { yours: 3, shared: 0, toSend: 0 },
+      viewer: { yours: 3, shared: 0, toSend: 0, projection: emptyProjection() },
       people: [
         person(ANA, 3, share({ included: 3, extras: 0, extrasSurchargeCop: 0, surchargeCop: 0 })),
       ],

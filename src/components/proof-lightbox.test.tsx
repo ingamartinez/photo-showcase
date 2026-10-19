@@ -78,6 +78,7 @@ function lightboxProps(
               resolvedKind: "edited" as const,
               billedTo: { id: viewerId, label: "Ana" },
               charge: "included" as const,
+              canEscalate: false,
             },
             picks: [
               {
@@ -973,23 +974,30 @@ describe("ProofLightbox — the owner's copy set (S7)", () => {
     kind: "edited" as const,
     pickedAt: sent,
   };
-  const claim = (billedTo: { id: string; label: string } | null) => ({
+  const claim = (
+    billedTo: { id: string; label: string } | null,
+    canEscalate = false,
+    resolvedKind: "edited" | "original" = "edited",
+  ) => ({
     claimedAt: sent,
-    resolvedKind: "edited" as const,
+    resolvedKind,
     billedTo,
     charge: "included" as const,
+    canEscalate,
   });
 
   function renderWithEntry(
     entry: ComponentProps<typeof ProofLightbox>["entryById"] extends infer _T
       ? NonNullable<ComponentProps<typeof ProofLightbox>["entryById"]>[string]
       : never,
+    overrides: Partial<ComponentProps<typeof ProofLightbox>> = {},
   ) {
     return renderLightbox({
       assets: assetsFor(1),
       index: 0,
       viewerId: A.id,
       entryById: { a1: entry },
+      ...overrides,
     });
   }
 
@@ -1067,6 +1075,116 @@ describe("ProofLightbox — the owner's copy set (S7)", () => {
     expect(screen.getByText("Ya está pedida")).toBeDefined();
   });
 
+  // Task #268 — the escalation line: somebody else's ORIGINAL, no final yet,
+  // the viewer's own pick unsent and (effectively) edited.
+  it("promises the escalation when the original has no final and the pick is edited", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: claim(B, true, "original"),
+      picks: [
+        { ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" },
+        { ...base, submittedAt: null, state: "degraded" },
+      ],
+    });
+
+    const line = screen.getByText(/la pidió original/);
+    expect(line.querySelector("b")?.textContent).toBe("Beto");
+    expect(line.textContent).toContain("si la envías editada, pasa a tu nombre");
+  });
+
+  it("does not promise it when canEscalate is false (a final exists)", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: claim(B, false, "original"),
+      picks: [
+        { ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" },
+        { ...base, submittedAt: null, state: "degraded" },
+      ],
+    });
+
+    expect(screen.queryByText(/la pidió original/)).toBeNull();
+    expect(screen.getByText(/así que la reciben todos/)).toBeDefined();
+  });
+
+  it("does not promise it when the viewer's local kind is original", () => {
+    renderWithEntry(
+      {
+        assetId: "a1",
+        claim: claim(B, true, "original"),
+        picks: [
+          { ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" },
+          { ...base, submittedAt: null, state: "degraded", kind: "original" },
+        ],
+      },
+      { selectionKindById: { a1: "original" } },
+    );
+
+    expect(screen.queryByText(/la pidió original/)).toBeNull();
+  });
+
+  it("shows it with originals OFF, mirroring planCartClaim's coercion", () => {
+    renderWithEntry(
+      {
+        assetId: "a1",
+        claim: claim(B, true, "original"),
+        picks: [
+          { ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" },
+          { ...base, submittedAt: null, state: "degraded", kind: "original" },
+        ],
+      },
+      { allowsOriginalSelection: false, selectionKindById: { a1: "original" } },
+    );
+
+    expect(screen.getByText(/la pidió original/)).toBeDefined();
+  });
+
+  it("follows selectionKindById live", () => {
+    const entry = {
+      assetId: "a1",
+      claim: claim(B, true, "original"),
+      picks: [
+        { ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" as const },
+        { ...base, submittedAt: null, state: "degraded" as const },
+      ],
+    };
+    const { rerender } = renderWithEntry(entry, { selectionKindById: { a1: "original" } });
+    expect(screen.queryByText(/la pidió original/)).toBeNull();
+
+    rerender(
+      <ProofLightbox
+        assets={assetsFor(1)}
+        urls={{}}
+        index={0}
+        quota={QUOTA}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+        onImageError={vi.fn()}
+        onToggleSelection={vi.fn()}
+        pendingAssetIds={new Set()}
+        isLocked={false}
+        isDelivered={false}
+        selectionKindById={{ a1: "edited" }}
+        onSetSelectionKind={vi.fn()}
+        allowsOriginalSelection
+        viewerId={A.id}
+        entryById={{ a1: entry }}
+      />,
+    );
+
+    expect(screen.getByText(/la pidió original/)).toBeDefined();
+  });
+
+  it("keeps 'Ya está pedida' for a legacy original with no holder", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: claim(null, true, "original"),
+      picks: [{ ...base, submittedAt: null, state: "degraded" }],
+    });
+
+    expect(screen.getByText("Ya está pedida")).toBeDefined();
+    expect(screen.queryByText(/la pidió original/)).toBeNull();
+  });
+
   it("shows no line at all on a free photo with no pick", () => {
     renderWithEntry(null);
 
@@ -1106,6 +1224,7 @@ describe("ProofLightbox — the action row is three cells (S11)", () => {
             resolvedKind: "edited" as const,
             billedTo: B,
             charge: "included" as const,
+            canEscalate: false,
           },
           picks: [
             {

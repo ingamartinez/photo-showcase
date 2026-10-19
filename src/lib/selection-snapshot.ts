@@ -101,6 +101,13 @@ export type SelectionClaim = {
    * `units[].charge` — the included/extra boundary is quota maths and must
    * not be re-derived on the client. */
   charge: "included" | "extra" | "original";
+  /** Task #268 — this unit is an `original` with no final yet, so an
+   * `edited` submit can still escalate it (decision 15). `submitPick`'s own
+   * rule (`selectionKind === "original" && finalKey === null`), exposed as
+   * ONE boolean: never a key or a URL. Not `ProofAsset.hasFinal`, which is
+   * `isSelected && isEdited && finalKey` and would read false on a claimed
+   * original that already has a final. */
+  canEscalate: boolean;
 };
 
 /** One asset that is claimed OR has at least one pick. */
@@ -113,6 +120,29 @@ export type SelectionEntry = {
   picks: SelectionEntryPick[];
 };
 
+/** What pressing "Enviar" would do to the SUBJECT's own cart, computed by
+ * the same `planCartClaim` the submit executes (task #268, S13). PER PERSON
+ * on purpose: the confirmation sheet answers "what happens to me", not what
+ * happens to the gallery. `passToYou + alreadyRequested` is exactly
+ * `viewer.toSend` — every cart pick resolves to one of those two outcomes.
+ *
+ * Required, never optional: an omitted projection would silently hide the
+ * rows the sheet exists to state. */
+export type SubmitProjection = {
+  /** Cart picks that would claim a free asset or escalate `original -> edited`
+   * (the unit lands on the submitter). */
+  passToYou: number;
+  /** Cart picks that would only join somebody else's unit (a final blocks an
+   * escalation, or the claim is already edited). */
+  alreadyRequested: number;
+  /** The subject's own share AFTER the submit, priced by the same single
+   * `attributeQuota` call. The browser formats it; it never computes money. */
+  after: AttributionShare;
+  /** The gallery's extra unit price from that same attribution — not
+   * `after.extras`, which can be 0, and not the live package row. */
+  extraUnitPriceCop: number;
+};
+
 /** The four numbers (decision 14). All computed on the server; the client
  * never counts picks or claims. */
 export type SelectionCounter = {
@@ -121,7 +151,12 @@ export type SelectionCounter = {
   /** The subject's own partition; `null` when there is no subject (an admin
    * without view-as). `yours` may only go down because of somebody else's
    * escalation, never up. */
-  viewer: { yours: number; shared: number; toSend: number } | null;
+  viewer: {
+    yours: number;
+    shared: number;
+    toSend: number;
+    projection: SubmitProjection;
+  } | null;
   /** Units per billed person, removed members included, in userId code-unit
    * order. The UI sorts for display.
    *

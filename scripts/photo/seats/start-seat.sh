@@ -38,6 +38,7 @@ usage: start-seat.sh <explore|plan|implement|review|ship> --prompt <text>|--prom
   --wait                 Block until the seat's TUI goes idle, then report status=ok|empty|timeout.
   --timeout-ms <ms>      Ceiling for --wait (default 900000).
   --dry-run              Print the exact command that would be typed into the terminal and stop.
+  --keep-open            Leave the seat's tab open even when it delivered (default: close it).
   --worktree <selector>  Orca worktree selector (default: active).
   --title <text>         Terminal tab title (default: photo-<seat>-seat).
 
@@ -52,6 +53,7 @@ prompt_file=""
 output=""
 do_wait=0
 do_dry_run=0
+do_keep_open=0
 timeout_ms="${SEAT_TIMEOUT_MS:-900000}"
 worktree="active"
 tab_title=""
@@ -67,6 +69,7 @@ while [ $# -gt 0 ]; do
     --title)       tab_title="${2:?--title needs a value}"; shift 2 ;;
     --wait)        do_wait=1; shift ;;
     --dry-run)     do_dry_run=1; shift ;;
+    --keep-open)   do_keep_open=1; shift ;;
     -*) echo "unknown option: $1" >&2; usage; exit 2 ;;
     *)  [ -z "$seat" ] || { echo "unexpected argument: $1" >&2; usage; exit 2; }
         seat="$1"; shift ;;
@@ -224,6 +227,19 @@ elif orca terminal wait --terminal "$handle" --for tui-idle --timeout-ms 5000 >/
   status="empty"
 fi
 
-printf 'status=%s\noutput-bytes=%s\n' "$status" "${bytes:-0}"
+# The tab is not part of the handoff: once the file is written and the TUI is settled, nothing in
+# this terminal is worth keeping, and leaving it open leaves tabs somebody has to close by hand —
+# and pi rewrites the tab title, so they cannot even be found by the seat name afterwards. A failed
+# seat keeps its tab, because that is the one you need to look at: read the screen, then close it.
+cleanup="left-open"
+if [ "$status" = "ok" ] && [ "$do_keep_open" -eq 0 ]; then
+  if orca terminal close --terminal "$handle" --tab >/dev/null 2>&1; then
+    cleanup="tab-closed"
+  else
+    cleanup="close-failed"
+  fi
+fi
+
+printf 'status=%s\noutput-bytes=%s\ncleanup=%s\n' "$status" "${bytes:-0}" "$cleanup"
 
 [ "$status" = "ok" ] || exit 1

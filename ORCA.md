@@ -80,6 +80,7 @@ contract=/abs/path/scripts/photo/seats/plan.md
 output=/var/folders/…/photo-plan.XXXXXX
 status=ok|empty|timeout       # only with --wait
 output-bytes=<n>              # only with --wait
+cleanup=tab-closed|left-open|close-failed   # only with --wait
 ```
 
 What it does:
@@ -87,8 +88,15 @@ What it does:
 1. refuses to run outside an Orca-managed worktree (`orca worktree current`) or without a brief,
 2. checks the provider exists in `pi --list-models`,
 3. mints the delivery path with `mktemp` and appends `Output path: <path>` to the brief,
-4. `orca terminal create --worktree active --title photo-<seat>-seat --command "pi …"`, and
-5. with `--wait`, polls the **output file** until it appears, then waits for the TUI to settle.
+4. `orca terminal create --worktree active --title photo-<seat>-seat --command "pi …"`,
+5. with `--wait`, polls the **output file** until it appears, then waits for the TUI to settle, and
+6. closes the tab it opened, but only when the seat delivered (`--keep-open` opts out).
+
+Step 6 is not tidiness. A finished seat's terminal has nothing left in it — the file is the handoff
+— and a leftover tab cannot even be recognised later, because pi's titlebar extension rewrites the
+tab title to `π - photo-showcase`, which is why hunting leftovers by `photo-*-seat` finds nothing.
+A failed seat keeps its tab on purpose: that is the one worth reading with
+`orca terminal read --terminal <handle> --screen` before closing it.
 
 The pi command line is:
 

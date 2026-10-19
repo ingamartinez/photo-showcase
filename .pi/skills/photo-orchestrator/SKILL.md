@@ -52,27 +52,34 @@ handoff="$(scripts/photo/seats/start-seat.sh plan --wait --timeout-ms 900000 \
   --prompt "Task <id>, epic <pid>, explore digest <digest-path>.
 Decide the technical path. Read your contract first.")"
 
-status="$(printf '%s\n' "$handoff" | sed -n 's/^status=//p')"
-output="$(printf '%s\n' "$handoff" | sed -n 's/^output=//p')"
+status="$(printf '%s\n' "$handoff" | sed -n 's/^status=//p')
+output="$(printf '%s\n' "$handoff" | sed -n 's/^output=//p')
+tab_cleanup="$(printf '%s\n' "$handoff" | sed -n 's/^cleanup=//p')"
 terminal="$(printf '%s\n' "$handoff" | sed -n 's/^terminal=//p')"
 agent="$(printf '%s\n' "$handoff" | sed -n 's/^agent=//p')"
 
 cat "$output"
-orca terminal close --terminal "$terminal" --tab
 ```
 
 - **The output path is the only delivery channel.** pi runs fullscreen with no scrollback, so
   `orca terminal read` cannot recover a transcript; `--screen` shows only the current frame. The
   launcher mints the path (`mktemp`) and appends it to the brief, so pass `--output` only when you
   already have one.
+- **You do not clean up after a successful seat: the launcher does.** `cleanup=tab-closed` means the
+  tab is gone. Leave it that way — a leftover tab is not free, because pi rewrites its title, so it
+  cannot be found by the seat's name later and has to be closed by hand. `--keep-open` exists for
+  the rare case you want to watch it.
 - `status` is `ok`, `empty` or `timeout`. `empty` means the seat finished and wrote nothing —
   a failure, not an empty success. Prompt a **new** seat once with the same brief; if it fails
   again, report and stop. Never invent the content.
 - `timeout` means the seat was still working when the ceiling was reached. Read the screen
   (`orca terminal read --terminal <handle> --screen`) to see whether it is working or stuck, then
   decide; do not report it as done.
+- A failed seat keeps its tab open on purpose (`cleanup=left-open`), because that is the one worth
+  looking at. Read the screen, then close it yourself with
+  `orca terminal close --terminal <handle> --tab`. Nothing else should outlive the run.
 - Seats are disposable (`--no-session`) and each gets a fresh terminal. A correction is a new seat
-  with the findings, never a resumed one. Always close the tab you opened.
+  with the findings, never a resumed one.
 - To re-prompt a seat that is still running, use `orca terminal send --terminal <handle> --text
 "…" --enter` — but a new seat is the normal path.
 

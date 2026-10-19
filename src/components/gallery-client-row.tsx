@@ -1,9 +1,15 @@
 "use client";
 
-// One row per ACTIVE client on the gallery detail page (task #97) — renders
-// the same "name · email" line #94 already established, plus a two-step
-// "Quitar" affordance for the removal action and, since task #101, a
-// "Reenviar acceso" affordance for the resend action.
+// One row per ACTIVE client on the gallery detail page (task #97), plus a
+// two-step "Quitar" affordance for the removal action and, since task #101,
+// a "Reenviar acceso" affordance for the resend action.
+//
+// Task #273 changed the identity line from the "name · email" single
+// truncated line #94 established to name stacked OVER email
+// (design/system/dashboard.html:934-935), and the email is never truncated
+// (`break-all`, mock :387) so it reads complete in a ~210px grid cell and its
+// full text stays in the DOM for screen readers. A client with no name shows
+// only the email — not the email twice.
 //
 // Task #133 (epic #125's mobile-first note): the row used to expose "Quitar"
 // and "Reenviar acceso" as two adjacent, ~11px text buttons — "intocables con
@@ -124,7 +130,7 @@ export function GalleryClientRow({
   if (removeState.status === "removed") {
     return (
       <p className="text-fg-mute text-sm line-through decoration-1">
-        {client.name ?? client.email} · {client.email} — quitado.
+        {client.name ? `${client.name} · ${client.email}` : client.email} — quitado.
       </p>
     );
   }
@@ -134,11 +140,14 @@ export function GalleryClientRow({
   const hasActions = resendable || removable || hasSelectionActions;
 
   return (
-    <div className="border-line-2 flex flex-col gap-2 rounded-[6px] border py-1.5 pr-1.5 pl-3">
+    // `h-full` so bordered boxes sharing a grid row (task #273) are equally
+    // tall: a stretched grid item has a definite height, so it resolves.
+    <div className="border-line-2 flex h-full flex-col gap-2 rounded-[6px] border py-1.5 pr-1.5 pl-3">
       <div className="flex min-h-11 items-center justify-between gap-3 lg:min-h-8">
-        <p className="min-w-0 truncate text-sm">
-          {displayName} · <span className="text-fg-mute">{client.email}</span>
-        </p>
+        <div className="min-w-0">
+          {client.name && <p className="text-sm break-words">{client.name}</p>}
+          <p className="text-fg-mute text-xs break-all">{client.email}</p>
+        </div>
 
         {/* `.client-item__more`, design/system/dashboard.html:388-393 — the
             ONE 44px control this row exposes; everything it opens is a full-

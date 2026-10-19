@@ -62,6 +62,45 @@ describe("GalleryClientRow", () => {
     expect(screen.getByText(/ana@example\.com/)).toBeDefined();
   });
 
+  // Task #273: the identity line is now name OVER email as two separate
+  // nodes (design/system/dashboard.html:934-935), which is what makes a
+  // ~210px grid cell readable — and the email is un-truncated, so its full
+  // text is in the DOM for a screen reader (CSS wrapping is visual only).
+  it("stacks the name over the email as two separate text nodes", () => {
+    render(
+      <GalleryClientRow
+        galleryId={GALLERY_ID}
+        client={CLIENT}
+        status="proofing"
+        removable
+        resendable={false}
+      />,
+    );
+
+    const name = screen.getByText("Ana Pérez");
+    // Exact string: the address is a whole text node of its own, not
+    // concatenated with the name.
+    const email = screen.getByText("ana@example.com");
+    expect(name).not.toBe(email);
+    expect(name.compareDocumentPosition(email) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  // Task #273, owner decision Q4: a client with no name shows ONLY the email
+  // — stacking them would otherwise print the same address twice.
+  it("renders a nameless client's email once, not twice", () => {
+    render(
+      <GalleryClientRow
+        galleryId={GALLERY_ID}
+        client={{ id: "u2", name: null, email: "sin-nombre@example.com" }}
+        status="proofing"
+        removable
+        resendable={false}
+      />,
+    );
+
+    expect(screen.getAllByText(/sin-nombre@example\.com/)).toHaveLength(1);
+  });
+
   it("hides the Acciones trigger entirely when neither removable nor resendable", () => {
     render(
       <GalleryClientRow
@@ -167,6 +206,30 @@ describe("GalleryClientRow", () => {
 
     await screen.findByText(/quitado/);
     expect(screen.queryByRole("button", { name: /Acciones para/ })).toBeNull();
+  });
+
+  // The same Q4 rule on the OTHER line this row renders for a client — the
+  // removed state's own sentence, which used to name the email twice when
+  // there was no name to show.
+  it("renders a nameless client's email once in the removed state", async () => {
+    removeGalleryClientMock.mockResolvedValue({ status: "removed" });
+    const user = userEvent.setup();
+    render(
+      <GalleryClientRow
+        galleryId={GALLERY_ID}
+        client={{ id: "u2", name: null, email: "sin-nombre@example.com" }}
+        status="proofing"
+        removable
+        resendable={false}
+      />,
+    );
+
+    await openActionsMenu(user, "sin-nombre@example.com");
+    await user.click(screen.getByRole("menuitem", { name: "Quitar" }));
+    await user.click(screen.getByRole("button", { name: "Confirmar" }));
+
+    await screen.findByText(/quitado/);
+    expect(screen.getAllByText(/sin-nombre@example\.com/)).toHaveLength(1);
   });
 
   it("shows the error message returned by the action, without hiding the row", async () => {

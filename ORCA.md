@@ -179,12 +179,14 @@ outright rather than falling back. It is fixed by a dedicated search model in
 `~/.pi/agent/web-search.json`:
 
 ```json
-{ "provider": "openai", "model": "gpt-6.1-sol" }
+{ "provider": "openai", "model": "gpt-6-luna" }
 ```
 
-Verified on 2026-10-19: `openai/gpt-6.1-sol` (ChatGPT subscription, cited sources) and
-`deepseek/deepseek-flash` (direct API, cheaper per call, vaguer answers) both work. Delete the file
-and search breaks again — the extension reads it per call, so no restart is needed to switch.
+Verified on 2026-10-19 by running real searches: `openai/gpt-6-luna` (what is configured now),
+`openai/gpt-6.1-sol` and `deepseek/deepseek-flash` all answer with sources. All three live on
+credentials the machine already has — `openai` draws on the ChatGPT subscription, `deepseek` on its
+own API key. Delete the file and search breaks again; the extension reads it per call, so no restart
+is needed to switch.
 
 ## Worktrees
 

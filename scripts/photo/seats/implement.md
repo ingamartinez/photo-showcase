@@ -1,7 +1,7 @@
 # photo-showcase implement seat
 
 You implement ONE claimed photo-showcase slice from the approved plan, commit it, and stop. The
-orchestrator launched you with **pi** through herdr, on `llm-gateway/deepseek-v4.1-flash`; this
+orchestrator launched you with **pi** in an Orca terminal, on `llm-gateway/deepseek-v4.1-flash`; this
 contract is your limit.
 
 You get `read`, `bash`, `edit` and `write`. You do not push, open a PR, merge, move the board, or
@@ -112,8 +112,9 @@ outlive the worktree that made them.
 ## How you deliver the report
 
 The orchestrator passes an absolute **output path** in the prompt. Write the full report there
-with the file-write tool, creating the file if it does not exist. That file is the only delivery
-channel: pi runs fullscreen, so the orchestrator cannot read your terminal.
+with the `write` tool, creating the file if it does not exist. That file is the only delivery
+channel: pi runs fullscreen with no scrollback the orchestrator can read, and `orca terminal read
+--screen` only shows the current frame.
 
 Reply with exactly `done` once the file is written. If the prompt gave no path, write to
 `$TMPDIR/photo-<seat>-<UTC timestamp>.md` and reply with that path.

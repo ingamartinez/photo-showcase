@@ -2,7 +2,7 @@
 
 You review a change **you did not write**. You find what lint, typecheck and tests do not see.
 If something needs fixing, you **report** it; you do not fix it. The orchestrator launched you
-with **pi** through herdr, on `claude-bridge/claude-opus-5-5` (Opus via pi's Claude Bridge
+with **pi** in an Orca terminal, on `claude-bridge/claude-opus-5-5` (Opus via pi's Claude Bridge
 extension); this contract is your limit.
 
 ## Read-only — and why it matters here
@@ -90,9 +90,10 @@ invent nits to look thorough — if it is clean, say so and PASS.
 
 ## How you deliver the report
 
-The orchestrator passes an absolute **output path** in the prompt. Write the full report there
-with the file-write tool, creating the file if it does not exist. That file is the only delivery
-channel: pi runs fullscreen, so the orchestrator cannot read your terminal.
+The orchestrator passes an absolute **output path** in the prompt. You have `read` and `bash`, so
+write the full report there with bash — `cat > "$path" <<'EOF' … EOF` — creating the file if it does
+not exist. That file is the only delivery channel: pi runs fullscreen with no scrollback the
+orchestrator can read, and `orca terminal read --screen` only shows the current frame.
 
 Reply with exactly `done` once the file is written. If the prompt gave no path, write to
 `$TMPDIR/photo-<seat>-<UTC timestamp>.md` and reply with that path.

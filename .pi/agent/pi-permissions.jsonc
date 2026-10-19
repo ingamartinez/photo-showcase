@@ -1,0 +1,41 @@
+// Project permission policy for pi-permission-system.
+//
+// OpenCode's lane was permissive: the coordinator denied itself edits and one board command, and
+// everything else was allowed. This keeps that posture — allow by default — and adds hard denials
+// for the commands this repository says must never run. Deny, not ask: nobody is watching a seat's
+// terminal, so an `ask` there is a hung seat, not a safety net.
+//
+// Last matching rule wins, so the broad allow comes first and the specific denials after it.
+{
+  "defaultPolicy": {
+    "tools": "allow",
+    "bash": "allow",
+    "mcp": "allow",
+    "skills": "allow",
+    "special": "allow",
+  },
+  "tools": {
+    "*": "allow",
+  },
+  "bash": {
+    "*": "allow",
+
+    // AGENTS.md: "Never `--no-verify`. Hooks are the gate."
+    "*--no-verify*": "deny",
+
+    // The board is appended, never rewritten. Matches `--body` but not `--append-body`.
+    "*kanban-md edit*--body*": "deny",
+
+    // KANBAN.md: branches are rebased onto main, never force-pushed over it.
+    "*git push --force*": "deny",
+
+    // Unrecoverable outside the repository, so no lane needs them. The two literal forms are
+    // exact matches (a wildcard there would also catch `rm -rf /tmp/…`, which seats legitimately
+    // use); the flag rule and the home rule are substring matches and fire wherever they appear.
+    "*sudo *": "deny",
+    "*--no-preserve-root*": "deny",
+    "rm -rf /": "deny",
+    "rm -rf ~": "deny",
+    "rm -rf ~/*": "deny",
+  },
+}

@@ -4,6 +4,20 @@
 
 This project uses **kanban-md** for task management. Always follow the workflow defined in [`KANBAN.md`](./KANBAN.md): create a task per slice, claim it before coding, and move it to `done` only after `photo-reviewer` returns `VERDICT: PASS`. Keep the board and the code in sync at all times.
 
+## Agent lanes
+
+Two lanes run over the same board, and neither one is a substitute for the board itself:
+
+- **Orca lane (default):** pi keeps the coordinating thread, [`ORCA.md`](./ORCA.md) describes the
+  five disposable pi seats it launches in Orca terminals, and the
+  [`photo-orchestrator`](./.pi/skills/photo-orchestrator/SKILL.md) skill is the coordinator contract
+  (`/skill:photo-orchestrator <task-id>`). The seats run via
+  `scripts/photo/seats/start-seat.sh`.
+- **Claude Code lane:** `.claude/agents/photo-implementer | photo-reviewer | photo-shipper`, run by
+  hand as `KANBAN.md` describes.
+
+Neither lane writes code without a claimed task, and neither one merges to `main`.
+
 ## Source of truth
 
 **The kanban board is the source of truth.** Each task body carries its own goal, verified context, acceptance criteria and known traps — read the task first, and treat it as sufficient. Work is grouped into epics (parent tasks tagged `epic`); epics are never implemented directly, only their child slices are.

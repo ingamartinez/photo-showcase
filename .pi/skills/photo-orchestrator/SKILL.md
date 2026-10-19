@@ -126,5 +126,10 @@ orca worktree set --worktree active --workspace-status in-review --json
 
 ## Memory (Engram)
 
-Use `project: "photo-showcase"` explicitly when you persist a plan, a verdict or a discovery.
-The seats have no Engram server, so anything worth keeping must be persisted by you.
+Engram is installed as the Pi-native package (`gentle-engram`), not as an MCP server, so its `mem_*`
+tools are yours directly — no `tool_search` hop. Call `mem_current_project` before your first write:
+it reports the detected project and how it was detected. Then pass `project: "photo-showcase"`
+explicitly when you persist a plan, a verdict or a discovery.
+
+The seats run with `ENGRAM_STARTUP_POLICY=disabled` and `--no-mcp`, so anything worth keeping must be
+persisted by you.

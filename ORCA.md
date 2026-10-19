@@ -125,6 +125,42 @@ review — not a sandbox. This is the same trust model the lane had before Orca,
 deliberately on 2026-10-17. Only the `implement` seat is allowed to change the tree, and the
 launcher gives it `read,bash,edit,write` explicitly.
 
+## MCP servers and memory
+
+Memory and MCP are two different mechanisms here, and confusing them is a real mistake — this lane
+made it once, by registering Engram as an MCP server.
+
+**Memory is a Pi package, not MCP.** `engram setup pi` installed `gentle-engram@0.4.2`, recorded in
+`~/.pi/agent/settings.json` as a package (`pi list` shows it). It exposes the `mem_*` tools natively
+and talks to `engram serve` over HTTP, binding writes to pi's real session id. Its `0 files` output
+is expected: it adds a package entry, it does not copy files.
+
+Engram must **not** appear in `mcp.json`. Upstream's Pi guide says native-only writes are not
+guaranteed while an `mcpServers.engram` entry exists, so the one this lane briefly had was removed.
+`mem_current_project` is the cheap proof either way — it reports the detected project and its
+source (`photo-showcase` via `git_remote` here).
+
+**MCP servers** live in `~/.pi/agent/mcp.json` and cover the other three:
+
+| Server      | Exposure | What it gives you                                      |
+| ----------- | -------- | ------------------------------------------------------ |
+| `codegraph` | direct   | `codegraph_explore` over this repository               |
+| `context7`  | direct   | current library documentation                          |
+| `figma`     | direct   | design context; needs the Figma desktop app on `:3845` |
+
+**The seats get neither.** The launcher passes `--no-mcp` (a seat's contract names its whole tool
+surface, and some servers ship tools that write — `figma` alone has `add_code_connect_map` and
+`send_code_connect_mappings`) and `ENGRAM_STARTUP_POLICY=disabled` (a seat that could save memory
+would be a second writer to a store the orchestrator owns). A read-only seat with an unaccounted
+second surface is not read-only. Escape hatches for a seat you are watching yourself: `SEAT_MCP=1`
+and `SEAT_MEMORY=1`.
+
+So memory belongs to the orchestrator: a plan, a verdict or a discovery worth keeping is persisted
+by it, with `project: "photo-showcase"` passed explicitly.
+
+`figma` warns at startup when the desktop app is not running. That is noise, not a failure: the
+other two still connect.
+
 ## Worktrees
 
 Seats run **in the worktree the orchestrator is in** (`--worktree active`). There is no per-lane

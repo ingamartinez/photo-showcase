@@ -41,7 +41,8 @@ usage: start-seat.sh <explore|plan|implement|review|ship> --prompt <text>|--prom
   --worktree <selector>  Orca worktree selector (default: active).
   --title <text>         Terminal tab title (default: photo-<seat>-seat).
 
-Overrides without editing this script: SEAT_PROVIDER, SEAT_MODEL, SEAT_THINKING, SEAT_TIMEOUT_MS.
+Overrides without editing this script: SEAT_PROVIDER, SEAT_MODEL, SEAT_THINKING, SEAT_TIMEOUT_MS,
+SEAT_MCP (1 = leave the MCP servers connected), SEAT_MEMORY (1 = let the seat write Engram memory).
 EOF
 }
 
@@ -164,7 +165,12 @@ esac
 
 # --append-system-prompt takes a path and reads the contract into the system prompt.
 # --approve trusts the project's own context files (AGENTS.md) for this run.
+# Seats keep exactly the tool surface their contract names. A seat runs with `--no-mcp` (the MCP
+# servers, some of which ship tools that write, belong to the orchestrator) and with the native
+# Engram provider disabled, so a seat cannot write memory behind the orchestrator's back.
+# SEAT_MCP=1 / SEAT_MEMORY=1 are the escape hatches for a one-off seat you are watching yourself.
 cmd="pi"
+[ "${SEAT_MEMORY:-0}" = "1" ] || cmd="ENGRAM_STARTUP_POLICY=disabled pi"
 add_arg() { cmd="$cmd $(printf '%q' "$1")"; }
 add_arg --provider;      add_arg "$provider"
 add_arg --model;         add_arg "$model"
@@ -172,6 +178,7 @@ add_arg --thinking;      add_arg "$thinking"
 add_arg --tools;         add_arg "$tools"
 add_arg --approve
 add_arg --no-session
+[ "${SEAT_MCP:-0}" = "1" ] || add_arg --no-mcp
 add_arg --append-system-prompt; add_arg "$contract"
 add_arg --;              add_arg "$prompt"
 

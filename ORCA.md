@@ -171,6 +171,21 @@ orchestrator owns.
 `figma` warns at startup when the desktop app is not running. That is noise, not a failure: the
 other two still connect.
 
+### Web search needs its own model
+
+`pi-web-search` searches with the **conversation** model by default, and the conversation model here
+(`llm-gateway/deepseek-v4.1-flash-1017`) has no provider-native search — so `web_search` fails
+outright rather than falling back. It is fixed by a dedicated search model in
+`~/.pi/agent/web-search.json`:
+
+```json
+{ "provider": "openai", "model": "gpt-6.1-sol" }
+```
+
+Verified on 2026-10-19: `openai/gpt-6.1-sol` (ChatGPT subscription, cited sources) and
+`deepseek/deepseek-flash` (direct API, cheaper per call, vaguer answers) both work. Delete the file
+and search breaks again — the extension reads it per call, so no restart is needed to switch.
+
 ## Worktrees
 
 Seats run **in the worktree the orchestrator is in** (`--worktree active`). There is no per-lane

@@ -18,6 +18,12 @@
 -- safe: an unlocked member can re-send, whereas a wrongly locked one is frozen
 -- out. The re-claim of the released carts below IS exact (picked_at is the old
 -- selected_at and `kind` is copied back).
+--
+-- The final-without-stamp assets accepted by owner decision 2026-10-19 also
+-- round-trip: 4.2 backfilled them with a NON-NULL submitted_at, so 4.3 never
+-- released them and their is_selected/selected_at/selected_by/requested_at are
+-- exactly the pre-migration values. Only `billed_at` was added, and dropping
+-- the column below removes it. No explicit restore is needed here.
 \set ON_ERROR_STOP 1
 BEGIN;
 -- Restore released carts from their surviving pick (picked_at = old selected_at

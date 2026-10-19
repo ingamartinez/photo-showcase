@@ -73,6 +73,53 @@ describe("0017_asset-picks-backfill.sql shape", () => {
     expect(decision20At, "decision 20's unlock (4.5)").toBeGreaterThan(billedAtAt);
   });
 
+  // Risk guarded: the owner's decision (2026-10-19) is that a photo with a
+  // final IS an order, even when the legacy flow never stamped requested_at.
+  // The insert's CASE must land that row as a SUBMITTED pick. Dropping the
+  // final branch sends it to ELSE NULL, which makes it a cart and 4.3 releases
+  // it -- silently discarding a delivered order. Placing it before the
+  // requested_at/admin-lock branches would let a lock stamp win over the
+  // delivered proof; anything after ELSE NULL is not part of the CASE at all.
+  it("treats a photo with a final as a submitted pick, after requested_at/locks and before ELSE NULL", () => {
+    const insertAt = statementIndex(/INSERT\s+INTO\s+"asset_picks"/i);
+    expect(insertAt, "the pick insert").toBeGreaterThan(-1);
+    const insert = statements[insertAt];
+
+    // The actual CASE starts a line; the word also appears mid-line in the
+    // statement's own prose comment, which this anchor skips.
+    const caseStart = insert.search(/\n\s*CASE\b/i);
+    expect(caseStart, "the submitted_at CASE").toBeGreaterThan(-1);
+    const caseEnd = insert.indexOf("\n  END", caseStart);
+    expect(caseEnd, "the CASE END").toBeGreaterThan(caseStart);
+    // Strip line comments: the CASE carries an explanatory comment that may
+    // itself mention "ELSE NULL"; prose must not be able to move a branch.
+    const caseExpr = insert.slice(caseStart, caseEnd).replace(/--[^\n]*/g, "");
+
+    const closedAt = caseExpr.search(/WHEN\s+g\."status"\s+IN\s*\(/i);
+    const requestedAt = caseExpr.search(/WHEN\s+a\."requested_at"\s+IS\s+NOT\s+NULL/i);
+    const adminLockAt = caseExpr.search(/WHEN\s+gc\."selection_locked_by"\s*=\s*'admin'/i);
+    const lockAt = caseExpr.search(/WHEN\s+gc\."selection_locked_at"\s+IS\s+NOT\s+NULL/i);
+    const finalAt = caseExpr.search(/WHEN\s+a\."final_key"\s+IS\s+NOT\s+NULL/i);
+    const elseNullAt = caseExpr.search(/\bELSE\s+NULL\b/i);
+
+    expect(closedAt, "the closed-gallery branch").toBeGreaterThan(-1);
+    expect(requestedAt, "the requested_at branch").toBeGreaterThan(-1);
+    expect(adminLockAt, "the admin-lock branch").toBeGreaterThan(-1);
+    expect(lockAt, "the client-lock branch").toBeGreaterThan(-1);
+    expect(finalAt, "the final branch").toBeGreaterThan(-1);
+    expect(elseNullAt, "ELSE NULL").toBeGreaterThan(-1);
+
+    expect(finalAt).toBeGreaterThan(closedAt);
+    expect(finalAt).toBeGreaterThan(requestedAt);
+    expect(finalAt).toBeGreaterThan(adminLockAt);
+    expect(finalAt).toBeGreaterThan(lockAt);
+    expect(finalAt).toBeLessThan(elseNullAt);
+
+    expect(caseExpr).toMatch(
+      /WHEN\s+a\."final_key"\s+IS\s+NOT\s+NULL\s+THEN\s+COALESCE\(a\."selected_at",\s*gc\."selection_submitted_at",\s*g\."selection_submitted_at"\)/i,
+    );
+  });
+
   // Risk guarded: relaxing the cart release. It must unclaim the photo,
   // reset `selection_kind` (the pick row keeps the real intent), and refuse to
   // touch a photo someone else already submitted. Dropping any of the three
@@ -130,9 +177,13 @@ describe("0017_asset-picks-backfill.sql shape", () => {
   });
 
   // Risk guarded: a reorder that runs the refusal guard after the insert makes
-  // the guard inspect post-backfill data and pass vacuously; reducing the
-  // guard to a NOTICE turns a refused deploy into a silent one.
-  it("runs the refusal guard before the first pick insert, as an EXCEPTION", () => {
+  // the guard inspect post-backfill data and pass vacuously; folding the
+  // accepted final-without-stamp bucket back into the refusal sum (or
+  // replacing the EXCEPTION with a NOTICE-only guard) turns a refused deploy
+  // into a silent one. The final bucket is accepted by owner decision
+  // 2026-10-19, so a NOTICE is expected -- the assertions below pin the
+  // refusal to the other four buckets, not to the presence of a bare RAISE.
+  it("runs the refusal guard before the first pick insert, as an EXCEPTION over the four refusing buckets", () => {
     const guardAt = statementIndex(/DO \$\$/);
     const insertAt = statementIndex(/INSERT\s+INTO\s+"asset_picks"/i);
 
@@ -142,7 +193,21 @@ describe("0017_asset-picks-backfill.sql shape", () => {
 
     const guard = statements[guardAt];
     expect(guard).toMatch(/RAISE\s+EXCEPTION/i);
-    expect(guard).not.toMatch(/RAISE\s+(NOTICE|WARNING|INFO)/i);
+    // The accepted bucket is reported, citing the decision that resolved it.
+    expect(guard).toMatch(/RAISE\s+NOTICE/i);
+    expect(guard).toMatch(/owner decision 2026-10-19/i);
+    // The refusal sum is exactly the four remaining buckets; cart_finals must
+    // not have been folded back in.
+    expect(guard).toMatch(
+      /IF\s+orphan_pickers\s*\+\s*removed_open\s*\+\s*undated\s*\+\s*closed_carts\s*>\s*0/i,
+    );
+    expect(guard).not.toMatch(/IF\s+orphan_pickers[\s\S]{0,160}?cart_finals[\s\S]{0,40}?>\s*0/i);
+    // The EXCEPTION template still names all four refusing buckets and no
+    // longer names the accepted one.
+    const exceptionAt = guard.search(/RAISE\s+EXCEPTION/i);
+    const exception = guard.slice(exceptionAt);
+    expect(exception).not.toMatch(/already have a final/i);
+    expect((exception.match(/%/g) ?? []).length).toBe(4);
   });
 
   // Risk guarded: `migrate()` only applies migrations whose timestamp is

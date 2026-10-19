@@ -8,11 +8,26 @@
 // frozen" (the identity bug the #239 suite documents).
 import type { ComponentProps } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { ProofGrid } from "./proof-grid";
 import type { ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
-import type { SelectionPick } from "@/lib/selection-snapshot";
+import { emptyShare } from "@/lib/quota-attribution";
+import type { SelectionEntry, SelectionKind } from "@/lib/selection-snapshot";
+import { emptyProjection } from "@/test-support/selection-fixtures";
+
+type SelectionPick = {
+  assetId: string;
+  selectedAt: string | null;
+  pickedBy: { id: string; label: string } | null;
+  selectionKind: SelectionKind;
+  requestedAt?: string | null;
+};
+
+function jsonResponse(status: number, body: unknown): Response {
+  return { ok: status >= 200 && status < 300, status, json: async () => body } as Response;
+}
 
 const TERMS = {
   includedPhotosSnapshot: 0,
@@ -59,7 +74,7 @@ function assets(): ProofAsset[] {
     originalFilename: `IMG_000${n}.JPG`,
     proofWidth: 1600,
     proofHeight: 1067,
-    isSelected: n <= 5,
+    isSelected: n === 1 || n === 2 || n === 5,
     proofUrl: `https://r2.example.com/proof-${n}`,
     hasFinal: n === 1,
     displayUrl: n === 1 ? "https://r2.example.com/display-1" : null,
@@ -67,21 +82,92 @@ function assets(): ProofAsset[] {
   }));
 }
 
-function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
+function entryFor(pick: SelectionPick): SelectionEntry {
+  return {
+    assetId: pick.assetId,
+    claim:
+      pick.requestedAt === null
+        ? null
+        : {
+            claimedAt: pick.selectedAt,
+            resolvedKind: pick.selectionKind,
+            billedTo: pick.pickedBy,
+            charge: "included",
+            canEscalate: false,
+          },
+    picks: pick.pickedBy
+      ? [
+          {
+            userId: pick.pickedBy.id,
+            label: pick.pickedBy.label,
+            kind: pick.selectionKind,
+            pickedAt: pick.selectedAt ?? "2026-10-16T08:00:00.000Z",
+            submittedAt: pick.requestedAt ?? null,
+            state: pick.requestedAt ? "billed" : "cart",
+          },
+        ]
+      : [],
+  };
+}
+
+function counterFor(picks: SelectionPick[], viewerId: string) {
+  const claimed = picks.filter((pick) => pick.requestedAt !== null && pick.pickedBy);
+  const counts = new Map<string, number>();
+  for (const pick of claimed) {
+    counts.set(pick.pickedBy!.id, (counts.get(pick.pickedBy!.id) ?? 0) + 1);
+  }
+  const own = picks.filter((pick) => pick.pickedBy?.id === viewerId);
+  return {
+    group: claimed.length,
+    viewer: {
+      yours: own.filter((pick) => pick.requestedAt !== null).length,
+      shared: 0,
+      toSend: own.filter((pick) => pick.requestedAt === null).length,
+      projection: emptyProjection(),
+    },
+    // Task #264 — this fixture is about delivery/order state, not money; the
+    // required share is the all-zero one, produced by the same module the
+    // server uses.
+    people: [...counts].map(([userId, units]) => ({
+      userId,
+      label: userId,
+      units,
+      share: emptyShare(),
+    })),
+    unattributed: 0,
+    unattributedShare: emptyShare(),
+  };
+}
+
+function renderGrid(
+  overrides: Partial<ComponentProps<typeof ProofGrid>> & {
+    initialPicks?: SelectionPick[];
+    initialLockedPickerIds?: string[];
+    initialSubmittedPickerIds?: string[];
+  } = {},
+) {
+  const {
+    initialPicks = PICKS,
+    initialLockedPickerIds = [],
+    initialSubmittedPickerIds: _legacySubmitted,
+    ...rest
+  } = overrides;
   return render(
     <ProofGrid
       galleryId="g1"
       initialAssets={assets()}
       initialStatus="proofing"
       initialSubmittedAt={null}
-      initialPicks={PICKS}
+      initialEntries={initialPicks.map(entryFor)}
+      initialQuota={computeQuota(initialPicks.length, 0, TERMS)}
+      initialCounter={counterFor(initialPicks, ANA.id)}
+      initialAdminLockedPickerIds={initialLockedPickerIds}
       viewerId={ANA.id}
-      {...TERMS}
       selectionTrayMode="flat"
       allowsOriginalSelection={false}
       rollingDelivery
       finalsOpen
-      {...overrides}
+      {...rest}
     />,
   );
 }
@@ -98,33 +184,32 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-describe("ProofGrid — rolling delivery (#244)", () => {
-  it("freezes exactly the ORDERED picks (any picker's) and leaves por-enviar picks and unpicked photos interactive", () => {
+describe("ProofGrid — rolling delivery (#244), now on universal order semantics", () => {
+  it("freezes exactly the VIEWER's own sent picks, not somebody else's order", () => {
     renderGrid();
 
     const disabled = [1, 2, 3, 4, 5, 6].filter((n) => tileButton(n).disabled);
 
-    // a1, a2 (Ana's orders) and a5 (Beto's order); NOT a3/a4 (por enviar) and
-    // NOT a6 (unpicked).
-    expect(disabled).toEqual([1, 2, 5]);
+    // Only a1/a2 are Ana's sent picks. a5 is Beto's order, a3/a4 are unsent
+    // carts, and joining or removing only ever touches the viewer's own row.
+    expect(disabled).toEqual([1, 2]);
   });
 
-  it("labels each pick por enviar / pedida / editada on its tile", () => {
+  it("labels every tile from the viewer's state: Editada > Por enviar (own cart) > Pedida", () => {
     renderGrid();
     const grid = screen.getAllByRole("list").at(-1)!;
 
-    expect(within(grid).getAllByText("Editada")).toHaveLength(1);
-    expect(within(grid).getAllByText("Pedida")).toHaveLength(2);
-    expect(within(grid).getAllByText("Por enviar")).toHaveLength(2);
+    expect(within(grid).getAllByText("Editada")).toHaveLength(1); // a1
+    expect(within(grid).getAllByText("Pedida")).toHaveLength(2); // a2, a5
+    expect(within(grid).getAllByText("Por enviar")).toHaveLength(1); // a3
   });
 
-  it("groups the tray into Por enviar and Pedidas, with Editada only where the final is readable", () => {
+  it("groups the tray into Por enviar and Pedidas for every gallery, with Editada only where the final is readable", () => {
     renderGrid();
     const tray = screen.getByRole("region", { name: "Fotos elegidas" });
 
-    // The group headings carry their counts; the per-photo status lines do not.
     const headings = Array.from(tray.querySelectorAll("p")).map((p) => p.textContent?.trim());
-    expect(headings).toContain("Por enviar (2)");
+    expect(headings).toContain("Por enviar (1)");
     expect(headings).toContain("Pedidas (3)");
     // Pedidas holds a1 (Editada), a2 and a5 (Pedida).
     expect(within(tray).getAllByText("Editada")).toHaveLength(1);
@@ -151,13 +236,12 @@ describe("ProofGrid — rolling delivery (#244)", () => {
     expect(srcs).not.toContain("https://r2.example.com/proof-1");
   });
 
-  it("the submit button counts only THIS person's por-enviar photos, and shows the last send", () => {
+  it("counts only THIS person's por-enviar photos and shows the last send", () => {
     renderGrid({ initialViewerSubmittedAt: ORDERED_AT });
 
     // Ana has one por enviar (a3); Beto's a4 does not count for her.
-    expect(screen.getByRole("button", { name: "Enviar 1 foto" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Enviar la foto" })).toBeTruthy();
     expect(screen.getAllByText(/Último envío:/).length).toBeGreaterThan(0);
-    expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
   });
 
   it("disables the submit button at zero por enviar", () => {
@@ -166,27 +250,45 @@ describe("ProofGrid — rolling delivery (#244)", () => {
     });
 
     expect(
-      (screen.getByRole("button", { name: "Enviar 0 fotos" }) as HTMLButtonElement).disabled,
+      (screen.getByRole("button", { name: "Enviar las 0" }) as HTMLButtonElement).disabled,
     ).toBe(true);
   });
 
   it("submitting orders the por-enviar photos WITHOUT locking: the grid stays interactive and the order is shown", async () => {
-    vi.stubGlobal("confirm", () => true);
-    const fetchMock = vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      json: async () => ({
-        status: "submitted",
-        quota: computeQuota(5, 0, TERMS),
-        submittedAt: "2026-10-16T12:00:00.000Z",
-        gallerySelected: false,
-        requestedCount: 1,
-      }),
-    }));
+    const afterPicks = PICKS.map((p) =>
+      p.assetId === "a3" ? { ...p, requestedAt: ORDERED_AT } : p,
+    );
+    const fetchMock = vi.fn((url: string) => {
+      if (url.endsWith("/submit-selection")) {
+        return Promise.resolve(
+          jsonResponse(200, {
+            status: "submitted",
+            quota: computeQuota(5, 0, TERMS),
+            submittedAt: "2026-10-16T12:00:00.000Z",
+            gallerySelected: false,
+            requestedCount: 1,
+          }),
+        );
+      }
+      return Promise.resolve(
+        jsonResponse(200, {
+          status: "proofing",
+          submittedAt: null,
+          entries: afterPicks.map(entryFor),
+          counter: counterFor(afterPicks, ANA.id),
+          quota: computeQuota(5, 0, TERMS),
+          viewerLock: null,
+          adminLockedPickerIds: [],
+          viewerSubmittedAt: "2026-10-16T12:00:00.000Z",
+        }),
+      );
+    });
     vi.stubGlobal("fetch", fetchMock);
     renderGrid();
 
-    fireEvent.click(screen.getByRole("button", { name: "Enviar 1 foto" }));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Enviar la foto" }));
+    await user.click(screen.getByRole("button", { name: "Sí, enviar la foto" }));
 
     await waitFor(() => expect(screen.getAllByText(/Último envío:/).length).toBeGreaterThan(0));
     // a3 is now ordered (frozen); the unpicked a6 and Beto's por-enviar a4 are
@@ -195,29 +297,47 @@ describe("ProofGrid — rolling delivery (#244)", () => {
     expect(tileButton(4).disabled).toBe(false);
     expect(tileButton(6).disabled).toBe(false);
     expect(screen.queryByText(/Enviaste tu selección/)).toBeNull();
-    expect(screen.getByRole("button", { name: "Enviar 0 fotos" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Enviar las 0" })).toBeTruthy();
   });
 
   it("an idempotent already_submitted 200 (nothing stamped) does NOT mark the por-enviar photos as ordered", async () => {
-    vi.stubGlobal("confirm", () => true);
     vi.stubGlobal(
       "fetch",
-      vi.fn(async () => ({
-        ok: true,
-        status: 200,
-        json: async () => ({
-          status: "already_submitted",
-          quota: computeQuota(5, 0, TERMS),
-          submittedAt: "2026-10-16T12:00:00.000Z",
-          gallerySelected: false,
-        }),
-      })),
+      vi.fn((url: string) => {
+        if (url.endsWith("/submit-selection")) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              status: "already_submitted",
+              quota: computeQuota(5, 0, TERMS),
+              submittedAt: "2026-10-16T12:00:00.000Z",
+              gallerySelected: false,
+            }),
+          );
+        }
+        return Promise.resolve(
+          jsonResponse(200, {
+            status: "proofing",
+            submittedAt: null,
+            entries: PICKS.map(entryFor),
+            counter: counterFor(PICKS, ANA.id),
+            quota: computeQuota(5, 0, TERMS),
+            viewerLock: null,
+            adminLockedPickerIds: [],
+            viewerSubmittedAt: null,
+          }),
+        );
+      }),
     );
     renderGrid();
 
-    fireEvent.click(screen.getByRole("button", { name: "Enviar 1 foto" }));
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: "Enviar la foto" }));
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Sí, enviar la foto" }));
 
-    await waitFor(() => expect(screen.getByRole("button", { name: "Enviar 1 foto" })).toBeTruthy());
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Enviar la foto" })).toBeTruthy(),
+    );
     expect(tileButton(3).disabled).toBe(false);
     expect(screen.queryByText(/Último envío:/)).toBeNull();
   });
@@ -256,9 +376,7 @@ describe("ProofGrid — rolling delivery (#244)", () => {
     expect(screen.queryByText(/editada ya disponible/)).toBeNull();
   });
 
-  // The owner's repro: a pick whose final is readable but that never got a
-  // `requested_at` (it was submitted under the classic flow) read "Por enviar".
-  it("a pick with a readable final and NO requestedAt reads Editada, on the tile and in the tray (Editada > Pedida > Por enviar)", () => {
+  it("a pick with a readable final and NO requestedAt reads Editada, on the tile and in the tray", () => {
     renderGrid({
       initialPicks: PICKS.map((p) => (p.assetId === "a1" ? { ...p, requestedAt: null } : p)),
     });
@@ -266,17 +384,69 @@ describe("ProofGrid — rolling delivery (#244)", () => {
     const tray = screen.getByRole("region", { name: "Fotos elegidas" });
 
     expect(within(grid).getAllByText("Editada")).toHaveLength(1);
-    expect(within(grid).getAllByText("Por enviar")).toHaveLength(2);
+    expect(within(grid).getAllByText("Por enviar")).toHaveLength(1);
     expect(within(tray).getAllByText("Editada")).toHaveLength(1);
     const headings = Array.from(tray.querySelectorAll("p")).map((p) => p.textContent?.trim());
-    // a1 moved out of "Por enviar" (a3, a4 remain) into "Pedidas" (a1, a2, a5).
-    expect(headings).toContain("Por enviar (2)");
-    expect(headings).toContain("Pedidas (3)");
+    // Task #267 — this expectation USED to read "Por enviar (1)" / "Pedidas
+    // (3)", pinning the very exclusion the owner reported as a bug: a1's
+    // pick is unsent, so submit sends it, so it belongs to "Por enviar" even
+    // though its final is already readable. The readable tag survives (it
+    // still says "Editada", which is true and useful), but the SECTION is
+    // decided by whether the viewer still has to send, not by the final.
+    expect(headings).toContain("Por enviar (2)"); // a1 + a3
+    expect(headings).toContain("Pedidas (2)"); // a2 + a5
   });
 
-  // A member migrated by updateRollingDelivery: unlocked, submitted_at kept.
-  // Even a STALE snapshot that still carries their old client-submitted lock
-  // must not bring back the classic "enviada/cerrada" copy.
+  // Task #267 — the owner's live report, reproduced as a fixture: the
+  // counter says "4 por enviar", the button says "Enviar las 4", and the tray
+  // listed "Por enviar (2)". The two missing ones were unsent picks on assets
+  // that another client had already ordered and whose final was therefore
+  // readable — excluded from `unsent` by the readable check and folded into
+  // "Pedidas" (or, on a gallery with no claim at all, nowhere). The tray's
+  // group must hold EXACTLY what submit sends.
+  it("lists in 'Por enviar' every pick the Enviar button counts, readable finals included", () => {
+    const picks = [
+      pick("a1", ANA, null), // readable final, still unsent
+      pick("a2", ANA, null), // readable final, still unsent
+      pick("a3", ANA, null), // no final at all
+      pick("a4", ANA, null), // no final at all
+    ];
+    renderGrid({
+      initialPicks: picks,
+      initialAssets: [1, 2, 3, 4].map((n) => ({
+        id: `a${n}`,
+        originalFilename: `IMG_000${n}.JPG`,
+        proofWidth: 1600,
+        proofHeight: 1067,
+        isSelected: false,
+        proofUrl: `https://r2.example.com/proof-${n}`,
+        hasFinal: n === 1 || n === 2,
+        displayUrl: n === 1 || n === 2 ? `https://r2.example.com/display-${n}` : null,
+        isExtra: false,
+      })),
+      initialCounter: counterFor(picks, ANA.id),
+    });
+
+    const tray = screen.getByRole("region", { name: "Fotos elegidas" });
+    const headings = Array.from(tray.querySelectorAll("p")).map((p) => p.textContent?.trim());
+    expect(headings).toContain("Por enviar (4)");
+    // Nothing is claimed yet, so there is no "Pedidas" section to fold them
+    // into — the pre-fix bug hid them outright in exactly this shape.
+    expect(headings.some((heading) => heading?.startsWith("Pedidas") ?? false)).toBe(false);
+    // One row per pick: no duplication into a second section either.
+    expect(within(tray).getAllByRole("listitem")).toHaveLength(4);
+
+    // The bar's own count is the server's `counter.viewer.toSend`; the tray
+    // header must agree with it, which is the whole point of the fix.
+    const counterLine = screen
+      .getByText(/entre todos/)
+      .closest("p")
+      ?.textContent?.replace(/\s+/g, " ")
+      .trim();
+    expect(counterLine).toContain("4 por enviar");
+    expect(screen.getByRole("button", { name: "Enviar las 4" })).toBeTruthy();
+  });
+
   it("a client-submitted member never sees the classic enviada/cerrada copy, even with a stale viewerLock", () => {
     const stale = {
       lockedAt: "2026-10-10T10:00:00.000Z",
@@ -296,12 +466,9 @@ describe("ProofGrid — rolling delivery (#244)", () => {
     expect(text).toMatch(/Último envío/);
     expect(text).toMatch(/seguir eligiendo/);
     expect(tileButton(3).disabled).toBe(false);
-    expect(screen.getByRole("button", { name: "Enviar 1 foto" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Enviar la foto" })).toBeTruthy();
   });
 
-  // Review 3: a member who ORDERED (submitted_at set) and was LATER locked by
-  // the photographer has the same two timestamps as a classic submit. The
-  // server says who locked (`lockedBy`); the client must not guess.
   it("a member who ordered and was then locked by the photographer keeps the photographer-locked copy and frozen tiles", () => {
     renderGrid({
       initialViewerLock: {
@@ -317,7 +484,7 @@ describe("ProofGrid — rolling delivery (#244)", () => {
 
     expect(text).toMatch(/Tu fotógrafo cerró tu selección/);
     expect([1, 2, 3, 4, 5, 6].filter((n) => tileButton(n).disabled)).toEqual([1, 2, 3, 4, 5, 6]);
-    expect(screen.queryByRole("button", { name: /Enviar \d+ foto/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /^Enviar/ })).toBeNull();
   });
 
   it("an ADMIN-locked member under the flag still gets the photographer-locked copy", () => {
@@ -335,15 +502,17 @@ describe("ProofGrid — rolling delivery (#244)", () => {
     expect(tileButton(3).disabled).toBe(true);
   });
 
-  it("flag OFF: no order labels, no download in proofing, locked-submit copy untouched", () => {
+  it("flag OFF still uses the universal order split, but shows no finals UI in proofing", () => {
     renderGrid({
       rollingDelivery: false,
       initialAssets: assets().map((asset) => ({ ...asset, hasFinal: false, displayUrl: null })),
     });
 
-    expect(screen.queryByText("Por enviar")).toBeNull();
-    expect(screen.queryByText("Pedida")).toBeNull();
+    // Order semantics are mandatory now; only the finals half of the flag is
+    // opt-in (epic #250 decision 11).
+    expect(screen.getAllByText("Por enviar").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("Pedida").length).toBeGreaterThan(0);
     expect(screen.queryByRole("button", { name: /Descargar/ })).toBeNull();
-    expect(screen.getByRole("button", { name: "Enviar selección" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Enviar la foto" })).toBeTruthy();
   });
 });

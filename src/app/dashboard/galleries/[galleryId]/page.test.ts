@@ -35,16 +35,23 @@ const getGalleryDetailMock = vi.fn();
 // mocked anywhere in this suite) — leaving it real via `importActual` would
 // make every test in this file reach for the real, unmocked database.
 const getGalleryUnlockAuditMock = vi.fn();
-const getGalleryClientSelectionsMock = vi.fn();
 vi.mock("@/lib/galleries", async () => {
   const actual = await vi.importActual<typeof import("@/lib/galleries")>("@/lib/galleries");
   return {
     ...actual,
     getGalleryDetail: (...args: unknown[]) => getGalleryDetailMock(...args),
     getGalleryUnlockAudit: (...args: unknown[]) => getGalleryUnlockAuditMock(...args),
-    getGalleryClientSelections: (...args: unknown[]) => getGalleryClientSelectionsMock(...args),
   };
 });
+
+// Epic #250 (#263): the per-person numbers, attribution and before/after
+// previews all come from ONE read (`getDashboardSelection`). Its REAL
+// implementation opens a `db.transaction` this suite never stands up, so it is
+// mocked here exactly like `getGalleryDetail` above.
+const getDashboardSelectionMock = vi.fn();
+vi.mock("@/lib/gallery-selection", () => ({
+  getDashboardSelection: (...args: unknown[]) => getDashboardSelectionMock(...args),
+}));
 
 // Task #97: the page now also reads `getClientsForPicker` (`@/lib/clients`)
 // to build the "attach" picker's eligible-client list — its REAL
@@ -78,8 +85,15 @@ beforeEach(() => {
   authMock.mockReset();
   getGalleryDetailMock.mockReset();
   getGalleryUnlockAuditMock.mockReset();
-  getGalleryClientSelectionsMock.mockReset();
-  getGalleryClientSelectionsMock.mockResolvedValue({ clients: [], pickOwnerByAssetId: {} });
+  getDashboardSelectionMock.mockReset();
+  getDashboardSelectionMock.mockResolvedValue({
+    entries: [],
+    quota: {},
+    people: [],
+    labels: {},
+    previewByClient: {},
+    members: [],
+  });
   getGalleryUnlockAuditMock.mockResolvedValue({
     unlockedAt: null,
     unlockedByEmail: null,

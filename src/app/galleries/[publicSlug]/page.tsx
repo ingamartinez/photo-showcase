@@ -5,17 +5,21 @@ import {
   formatClientGalleryCardState,
   formatGalleryStatus,
   formatSessionDate,
+  getGalleryClients,
   getGalleryDetailBySlug,
   isGalleryVisibleToClient,
 } from "@/lib/galleries";
 import { areFinalsOpenToClient } from "@/lib/final-access";
-import { isAdminPreviewingClientGallery, isGalleryOwner } from "@/lib/gallery-access";
-import { getSelectionLockSnapshot } from "@/lib/gallery-client-locks";
+import {
+  isAdminPreviewingClientGallery,
+  isGalleryOwner,
+  resolveViewAs,
+} from "@/lib/gallery-access";
 import { getGallerySelection } from "@/lib/gallery-selection";
 import { readClientGalleryBySlug } from "@/lib/graphql/client-gallery-reads";
 import { selectionTrayModeFromWire } from "@/lib/graphql/types/selection-tray-mode";
 import { displayKey, getPresignedUrl, storedKey } from "@/lib/r2";
-import { ClientPreviewBanner } from "@/components/client-preview-banner";
+import { ClientPreviewBanner, type PreviewSubject } from "@/components/client-preview-banner";
 import { ProofGrid } from "@/components/proof-grid";
 
 export const metadata: Metadata = {
@@ -43,12 +47,15 @@ export const metadata: Metadata = {
 // that doesn't match a row, which this page turns into a 404.
 export default async function ClientGalleryPage({
   params,
+  searchParams,
 }: {
   params: Promise<{ publicSlug: string }>;
+  searchParams?: Promise<{ viewAs?: string | string[] }>;
 }) {
   const session = await requireSession();
 
   const { publicSlug } = await params;
+  const { viewAs: rawViewAs } = (await searchParams) ?? {};
 
   // Task #31: read through the GraphQL schema (`Query.galleryBySlug`),
   // executed IN PROCESS rather than over HTTP — see
@@ -93,6 +100,18 @@ export default async function ClientGalleryPage({
     // able to tell "your gallery isn't ready yet" from "no such gallery".
     notFound();
   }
+
+  // Epic #250 S6 — the optional admin "view as this client" subject. Runs
+  // AFTER every existing gate, so a client sending it is refused loudly and a
+  // stranger still learns nothing. `forbidden()` for a non-admin (a bug, not
+  // lost access) and `notFound()` for an unknown/removed subject.
+  const viewAs = await resolveViewAs(session, gallery.id, rawViewAs);
+  if (!viewAs.ok) {
+    if (viewAs.error === "view_as_admin_only") forbidden();
+    notFound();
+  }
+  const subjectId = viewAs.subjectId;
+  const viewAsId = subjectId === session.user.id ? null : subjectId;
 
   // Presigned at render time, for the INITIAL paint only — `getPresignedUrl`
   // is a local HMAC signature, not an R2 round trip, so doing this once per
@@ -187,22 +206,69 @@ export default async function ClientGalleryPage({
     };
   });
 
-  // Task #95: the FIRST paint of the collaborative tray, from the SAME
-  // function `GET /api/galleries/[galleryId]/selection` calls for every live
-  // refresh afterwards — one query shape, so "what the server said at page
-  // load" and "what the server says now" cannot drift into two different
-  // answers. Read AFTER the ownership and visibility gates above, never
-  // before: it returns other clients' names.
+  // Task #95: the FIRST paint of the collaborative tray and the counter, from
+  // the SAME builder `GET /api/galleries/[galleryId]/selection` calls for
+  // every live refresh afterwards — one query shape, so "what the server said
+  // at page load" and "what the server says now" cannot drift into two
+  // different answers. The server also computes the quota here: the client no
+  // longer derives it (epic #250 S6). Read AFTER the ownership, visibility
+  // and view-as gates above, never before: it returns other clients' names.
   //
   // A DIRECT call, deliberately left out of the GraphQL move (task #31): this
   // function is not in that schema and was not added to it. Same position the
   // presigned-URL calls above hold — see src/lib/graphql/
   // client-gallery-reads.ts's header for both.
-  const initialPicks = await getGallerySelection(gallery.id);
-  // Epic #239 — per-client lock state for slice #241's UI (the viewer's own
-  // lock and whose picks are frozen). Same function the live selection route
-  // calls, for the same one-source-of-truth reason as `initialPicks`.
-  const lockSnapshot = await getSelectionLockSnapshot(gallery.id, session.user.id);
+  const view = await getGallerySelection(
+    gallery.id,
+    {
+      includedPhotosSnapshot: gallery.includedPhotosSnapshot,
+      extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
+      extraPhotoPriceTiersSnapshot: gallery.extraPhotoPriceTiersSnapshot,
+      originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,
+    },
+    subjectId,
+    // Task #268 — the projection mirrors `claimCart`'s own coercion rule, so
+    // an `original` cart pick in a gallery that no longer allows originals is
+    // projected as the `edited` pick the submit will actually resolve.
+    { allowsOriginal: gallery.allowsOriginalSelection !== false },
+  );
+
+  // Epic #250 S7 — the admin's acting subject (decision 12). `getGalleryClients`
+  // is an ADMIN-only query: a real client's path keeps exactly the reads it
+  // had before this slice (page.query-count.test.ts pins that).
+  const isAdmin = isAdminPreviewingClientGallery(session);
+  const members = isAdmin
+    ? (await getGalleryClients(gallery.id)).map((client) => ({
+        id: client.id,
+        label: client.name ?? client.email,
+      }))
+    : [];
+  const activeMember = subjectId !== null ? members.find((m) => m.id === subjectId) : undefined;
+  // Acting requires BOTH an admin and a subject that is still an ACTIVE member.
+  // A removed member (resolveViewAs deliberately allows inspecting their sent
+  // picks) is read-only: decision 17 keeps their history, not their write
+  // access.
+  const actingClientId = isAdmin && subjectId !== null && activeMember ? subjectId : null;
+  const readOnly = isAdmin && actingClientId === null;
+  // The removed subject's label lives on the selection view already (the
+  // counter's `people` rows include removed members, and every pick carries
+  // its own label), so C17 needs no extra query. Fallback is the anonymous
+  // "Esta persona" in the banner.
+  const subjectFromView =
+    subjectId === null
+      ? null
+      : (view.counter.people.find((person) => person.userId === subjectId)?.label ??
+        view.entries.flatMap((entry) => entry.picks).find((pick) => pick.userId === subjectId)
+          ?.label ??
+        null);
+  const previewSubject: PreviewSubject | null =
+    isAdmin && subjectId !== null
+      ? {
+          id: subjectId,
+          label: activeMember?.label ?? subjectFromView,
+          isActive: activeMember !== undefined,
+        }
+      : null;
 
   return (
     <>
@@ -213,8 +279,12 @@ export default async function ClientGalleryPage({
           sees this: `session.user.role` here is populated server-side by
           `src/auth.ts`'s session callback, not anything a client could
           spoof to make it appear. */}
-      {isAdminPreviewingClientGallery(session) && (
-        <ClientPreviewBanner dashboardHref={`/dashboard/galleries/${gallery.id}`} />
+      {isAdmin && (
+        <ClientPreviewBanner
+          dashboardHref={`/dashboard/galleries/${gallery.id}`}
+          members={members}
+          subject={previewSubject}
+        />
       )}
 
       <div className="mb-10">
@@ -254,6 +324,10 @@ export default async function ClientGalleryPage({
       </div>
 
       <ProofGrid
+        // Epic #250 S6 — a different SUBJECT remounts the client tree, so the
+        // hook's state initialisers re-run and the previous person's counter
+        // and lock cannot linger until the next snapshot.
+        key={viewAsId ?? "self"}
         galleryId={gallery.id}
         initialAssets={initialAssets}
         initialStatus={gallery.status}
@@ -263,17 +337,27 @@ export default async function ClientGalleryPage({
         // same conversion this line used to do, one layer down. `<ProofGrid>`
         // wanted a string either way.
         initialSubmittedAt={gallery.selectionSubmittedAt}
-        initialPicks={initialPicks}
-        initialViewerLock={lockSnapshot.viewerLock}
-        initialLockedPickerIds={lockSnapshot.lockedPickerIds}
-        initialSubmittedPickerIds={lockSnapshot.submittedPickerIds}
+        initialEntries={view.entries}
+        initialQuota={view.quota}
+        initialCounter={view.counter}
+        initialViewerLock={view.lock.viewerLock}
+        initialAdminLockedPickerIds={view.lock.adminLockedPickerIds}
         // The submit route refuses admins (`admin_cannot_submit`), so the
         // previewing photographer gets a note instead of a dead button.
-        isAdminPreview={isAdminPreviewingClientGallery(session)}
-        // Display only — the tray renders this session's own picks as "Vos".
+        isAdminPreview={isAdmin}
+        // Epic #250 S7 — decision 12: every PATCH names the acting client, or
+        // the route answers 409 `admin_cannot_pick`. A client never sends it.
+        actingClientId={actingClientId}
+        // An admin without an active subject may look but not touch.
+        readOnly={readOnly}
+        // Display only — the tray renders the subject's own picks as "Tú".
         // Nothing is authorized by it: every route <ProofGrid> calls resolves
         // the acting session server-side.
-        viewerId={session.user.id}
+        viewerId={subjectId ?? session.user.id}
+        // Epic #250 S6 — the admin's view-as subject, forwarded to the hook so
+        // its live refresh reads the same person. Null for a client's own
+        // view and for an admin without a subject.
+        viewAsId={viewAsId}
         // Task #193 — `gallery.package.name` used to be passed through here
         // as `packageName`. The owner's decision, applying to every gallery
         // regardless of `termsOverridden`: a client must never be able to
@@ -282,17 +366,6 @@ export default async function ClientGalleryPage({
         // deal different from the published one. See selection-counter.tsx's
         // and proof-grid.tsx's own comments for why this is unconditional,
         // not only for overridden galleries.
-        includedPhotosSnapshot={gallery.includedPhotosSnapshot}
-        extraPhotoPriceCopSnapshot={gallery.extraPhotoPriceCopSnapshot}
-        extraPhotoPriceTiersSnapshot={gallery.extraPhotoPriceTiersSnapshot}
-        // Task #206 — closes the wiring gap #205 left open deliberately (see
-        // that task's kanban body). Now that `Gallery.originalPhotoPriceCopSnapshot`
-        // is on the wire (src/lib/graphql/types/gallery.ts,
-        // client-gallery-reads.ts), this is a REQUIRED prop on <ProofGrid>
-        // (and, one layer down, on `useSharedSelection`) — the compiler
-        // enforces this line exists, rather than a comment merely asking for
-        // it.
-        originalPhotoPriceCopSnapshot={gallery.originalPhotoPriceCopSnapshot}
         // Task #204 — presentation only, an admin-set choice on the gallery
         // itself. `selectionTrayModeFromWire` undoes GraphQL's own
         // NAME-not-VALUE enum serialization — see that function's own
@@ -307,7 +380,7 @@ export default async function ClientGalleryPage({
         // Task #244 — opt-in rolling delivery and the viewer's last submit.
         rollingDelivery={gallery.rollingDelivery}
         finalsOpen={showsDeliveredPhotos}
-        initialViewerSubmittedAt={lockSnapshot.viewerSubmittedAt ?? null}
+        initialViewerSubmittedAt={view.lock.viewerSubmittedAt}
       />
     </>
   );

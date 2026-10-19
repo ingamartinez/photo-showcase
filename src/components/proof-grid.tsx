@@ -134,7 +134,16 @@ import { useProofUrls } from "@/components/use-proof-urls";
 import { useSharedSelection, type GalleryStatus } from "@/components/use-shared-selection";
 import type { Gallery } from "@/lib/db/schema";
 import type { QuotaResult } from "@/lib/quota";
-import { pickerLabelFor, type SelectionPick, type ViewerLock } from "@/lib/selection-snapshot";
+import {
+  pickerLabelFor,
+  claimedEntries,
+  viewerPickOf,
+  UNATTRIBUTED_PICKER_LABEL,
+  type SelectionCounter as SelectionCounterData,
+  type SelectionEntry,
+  type SelectionEntryPick,
+  type ViewerLock,
+} from "@/lib/selection-snapshot";
 
 // Re-exported, not re-declared: `GalleryStatus` and the fallback poll's
 // cadence belong next to the status machine and the loop they pace
@@ -207,17 +216,17 @@ export function ProofGrid({
   initialAssets,
   initialStatus,
   initialSubmittedAt,
-  initialPicks,
+  initialEntries,
+  initialQuota,
+  initialCounter,
   viewerId,
-  includedPhotosSnapshot,
-  extraPhotoPriceCopSnapshot,
-  extraPhotoPriceTiersSnapshot,
-  originalPhotoPriceCopSnapshot,
+  viewAsId = null,
+  actingClientId = null,
+  readOnly = false,
   selectionTrayMode,
   allowsOriginalSelection,
   initialViewerLock = null,
-  initialLockedPickerIds = [],
-  initialSubmittedPickerIds = [],
+  initialAdminLockedPickerIds = [],
   isAdminPreview = false,
   rollingDelivery = false,
   finalsOpen = initialStatus === "delivered",
@@ -230,23 +239,30 @@ export function ProofGrid({
   initialAssets: ProofAsset[];
   initialStatus: GalleryStatus;
   initialSubmittedAt: string | null;
-  // Task #95: the shared, attributed selection as of the server render, built
-  // by the SAME `getGallerySelection()` the live route calls — see that
-  // module's header comment for why one function feeds both. Only the FIRST
-  // paint comes from here; every refresh afterwards replaces it wholesale
-  // with a fresh snapshot.
-  initialPicks: SelectionPick[];
-  // Epic #239 — per-client lock state as of the server render: the viewer's
-  // own lock (their controls freeze while the gallery is still `proofing` for
-  // the others) and the ids of locked pickers (their picks are read-only for
-  // everybody else). Seeds `useSharedSelection`; every snapshot after replaces
-  // both wholesale.
+  // Task #95 / epic #250 S6: the shared selection as of the server render,
+  // built by the SAME builder the live route and the PATCH route use. One
+  // entry per asset somebody asked for, its claim, and every asker.
+  initialEntries: SelectionEntry[];
+  // The server's own quota and four-number counter for the first paint. The
+  // client derives neither (epic #250 S6).
+  initialQuota: QuotaResult;
+  initialCounter: SelectionCounterData;
+  // Epic #239 — per-client lock state as of the server render: the subject's
+  // own lock and the ids the PHOTOGRAPHER locked. Seeds `useSharedSelection`;
+  // every snapshot after replaces both wholesale.
   initialViewerLock?: ViewerLock | null;
-  initialLockedPickerIds?: string[];
-  initialSubmittedPickerIds?: string[];
+  initialAdminLockedPickerIds?: string[];
+  // Epic #250 S6 — the admin's view-as subject, forwarded to the hook's poll.
+  viewAsId?: string | null;
   // Epic #239 — the photographer previewing this page. The submit route
   // refuses admins, so no working submit button is rendered for them.
   isAdminPreview?: boolean;
+  // Epic #250 S7 — the client an admin acts on behalf of (decision 12). Null
+  // for a client's own view and for an admin looking without a subject.
+  actingClientId?: string | null;
+  // Epic #250 S7 — an admin viewing WITHOUT a subject may look but not touch:
+  // every pick control is disabled. See `useSharedSelection`'s own param.
+  readOnly?: boolean;
   // Task #244 — opt-in rolling delivery (`galleries.rolling_delivery`): edited
   // finals show as soon as they are readable (even while `proofing`/
   // `selected`), picks split into "Por enviar" and "Pedidas", and "Enviar"
@@ -261,48 +277,16 @@ export function ProofGrid({
   finalsOpen?: boolean;
   // Task #244 — the viewer's own last submit time, for "Último envío".
   initialViewerSubmittedAt?: string | null;
-  // The signed-in user's own id, so the tray can render their own picks as
-  // "Vos" rather than their own name (see `pickerLabelFor`). Nothing is
-  // authorized by this value — it is a display detail; every route this
-  // component calls resolves the acting session server-side and would refuse
-  // a request regardless of what is passed here.
+  // The subject's own id (the admin's view-as person when there is one), so
+  // the tray can render their own picks as "Tú" rather than their own name
+  // (see `pickerLabelFor`). Nothing is authorized by this value — it is a
+  // display detail; every route this component calls resolves the acting
+  // session server-side and would refuse a request regardless of what is
+  // passed here.
   viewerId: string;
-  // The gallery's own frozen commercial terms (schema.ts's
-  // `includedPhotosSnapshot` / `extraPhotoPriceCopSnapshot`) — passed
-  // through from the server component that renders this page
-  // (src/app/galleries/[publicSlug]/page.tsx), never re-fetched from the
-  // live `packages` row here. Only needed for the INITIAL paint's quota
-  // (before any toggle has happened yet); every toggle after that replaces
-  // the whole `quota` state with the server's own recomputation, which
-  // already carries these same numbers back.
-  //
-  // Task #193 — there used to be a `packageName: string` prop right here,
-  // threaded straight through to <SelectionCounter>. REMOVED, and not just
-  // for overridden galleries: the owner's decision was that the package's
-  // NAME must never reach a client's own view of ANY gallery, overridden or
-  // not, because the ABSENCE of the name only in overridden galleries would
-  // itself be the tell — a client with two galleries, or two clients who
-  // talk, would learn "no name shown" means "you got a special deal" just as
-  // easily as reading the name would. Removing it unconditionally is what
-  // keeps every gallery's client view identical in this respect, regardless
-  // of whether `termsOverridden` is true. The NUMBERS below still render —
-  // this is about the package's label, not its terms.
-  includedPhotosSnapshot: number;
-  extraPhotoPriceCopSnapshot: number;
-  // Task #231 — frozen volume scale, `null`/absent = flat price.
-  extraPhotoPriceTiersSnapshot: { minExtras: number; priceCop: number }[] | null;
-  // Task #206 — the gallery's frozen original-photo price, threaded the same
-  // way its two siblings above are. REQUIRED, not optional: before this
-  // slice, `useSharedSelection` hardcoded `0` here (see that file's own
-  // former comment, and #205's "Hueco de cableado" note) because nothing
-  // upstream of it carried the real value — the GraphQL `Gallery` type
-  // didn't expose it and this prop didn't exist. Making it required is what
-  // turns "the wiring gap is closed" into something the compiler checks
-  // rather than a comment that could go stale.
-  originalPhotoPriceCopSnapshot: number;
-  // Task #204 — how <SelectionTray> lays out the SAME picks below: one flat
-  // list (today's only behavior) or grouped one row per picker. Purely a
-  // presentation choice the admin sets on the gallery itself
+  // Task #204 — how <SelectionTray> lays out the SAME entries below: one flat
+  // list (today's only behavior) or grouped one row per billed person. Purely
+  // a presentation choice the admin sets on the gallery itself
   // (src/app/dashboard/galleries/actions.ts's `updateSelectionTrayMode`);
   // this component makes no decision about it, only threads it through.
   selectionTrayMode: Gallery["selectionTrayMode"];
@@ -333,12 +317,12 @@ export function ProofGrid({
   const {
     selectionById,
     quota,
-    picks,
+    entries,
+    counter,
     isLocked,
     isGalleryLocked,
     viewerLock,
-    lockedPickerIds,
-    submittedPickerIds,
+    adminLockedPickerIds,
     submittedAt,
     viewerSubmittedAt,
     pendingIds,
@@ -349,18 +333,18 @@ export function ProofGrid({
     handleSubmitted,
   } = useSharedSelection({
     viewerId,
+    viewAsId,
+    actingClientId,
+    readOnly,
     initialViewerLock,
-    initialLockedPickerIds,
-    initialSubmittedPickerIds,
+    initialAdminLockedPickerIds,
     galleryId,
     initialAssets,
     initialStatus,
     initialSubmittedAt,
-    initialPicks,
-    includedPhotosSnapshot,
-    extraPhotoPriceCopSnapshot,
-    extraPhotoPriceTiersSnapshot,
-    originalPhotoPriceCopSnapshot,
+    initialEntries,
+    initialQuota,
+    initialCounter,
     rollingDelivery,
     initialViewerSubmittedAt,
   });
@@ -457,60 +441,67 @@ export function ProofGrid({
   // the live array by tag instead, on every render.
   const [lightbox, setLightbox] = useState<{ group: LightboxGroup; index: number } | null>(null);
 
-  // Task #206 — every currently-selected asset's own type, looked up by id.
-  // Built off `picks` (the shared selection's own list, which now carries
-  // `selectionKind` per pick) rather than a second piece of state: an asset
-  // NOT in this map is not currently selected, and the type control on both
-  // the tile and the lightbox only ever renders for a selected asset anyway
-  // (see <ProofTile>'s and <ProofLightbox>'s own comments — "a photo that
-  // isn't picked has no type", the task's own words). `useMemo` only to avoid
-  // rebuilding this on an unrelated re-render (a lightbox open/close, a
-  // toggled `isStale`), matching <SelectionTray>'s own `groups` memo.
-  const selectionKindById = useMemo(
-    () => Object.fromEntries(picks.map((pick) => [pick.assetId, pick.selectionKind])),
-    [picks],
+  // Epic #250 S7 — THE TOGGLE'S OWN TRUTH. `selectionById` (and its
+  // `displayAssets` mirror) is the CLAIM: at least one person sent a pick. On a
+  // shared board that is usually somebody else's, so reflecting it on the
+  // viewer's button is the inversion this slice exists to remove. This map is
+  // the viewer's own pick per asset, straight off `entries` (never
+  // `assets.isSelected`).
+  const viewerPickById = useMemo(() => {
+    const own = new Map<string, SelectionEntryPick>();
+    for (const entry of entries) {
+      const pick = viewerPickOf(entry, viewerId);
+      if (pick) own.set(entry.assetId, pick);
+    }
+    return own;
+  }, [entries, viewerId]);
+  // Epic #250 S7 — the lightbox needs each asset's full entry (claim + every
+  // asker) to describe the viewer's own pick and its attribution.
+  const entryById = useMemo(
+    () => Object.fromEntries(entries.map((entry) => [entry.assetId, entry])),
+    [entries],
   );
 
-  // Epic #239 — what THIS viewer's controls reflect beyond their own lock:
-  //   - `lockedAssetIds`: picks that belong to somebody who already submitted.
-  //     Read-only on the tile and in the lightbox for everyone else (the server
-  //     answers 409 `pick_locked` regardless; this just doesn't offer it).
-  //   - `ownPickCount`: how many photos THIS person picked, by id (never by
-  //     label). The submit route refuses an empty selection per person.
-  //   - `lockedByAdmin`: locked without ever having submitted themselves.
-  const lockedAssetIds = useMemo(
+  // Task #206 — every asset's TYPE as the VIEWER asked for it, not the claim's
+  // resolved kind: a cart that asked `original` must show Original pressed even
+  // while the photo is unclaimed, and a degraded `edited` pick must not borrow
+  // somebody else's resolved `edited`/`original`.
+  const selectionKindById = useMemo(
+    () => Object.fromEntries([...viewerPickById].map(([assetId, pick]) => [assetId, pick.kind])),
+    [viewerPickById],
+  );
+
+  // Epic #239 / S6 — what THIS subject's controls reflect beyond their own
+  // lock:
+  //   - `claimedAssetIds`: every claimed entry, in server order. Feeds the
+  //     "Pedida" label and the lightbox's claimed set. No rolling condition:
+  //     a classic claim is still claimed.
+  //   - `viewerSubmittedAssetIds`: entries where the SUBJECT's own pick was
+  //     sent. That is the honest freeze (decision 8: a degraded pick stays
+  //     removable). Never "somebody's lock" — nobody can edit anybody else's
+  //     pick any more.
+  //   - `ownPickCount`: every pick the subject has (sent or still to send),
+  //     off the server's counter, never a client-side count. It gates the
+  //     classic submit button, so leaving `toSend` out would make a gallery
+  //     whose picks are all still carts impossible to send.
+  const claimedAssetIds = useMemo(
+    () => new Set(claimedEntries(entries).map((entry) => entry.assetId)),
+    [entries],
+  );
+  const ownPickCount = counter.viewer
+    ? counter.viewer.yours + counter.viewer.shared + counter.viewer.toSend
+    : 0;
+  const viewerSubmittedAssetIds = useMemo(
     () =>
       new Set(
-        picks
-          .filter((pick) => {
-            const pickerId = pick.pickedBy?.id;
-            return pickerId !== undefined && lockedPickerIds.includes(pickerId);
-          })
-          .map((pick) => pick.assetId),
+        entries
+          .filter((entry) => viewerPickOf(entry, viewerId)?.submittedAt != null)
+          .map((entry) => entry.assetId),
       ),
-    [picks, lockedPickerIds],
+    [entries, viewerId],
   );
-  const ownPickCount = useMemo(
-    () => picks.filter((pick) => pick.pickedBy?.id === viewerId).length,
-    [picks, viewerId],
-  );
-  // Task #244 — rolling delivery. Internally "the cart", user-facing "por
-  // enviar" (picks not yet sent) vs "pedidas" (sent: frozen for clients).
-  // `requestedAssetIds` also joins the locked set for tiles and the lightbox,
-  // so an ordered pick offers no remove control.
-  const requestedAssetIds = useMemo(
-    () =>
-      new Set(rollingDelivery ? picks.filter((p) => !!p.requestedAt).map((p) => p.assetId) : []),
-    [picks, rollingDelivery],
-  );
-  const frozenAssetIds = useMemo(
-    () => new Set([...lockedAssetIds, ...requestedAssetIds]),
-    [lockedAssetIds, requestedAssetIds],
-  );
-  const unsentCount = useMemo(
-    () => picks.filter((pick) => pick.pickedBy?.id === viewerId && !pick.requestedAt).length,
-    [picks, viewerId],
-  );
+  const frozenAssetIds = actingClientId !== null ? new Set<string>() : viewerSubmittedAssetIds;
+  const unsentCount = counter.viewer?.toSend ?? 0;
   const readableAssetIds = useMemo(
     () =>
       new Set(
@@ -579,37 +570,47 @@ export function ProofGrid({
   // own header comment on THE TRAP for why that distinction is the whole
   // point of this function existing.
   function renderTile(asset: ProofAsset, index: number, group: LightboxGroup) {
+    const ownPick = viewerPickById.get(asset.id) ?? null;
+    const isSelected = ownPick !== null;
     return (
       <ProofTile
         key={asset.id}
         asset={asset}
         position={index + 1}
         src={urls[asset.id] ?? asset.proofUrl}
-        isSelected={asset.isSelected}
+        // Epic #250 S7 — the VIEWER's pick, never the claim. `asset.isSelected`
+        // says "somebody sent one", which on a shared board is usually not me.
+        isSelected={isSelected}
         isPending={pendingIds.has(asset.id)}
-        isLocked={isLocked || frozenAssetIds.has(asset.id)}
+        isLocked={isLocked || readOnly || frozenAssetIds.has(asset.id)}
         showDownload={showsFinals && asset.hasFinal}
         orderLabel={
-          // Precedence everywhere: Editada (final readable) > Pedida
-          // (requested) > Por enviar. A readable final wins even without a
-          // `requested_at` stamp.
-          rollingDelivery && showsFinals && asset.hasFinal
+          // Precedence everywhere: Editada (final readable) > Por enviar (the
+          // viewer's own unsent pick on a free photo) > Pedida (claimed by
+          // anyone). No rolling gate any more: the order semantics are
+          // mandatory (decision 10), the flag only gates finals.
+          showsFinals && asset.hasFinal
             ? "Editada"
-            : rollingDelivery && !isDelivered && asset.isSelected
-              ? requestedAssetIds.has(asset.id)
+            : !isDelivered && ownPick?.state === "cart"
+              ? "Por enviar"
+              : !isDelivered && claimedAssetIds.has(asset.id)
                 ? "Pedida"
-                : "Por enviar"
-              : null
+                : null
         }
         onError={() => void refreshUrl(asset.id)}
         onOpen={() => setLightbox({ group, index })}
-        onToggleSelection={() => void toggleSelection(asset.id, !asset.isSelected)}
-        // Task #206 — only meaningful while `isSelected` (the tile itself
-        // gates rendering the control on that), so an unselected asset's
-        // `"edited"` fallback here is never actually shown.
+        // Sends the OPPOSITE of the viewer's own pick — where this used to send
+        // `!asset.isSelected` (the claim), which deselected somebody else's
+        // photo on rows 2 and 4.
+        onToggleSelection={() => void toggleSelection(asset.id, !isSelected)}
+        // Task #206 — the viewer's own kind, not the resolved claim. Only
+        // meaningful while picked; the tile gates the control on that.
         selectionKind={selectionKindById[asset.id] ?? "edited"}
         onSetSelectionKind={(kind) => void setSelectionKind(asset.id, kind)}
         allowsOriginalSelection={allowsOriginalSelection}
+        pickers={entryById[asset.id]?.picks ?? []}
+        viewerId={viewerId}
+        viewerPickState={ownPick?.state ?? null}
       />
     );
   }
@@ -624,15 +625,14 @@ export function ProofGrid({
           panel. */}
       {!isDelivered && (
         <SelectionTray
-          picks={picks}
+          entries={entries}
           urls={urls}
           filenamesByAssetId={filenamesByAssetId}
           viewerId={viewerId}
           mode={selectionTrayMode}
           isLocked={isLocked}
           isGalleryLocked={isGalleryLocked}
-          lockedPickerIds={lockedPickerIds}
-          submittedPickerIds={submittedPickerIds}
+          adminLockedPickerIds={adminLockedPickerIds}
           lockedByAdmin={lockedByAdmin}
           rollingDelivery={rollingDelivery}
           readableAssetIds={readableAssetIds}
@@ -672,14 +672,21 @@ export function ProofGrid({
           nothing left to act on. */}
       {!isDelivered && isLocked && (
         <div className="mb-4">
-          <SelectionCounter quota={quota} allowsOriginalSelection={allowsOriginalSelection} />
+          {/* Task #264 — the same per-person counter the proofing bar shows:
+              the `selected` view had the identical one-bill assumption. */}
+          <SelectionCounter
+            quota={quota}
+            allowsOriginalSelection={allowsOriginalSelection}
+            counter={counter}
+            viewerId={viewerId}
+          />
         </div>
       )}
 
       {!isDelivered && isLocked && (
         <SelectedStateNote
           quota={quota}
-          picks={picks}
+          counter={counter}
           viewerId={viewerId}
           submittedAt={ownSubmittedAt}
           isGalleryLocked={isGalleryLocked}
@@ -709,9 +716,14 @@ export function ProofGrid({
           `.lede`: that header renders for `selected` and `delivered` too, and
           only this component knows whether the selection is still open. */}
       {!isLocked && (
-        <p className="text-fg-dim mb-3 text-sm">
-          Toca una foto para verla grande. El círculo la elige.
-        </p>
+        <>
+          <p className="text-fg-dim mb-3 text-sm">
+            Toca una foto para verla grande. El círculo la elige.{" "}
+            <strong className="text-fg font-normal">Cada persona elige las suyas</strong> — nadie
+            más del grupo puede sacarlas, y si dos eligen la misma, cuenta una sola vez.
+          </p>
+          {counter.viewer !== null && !isDelivered && <ViewerCounterLine counter={counter} />}
+        </>
       )}
 
       {isDelivered ? (
@@ -811,6 +823,8 @@ export function ProofGrid({
             <SelectionCounter
               quota={quota}
               allowsOriginalSelection={allowsOriginalSelection}
+              counter={counter}
+              viewerId={viewerId}
               collapsible
             />
             <div className="flex items-center gap-3">
@@ -829,6 +843,7 @@ export function ProofGrid({
                 rollingDelivery={rollingDelivery}
                 unsentCount={unsentCount}
                 lastSubmittedAt={viewerSubmittedAt}
+                projection={counter.viewer?.projection ?? null}
               />
             </div>
           </div>
@@ -857,6 +872,7 @@ export function ProofGrid({
             rollingDelivery={rollingDelivery}
             unsentCount={unsentCount}
             lastSubmittedAt={viewerSubmittedAt}
+            projection={counter.viewer?.projection ?? null}
           />
         </div>
       )}
@@ -895,15 +911,45 @@ export function ProofGrid({
           onImageError={(assetId) => void refreshUrl(assetId)}
           onToggleSelection={(assetId, nextSelected) => void toggleSelection(assetId, nextSelected)}
           pendingAssetIds={pendingIds}
-          isLocked={isLocked}
+          isLocked={isLocked || readOnly}
           lockedAssetIds={frozenAssetIds}
+          // Epic #250 S7 — the lightbox's sent-pick freeze follows the tile's:
+          // real for the pick's owner, absent while an admin acts on the
+          // subject's behalf (see `frozenAssetIds` above).
+          isActing={actingClientId !== null}
           isDelivered={showsFinals}
           selectionKindById={selectionKindById}
           onSetSelectionKind={(assetId, kind) => void setSelectionKind(assetId, kind)}
           allowsOriginalSelection={allowsOriginalSelection}
+          entryById={entryById}
+          viewerId={viewerId}
         />
       )}
     </>
+  );
+}
+
+/** Epic #250 S7 — the four-number counter (decision 14), rendered as one meta
+ * line under the instruction: "9 tuyas · 2 compartidas · 3 por enviar · 15
+ * entre todos". Every number comes from the SERVER's `counter` — this
+ * component never counts entries, because the partition invariant (every pick
+ * of yours is in exactly one bucket) is the server's to keep. Always four
+ * numbers, zeros included, so the line never reflows as numbers appear. */
+function ViewerCounterLine({ counter }: { counter: SelectionCounterData }) {
+  if (counter.viewer === null) return null;
+  const { yours, shared, toSend } = counter.viewer;
+  return (
+    <p className="text-fg-mute mb-3 text-sm">
+      <strong className="text-fg font-medium">
+        {yours} {yours === 1 ? "tuya" : "tuyas"}
+      </strong>
+      {" · "}
+      {shared} {shared === 1 ? "compartida" : "compartidas"}
+      {" · "}
+      {toSend} por enviar
+      {" · "}
+      {counter.group} entre todos
+    </p>
   );
 }
 
@@ -925,7 +971,7 @@ export function ProofGrid({
 // editing is in progress, the client is told by email when it's done.
 function SelectedStateNote({
   quota,
-  picks,
+  counter,
   viewerId,
   submittedAt,
   isGalleryLocked,
@@ -933,9 +979,9 @@ function SelectedStateNote({
   ownPickCount,
 }: {
   quota: QuotaResult;
-  picks: SelectionPick[];
+  counter: SelectionCounterData;
   /** Same prop <SelectionTray> already takes — the viewer's own picks read
-   * "Vos" in the per-picker recap below too, for the same reason. */
+   * "Tú" in the per-picker recap below too, for the same reason. */
   viewerId: string;
   /** The VIEWER's own submission time (epic #239), not the gallery's closing
    * time. `null` when an admin locked them. */
@@ -946,25 +992,28 @@ function SelectedStateNote({
   isGalleryLocked: boolean;
   /** Epic #239 — the photographer locked this person; they never submitted. */
   lockedByAdmin: boolean;
-  /** Epic #239 — photos THIS person picked. */
+  /** Epic #239 — photos THIS person picked and sent, off the server counter. */
   ownPickCount: number;
 }) {
-  // Per-picker tally (task #94's shared gallery, not per-client): "Vos 9 ·
-  // Beto 4 · Sara 2" (client.html:726, :848-850), computed off the SAME
-  // `picks` list <SelectionTray> renders — never a second count of anything,
-  // matching this whole file's own "quota is derived once, never twice"
-  // stance for the numeric quota above it.
+  // Per-picker tally (task #94's shared gallery, not per-client): "Tú 9 ·
+  // Beto 4 · Sara 2" (client.html:726, :848-850), off the SERVER's `people`
+  // rows plus its "Sin registro" bucket — never a client-side count of the
+  // entry list.
   const perPicker = useMemo(() => {
-    const counts = new Map<string, { label: string; count: number }>();
-    for (const pick of picks) {
-      const key = pick.pickedBy?.id ?? "unattributed";
-      const label = pickerLabelFor(pick.pickedBy, viewerId);
-      const existing = counts.get(key);
-      if (existing) existing.count += 1;
-      else counts.set(key, { label, count: 1 });
+    const rows = counter.people.map((person) => ({
+      key: person.userId,
+      label: pickerLabelFor({ id: person.userId, label: person.label }, viewerId),
+      count: person.units,
+    }));
+    if (counter.unattributed > 0) {
+      rows.push({
+        key: "unattributed",
+        label: UNATTRIBUTED_PICKER_LABEL,
+        count: counter.unattributed,
+      });
     }
-    return [...counts.values()];
-  }, [picks, viewerId]);
+    return rows;
+  }, [counter, viewerId]);
 
   return (
     <div className="border-line-2 mt-2 mb-6 rounded-sm border p-[18px]">
@@ -996,10 +1045,10 @@ function SelectedStateNote({
       )}
       <p className="text-fg-dim mt-2 text-sm">
         ¿Te arrepentiste de alguna? {isGalleryLocked ? "La selección" : "Tu selección"} quedó
-        cerrada, pero escribile a tu fotógrafo y él la reabre.
+        cerrada, pero escríbele a tu fotógrafo y él la reabre.
       </p>
       {/* Only worth a breakdown once more than one person actually picked
-          something — a solo client seeing "Vos: 15" would just be the same
+          something — a solo client seeing "Tú: 15" would just be the same
           number repeated with no new information. */}
       {perPicker.length > 1 && (
         <dl className="mt-4 grid gap-2 text-sm">

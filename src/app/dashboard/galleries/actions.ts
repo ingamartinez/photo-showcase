@@ -24,6 +24,7 @@ import { AuthError } from "next-auth";
 import { signIn } from "@/auth";
 import { db } from "@/lib/db";
 import {
+  assetPicks,
   assets,
   galleries,
   galleryClients,
@@ -52,6 +53,57 @@ import {
 } from "@/lib/gallery-client-locks";
 import { isClientLockActionableStatus } from "@/lib/client-selection-state";
 import { notifySelectionChanged } from "@/lib/selection-events";
+import {
+  applyAssetChanges,
+  claimCart,
+  quotaSnapshotOf,
+  readPickState,
+  type CartClaimCounts,
+} from "@/lib/pick-claims";
+import {
+  attributionDeltaBetween,
+  planOriginalsOff,
+  planRemovePicks,
+  type AttributionDelta,
+  type AssetRow,
+  type PickRow,
+} from "@/lib/pick-plans";
+
+/** The "who is this" label the app uses everywhere: `name ?? email`. Read per
+ * id because the test double only models `eq`, and these lists are tiny (one
+ * to three people on an admin action). */
+async function personLabels(userIds: readonly string[]): Promise<Record<string, string>> {
+  const labels: Record<string, string> = {};
+  for (const userId of userIds) {
+    const [row] = await db
+      .select({ name: users.name, email: users.email })
+      .from(users)
+      .where(eq(users.id, userId))
+      .limit(1);
+    if (row) labels[userId] = row.name ?? row.email;
+  }
+  return labels;
+}
+
+/** The before/after of an executed admin write, from the rows it actually
+ * produced (re-read inside the transaction) rather than from a second,
+ * hand-maintained diff. `attributionDeltaBetween` is the same money maths the
+ * preview uses, so a number can never disagree with what the write did. */
+async function executedDelta(
+  before: { rows: AssetRow[]; picks: PickRow[] },
+  after: { rows: AssetRow[]; picks: PickRow[] },
+  gallery: Gallery,
+): Promise<AttributionDelta> {
+  const delta = attributionDeltaBetween(before.rows, after.rows, quotaSnapshotOf(gallery));
+  const labels = await personLabels(delta.people.map((person) => person.userId));
+  return {
+    ...delta,
+    people: delta.people.map((person) => ({
+      ...person,
+      label: labels[person.userId] ?? person.userId,
+    })),
+  };
+}
 
 // Task #193 — a manual override of a snapshot's value.
 //
@@ -632,12 +684,43 @@ export async function updateAllowsOriginalSelection(
   // together or neither does. See this function's own header comment for
   // why an off-switch that left the reset out is exactly the state task
   // #214 exists to prevent.
+  //
+  // Task #260 (epic #250): the reset is no longer `UPDATE assets` alone. After
+  // S4 the cart lives in `asset_picks`, so an `original` cart pick would
+  // survive the switch and `claimCart` would claim it as original in a gallery
+  // that no longer allows them (hazard 6). The reset therefore rewrites the
+  // picks too, and the claimed assets that stay `original` (a final exists —
+  // decision 15) are left exactly as they are. The gallery row is locked first
+  // because the reset now writes an arrival (`billed_at`).
   await db.transaction(async (tx) => {
+    const fresh = await lockGalleryRow(tx, gallery.id);
+    if (!fresh) return;
+    const now = new Date();
     if (!parsed.data.allowsOriginalSelection) {
+      const before = await readPickState(tx, gallery.id);
+      const plan = planOriginalsOff(before.rows, before.picks, now);
+      await tx
+        .update(assetPicks)
+        .set({ kind: "edited" })
+        .where(and(eq(assetPicks.galleryId, gallery.id), eq(assetPicks.kind, "original")));
+      if (plan.assetChanges.length > 0) {
+        await applyAssetChanges(tx, plan.assetChanges, plan.arrival ?? now);
+      }
+      // `selectionKind` is meaningless while `isSelected` is false
+      // (schema.ts), but the column must not silently keep reading `original`
+      // on a gallery whose switch is off — task #214's own reasoning, kept.
+      // The claimed rows above are rewritten by the plan (legacy units
+      // excepted); this covers the unselected ones.
       await tx
         .update(assets)
         .set({ selectionKind: "edited" })
-        .where(and(eq(assets.galleryId, gallery.id), eq(assets.selectionKind, "original")));
+        .where(
+          and(
+            eq(assets.galleryId, gallery.id),
+            eq(assets.selectionKind, "original"),
+            eq(assets.isSelected, false),
+          ),
+        );
     }
     await tx
       .update(galleries)
@@ -1242,7 +1325,7 @@ export async function unlockSelection(
       status: "unlocked_email_failed",
       message:
         "Desbloqueamos la selección, pero no encontramos clientes a quién avisar por correo. " +
-        "Avisale por otro medio (WhatsApp / llamada).",
+        "Avísale por otro medio (WhatsApp / llamada).",
     };
   }
   if (failedEmails.length > 0) {
@@ -1250,7 +1333,7 @@ export async function unlockSelection(
       status: "unlocked_email_failed",
       message:
         `Desbloqueamos la selección, pero no pudimos avisarle por correo a: ${failedEmails.join(", ")}. ` +
-        "Avisale por otro medio (WhatsApp / llamada).",
+        "Avísale por otro medio (WhatsApp / llamada).",
     };
   }
   return { status: "unlocked" };
@@ -1514,7 +1597,7 @@ export async function deliverGallery(
       status: "delivered_email_failed",
       message:
         "Entregamos la galería, pero no encontramos clientes a quién avisar por correo. " +
-        "Avisale por otro medio (WhatsApp / llamada).",
+        "Avísale por otro medio (WhatsApp / llamada).",
     };
   }
   if (failedEmails.length > 0) {
@@ -1522,7 +1605,7 @@ export async function deliverGallery(
       status: "delivered_email_failed",
       message:
         `Entregamos la galería, pero no pudimos avisarle por correo a: ${failedEmails.join(", ")}. ` +
-        "Avisale por otro medio (WhatsApp / llamada).",
+        "Avísale por otro medio (WhatsApp / llamada).",
     };
   }
   return { status: "delivered" };
@@ -1809,7 +1892,7 @@ export async function attachGalleryClients(
       status: "attached_email_failed",
       message:
         `Agregamos al cliente, pero no pudimos enviarle el correo de acceso a: ${failedEmails.join(", ")}. ` +
-        "Avisale por otro medio (WhatsApp / llamada).",
+        "Avísale por otro medio (WhatsApp / llamada).",
     };
   }
 
@@ -1973,7 +2056,7 @@ export async function resendGalleryAccessEmail(
       status: "throttled",
       message:
         `Ya le reenviaste el correo a ${membership.email} varias veces en poco tiempo. ` +
-        "Esperá unos minutos antes de volver a intentar.",
+        "Espera unos minutos antes de volver a intentar.",
     };
   }
 
@@ -1999,7 +2082,7 @@ export async function resendGalleryAccessEmail(
     if (!(error instanceof AuthError)) throw error;
     return {
       status: "resend_email_failed",
-      message: `No pudimos reenviarle el correo a ${membership.email}. Intentá de nuevo en un rato.`,
+      message: `No pudimos reenviarle el correo a ${membership.email}. Intenta de nuevo en un rato.`,
     };
   }
 
@@ -2030,11 +2113,18 @@ const removeGalleryClientSchema = z.object({
 /**
  * Sets `gallery_clients.removedAt` for exactly one (gallery, client) pair.
  *
- * Never touches `assets.selectedBy` — a removed client's picks stay
+ * Never touches `assets.billedTo` — a removed client's picks stay
  * attributed to them, the same "historical fact of who chose what"
  * reasoning task #94 already established for that column (schema.ts's own
- * comment on `selectedBy`). This action has no code path that reads or
+ * comment on `billedTo`). This action has no code path that reads or
  * writes `assets` at all.
+ *
+ * DECISION 17 (epic #250, S5): their UNSUBMITTED picks — the cart — ARE
+ * deleted. A cart is intent, not a request, and it carries no money; leaving
+ * it behind would keep the gallery's "everyone is done" predicate false
+ * forever on behalf of somebody who is no longer in it. Submitted picks stay,
+ * to their name: they are requests the photographer may already be working on,
+ * and `asset_picks_membership_fk` still resolves because removal is soft.
  *
  * THE LAST-CLIENT GUARD, conditional on status (owner-decided after this
  * task started): `activeClientRuleViolation()` (src/lib/galleries.ts) answers
@@ -2144,6 +2234,16 @@ export async function removeGalleryClient(
       )
       .returning();
     if (removed.length > 0) {
+      // Decision 17: carts die with the membership; submitted picks stay.
+      await tx
+        .delete(assetPicks)
+        .where(
+          and(
+            eq(assetPicks.galleryId, gallery.id),
+            eq(assetPicks.userId, parsed.data.clientId),
+            isNull(assetPicks.submittedAt),
+          ),
+        );
       transition = await settleGalleryLockStatus(tx, gallery.id);
     }
     return removed;
@@ -2195,6 +2295,12 @@ export async function removeGalleryClient(
 export type GalleryClientSelectionActionState = {
   status: "idle" | "error" | "done" | "done_email_failed";
   message?: string;
+  /** Epic #250 S5 — the per-person before/after of the write that just ran,
+   * computed from the rows it produced. S8 renders it; until then it is the
+   * data contract. */
+  delta?: AttributionDelta;
+  /** `claimCart`'s per-outcome counts, when the action claimed a cart. */
+  pickOutcomes?: CartClaimCounts;
 };
 
 const galleryClientSelectionSchema = z.object({
@@ -2284,19 +2390,33 @@ function finishClientSelectionAction(gallery: Gallery) {
 }
 
 /** Locks ONE client's selection without them having submitted
- * (`selection_locked_at` set, `selection_submitted_at` left NULL). Locking the
- * last open client closes the gallery (`proofing -> selected`). */
+ * (`selection_locked_at` set, `selection_submitted_at` left NULL), and —
+ * decision 18 — CLAIMS THEIR CART in the same transaction. Locking somebody
+ * with a cart would otherwise close a gallery (decision 13 counts a lock as
+ * done) while leaving their requests unclaimed, which is exactly the state
+ * decision 18 exists to forbid. Locking the last open client closes the
+ * gallery (`proofing -> selected`). */
 export async function lockGalleryClientSelection(
   _prevState: GalleryClientSelectionActionState,
   formData: FormData,
 ): Promise<GalleryClientSelectionActionState> {
+  let deltaInput:
+    | {
+        before: { rows: AssetRow[]; picks: PickRow[] };
+        after: { rows: AssetRow[]; picks: PickRow[] };
+        gallery: Gallery;
+      }
+    | undefined;
+  let pickOutcomes: CartClaimCounts | undefined;
   const outcome = await runClientSelectionAction(formData, async (tx, ctx) => {
     if (ctx.lockedAt !== null) return "La selección de esa persona ya está bloqueada.";
+    const now = new Date();
+    const before = await readPickState(tx, ctx.gallery.id);
     await tx
       .update(galleryClients)
       // Task #244: say WHO locked. An order under rolling delivery also sets
       // `selection_submitted_at`, so the lock source cannot be inferred.
-      .set({ selectionLockedAt: new Date(), selectionLockedBy: "admin" })
+      .set({ selectionLockedAt: now, selectionLockedBy: "admin" })
       .where(
         and(
           eq(galleryClients.galleryId, ctx.gallery.id),
@@ -2304,11 +2424,26 @@ export async function lockGalleryClientSelection(
           isNull(galleryClients.removedAt),
         ),
       );
+    // Decision 18 — the lock claims the cart. An empty cart is legal: stamped
+    // stays 0 and nothing is written.
+    pickOutcomes = (await claimCart(tx, ctx.gallery, ctx.clientId, now)).counts;
+    deltaInput = {
+      before,
+      after: await readPickState(tx, ctx.gallery.id),
+      gallery: ctx.gallery,
+    };
     return null;
   });
   if (!outcome.ok) return outcome.state;
   finishClientSelectionAction(outcome.gallery);
-  return { status: "done", message: "Bloqueamos la selección de esa persona." };
+  return {
+    status: "done",
+    message: "Bloqueamos la selección de esa persona.",
+    ...(deltaInput
+      ? { delta: await executedDelta(deltaInput.before, deltaInput.after, deltaInput.gallery) }
+      : {}),
+    ...(pickOutcomes ? { pickOutcomes } : {}),
+  };
 }
 
 /** Reopens ONE client (clears BOTH lock columns), moves a `selected` gallery
@@ -2346,7 +2481,7 @@ export async function unlockGalleryClientSelection(
       status: "done_email_failed",
       message:
         "Desbloqueamos la selección, pero no encontramos el correo de esa persona. " +
-        "Avisale por otro medio (WhatsApp / llamada).",
+        "Avísale por otro medio (WhatsApp / llamada).",
     };
   }
   try {
@@ -2363,36 +2498,47 @@ export async function unlockGalleryClientSelection(
       status: "done_email_failed",
       message:
         `Desbloqueamos la selección, pero no pudimos avisarle por correo a: ${user.email}. ` +
-        "Avisale por otro medio (WhatsApp / llamada).",
+        "Avísale por otro medio (WhatsApp / llamada).",
     };
   }
   return { status: "done", message: "Desbloqueamos la selección y le avisamos por correo." };
 }
 
-/** Wipes ONE client's picks: every asset of THIS gallery with `selected_by =
- * client` is deselected (the same reset the PATCH route does on deselect),
- * both lock columns are cleared, and the gallery is settled — all in one
- * transaction. No email. Other clients' picks and other galleries are never
- * touched. */
+/** Wipes ONE client's picks: every `asset_picks` row of this person in THIS
+ * gallery is deleted (cart AND submitted, decision 17's sibling), every asset
+ * that loses a SUBMITTED pick is re-resolved (unclaimed when nobody is left,
+ * kind and holder re-elected otherwise), both lock columns are cleared, and the
+ * gallery is settled — all in one transaction. No email. Other people's picks
+ * and other galleries are never touched.
+ *
+ * THE RE-RESOLUTION IS THE POINT (hazard 1). The pre-S5 version unclaimed the
+ * assets but left every `asset_picks` row behind, so somebody else's `joined`
+ * pick sat on an unclaimed asset — `derivePickStatus` throws on exactly that,
+ * and their next PATCH answered 500. Re-resolution reads the picks as they
+ * stand after the delete, so the remaining pickers are re-elected properly. */
 export async function removeGalleryClientPicks(
   _prevState: GalleryClientSelectionActionState,
   formData: FormData,
 ): Promise<GalleryClientSelectionActionState> {
-  let removed = 0;
+  let deleted = 0;
+  let deltaInput:
+    | {
+        before: { rows: AssetRow[]; picks: PickRow[] };
+        after: { rows: AssetRow[]; picks: PickRow[] };
+        gallery: Gallery;
+      }
+    | undefined;
   const outcome = await runClientSelectionAction(formData, async (tx, ctx) => {
-    const deselected = await tx
-      .update(assets)
-      .set({
-        isSelected: false,
-        selectedAt: null,
-        selectedBy: null,
-        selectionKind: "edited",
-        // Task #244: removing a pick also cancels its order.
-        requestedAt: null,
-      })
-      .where(and(eq(assets.galleryId, ctx.gallery.id), eq(assets.selectedBy, ctx.clientId)))
-      .returning({ id: assets.id });
-    removed = deselected.length;
+    const now = new Date();
+    const before = await readPickState(tx, ctx.gallery.id);
+    const plan = planRemovePicks(before.rows, before.picks, ctx.clientId, now);
+    await tx
+      .delete(assetPicks)
+      .where(and(eq(assetPicks.galleryId, ctx.gallery.id), eq(assetPicks.userId, ctx.clientId)));
+    if (plan.assetChanges.length > 0) {
+      await applyAssetChanges(tx, plan.assetChanges, plan.arrival ?? now);
+    }
+    deleted = plan.deletedPicks.length;
     await tx
       .update(galleryClients)
       .set({ selectionLockedAt: null, selectionSubmittedAt: null, selectionLockedBy: null })
@@ -2403,6 +2549,11 @@ export async function removeGalleryClientPicks(
           isNull(galleryClients.removedAt),
         ),
       );
+    deltaInput = {
+      before,
+      after: await readPickState(tx, ctx.gallery.id),
+      gallery: ctx.gallery,
+    };
     return null;
   });
   if (!outcome.ok) return outcome.state;
@@ -2410,16 +2561,19 @@ export async function removeGalleryClientPicks(
   return {
     status: "done",
     message:
-      removed === 1
+      deleted === 1
         ? "Quitamos 1 foto elegida por esa persona y reabrimos su selección."
-        : `Quitamos ${removed} fotos elegidas por esa persona y reabrimos su selección.`,
+        : `Quitamos ${deleted} fotos elegidas por esa persona y reabrimos su selección.`,
+    ...(deltaInput
+      ? { delta: await executedDelta(deltaInput.before, deltaInput.after, deltaInput.gallery) }
+      : {}),
   };
 }
 
 // ---------------------------------------------------------------------------
 // Update the selection tray's layout (task #204) — `flat` (today's only
 // behavior) or `by-person` (one row per picker). PRESENTATION ONLY: this
-// never reads or writes `assets.isSelected`/`selectedBy`, the frozen
+// never reads or writes `assets.isSelected`/`billedTo`, the frozen
 // `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot` terms, or anything
 // #200's audit trail already covers — a client's selection, and what they
 // owe for it, is identical before and after this action runs. That is also
@@ -2515,13 +2669,27 @@ const updateRollingDeliverySchema = z.object({
 });
 
 /**
- * Flips `galleries.rolling_delivery`. Turning it ON also migrates members who
- * submitted under the classic flow (see the transaction below). Turning it OFF hides finals from clients
- * again on the next load (the read gate is `canReadFinalDeliverable`) but
- * deliberately does not touch `assets.requested_at`: the photographer's queue
- * of ordered photos must survive a toggle, and the freeze that reads it is
- * itself gated on the flag. Same two `revalidatePath` surfaces as the sibling
- * toggles, so the client's own page re-renders with or without the finals.
+ * Flips `galleries.rolling_delivery`, and NOTHING ELSE (epic #250 decision 11,
+ * task #260).
+ *
+ * WHAT THE FLAG MEANS NOW: decision 11(b) only — whether clients can read
+ * finals BEFORE delivery (`final-access.ts`, `areFinalsOpenToClient`). The
+ * order semantics of decision 10 are mandatory everywhere and no longer gate
+ * on this flag, so turning it on or off cannot change how a submit behaves.
+ *
+ * WHY THE OLD "MIGRATION ON" IS GONE: it converted classic submissions into
+ * orders (stamp `requested_at`, unlock the member). Migration 0017 already did
+ * that one-time conversion for every gallery, and re-running it would unlock
+ * members of a `selected` gallery and reopen it on a toggle that is only about
+ * finals visibility. Nothing is rewritten here: existing `requested_at` values,
+ * locks and finals all stay as they are.
+ *
+ * Also removed: the `settleGalleryLockStatus` call. A flag write does not move
+ * anybody's lock or cart state, so it has no business changing the status —
+ * and after decision 13 it could close a gallery on an unrelated toggle.
+ *
+ * Same two `revalidatePath` surfaces as the sibling toggles, so the client's
+ * own page re-renders with or without the finals.
  */
 export async function updateRollingDelivery(
   _prevState: UpdateRollingDeliveryState,
@@ -2549,79 +2717,12 @@ export async function updateRollingDelivery(
     return { status: "error", message: "La galería no existe." };
   }
 
-  // Turning it OFF changes no data (see the header). Turning it ON must also
-  // MIGRATE the members who already submitted under the classic (#239) flow,
-  // in the SAME transaction as the flag flip: a member left "locked + no
-  // requested_at" would sit in a hybrid state (locked, yet every pick reads
-  // "Por enviar"). A gallery-row lock first, like every writer of these
-  // columns, so the settle below reads a consistent membership set.
-  const migrated = await db.transaction(async (tx) => {
-    const fresh = await lockGalleryRow(tx, gallery.id);
-    await tx
-      .update(galleries)
-      .set({ rollingDelivery: parsed.data.rollingDelivery })
-      .where(eq(galleries.id, gallery.id));
-    // The migration is a ONE-TIME transition: it runs only on a real
-    // false -> true change of the STORED flag (read under the gallery lock,
-    // so a stale tab re-sending `true`, or a repeated toggle, can never
-    // re-run it), and only while picking is live. Turning the flag OFF, or
-    // setting it to the value it already has, touches no member or asset.
-    const isRealEnable = fresh !== null && !fresh.rollingDelivery && parsed.data.rollingDelivery;
-    if (!isRealEnable) return false;
-    if (fresh.status !== "proofing" && fresh.status !== "selected") return false;
-
-    // ONLY client-submitted members: locked AND submitted. An admin-locked
-    // member (submitted NULL) stays locked — that is the photographer's call.
-    const members = await tx
-      .select({
-        userId: galleryClients.userId,
-        submittedAt: galleryClients.selectionSubmittedAt,
-        lockedAt: galleryClients.selectionLockedAt,
-        lockedBy: galleryClients.selectionLockedBy,
-      })
-      .from(galleryClients)
-      .where(and(eq(galleryClients.galleryId, gallery.id), isNull(galleryClients.removedAt)));
-    for (const member of members) {
-      // The lock SOURCE is explicit (`selection_locked_by`), never inferred
-      // from the timestamps: a member who ordered and was later locked by the
-      // photographer has both set, exactly like a classic submit.
-      if (member.lockedBy !== "client" || member.lockedAt === null) continue;
-      if (member.submittedAt === null) continue;
-      // Their order is their old submission: stamp THEIR OWN unrequested
-      // picks with THEIR submit time (the `selected_by` scope keeps everyone
-      // else's picks out), then unlock them, keeping `selection_submitted_at`.
-      await tx
-        .update(assets)
-        .set({ requestedAt: member.submittedAt })
-        .where(
-          and(
-            eq(assets.galleryId, gallery.id),
-            eq(assets.isSelected, true),
-            eq(assets.selectedBy, member.userId),
-            isNull(assets.requestedAt),
-          ),
-        );
-      await tx
-        .update(galleryClients)
-        .set({ selectionLockedAt: null, selectionLockedBy: null })
-        .where(
-          and(
-            eq(galleryClients.galleryId, gallery.id),
-            eq(galleryClients.userId, member.userId),
-            isNull(galleryClients.removedAt),
-          ),
-        );
-    }
-    // `selected` only because everyone had submitted -> back to `proofing`,
-    // through the existing settle logic (never hand-rolled here).
-    await settleGalleryLockStatus(tx, gallery.id);
-    return true;
-  });
-
-  if (migrated) {
-    // Open client tabs must drop the "enviada/cerrada" state without a reload.
-    void notifySelectionChanged(gallery.id).catch(() => {});
-  }
+  // A plain flag write: no transaction, no gallery lock, no member or asset
+  // write, no settle and no notify (see the docblock above).
+  await db
+    .update(galleries)
+    .set({ rollingDelivery: parsed.data.rollingDelivery })
+    .where(eq(galleries.id, gallery.id));
 
   revalidatePath(`/dashboard/galleries/${gallery.id}`);
   revalidatePath("/dashboard/galleries");
@@ -2635,7 +2736,7 @@ export async function updateRollingDelivery(
 //
 // The photographer's own request (2026-08-07): "si esta la opción de
 // agrupacion por persona yo escogería a que persona va asignada esas nuevas
-// fotos." An extra is a photo NOBODY picked, so it has no `selectedBy` and
+// fotos." An extra is a photo NOBODY picked, so it has no `billedTo` and
 // therefore no row to land in when the client's tray is grouped `by-person`.
 // This action is how that row gets chosen.
 //

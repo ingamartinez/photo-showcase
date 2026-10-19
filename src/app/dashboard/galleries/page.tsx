@@ -94,7 +94,17 @@ export default async function GalleriesPage() {
   // Epic #125's rule from #129/#174: a counter that lies is worse than one
   // that is absent, and the only counter that cannot lie is one derived from
   // what is on the screen.
-  const pendingCount = galleries.filter((gallery) => gallery.status === "selected").length;
+  // TASK #263: the tally is the subset whose ROW says it has work — the same
+  // `pendingWorkCount` the badge is keyed on. Under epic #250's decision 10 a
+  // submit no longer locks, so `status === "selected"` stopped meaning "waits
+  // on you": a `proofing` gallery can hold ordered photos with no final, and a
+  // `selected` gallery whose finals are all uploaded is not waiting on
+  // anybody.`
+  //
+  // The page's own invariant ("the tally is the subset whose row says so",
+  // #129/#174) is what forces both halves of this change: the count and the
+  // per-row emphasis read the SAME field, so they cannot disagree.
+  const pendingCount = galleries.filter((gallery) => gallery.pendingWorkCount > 0).length;
   const pendingCopy = formatPendingSelectionCount(pendingCount);
 
   return (
@@ -239,10 +249,14 @@ export default async function GalleriesPage() {
                         - `data-status` on the row (machine-readable);
                         - the ramp's own hue on the stripe, badge ink, border
                           and wash (visual, at a glance);
-                        - and, for `selected` only, real words a screen reader
-                          reads out — the state that means somebody is waiting
-                          on YOU is the one whose urgency the colour was
-                          carrying alone.
+                        - and, for a row with pending work only, real words a
+                          screen reader reads out — the state that means
+                          somebody is waiting on YOU is the one whose urgency
+                          the colour was carrying alone. Since epic #250/#263
+                          this is `pendingWorkCount > 0`, not `status ===
+                          "selected"`: work arrives in `proofing` too, and a
+                          `selected` gallery with every final uploaded is
+                          waiting on nobody.
                       The chrome tests assert the first and the third. They
                       deliberately no longer assert on class names. */}
                   <span className="justify-self-end [grid-area:state] lg:justify-self-start lg:[grid-area:auto]">
@@ -250,7 +264,7 @@ export default async function GalleriesPage() {
                       className={cn(
                         "text-app-micro inline-flex items-center gap-1.5 rounded-full border py-[3px] pr-[9px] pl-[7px] tracking-[0.03em] whitespace-nowrap",
                         "border-[var(--row-status)]/40 bg-[var(--row-status)]/12 text-[color:var(--row-status)]",
-                        gallery.status === "selected" && "font-semibold",
+                        gallery.pendingWorkCount > 0 && "font-semibold",
                       )}
                     >
                       <span
@@ -258,7 +272,7 @@ export default async function GalleriesPage() {
                         className="size-[5px] shrink-0 rounded-full bg-current"
                       />
                       {formatGalleryStatus(gallery.status)}
-                      {gallery.status === "selected" && (
+                      {gallery.pendingWorkCount > 0 && (
                         <span className="sr-only"> — esperando tu revisión</span>
                       )}
                     </span>

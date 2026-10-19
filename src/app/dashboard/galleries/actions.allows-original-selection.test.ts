@@ -49,7 +49,20 @@ vi.mock("@/lib/selection-events", () => ({
 // TWO tables, with genuine rollback on a mid-transaction failure.
 type Row = Record<string, unknown>;
 
-type LeafCondition = { dbColumnName: string; op: "eq"; value: unknown };
+type LeafCondition =
+  { dbColumnName: string; op: "eq"; value: unknown } | { dbColumnName: string; op: "isNull" };
+
+function textOf(node: unknown): string | null {
+  if (node && typeof node === "object" && "queryChunks" in node) {
+    const parts = (node as { queryChunks: unknown[] }).queryChunks.map(textOf);
+    return parts.some((part) => part === null) ? null : parts.join("");
+  }
+  if (node && typeof node === "object" && !("name" in node) && "value" in node) {
+    const value = (node as { value?: unknown }).value;
+    if (Array.isArray(value) && value.every((v) => typeof v === "string")) return value.join("");
+  }
+  return null;
+}
 
 function parseLeaf(node: unknown): LeafCondition | undefined {
   const chunks = (node as { queryChunks?: unknown[] } | null)?.queryChunks;
@@ -57,6 +70,7 @@ function parseLeaf(node: unknown): LeafCondition | undefined {
   let dbColumnName: string | undefined;
   let value: unknown;
   let hasValue = false;
+  let isNullText = false;
   for (const chunk of chunks) {
     if (chunk && typeof chunk === "object") {
       if ("name" in chunk && "table" in chunk) dbColumnName = (chunk as { name: string }).name;
@@ -65,8 +79,11 @@ function parseLeaf(node: unknown): LeafCondition | undefined {
         hasValue = true;
       }
     }
+    if (textOf(chunk)?.trim() === "is null") isNullText = true;
   }
-  if (!dbColumnName || !hasValue) return undefined;
+  if (!dbColumnName) return undefined;
+  if (isNullText) return { dbColumnName, op: "isNull" };
+  if (!hasValue) return undefined;
   return { dbColumnName, op: "eq", value };
 }
 
@@ -98,25 +115,30 @@ function jsKeyFor(table: Record<string, unknown>, dbColumnName: string): string 
 function matchesRow(row: Row, table: Record<string, unknown>, condition: unknown): boolean {
   return conditions(condition).every((c) => {
     const jsKey = jsKeyFor(table, c.dbColumnName);
+    if (c.op === "isNull") return row[jsKey] == null;
     return row[jsKey] === c.value;
   });
 }
 
 vi.mock("@/lib/db", async () => {
-  const { assets, galleries } = await import("@/lib/db/schema");
+  const { assets, assetPicks, galleries } = await import("@/lib/db/schema");
 
   const galleryRows: Row[] = [];
   const assetRows: Row[] = [];
+  const pickRows: Row[] = [];
+  const log: string[] = [];
 
   function rowsFor(table: unknown): Row[] {
     if (table === galleries) return galleryRows;
     if (table === assets) return assetRows;
+    if (table === assetPicks) return pickRows;
     throw new Error("fake db: unsupported table");
   }
 
   function tableShapeFor(table: unknown): Record<string, unknown> {
     if (table === galleries) return galleries as unknown as Record<string, unknown>;
     if (table === assets) return assets as unknown as Record<string, unknown>;
+    if (table === assetPicks) return assetPicks as unknown as Record<string, unknown>;
     throw new Error("fake db: unsupported table");
   }
 
@@ -124,29 +146,83 @@ vi.mock("@/lib/db", async () => {
   // reasoning as actions.attach.test.ts's own `faults` object: a single
   // fault on whichever statement happens to run second would only prove
   // atomicity by accident of statement order.
-  const faults = { failNextAssetsUpdate: false, failNextGalleriesUpdate: false };
+  const faults = {
+    failNextAssetsUpdate: false,
+    failNextGalleriesUpdate: false,
+    failNextPicksUpdate: false,
+  };
 
   const writeOps = {
     update: (table: unknown) => ({
       set: (patch: Row) => ({
         where: (condition: unknown) => {
+          const failing = (message: string) => {
+            const rejected = Promise.reject(new Error(message)) as Promise<void> & {
+              returning: (columns?: Record<string, unknown>) => Promise<Row[]>;
+            };
+            rejected.returning = () => Promise.reject(new Error(message));
+            // Swallow the unhandled-rejection warning for the branch the
+            // caller never reaches (`.returning` vs awaiting the promise).
+            rejected.catch(() => {});
+            return rejected;
+          };
           if (table === assets && faults.failNextAssetsUpdate) {
             faults.failNextAssetsUpdate = false;
-            return Promise.reject(new Error("simulated failure resetting assets"));
+            return failing("simulated failure resetting assets");
+          }
+          if (table === assetPicks && faults.failNextPicksUpdate) {
+            faults.failNextPicksUpdate = false;
+            return failing("simulated failure resetting picks");
           }
           if (table === galleries && faults.failNextGalleriesUpdate) {
             faults.failNextGalleriesUpdate = false;
-            return Promise.reject(new Error("simulated failure updating gallery"));
+            return failing("simulated failure updating gallery");
           }
           const matches = rowsFor(table).filter((row) =>
             matchesRow(row, tableShapeFor(table), condition),
           );
+          log.push("update");
           for (const row of matches) Object.assign(row, patch);
-          return Promise.resolve();
+          const promise = Promise.resolve() as Promise<void> & {
+            returning: (columns?: Record<string, unknown>) => Promise<Row[]>;
+          };
+          // `applyAssetChanges` reads the CAS result back.
+          promise.returning = async () => matches.map((row) => ({ ...row }));
+          return promise;
         },
       }),
     }),
   };
+
+  function fakeSelect(columns?: Record<string, unknown>) {
+    return {
+      from: (table: unknown) => ({
+        where: (condition: unknown) => {
+          const rows = rowsFor(table)
+            .filter((row) => matchesRow(row, tableShapeFor(table), condition))
+            .map((row) => {
+              if (!columns) return { ...row };
+              const projected: Row = {};
+              for (const [alias, column] of Object.entries(columns)) {
+                const jsKey = jsKeyFor(tableShapeFor(table), (column as { name: string }).name);
+                projected[alias] = row[jsKey] ?? null;
+              }
+              return projected;
+            });
+          const resultPromise = Promise.resolve(rows);
+          return {
+            limit: async (n: number) => rows.slice(0, n),
+            for: async () => {
+              log.push("for:update");
+              return rows;
+            },
+            then: resultPromise.then.bind(resultPromise),
+            catch: resultPromise.catch.bind(resultPromise),
+          };
+        },
+      }),
+    };
+  }
 
   return {
     db: {
@@ -158,38 +234,23 @@ vi.mock("@/lib/db", async () => {
       transaction: async (fn: (tx: typeof writeOps) => Promise<unknown>) => {
         const galleriesSnapshot = galleryRows.map((row) => ({ ...row }));
         const assetsSnapshot = assetRows.map((row) => ({ ...row }));
+        const picksSnapshot = pickRows.map((row) => ({ ...row }));
         try {
-          return await fn(writeOps);
+          return await fn({ ...writeOps, select: fakeSelect } as typeof writeOps);
         } catch (error) {
           galleryRows.length = 0;
           galleryRows.push(...galleriesSnapshot);
           assetRows.length = 0;
           assetRows.push(...assetsSnapshot);
+          pickRows.length = 0;
+          pickRows.push(...picksSnapshot);
           throw error;
         }
       },
-      select: (columns?: Record<string, unknown>) => ({
-        from: (table: unknown) => ({
-          where: (condition: unknown) => {
-            const rows = rowsFor(table)
-              .filter((row) => matchesRow(row, tableShapeFor(table), condition))
-              .map((row) => {
-                if (!columns) return { ...row };
-                const projected: Row = {};
-                for (const key of Object.keys(columns)) projected[key] = row[key];
-                return projected;
-              });
-            const resultPromise = Promise.resolve(rows);
-            return {
-              limit: async (n: number) => rows.slice(0, n),
-              then: resultPromise.then.bind(resultPromise),
-              catch: resultPromise.catch.bind(resultPromise),
-            };
-          },
-        }),
-      }),
+      select: fakeSelect,
       // Test-only escape hatches, not part of the real `db` shape.
-      __rows: { galleries: galleryRows, assets: assetRows },
+      __rows: { galleries: galleryRows, assets: assetRows, assetPicks: pickRows },
+      __log: log,
       __faults: faults,
     },
   };
@@ -198,8 +259,13 @@ vi.mock("@/lib/db", async () => {
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
     db: {
-      __rows: { galleries: Row[]; assets: Row[] };
-      __faults: { failNextAssetsUpdate: boolean; failNextGalleriesUpdate: boolean };
+      __rows: { galleries: Row[]; assets: Row[]; assetPicks: Row[] };
+      __log: string[];
+      __faults: {
+        failNextAssetsUpdate: boolean;
+        failNextGalleriesUpdate: boolean;
+        failNextPicksUpdate: boolean;
+      };
     };
   };
   return db;
@@ -250,6 +316,23 @@ function assetRow(overrides: Row = {}): Row {
     originalFilename: "IMG_0001.JPG",
     isSelected: true,
     selectionKind: "edited",
+    selectedAt: null,
+    requestedAt: null,
+    billedTo: null,
+    billedAt: null,
+    finalKey: null,
+    ...overrides,
+  };
+}
+
+function pickRow(overrides: Row = {}): Row {
+  return {
+    assetId: "asset-1",
+    galleryId: GALLERY_ID,
+    userId: "client-a",
+    kind: "original",
+    pickedAt: new Date("2026-10-15T10:00:00.000Z"),
+    submittedAt: null,
     ...overrides,
   };
 }
@@ -273,9 +356,12 @@ beforeEach(async () => {
   const db = await seededDb();
   db.__rows.galleries.length = 0;
   db.__rows.assets.length = 0;
+  db.__rows.assetPicks.length = 0;
+  db.__log.length = 0;
   db.__rows.galleries.push(galleryRow());
   db.__faults.failNextAssetsUpdate = false;
   db.__faults.failNextGalleriesUpdate = false;
+  db.__faults.failNextPicksUpdate = false;
 });
 
 describe("updateAllowsOriginalSelection authorization", () => {
@@ -476,9 +562,9 @@ describe("updateAllowsOriginalSelection — turning OFF", () => {
     const db = await seededDb();
     db.__rows.galleries[0] = galleryRow({ allowsOriginalSelection: true });
     db.__rows.assets.push(
-      assetRow({ id: "asset-1", selectionKind: "original" }),
-      assetRow({ id: "asset-2", selectionKind: "original" }),
-      assetRow({ id: "asset-3", selectionKind: "edited" }),
+      assetRow({ id: "asset-1", selectionKind: "original", billedTo: "client-a" }),
+      assetRow({ id: "asset-2", selectionKind: "original", billedTo: "client-b" }),
+      assetRow({ id: "asset-3", selectionKind: "edited", billedTo: "client-a" }),
     );
     const { updateAllowsOriginalSelection } = await import("./actions");
 
@@ -535,7 +621,14 @@ describe("updateAllowsOriginalSelection — turning OFF", () => {
   it("does not flip the flag when the assets reset fails mid-transaction", async () => {
     const db = await seededDb();
     db.__rows.galleries[0] = galleryRow({ allowsOriginalSelection: true });
-    db.__rows.assets.push(assetRow({ id: "asset-1", selectionKind: "original" }));
+    db.__rows.assets.push(
+      assetRow({
+        id: "asset-1",
+        selectionKind: "original",
+        billedTo: "client-a",
+        billedAt: new Date("2026-10-15T10:00:00.000Z"),
+      }),
+    );
     db.__faults.failNextAssetsUpdate = true;
     const { updateAllowsOriginalSelection } = await import("./actions");
 
@@ -555,7 +648,14 @@ describe("updateAllowsOriginalSelection — turning OFF", () => {
   it("rolls back the assets reset when the flag flip fails mid-transaction", async () => {
     const db = await seededDb();
     db.__rows.galleries[0] = galleryRow({ allowsOriginalSelection: true });
-    db.__rows.assets.push(assetRow({ id: "asset-1", selectionKind: "original" }));
+    db.__rows.assets.push(
+      assetRow({
+        id: "asset-1",
+        selectionKind: "original",
+        billedTo: "client-a",
+        billedAt: new Date("2026-10-15T10:00:00.000Z"),
+      }),
+    );
     db.__faults.failNextGalleriesUpdate = true;
     const { updateAllowsOriginalSelection } = await import("./actions");
 
@@ -600,5 +700,131 @@ describe("updateAllowsOriginalSelection — turning OFF", () => {
       extraPhotoPriceCopSnapshot: 5_000,
       termsOverridden: false,
     });
+  });
+});
+
+// Epic #250 S5 (#260) — hazard 6, decision 15 and the lock order.
+describe("updateAllowsOriginalSelection OFF — picks, finals and the lock (epic #250)", () => {
+  const LOCKED_AT = new Date("2026-10-15T10:00:00.000Z");
+
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+  });
+
+  it("rewrites EVERY original pick, escalates claimed originals without a final, and keeps one with a final", async () => {
+    const db = await seededDb();
+    db.__rows.galleries[0] = galleryRow({ allowsOriginalSelection: true });
+    db.__rows.assets.push(
+      assetRow({
+        id: "w",
+        isSelected: false,
+        selectionKind: "edited",
+        billedTo: null,
+        billedAt: null,
+      }),
+      assetRow({
+        id: "x",
+        selectionKind: "original",
+        billedTo: "client-c",
+        billedAt: LOCKED_AT,
+      }),
+      assetRow({
+        id: "y",
+        selectionKind: "original",
+        billedTo: "client-d",
+        billedAt: LOCKED_AT,
+        finalKey: "final/y.jpg",
+      }),
+    );
+    db.__rows.assetPicks.push(
+      pickRow({ assetId: "w", userId: "client-a", kind: "original", submittedAt: null }),
+      pickRow({ assetId: "x", userId: "client-c", kind: "original", submittedAt: LOCKED_AT }),
+      pickRow({ assetId: "x", userId: "client-b", kind: "original", submittedAt: LOCKED_AT }),
+      pickRow({ assetId: "y", userId: "client-d", kind: "original", submittedAt: LOCKED_AT }),
+    );
+    const { updateAllowsOriginalSelection } = await import("./actions");
+
+    const result = await updateAllowsOriginalSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID, allowsOriginalSelection: "false" }),
+    );
+
+    expect(result).toEqual({ status: "updated" });
+    expect(db.__rows.galleries[0]).toMatchObject({ allowsOriginalSelection: false });
+    // Hazard 6: the CART pick is rewritten too, or claimCart would claim it
+    // as an original in a gallery that no longer allows them.
+    expect(db.__rows.assetPicks.every((p) => p.kind === "edited")).toBe(true);
+    // X: same holder, edited, and it re-arrived (billed_at = the new arrival).
+    const x = db.__rows.assets.find((a) => a.id === "x")!;
+    expect(x).toMatchObject({ isSelected: true, billedTo: "client-c", selectionKind: "edited" });
+    expect((x.billedAt as Date).getTime()).toBeGreaterThan(LOCKED_AT.getTime());
+    // Y: decision 15, a final freezes the kind.
+    expect(db.__rows.assets.find((a) => a.id === "y")).toMatchObject({
+      selectionKind: "original",
+      billedTo: "client-d",
+    });
+    // W: unclaimed, so no money moved.
+    expect(db.__rows.assets.find((a) => a.id === "w")).toMatchObject({ isSelected: false });
+  });
+
+  it("a subsequent submit claims the rewritten cart pick as EDITED", async () => {
+    const db = await seededDb();
+    db.__rows.galleries[0] = galleryRow({ allowsOriginalSelection: true });
+    db.__rows.assets.push(assetRow({ id: "w", isSelected: false, billedTo: null }));
+    db.__rows.assetPicks.push(
+      pickRow({ assetId: "w", userId: "client-a", kind: "original", submittedAt: null }),
+    );
+    const { updateAllowsOriginalSelection } = await import("./actions");
+    const { claimCart } = await import("@/lib/pick-claims");
+
+    await updateAllowsOriginalSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID, allowsOriginalSelection: "false" }),
+    );
+    const gallery = (await seededDb()).__rows.galleries[0]! as never;
+    const tx = (await import("@/lib/db")).db as never;
+    await claimCart(tx, gallery, "client-a", new Date("2026-10-18T10:00:00Z"));
+
+    expect(db.__rows.assets.find((a) => a.id === "w")).toMatchObject({
+      isSelected: true,
+      billedTo: "client-a",
+      selectionKind: "edited",
+    });
+  });
+
+  it("takes the gallery row lock BEFORE any write", async () => {
+    const db = await seededDb();
+    db.__rows.galleries[0] = galleryRow({ allowsOriginalSelection: true });
+    db.__rows.assets.push(assetRow({ id: "x", selectionKind: "original", billedTo: "client-c" }));
+    const { updateAllowsOriginalSelection } = await import("./actions");
+
+    await updateAllowsOriginalSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID, allowsOriginalSelection: "false" }),
+    );
+
+    expect(db.__log[0]).toBe("for:update");
+  });
+
+  it("keeps the pick rewrite inside the same transaction: a failing picks update leaves every original standing", async () => {
+    const db = await seededDb();
+    db.__rows.galleries[0] = galleryRow({ allowsOriginalSelection: true });
+    db.__rows.assets.push(assetRow({ id: "x", selectionKind: "original", billedTo: "client-c" }));
+    db.__rows.assetPicks.push(
+      pickRow({ assetId: "x", userId: "client-c", kind: "original", submittedAt: LOCKED_AT }),
+    );
+    db.__faults.failNextPicksUpdate = true;
+    const { updateAllowsOriginalSelection } = await import("./actions");
+
+    await expect(
+      updateAllowsOriginalSelection(
+        { status: "idle" },
+        formDataWith({ galleryId: GALLERY_ID, allowsOriginalSelection: "false" }),
+      ),
+    ).rejects.toThrow(/simulated failure resetting picks/);
+
+    expect(db.__rows.galleries[0]).toMatchObject({ allowsOriginalSelection: true });
+    expect(db.__rows.assets[0]).toMatchObject({ selectionKind: "original" });
+    expect(db.__rows.assetPicks[0]).toMatchObject({ kind: "original" });
   });
 });

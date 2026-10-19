@@ -2,6 +2,9 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "next-auth";
 import ClientGalleryPage from "./page";
 import type { GalleryDetail } from "@/lib/galleries";
+import { computeQuota, type GalleryQuotaSnapshot } from "@/lib/quota";
+import { emptyShare } from "@/lib/quota-attribution";
+import { emptyProjection } from "@/test-support/selection-fixtures";
 
 // `import "server-only"` (transitively, via src/lib/auth-guards.ts and
 // src/lib/galleries.ts) only resolves inside a real Next.js bundle — see
@@ -12,11 +15,15 @@ const authMock = vi.fn();
 vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 
 const getGalleryDetailBySlugMock = vi.fn();
+const getGalleryClientsMock = vi.fn();
 vi.mock("@/lib/galleries", async () => {
   const actual = await vi.importActual<typeof import("@/lib/galleries")>("@/lib/galleries");
   return {
     ...actual,
     getGalleryDetailBySlug: (...args: unknown[]) => getGalleryDetailBySlugMock(...args),
+    // Epic #250 S7 — the admin-preview selector's member list. A real query,
+    // so it is mocked here; the client path must never call it.
+    getGalleryClients: (...args: unknown[]) => getGalleryClientsMock(...args),
   };
 });
 
@@ -42,6 +49,7 @@ vi.mock("@/lib/r2", () => ({
 // isn't), so this suite keeps testing exactly its own job: does this PAGE
 // call `isGalleryOwner` and honor its result.
 const isGalleryOwnerMock = vi.fn<(galleryId: string, session: Session) => Promise<boolean>>();
+const resolveViewAsMock = vi.fn();
 vi.mock("@/lib/gallery-access", () => ({
   isGalleryOwner: (...args: [string, Session]) => isGalleryOwnerMock(...args),
   // Task #139: a plain re-implementation of the real predicate (admin, full
@@ -50,6 +58,8 @@ vi.mock("@/lib/gallery-access", () => ({
   // gallery-access.test.ts; this file's own concern is authorization and the
   // notFound()/forbidden() branches, not this banner's gate.
   isAdminPreviewingClientGallery: (session: Session) => session.user.role === "admin",
+  // Epic #250 S6 — own subject, no view-as by default.
+  resolveViewAs: (...args: unknown[]) => resolveViewAsMock(...args),
 }));
 
 // Task #95: the collaborative tray's first paint. Mocked for the same reason
@@ -58,9 +68,9 @@ vi.mock("@/lib/gallery-access", () => ({
 // about is that the page reads it only AFTER the ownership and visibility
 // gates have passed, which the guard tests below prove by asserting it was
 // never called at all on a refused request.
-const getGallerySelectionMock = vi.fn<(galleryId: string) => Promise<unknown[]>>();
+const getGallerySelectionMock = vi.fn<(...args: unknown[]) => Promise<unknown>>();
 vi.mock("@/lib/gallery-selection", () => ({
-  getGallerySelection: (...args: [string]) => getGallerySelectionMock(...args),
+  getGallerySelection: (...args: unknown[]) => getGallerySelectionMock(...args),
 }));
 
 // Epic #239: the per-client lock snapshot, mocked for the same reason —
@@ -73,6 +83,11 @@ vi.mock("@/lib/gallery-client-locks", () => ({
 
 beforeEach(() => {
   authMock.mockReset();
+  resolveViewAsMock.mockReset();
+  resolveViewAsMock.mockImplementation(async (session: Session) => ({
+    ok: true,
+    subjectId: session.user.role === "admin" ? null : session.user.id,
+  }));
   getSelectionLockSnapshotMock.mockReset();
   getSelectionLockSnapshotMock.mockResolvedValue({
     viewerLock: null,
@@ -80,8 +95,10 @@ beforeEach(() => {
     submittedPickerIds: [],
   });
   getGallerySelectionMock.mockReset();
-  getGallerySelectionMock.mockResolvedValue([]);
+  getGallerySelectionMock.mockResolvedValue(viewFor([]));
   getGalleryDetailBySlugMock.mockReset();
+  getGalleryClientsMock.mockReset();
+  getGalleryClientsMock.mockResolvedValue([]);
   getPresignedUrlMock.mockReset();
   getPresignedUrlMock.mockReturnValue("https://r2.example.com/presigned-proof-url");
   isGalleryOwnerMock.mockReset();
@@ -126,6 +143,92 @@ function galleryDetail(overrides: Partial<GalleryDetail> = {}): GalleryDetail {
 
 function paramsFor(publicSlug: string) {
   return { params: Promise.resolve({ publicSlug }) };
+}
+
+type LegacyPick = {
+  assetId: string;
+  selectedAt?: string | null;
+  pickedBy: { id: string; label: string } | null;
+  selectionKind?: "edited" | "original";
+};
+
+const DEFAULT_TERMS = {
+  includedPhotosSnapshot: 13,
+  extraPhotoPriceCopSnapshot: 5_000,
+  extraPhotoPriceTiersSnapshot: null,
+  originalPhotoPriceCopSnapshot: 2_000,
+};
+
+/** Adapts the pre-S6 fixture shape (a flat list of claimed picks) to the S6
+ * wire shape, computing the server's quota/counter exactly as
+ * `buildGallerySelection` would for these fixtures. */
+function viewFor(
+  picks: LegacyPick[],
+  terms: GalleryQuotaSnapshot = DEFAULT_TERMS,
+  lock: {
+    viewerLock: {
+      lockedAt: string;
+      submittedAt: string | null;
+      lockedBy?: "client" | "admin";
+    } | null;
+    adminLockedPickerIds: string[];
+    viewerSubmittedAt: string | null;
+  } = { viewerLock: null, adminLockedPickerIds: [], viewerSubmittedAt: null },
+) {
+  const entries = picks.map((pick) => ({
+    assetId: pick.assetId,
+    claim: {
+      claimedAt: pick.selectedAt ?? null,
+      resolvedKind: pick.selectionKind ?? ("edited" as const),
+      billedTo: pick.pickedBy,
+      charge: "included" as const,
+    },
+    picks: pick.pickedBy
+      ? [
+          {
+            userId: pick.pickedBy.id,
+            label: pick.pickedBy.label,
+            kind: pick.selectionKind ?? ("edited" as const),
+            pickedAt: pick.selectedAt ?? "2026-07-30T12:00:00.000Z",
+            submittedAt: pick.selectedAt ?? null,
+            state: "billed" as const,
+          },
+        ]
+      : [],
+  }));
+  const edited = picks.filter((pick) => (pick.selectionKind ?? "edited") === "edited").length;
+  const original = picks.length - edited;
+  const quota = computeQuota(edited, original, terms);
+  const counts = new Map<string, number>();
+  for (const pick of picks) {
+    if (!pick.pickedBy) continue;
+    counts.set(pick.pickedBy.id, (counts.get(pick.pickedBy.id) ?? 0) + 1);
+  }
+  return {
+    entries,
+    quota,
+    counter: {
+      group: picks.length,
+      viewer: {
+        yours: counts.get("client-a") ?? 0,
+        shared: 0,
+        toSend: 0,
+        projection: emptyProjection(),
+      },
+      people: [...counts].map(([userId, units]) => ({
+        userId,
+        label: picks.find((pick) => pick.pickedBy?.id === userId)?.pickedBy?.label ?? userId,
+        units,
+        // Task #264 — this fixture predates the per-person money wire; the
+        // required share is the all-zero one, from the same module the server
+        // uses.
+        share: emptyShare(),
+      })),
+      unattributed: picks.filter((pick) => pick.pickedBy === null).length,
+      unattributedShare: emptyShare(),
+    },
+    lock,
+  };
 }
 
 describe("ClientGalleryPage", () => {
@@ -233,37 +336,181 @@ describe("ClientGalleryPage", () => {
     },
   );
 
-  // Epic #239 — slice #241 reads these two props. The snapshot must be asked
-  // for with the gallery's OWN id and the VIEWER's id (not the gallery's
-  // clients), and handed to <ProofGrid> untouched.
-  it("reads the lock snapshot for this gallery and viewer and hands it to <ProofGrid>", async () => {
+  // Epic #239 / S6 — the lock and the counter now come from the ONE
+  // `getGallerySelection` read, and are handed to <ProofGrid> untouched.
+  it("reads the selection once for this gallery and subject and hands its lock and counter to <ProofGrid>", async () => {
     authMock.mockResolvedValue(sessionFor("client", "client-a"));
     getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
-    const snapshot = {
-      viewerLock: { lockedAt: "2026-10-15T10:00:00.000Z", submittedAt: "2026-10-15T10:00:00.000Z" },
-      lockedPickerIds: ["client-a", "client-b"],
-      submittedPickerIds: ["client-a"],
+    const lock = {
+      viewerLock: {
+        lockedAt: "2026-10-15T10:00:00.000Z",
+        submittedAt: "2026-10-15T10:00:00.000Z",
+        lockedBy: "client" as const,
+      },
+      adminLockedPickerIds: ["client-a"],
+      viewerSubmittedAt: "2026-10-15T10:00:00.000Z",
     };
-    getSelectionLockSnapshotMock.mockResolvedValue(snapshot);
+    getGallerySelectionMock.mockResolvedValue(viewFor([], DEFAULT_TERMS, lock));
 
     const tree = await ClientGalleryPage(paramsFor(SLUG));
 
-    expect(getSelectionLockSnapshotMock).toHaveBeenCalledWith("g1", "client-a");
+    expect(getGallerySelectionMock).toHaveBeenCalledWith("g1", DEFAULT_TERMS, "client-a", {
+      allowsOriginal: false,
+    });
     const found: Record<string, unknown>[] = [];
     const walk = (node: unknown): void => {
       if (!node || typeof node !== "object") return;
       if (Array.isArray(node)) return node.forEach(walk);
       const props = (node as { props?: Record<string, unknown> }).props;
-      if (props && "initialLockedPickerIds" in props) found.push(props);
+      if (props && "initialAdminLockedPickerIds" in props) found.push(props);
       if (props) walk(props.children);
     };
     walk(tree);
     expect(found).toHaveLength(1);
     expect(found[0]).toMatchObject({
-      initialViewerLock: snapshot.viewerLock,
-      initialLockedPickerIds: snapshot.lockedPickerIds,
-      initialSubmittedPickerIds: snapshot.submittedPickerIds,
+      initialViewerLock: lock.viewerLock,
+      initialAdminLockedPickerIds: lock.adminLockedPickerIds,
+      initialViewerSubmittedAt: lock.viewerSubmittedAt,
     });
+  });
+
+  it("forbids a CLIENT that sends a view-as parameter", async () => {
+    authMock.mockResolvedValue(sessionFor("client", "client-a"));
+    getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+    resolveViewAsMock.mockResolvedValue({ ok: false, error: "view_as_admin_only" });
+
+    await expect(ClientGalleryPage(paramsFor(SLUG))).rejects.toMatchObject({
+      digest: "NEXT_HTTP_ERROR_FALLBACK;403",
+    });
+    expect(getGallerySelectionMock).not.toHaveBeenCalled();
+  });
+
+  it("views as an active member for an admin: subject id reaches the read, viewerId, actingClientId and the remount key", async () => {
+    authMock.mockResolvedValue(sessionFor("admin", "admin-1"));
+    getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+    getGalleryClientsMock.mockResolvedValue([
+      { id: "client-b", name: null, email: "beto@example.com" },
+    ]);
+    resolveViewAsMock.mockResolvedValue({ ok: true, subjectId: "client-b" });
+
+    const tree = await ClientGalleryPage({
+      ...paramsFor(SLUG),
+      searchParams: Promise.resolve({ viewAs: "client-b" }),
+    });
+
+    expect(resolveViewAsMock).toHaveBeenCalledWith(expect.anything(), "g1", "client-b");
+    expect(getGallerySelectionMock).toHaveBeenCalledWith("g1", expect.any(Object), "client-b", {
+      allowsOriginal: false,
+    });
+    const found: Record<string, unknown>[] = [];
+    const walk = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) return node.forEach(walk);
+      const props = (node as { props?: Record<string, unknown> }).props;
+      if (props && "viewAsId" in props) found.push(props);
+      if (props) walk(props.children);
+    };
+    walk(tree);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({
+      viewerId: "client-b",
+      viewAsId: "client-b",
+      actingClientId: "client-b",
+      readOnly: false,
+      isAdminPreview: true,
+    });
+  });
+
+  it("an admin with no subject is read-only: no actingClientId, readOnly true", async () => {
+    authMock.mockResolvedValue(sessionFor("admin", "admin-1"));
+    getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+    getGalleryClientsMock.mockResolvedValue([
+      { id: "client-b", name: "Beto", email: "beto@example.com" },
+    ]);
+
+    const tree = await ClientGalleryPage(paramsFor(SLUG));
+
+    const found: Record<string, unknown>[] = [];
+    const walk = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) return node.forEach(walk);
+      const props = (node as { props?: Record<string, unknown> }).props;
+      if (props && "actingClientId" in props) found.push(props);
+      if (props) walk(props.children);
+    };
+    walk(tree);
+    expect(found).toHaveLength(1);
+    expect(found[0]).toMatchObject({ actingClientId: null, readOnly: true });
+  });
+
+  it("a REMOVED view-as subject is read-only and keeps the name the selection view still carries", async () => {
+    authMock.mockResolvedValue(sessionFor("admin", "admin-1"));
+    getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+    // `getGalleryClients` is active-only, so the removed member is absent…
+    getGalleryClientsMock.mockResolvedValue([]);
+    resolveViewAsMock.mockResolvedValue({ ok: true, subjectId: "client-gone" });
+    // …but their sent picks still carry their label (decision 17).
+    getGallerySelectionMock.mockResolvedValue(
+      viewFor([
+        {
+          assetId: "a1",
+          selectedAt: "2026-10-01T12:00:00.000Z",
+          pickedBy: { id: "client-gone", label: "Carla" },
+          selectionKind: "edited",
+        },
+      ]),
+    );
+
+    const tree = await ClientGalleryPage({
+      ...paramsFor(SLUG),
+      searchParams: Promise.resolve({ viewAs: "client-gone" }),
+    });
+
+    const gridProps: Record<string, unknown>[] = [];
+    const bannerProps: Record<string, unknown>[] = [];
+    const walk = (node: unknown): void => {
+      if (!node || typeof node !== "object") return;
+      if (Array.isArray(node)) return node.forEach(walk);
+      const props = (node as { props?: Record<string, unknown> }).props;
+      if (props && "actingClientId" in props) gridProps.push(props);
+      if (props && "subject" in props) bannerProps.push(props);
+      if (props) walk(props.children);
+    };
+    walk(tree);
+
+    expect(getGalleryClientsMock).toHaveBeenCalledWith("g1");
+    expect(gridProps[0]).toMatchObject({
+      viewerId: "client-gone",
+      actingClientId: null,
+      readOnly: true,
+    });
+    expect(bannerProps[0]?.subject).toMatchObject({
+      id: "client-gone",
+      label: "Carla",
+      isActive: false,
+    });
+  });
+
+  it("never calls getGalleryClients for a CLIENT's own visit", async () => {
+    authMock.mockResolvedValue(sessionFor("client", "client-a"));
+    getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+
+    await ClientGalleryPage(paramsFor(SLUG));
+
+    expect(getGalleryClientsMock).not.toHaveBeenCalled();
+  });
+
+  it("404s an admin view-as for an unknown member", async () => {
+    authMock.mockResolvedValue(sessionFor("admin", "admin-1"));
+    getGalleryDetailBySlugMock.mockResolvedValue(galleryDetail());
+    resolveViewAsMock.mockResolvedValue({ ok: false, error: "view_as_not_member" });
+
+    await expect(
+      ClientGalleryPage({
+        ...paramsFor(SLUG),
+        searchParams: Promise.resolve({ viewAs: "gone" }),
+      }),
+    ).rejects.toMatchObject({ digest: "NEXT_HTTP_ERROR_FALLBACK;404" });
   });
 
   it("presigns a proof URL for every asset in the gallery", async () => {

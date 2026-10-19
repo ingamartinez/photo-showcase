@@ -17,6 +17,12 @@ import userEvent from "@testing-library/user-event";
 import type { Session } from "next-auth";
 import GalleryDetailPage from "./page";
 import type { GalleryDetail } from "@/lib/galleries";
+import {
+  attributionDelta,
+  planOriginalsOff,
+  previewOriginalsOff,
+  type AssetRow,
+} from "@/lib/pick-plans";
 
 const requireAdminMock = vi.fn<() => Promise<Session>>();
 vi.mock("@/lib/auth-guards", () => ({ requireAdmin: () => requireAdminMock() }));
@@ -25,7 +31,15 @@ const getGalleryDetailMock = vi.fn<() => Promise<GalleryDetail | null>>();
 // Task #73's own read — mocked here too (this module is mocked wholesale,
 // not via `importActual`, so leaving this out would resolve to `undefined`
 // and the page's own `await getGalleryUnlockAudit(...)` call would throw).
-const getGalleryClientSelectionsMock = vi.fn();
+// Epic #250 (#263): the per-person numbers, attribution and the before/after
+// previews come from ONE read, whose real implementation opens a
+// `db.transaction` (unresolvable under jsdom) — mocked wholesale like
+// `@/lib/galleries` above.
+const getDashboardSelectionMock = vi.fn();
+vi.mock("@/lib/gallery-selection", () => ({
+  getDashboardSelection: (...args: unknown[]) => getDashboardSelectionMock(...args),
+}));
+
 const getGalleryUnlockAuditMock = vi.fn<
   () => Promise<{
     unlockedAt: Date | null;
@@ -36,7 +50,7 @@ const getGalleryUnlockAuditMock = vi.fn<
 vi.mock("@/lib/galleries", () => ({
   getGalleryDetail: () => getGalleryDetailMock(),
   getGalleryUnlockAudit: () => getGalleryUnlockAuditMock(),
-  getGalleryClientSelections: () => getGalleryClientSelectionsMock(),
+
   formatGalleryStatus: (status: string) => {
     const labels: Record<string, string> = {
       draft: "Borrador",
@@ -209,8 +223,15 @@ beforeEach(() => {
   } as Session);
   getGalleryDetailMock.mockReset();
   getGalleryUnlockAuditMock.mockReset();
-  getGalleryClientSelectionsMock.mockReset();
-  getGalleryClientSelectionsMock.mockResolvedValue({ clients: [], pickOwnerByAssetId: {} });
+  getDashboardSelectionMock.mockReset();
+  getDashboardSelectionMock.mockResolvedValue({
+    entries: [],
+    quota: { selected: 0, surchargeCop: 0 },
+    people: [],
+    labels: {},
+    previewByClient: {},
+    members: [],
+  });
   getGalleryUnlockAuditMock.mockResolvedValue({
     unlockedAt: null,
     unlockedByEmail: null,
@@ -309,9 +330,12 @@ describe("GalleryDetailPage chrome", () => {
     expect(betoLine.tagName).toBe("P");
   });
 
-  // Epic #239 (#242): each client row shows ITS OWN count and state, taken
-  // from the per-client lock columns — three clients, three different states.
-  it("shows each client's own pick count and state (eligiendo / envió / bloqueado)", async () => {
+  // Epic #239 (#242), re-expressed for epic #250/#263: each client row shows
+  // ITS OWN four-number tally and state. The state no longer comes off the
+  // lock columns alone — a submit does not lock (decision 10) — so `envió`
+  // here is `submitted_at` set with an empty cart, and `bloqueado` is the
+  // admin lock.
+  it("shows each client's own tally and state (eligiendo / envió / bloqueado)", async () => {
     getGalleryDetailMock.mockResolvedValue(
       galleryDetail({
         status: "proofing",
@@ -323,27 +347,45 @@ describe("GalleryDetailPage chrome", () => {
       }),
     );
     const sent = new Date("2026-10-12T15:00:00Z");
-    getGalleryClientSelectionsMock.mockResolvedValue({
-      clients: [
-        { userId: "u1", lockedAt: null, submittedAt: null, pickCount: 3 },
-        { userId: "u2", lockedAt: sent, submittedAt: sent, pickCount: 1 },
-        { userId: "u3", lockedAt: sent, submittedAt: null, pickCount: 0 },
+    getDashboardSelectionMock.mockResolvedValue({
+      entries: [],
+      quota: { selected: 0, surchargeCop: 0 },
+      labels: {},
+      previewByClient: {},
+      people: [
+        { userId: "u1", label: "Ana Pérez", yours: 3, shared: 1, edited: 0, toSend: 2 },
+        { userId: "u2", label: "Beto Gómez", yours: 1, shared: 0, edited: 1, toSend: 0 },
+        { userId: "u3", label: "Caro Ruiz", yours: 0, shared: 0, edited: 0, toSend: 0 },
       ],
-      pickOwnerByAssetId: {},
+      members: [
+        { userId: "u1", lockedAt: null, submittedAt: null },
+        { userId: "u2", lockedAt: null, submittedAt: sent },
+        { userId: "u3", lockedAt: sent, submittedAt: null },
+      ],
     });
 
     render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
 
-    expect(screen.getByText("3 fotos elegidas · Eligiendo")).toBeDefined();
-    expect(screen.getByText("1 foto elegida · Envió el 12/10/2026")).toBeDefined();
-    expect(screen.getByText("0 fotos elegidas · Bloqueado por vos")).toBeDefined();
+    expect(
+      screen.getByText("pedidas 3 · compartidas 1 · editadas 0 · por enviar 2 · Eligiendo"),
+    ).toBeDefined();
+    expect(
+      screen.getByText(
+        "pedidas 1 · compartidas 0 · editadas 1 · por enviar 0 · Envió el 12/10/2026",
+      ),
+    ).toBeDefined();
+    expect(
+      screen.getByText("pedidas 0 · compartidas 0 · editadas 0 · por enviar 0 · Bloqueado por ti"),
+    ).toBeDefined();
   });
 
-  // The filter's input is computed on the PAGE (which clients count as
-  // frozen) — a submitted client and an admin-locked client are frozen, the
-  // one still choosing is not, and an unattributed pick belongs to nobody.
-  it("the selected-photos filter keeps only the picks of submitted and admin-locked clients", async () => {
-    const pick = (id: string, name: string) => ({
+  // Task #263: the person filter reads `pickers` — everybody who SUBMITTED a
+  // pick — not the billed holder alone. BETO_JOINED is Ana's unit and Beto
+  // only joined it, so filtering by Beto must still find it; the old
+  // `frozenPickerIds` checkbox this replaces is gone (a submit no longer
+  // locks anybody).
+  it("the selected-photos person filter follows the pickers, including joiners", async () => {
+    const pick = (id: string, name: string, billedTo: string) => ({
       id,
       originalFilename: name,
       proofKey: `galleries/g1/proofs/${id}.webp`,
@@ -356,6 +398,16 @@ describe("GalleryDetailPage chrome", () => {
       selectionKind: "edited" as const,
       isExtra: false,
       deliveredFor: null,
+      billedTo,
+    });
+    const iso = new Date("2026-10-12T15:00:00Z").toISOString();
+    const billed = (assetId: string, userId: string, label: string) => ({
+      userId,
+      label,
+      kind: "edited" as const,
+      pickedAt: iso,
+      submittedAt: iso,
+      state: "billed" as const,
     });
     getGalleryDetailMock.mockResolvedValue(
       galleryDetail({
@@ -366,35 +418,130 @@ describe("GalleryDetailPage chrome", () => {
           { id: "u3", name: "Caro Ruiz", email: "caro@example.com" },
         ],
         assets: [
-          pick("p1", "ANA_SUBMITTED.jpg"),
-          pick("p2", "BETO_LOCKED.jpg"),
-          pick("p3", "CARO_OPEN.jpg"),
+          pick("p1", "ANA_OWN.jpg", "u1"),
+          pick("p2", "BETO_JOINED.jpg", "u1"),
+          pick("p3", "CARO_OWN.jpg", "u3"),
         ],
       }),
     );
-    const sent = new Date("2026-10-12T15:00:00Z");
-    getGalleryClientSelectionsMock.mockResolvedValue({
-      clients: [
-        { userId: "u1", lockedAt: sent, submittedAt: sent, pickCount: 1 },
-        { userId: "u2", lockedAt: sent, submittedAt: null, pickCount: 1 },
-        { userId: "u3", lockedAt: null, submittedAt: null, pickCount: 1 },
+    getDashboardSelectionMock.mockResolvedValue({
+      quota: { selected: 3, surchargeCop: 0 },
+      labels: {},
+      previewByClient: {},
+      people: [],
+      members: [],
+      entries: [
+        {
+          assetId: "p1",
+          claim: null,
+          picks: [billed("p1", "u1", "Ana Pérez")],
+        },
+        {
+          assetId: "p2",
+          claim: null,
+          picks: [
+            billed("p2", "u1", "Ana Pérez"),
+            { ...billed("p2", "u2", "Beto Gómez"), state: "joined" as const },
+          ],
+        },
+        {
+          assetId: "p3",
+          claim: null,
+          picks: [billed("p3", "u3", "Caro Ruiz")],
+        },
       ],
-      pickOwnerByAssetId: { p1: "u1", p2: "u2", p3: "u3" },
     });
 
     render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
     const details = screen.getByText(/^Fotos seleccionadas/).closest("details")!;
     expect(within(details).getAllByRole("listitem")).toHaveLength(3);
 
-    await userEvent.click(
-      screen.getByLabelText("Solo de quienes ya enviaron o quedaron bloqueados"),
-    );
+    await userEvent.selectOptions(screen.getByLabelText("Persona"), "u2");
 
     expect(
       within(details)
         .getAllByRole("listitem")
         .map((li) => li.querySelector("[data-testid=photo-filename]")?.textContent),
-    ).toEqual(["ANA_SUBMITTED.jpg", "BETO_LOCKED.jpg"]);
+    ).toEqual(["BETO_JOINED.jpg"]);
+  });
+
+  // Task #263 fix round (W2): `pickers` is SUBMITTED-only on purpose — a
+  // `degraded` pick is on a photo somebody else already holds and has not been
+  // sent yet. So it must not make that person findable under their name on a
+  // photo they never ordered, and it must not inflate the row's "+N". Without
+  // this, widening the page's filter to "everybody who touched it" would ship
+  // green: the ".filter(() => true)" mutation stayed at 54 passed before it.
+  it("leaves a DEGRADED pick out of the person filter and out of +N", async () => {
+    const listed = (id: string, name: string, billedTo: string) => ({
+      id,
+      originalFilename: name,
+      proofKey: `galleries/g1/proofs/${id}.webp`,
+      proofWidth: 1600,
+      proofHeight: 1067,
+      isSelected: true,
+      sortOrder: 0,
+      finalKey: null,
+      isEdited: false,
+      selectionKind: "edited" as const,
+      isExtra: false,
+      deliveredFor: null,
+      billedTo,
+    });
+    const iso = new Date("2026-10-12T15:00:00Z").toISOString();
+    const pick = (userId: string, label: string, state: "billed" | "degraded") => ({
+      userId,
+      label,
+      kind: "edited" as const,
+      pickedAt: iso,
+      submittedAt: iso,
+      state,
+    });
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        status: "proofing",
+        clients: [
+          { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
+          { id: "u2", name: "Beto Gómez", email: "beto@example.com" },
+        ],
+        assets: [listed("p1", "ANA_OWN.jpg", "u1"), listed("p2", "ANA_AND_BETO.jpg", "u1")],
+      }),
+    );
+    getDashboardSelectionMock.mockResolvedValue({
+      quota: { selected: 2, surchargeCop: 0 },
+      labels: {},
+      previewByClient: {},
+      people: [],
+      members: [],
+      entries: [
+        { assetId: "p1", claim: null, picks: [pick("u1", "Ana Pérez", "billed")] },
+        {
+          assetId: "p2",
+          claim: null,
+          // Beto only has a DEGRADED pick here — he asked for a photo Ana
+          // already holds, and nothing of his was sent.
+          picks: [pick("u1", "Ana Pérez", "billed"), pick("u2", "Beto Gómez", "degraded")],
+        },
+      ],
+    });
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+    const details = screen.getByText(/^Fotos seleccionadas/).closest("details")!;
+    const rowFor = (filename: string) =>
+      within(details)
+        .getAllByRole("listitem")
+        .find((li) => li.querySelector("[data-testid=photo-filename]")?.textContent === filename)!;
+
+    expect(within(details).getAllByRole("listitem")).toHaveLength(2);
+    // The row names the HOLDER and counts nobody else: Beto's degraded pick
+    // carries no unit, so there is no second person to count.
+    expect(rowFor("ANA_AND_BETO.jpg").textContent).toContain("Ana Pérez");
+    expect(rowFor("ANA_AND_BETO.jpg").textContent).not.toContain("+1");
+
+    // ...and Beto's filter finds nothing at all: the list is empty and the
+    // summary says so, rather than listing a photo he never ordered.
+    await userEvent.selectOptions(screen.getByLabelText("Persona"), "u2");
+    expect(within(details).queryAllByRole("listitem")).toHaveLength(0);
+    expect(details.querySelector("summary")?.textContent).toBe("Fotos seleccionadas (0)");
   });
 
   it("does not show the per-client panel on a draft gallery", async () => {
@@ -404,10 +551,6 @@ describe("GalleryDetailPage chrome", () => {
         clients: [{ id: "u1", name: "Ana Pérez", email: "ana@example.com" }],
       }),
     );
-    getGalleryClientSelectionsMock.mockResolvedValue({
-      clients: [{ userId: "u1", lockedAt: null, submittedAt: null, pickCount: 0 }],
-      pickOwnerByAssetId: {},
-    });
 
     render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
 
@@ -595,7 +738,7 @@ describe("GalleryDetailPage chrome", () => {
     render(element);
 
     expect(screen.getByText(/Todavía sin cliente/)).toBeDefined();
-    expect(screen.getByText(/agregá uno acá abajo para poder publicar la galería/)).toBeDefined();
+    expect(screen.getByText(/agrega uno acá abajo para poder publicar la galería/)).toBeDefined();
   });
 
   // Task #73's UI half of the same "hiding is UX only" guard: unlockSelection()
@@ -818,7 +961,7 @@ describe("GalleryDetailPage — archive-size warning (task #92)", () => {
     render(element);
 
     const warning = screen.getByText(/no va a funcionar por encima de unos 4 GB/);
-    expect(warning.textContent).toContain("Considerá exports más livianos");
+    expect(warning.textContent).toContain("Considera exports más livianos");
   });
 
   it("uses different, more urgent copy once the gallery has already crossed the ceiling", async () => {
@@ -1198,6 +1341,134 @@ describe("GalleryDetailPage — the allows-original-selection control reflects t
   });
 });
 
+// Task #263 fix round (W1) — THE DIALOG AND THE WRITE MUST BE ONE DEFINITION.
+// `updateAllowsOriginalSelection` runs `planOriginalsOff` and applies its
+// `assetChanges`. That planner skips TWO kinds of claimed original:
+//
+//   - one that already has a final (decision 15: a produced file is never
+//     re-labelled), and
+//   - a LEGACY unit with no recorded holder (`reresolveClaim` rule 2: never
+//     invent or remove the basis of a legacy unit).
+//
+// The first fix at #263 counted only the first kind, so the dialog promised a
+// reversion the write would not perform. This block renders the REAL page off
+// REAL asset rows and compares what the dialog says to what the planner — the
+// function the action executes — says they will become.
+describe("GalleryDetailPage — the disable-originals preview IS the write's plan (task #263)", () => {
+  const NOW = new Date("2026-10-18T00:00:00Z");
+  const TERMS = {
+    includedPhotosSnapshot: 13,
+    extraPhotoPriceCopSnapshot: 5_000,
+    extraPhotoPriceTiersSnapshot: null,
+    originalPhotoPriceCopSnapshot: 2_000,
+  };
+
+  const row = (
+    id: string,
+    selectionKind: "edited" | "original",
+    extra: Partial<AssetRow> = {},
+  ) => ({
+    id,
+    originalFilename: `${id}.JPG`,
+    proofKey: `galleries/g1/proofs/${id}.webp`,
+    proofWidth: 1600,
+    proofHeight: 1067,
+    isSelected: true,
+    sortOrder: 0,
+    finalKey: null,
+    isEdited: false,
+    selectionKind,
+    isExtra: false,
+    deliveredFor: null,
+    billedTo: "u1" as string | null,
+    ...extra,
+  });
+
+  // 12 edited + 3 originals: one already has a final, one is a legacy unit
+  // with no holder, one is an ordinary revertible original.
+  const assets = [
+    ...Array.from({ length: 12 }, (_unused, index) => row(`e${index}`, "edited")),
+    row("o0", "original", { finalKey: "galleries/g1/finals/o0.jpg" }),
+    row("o1", "original", { billedTo: null }),
+    row("o2", "original"),
+  ];
+
+  // The rows exactly as the page builds them for `previewOriginalsOff`.
+  const plannerRows: AssetRow[] = assets.map((asset) => ({
+    id: asset.id,
+    isSelected: asset.isSelected,
+    selectionKind: asset.selectionKind,
+    billedTo: asset.billedTo ?? null,
+    billedAt: null,
+    finalKey: asset.finalKey,
+    selectedAt: null,
+    requestedAt: null,
+  }));
+
+  it("reports only the original the action will really rewrite, not the frozen or the legacy one", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        status: "selected",
+        allowsOriginalSelection: true,
+        ...TERMS,
+        assets,
+      }),
+    );
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Deshabilitar selección de originales" }));
+    const dialog = await screen.findByRole("dialog");
+
+    // Today: 12 edited + 3 originals -> 6.000 in originals.
+    expect(
+      within(dialog).getByText("Hoy: 12 editadas · 3 originales · recargo $ 6.000"),
+    ).toBeDefined();
+    // Only ONE reverts: 12 + 1 = 13 edited, 2 still original (frozen + legacy),
+    // 2 x 2.000 = 4.000. The old `frozenOriginalCount` rule would say 14/1 and
+    // $ 7.000 here.
+    expect(
+      within(dialog).getByText("Al confirmar: 13 editadas · 2 originales · recargo $ 4.000"),
+    ).toBeDefined();
+    expect(within(dialog).getByText(/1 foto original ya elegida vuelve a editada/)).toBeDefined();
+  });
+
+  it("renders the SAME before/after `attributionDelta(planOriginalsOff(...))` produces — the parity the write relies on", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({
+        status: "selected",
+        allowsOriginalSelection: true,
+        ...TERMS,
+        assets,
+      }),
+    );
+
+    const plan = planOriginalsOff(plannerRows, [], NOW);
+    const delta = attributionDelta(plannerRows, plan, TERMS);
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "Deshabilitar selección de originales" }));
+    const dialog = await screen.findByRole("dialog");
+
+    const after = delta.gallery.after;
+    const money = (amountCop: number) => `$ ${amountCop.toLocaleString("es-CO")}`;
+    expect(
+      within(dialog).getByText(
+        `Al confirmar: ${after.selectedEdited} editadas · ${after.selectedOriginal} originales · recargo ${money(after.surchargeCop)}`,
+      ),
+    ).toBeDefined();
+    // ...and the plan really rewrites exactly one asset (the ordinary one).
+    expect(plan.assetChanges.map((change) => change.assetId)).toEqual(["o2"]);
+
+    // The page's own prop is the same function of the same rows: one planner,
+    // two call sites (`previewOriginalsOff` here, `planOriginalsOff` in the
+    // action).
+    const preview = previewOriginalsOff(plannerRows, NOW, TERMS);
+    expect(preview).toEqual({ before: delta.gallery.before, after: delta.gallery.after });
+  });
+});
+
 // Task #231 — the wiring seam for the volume scale. Both client components
 // below default to nothing: a page that hands them `null` instead of the
 // gallery's own scale type-checks, and (before this block) broke no test —
@@ -1222,6 +1493,11 @@ describe("GalleryDetailPage — the frozen volume scale reaches its consumers (t
     selectionKind,
     isExtra: false,
     deliveredFor: null,
+    // Task #263 — a claimed unit has a recorded holder. It matters to the
+    // disable-originals preview below: `planOriginalsOff` (the planner the
+    // WRITE runs) never rewrites a LEGACY unit with `billedTo === null`, so a
+    // fixture without holders would describe two originals that stay put.
+    billedTo: "u1",
   });
   const tieredGallery = (editedCount: number, originalCount: number) =>
     galleryDetail({

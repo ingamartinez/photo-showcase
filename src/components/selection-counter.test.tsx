@@ -4,6 +4,15 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { SelectionCounter } from "./selection-counter";
 import { computeQuota } from "@/lib/quota";
 import { formatCop } from "@/lib/format";
+import type { AttributionShare } from "@/lib/quota-attribution";
+import {
+  ANA,
+  BETO,
+  SARA,
+  counter,
+  person,
+  emptyProjection,
+} from "@/test-support/selection-fixtures";
 
 // No `@/lib/format` mock needed: unlike `@/lib/galleries`, it has no
 // `server-only`/`@/lib/db` import for jsdom to choke on — see that module's
@@ -491,5 +500,1050 @@ describe("SelectionCounter — not collapsible (the `selected` view, task #236)"
     expect(screen.getByText(/Precio por foto extra/)).toBeDefined();
     expect(screen.getAllByRole("listitem")).toHaveLength(1);
     expect(screen.getByText(/no se cobra nada/)).toBeDefined();
+  });
+});
+
+// Task #264 — the per-person money breakdown. Every amount asserted below is
+// the SERVER's own `share.surchargeCop` (handed in as a fixture), which is the
+// point of the slice: the browser formats the split, it never derives it. The
+// gallery total in "Entre todos" is `quota`, also handed in whole.
+describe("SelectionCounter — per-person money (task #264)", () => {
+  /** A share with only the fields the test cares about set. No maths: a test
+   * that computed `extras * price` would agree with a component making the
+   * same mistake. */
+  function share(overrides: Partial<AttributionShare> = {}): AttributionShare {
+    return {
+      included: 0,
+      extras: 0,
+      originals: 0,
+      extrasSurchargeCop: 0,
+      originalsSurchargeCop: 0,
+      surchargeCop: 0,
+      ...overrides,
+    };
+  }
+
+  const labels = () => screen.getAllByRole("term").map((node) => node.textContent);
+  const amounts = () =>
+    screen
+      .getAllByRole("definition")
+      .map((node) => (node.textContent ?? "").replace(/\s+/g, " ").trim());
+
+  // The terms that make the fixture's rows ADD UP to its quota: 6 edited
+  // (4 included + 2 extras) and 1 original, over a 4-included pool. A fixture
+  // that did not add up would make this test unable to tell a read total from
+  // a summed one — that is T9's job, further down, on purpose.
+  const MONEY_TERMS = {
+    includedPhotosSnapshot: 4,
+    extraPhotoPriceCopSnapshot: 5_000,
+    extraPhotoPriceTiersSnapshot: null,
+    originalPhotoPriceCopSnapshot: 2_000,
+  };
+  const MONEY_QUOTA = () => computeQuota(6, 1, MONEY_TERMS);
+
+  const ANA_SHARE = share({
+    included: 1,
+    extras: 2,
+    extrasSurchargeCop: 10_000,
+    surchargeCop: 10_000,
+  });
+  const ANGELA_SHARE = share({ included: 2 });
+  const BETO_SHARE = share({ originals: 1, originalsSurchargeCop: 2_000, surchargeCop: 2_000 });
+  const LEGACY_SHARE = share({ included: 1 });
+
+  function threeHolders(overrides: Parameters<typeof counter>[0] = {}) {
+    return counter({
+      group: 7,
+      viewer: { yours: 3, shared: 0, toSend: 0, projection: emptyProjection() },
+      people: [
+        person(ANA, 3, ANA_SHARE),
+        // Sorts BEFORE Beto only under a Spanish collation of the label, and
+        // not first at all: "Tú" always leads.
+        person({ id: "client-z", label: "Ángela" }, 2, ANGELA_SHARE),
+        person(BETO, 1, BETO_SHARE),
+      ],
+      unattributed: 1,
+      unattributedShare: LEGACY_SHARE,
+      ...overrides,
+    });
+  }
+
+  it("lists one row per person — you first, then by label, then 'Sin registro' last — with the server's own amounts", () => {
+    render(
+      <SelectionCounter
+        quota={MONEY_QUOTA()}
+        allowsOriginalSelection
+        counter={threeHolders()}
+        viewerId={ANA.id}
+      />,
+    );
+
+    expect(labels()).toEqual(["Tú", "Ángela", "Beto", "Sin registro"]);
+    expect(amounts()).toEqual([
+      "3 fotos · 2 extras · $ 10.000",
+      "2 fotos · 0 extras · $ 0",
+      "1 foto · 0 extras · 1 original · $ 2.000",
+      "1 foto · 0 extras · $ 0",
+    ]);
+    // The headline counts the group once, not the sum of rows.
+    expect(screen.getByText(/incluidas 4/).textContent).toContain("seleccionadas 7 entre todos");
+    // Task #269 — the gallery block is the SECOND level now: rows first, and
+    // the pre-#264 block behind its own control. The assertions below are
+    // about the same strings as before, opened one level deeper.
+    fireEvent.click(screen.getByRole("button", { name: "Ver total de la galería" }));
+    // The gallery's own block keeps its label and its number: 2 extras at
+    // 5.000 plus 1 original at 2.000.
+    expect(screen.getByText("Entre todos")).toBeDefined();
+    expect(screen.getByText(/total \$ 12\.000/)).toBeDefined();
+  });
+
+  it("still gives the viewer a row when they hold nothing, and emphasises only that row", () => {
+    render(
+      <SelectionCounter
+        quota={computeQuota(4, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={counter({
+          group: 2,
+          viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
+          people: [person(ANA, 0), person(BETO, 2, share({ included: 2 }))],
+        })}
+        viewerId={ANA.id}
+      />,
+    );
+
+    expect(labels()).toEqual(["Tú", "Beto"]);
+    expect(amounts()[0]).toBe("0 fotos · 0 extras · $ 0");
+    const [own, other] = screen.getAllByRole("term");
+    expect(own?.className).toContain("text-fg");
+    expect(own?.className).toContain("font-medium");
+    expect(other?.className ?? "").not.toContain("font-medium");
+    const [ownAmount, otherAmount] = screen.getAllByRole("definition");
+    expect(ownAmount?.className).toContain("font-medium");
+    expect(otherAmount?.className ?? "").not.toContain("font-medium");
+  });
+
+  // THE REGRESSION GUARD. One holder of units IS the whole bill, so nothing
+  // about this component's output may change for them — not a row, not the
+  // headline, not a label. Byte equality against the same component rendered
+  // without any counter at all is the strongest form this assertion can take.
+  it("renders byte-identically to the pre-#264 output when a single person holds every unit", () => {
+    const quota = computeQuota(15, 0, SNAPSHOT);
+    const solo = counter({
+      group: 15,
+      viewer: { yours: 15, shared: 0, toSend: 0, projection: emptyProjection() },
+      people: [
+        person(
+          ANA,
+          15,
+          share({ included: 13, extras: 2, extrasSurchargeCop: 10_000, surchargeCop: 10_000 }),
+        ),
+      ],
+    });
+
+    const { container: wired, unmount } = render(
+      <SelectionCounter quota={quota} allowsOriginalSelection counter={solo} viewerId={ANA.id} />,
+    );
+    const wiredText = wired.textContent;
+    unmount();
+
+    const { container: legacy } = render(
+      <SelectionCounter quota={quota} allowsOriginalSelection />,
+    );
+
+    expect(wiredText).toBe(legacy.textContent);
+    expect(screen.queryByRole("term")).toBeNull();
+    expect(screen.queryByText(/entre todos/i)).toBeNull();
+  });
+
+  it("keeps the admin's solo view identical too — no subject, one holder", () => {
+    const quota = computeQuota(15, 0, SNAPSHOT);
+    const solo = counter({
+      group: 15,
+      viewer: null,
+      people: [
+        person(
+          ANA,
+          15,
+          share({ included: 13, extras: 2, extrasSurchargeCop: 10_000, surchargeCop: 10_000 }),
+        ),
+      ],
+    });
+
+    const { container: wired, unmount } = render(
+      <SelectionCounter quota={quota} allowsOriginalSelection counter={solo} viewerId={null} />,
+    );
+    const wiredText = wired.textContent;
+    unmount();
+
+    const { container: legacy } = render(
+      <SelectionCounter quota={quota} allowsOriginalSelection />,
+    );
+
+    expect(wiredText).toBe(legacy.textContent);
+    expect(screen.queryByRole("term")).toBeNull();
+  });
+
+  it("agrees with the person's own grammar: 1 foto · 1 extra · 1 original, never '1 fotos'", () => {
+    const one = counter({
+      group: 2,
+      viewer: { yours: 1, shared: 1, toSend: 0, projection: emptyProjection() },
+      people: [
+        person(ANA, 1, share({ extras: 1, extrasSurchargeCop: 5_000, surchargeCop: 5_000 })),
+        person(BETO, 1, share({ originals: 1, originalsSurchargeCop: 2_000, surchargeCop: 2_000 })),
+      ],
+    });
+    const { unmount } = render(
+      <SelectionCounter
+        quota={computeQuota(1, 1, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={one}
+        viewerId={ANA.id}
+      />,
+    );
+    expect(amounts()).toEqual([
+      "1 foto · 1 extra · $ 5.000",
+      "1 foto · 0 extras · 1 original · $ 2.000",
+    ]);
+    unmount();
+
+    const many = counter({
+      group: 4,
+      viewer: { yours: 2, shared: 1, toSend: 0, projection: emptyProjection() },
+      people: [person(ANA, 2), person(BETO, 2, share({ originals: 2 }))],
+    });
+    render(
+      <SelectionCounter
+        quota={computeQuota(4, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={many}
+        viewerId={ANA.id}
+      />,
+    );
+    expect(amounts()).toEqual([
+      "2 fotos · 0 extras · $ 0",
+      "2 fotos · 0 extras · 2 originales · $ 0",
+    ]);
+  });
+
+  // "Absent, not zeroed" survives here too: the per-row originals segment is
+  // hidden by the gallery's own switch AND by a zero count, never rendered as
+  // "0 originales".
+  it("hides the originals segment per row when the switch is off, and when a share has none", () => {
+    const withOriginals = counter({
+      group: 2,
+      viewer: { yours: 1, shared: 1, toSend: 0, projection: emptyProjection() },
+      people: [person(ANA, 1, BETO_SHARE), person(BETO, 1, BETO_SHARE)],
+    });
+
+    const { unmount } = render(
+      <SelectionCounter
+        quota={computeQuota(2, 0, SNAPSHOT)}
+        allowsOriginalSelection={false}
+        counter={withOriginals}
+        viewerId={ANA.id}
+      />,
+    );
+    expect(amounts()[0]).toBe("1 foto · 0 extras · $ 2.000");
+    expect(screen.queryByText(/originales/)).toBeNull();
+    unmount();
+
+    render(
+      <SelectionCounter
+        quota={computeQuota(2, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={counter({
+          group: 2,
+          viewer: { yours: 1, shared: 1, toSend: 0, projection: emptyProjection() },
+          people: [person(ANA, 1), person(BETO, 1)],
+        })}
+        viewerId={ANA.id}
+      />,
+    );
+    expect(amounts()).toEqual(["1 foto · 0 extras · $ 0", "1 foto · 0 extras · $ 0"]);
+    expect(screen.queryByText(/originales/)).toBeNull();
+  });
+
+  it("names the viewer's own amount in the folded bar, and leaves the solo wording alone", () => {
+    const compact = () =>
+      screen
+        .getByRole("button", { name: "Ver detalle" })
+        .parentElement?.textContent?.replace(/\s+/g, " ") ?? "";
+
+    const { unmount } = render(
+      <SelectionCounter
+        quota={computeQuota(15, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={threeHolders()}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+    expect(compact()).toContain("$ 10.000 a tu nombre");
+    expect(compact()).not.toContain("en extras");
+    unmount();
+
+    render(
+      <SelectionCounter
+        quota={computeQuota(15, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={counter({
+          group: 15,
+          viewer: { yours: 15, shared: 0, toSend: 0, projection: emptyProjection() },
+          people: [person(ANA, 15, ANA_SHARE)],
+        })}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+    expect(compact()).toContain(
+      `${formatCop(computeQuota(15, 0, SNAPSHOT).extrasSurchargeCop)} en extras`.replace(
+        /\s+/g,
+        " ",
+      ),
+    );
+    expect(compact()).not.toContain("a tu nombre");
+  });
+
+  // Review round 2, CRITICAL — THE ZERO-SHARE GUARD. The compact row names the
+  // viewer's amount only when there IS an amount to name: a STRICTLY positive
+  // `share.surchargeCop`. "$ 0 a tu nombre" points at money the reader does not
+  // owe, so a zero viewer share keeps the gallery-wide wording the pre-#264
+  // bar already had. This is the FOLDED, MULTI-ROW case that separates it from
+  // the solo fallbacks above: two bill-holders, so the breakdown is on and the
+  // viewer's own row renders at zero — while somebody ELSE holds the money.
+  it("keeps the gallery-wide wording when the viewer's own share is $ 0 — never '$ 0 a tu nombre'", () => {
+    const compact = () =>
+      screen
+        .getByRole("button", { name: "Ver detalle" })
+        .parentElement?.textContent?.replace(/\s+/g, " ") ?? "";
+
+    const billsAreSomeoneElses = counter({
+      group: 5,
+      viewer: { yours: 2, shared: 0, toSend: 0, projection: emptyProjection() },
+      people: [
+        // The viewer holds units but no money: both picks are included.
+        person(ANA, 2),
+        // Beto's extras are the whole bill.
+        person(
+          BETO,
+          3,
+          share({ included: 1, extras: 2, extrasSurchargeCop: 10_000, surchargeCop: 10_000 }),
+        ),
+      ],
+    });
+
+    const { unmount } = render(
+      <SelectionCounter
+        quota={computeQuota(15, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={billsAreSomeoneElses}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+
+    // Positive controls: the breakdown IS on and the viewer's row IS there, at
+    // zero, so the assertions below are about the guard and not about a
+    // missing row or an unfolded bar.
+    expect(labels()).toEqual(["Tú", "Beto"]);
+    expect(amounts()).toEqual(["2 fotos · 0 extras · $ 0", "3 fotos · 2 extras · $ 10.000"]);
+    expect(screen.getByRole("button", { name: "Ver detalle" })).toBeDefined();
+
+    // No originals, extras > 0: the approved gallery-wide fallback.
+    expect(compact()).toContain("$ 10.000 en extras");
+    expect(compact()).not.toContain("a tu nombre");
+    unmount();
+
+    // With originals the fallback is the gallery's TOTAL, labelled "en total"
+    // (2 extras at 5.000 + 1 original at 2.000) — still not the viewer's zero.
+    const withOriginals = computeQuota(15, 1, SNAPSHOT);
+    expect(withOriginals.surchargeCop).toBe(12_000);
+    render(
+      <SelectionCounter
+        quota={withOriginals}
+        allowsOriginalSelection
+        counter={billsAreSomeoneElses}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+    expect(compact()).toContain(
+      `${formatCop(withOriginals.surchargeCop)} en total`.replace(/\s+/g, " "),
+    );
+    expect(compact()).not.toContain("a tu nombre");
+  });
+
+  // Review round 2 — the SPARSE wire the server actually sends: `people` lists
+  // the holders of units, so a viewer who holds nothing is simply absent, not
+  // present with zeros. The bar must still lead with "Tú · 0 fotos" (the
+  // pre-#264 behavior for a viewer with nothing picked) and must not turn that
+  // absence into a zero amount in the compact row.
+  it("gives an absent-from-`people` viewer a zero row without naming a zero amount", () => {
+    const compact = () =>
+      screen
+        .getByRole("button", { name: "Ver detalle" })
+        .parentElement?.textContent?.replace(/\s+/g, " ") ?? "";
+
+    render(
+      <SelectionCounter
+        quota={computeQuota(15, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={counter({
+          group: 3,
+          viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
+          people: [
+            person(ANA, 2, share({ included: 2 })),
+            person(BETO, 1, share({ extras: 1, extrasSurchargeCop: 5_000, surchargeCop: 5_000 })),
+          ],
+        })}
+        viewerId={SARA.id}
+        collapsible
+      />,
+    );
+
+    // Sara is the viewer and is NOT in `people` — her name must never appear as
+    // somebody else's row — yet "Tú" is still there, at zero, first.
+    expect(labels()).toEqual(["Tú", "Ana", "Beto"]);
+    expect(amounts()[0]).toBe("0 fotos · 0 extras · $ 0");
+    expect(screen.queryByText("Sara")).toBeNull();
+
+    expect(compact()).toContain("$ 10.000 en extras");
+    expect(compact()).not.toContain("a tu nombre");
+  });
+
+  // THE POINT OF THE SLICE, as an assertion: the total is READ off `quota`,
+  // not added up from the rows. The fixture's rows deliberately do NOT add up
+  // to the quota's total (3.000 vs 16.000), so an implementation that summed
+  // the rows — the tempting way to make the block "agree" — prints 3.000 and
+  // fails here.
+  it("prints the gallery total from `quota`, even when the rows do not add up to it", () => {
+    // 9 edited over a 7-included pool = 2 extras at 5.000; 3 originals at
+    // 2.000; total 16.000. The two rows below claim 1.000 + 2.000.
+    const quota = computeQuota(9, 3, {
+      ...SNAPSHOT,
+      includedPhotosSnapshot: 7,
+    });
+    expect(quota.surchargeCop).toBe(16_000);
+
+    render(
+      <SelectionCounter
+        quota={quota}
+        allowsOriginalSelection
+        counter={counter({
+          group: 2,
+          viewer: { yours: 1, shared: 1, toSend: 0, projection: emptyProjection() },
+          people: [
+            person(ANA, 1, share({ extras: 1, extrasSurchargeCop: 1_000, surchargeCop: 1_000 })),
+            person(
+              BETO,
+              1,
+              share({ originals: 1, originalsSurchargeCop: 2_000, surchargeCop: 2_000 }),
+            ),
+          ],
+        })}
+        viewerId={ANA.id}
+      />,
+    );
+
+    // Task #269 — this block is the second level of the #269 disclosure, so
+    // the test opens it exactly as a reader would before reading the total.
+    fireEvent.click(screen.getByRole("button", { name: "Ver total de la galería" }));
+    expect(screen.getByText(/total \$ 16\.000/)).toBeDefined();
+    expect(screen.queryByText(/total \$ 3\.000/)).toBeNull();
+    // Positive control: the rows rendered, so the assertion above is about a
+    // mounted breakdown and not about an empty render.
+    expect(amounts()).toEqual([
+      "1 foto · 1 extra · $ 1.000",
+      "1 foto · 0 extras · 1 original · $ 2.000",
+    ]);
+  });
+});
+
+// Task #269 — THE OWNER'S REPORT (2026-10-18), as assertions: the opened
+// detail was a wall of per-person rows PLUS the whole gallery-pricing block,
+// and expanding it on a phone pushed the grid and the bar around. The fix is
+// two levels — rows behind "Ver detalle", the gallery's own block behind a
+// SECOND control — with both living in the one bounded scroll region. Every
+// test below pins one of those clauses; the mutation that matters is the one
+// that puts the block back next to the rows, which turns T1 red.
+describe("SelectionCounter — two-level money detail (task #269)", () => {
+  function share(overrides: Partial<AttributionShare> = {}): AttributionShare {
+    return {
+      included: 0,
+      extras: 0,
+      originals: 0,
+      extrasSurchargeCop: 0,
+      originalsSurchargeCop: 0,
+      surchargeCop: 0,
+      ...overrides,
+    };
+  }
+
+  const ANA_SHARE = share({
+    included: 1,
+    extras: 2,
+    extrasSurchargeCop: 10_000,
+    surchargeCop: 10_000,
+  });
+  // 2 extras at 5.000 plus 1 original at 2.000 — distinct amounts, so a
+  // swapped/total-only read of the global block is visible.
+  const TERMS = {
+    includedPhotosSnapshot: 4,
+    extraPhotoPriceCopSnapshot: 5_000,
+    extraPhotoPriceTiersSnapshot: null,
+    originalPhotoPriceCopSnapshot: 2_000,
+  };
+  const QUOTA = () => computeQuota(6, 1, TERMS);
+
+  /** Two bill-holders: enough rows for the breakdown to be on, which is the
+   * ONLY condition that opens the two-level structure. */
+  const twoHolders = () =>
+    counter({
+      group: 4,
+      viewer: { yours: 3, shared: 0, toSend: 0, projection: emptyProjection() },
+      people: [person(ANA, 3, ANA_SHARE), person(BETO, 1)],
+    });
+
+  const toggle = (name: string) => screen.getByRole("button", { name });
+  const regionFor = (button: HTMLElement) =>
+    document.getElementById(button.getAttribute("aria-controls") ?? "");
+
+  it("opens the detail to the person rows only — the gallery block is absent until its own control", () => {
+    render(
+      <SelectionCounter
+        quota={QUOTA()}
+        allowsOriginalSelection
+        counter={twoHolders()}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+
+    fireEvent.click(toggle("Ver detalle"));
+
+    // Positive control: the rows really rendered.
+    expect(screen.getAllByRole("term").map((node) => node.textContent)).toEqual(["Tú", "Beto"]);
+    expect(
+      screen
+        .getAllByRole("definition")
+        .map((node) => (node.textContent ?? "").replace(/\s+/g, " ")),
+    ).toEqual(["3 fotos · 2 extras · $ 10.000", "1 foto · 0 extras · $ 0"]);
+
+    // The wall is gone: no "Entre todos", no extras arithmetic, no tiers.
+    // Absent from the DOM, not merely scrolled out of the box.
+    expect(screen.queryByText("Entre todos")).toBeNull();
+    expect(screen.queryByText(/^extras/)).toBeNull();
+    expect(screen.queryByText(/no se cobra nada/)).toBeNull();
+    expect(screen.queryByText(/total \$/)).toBeNull();
+
+    const total = toggle("Ver total de la galería");
+    expect(total.getAttribute("aria-expanded")).toBe("false");
+    const controlled = regionFor(total);
+    expect(controlled).not.toBeNull();
+    expect(controlled?.textContent).toBe("");
+  });
+
+  it("the second control reveals the pre-#264 gallery block verbatim, without repeating the rows", () => {
+    render(
+      <SelectionCounter
+        quota={QUOTA()}
+        allowsOriginalSelection
+        counter={twoHolders()}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+    fireEvent.click(toggle("Ver detalle"));
+
+    const total = toggle("Ver total de la galería");
+    // jsdom does not move focus on click, so set it explicitly: this is the
+    // "no focus loss" clause — the button must survive its own state change.
+    total.focus();
+    fireEvent.click(total);
+
+    const open = toggle("Ocultar total");
+    expect(open).toBe(total);
+    expect(document.activeElement).toBe(open);
+    expect(open.getAttribute("aria-expanded")).toBe("true");
+
+    // Same strings, same formatter, same order as before #269.
+    expect(screen.getByText("Entre todos")).toBeDefined();
+    expect(screen.getByText(/^extras 2 × \$ 5\.000 = \$ 10\.000/)).toBeDefined();
+    expect(screen.getByText(/originales 1 × \$ 2\.000 = \$ 2\.000/)).toBeDefined();
+    expect(screen.getByText(/total \$ 12\.000/)).toBeDefined();
+    expect(screen.getByText(/no se cobra nada/)).toBeDefined();
+
+    // The rows are NOT duplicated by the reveal: still exactly two.
+    expect(screen.getAllByRole("term")).toHaveLength(2);
+
+    // ...and it closes again, leaving the rows in place.
+    fireEvent.click(open);
+    expect(toggle("Ver total de la galería").getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByText("Entre todos")).toBeNull();
+    expect(screen.getAllByRole("term")).toHaveLength(2);
+  });
+
+  it("keeps the single payer's detail exactly as it was — no rows, no second control", () => {
+    const solo = counter({
+      group: 15,
+      viewer: { yours: 15, shared: 0, toSend: 0, projection: emptyProjection() },
+      people: [
+        person(
+          ANA,
+          15,
+          share({ included: 13, extras: 2, extrasSurchargeCop: 10_000, surchargeCop: 10_000 }),
+        ),
+      ],
+    });
+
+    render(
+      <SelectionCounter
+        quota={computeQuota(15, 0, SNAPSHOT)}
+        allowsOriginalSelection
+        counter={solo}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+
+    expect(screen.queryByRole("term")).toBeNull();
+    expect(screen.queryByRole("button", { name: /total/i })).toBeNull();
+
+    fireEvent.click(toggle("Ver detalle"));
+    // Today's detail, immediately — no second level to walk through.
+    expect(screen.getByText(/^extras 2 × \$ 5\.000 = \$ 10\.000/)).toBeDefined();
+    expect(screen.queryByRole("button", { name: /total/i })).toBeNull();
+    expect(screen.queryByText("Entre todos")).toBeNull();
+  });
+
+  it("gives a zero-unit viewer next to a single holder the two-level detail: two rows, no global block, and a total control", () => {
+    // Fix round 1 — the shape the first cut kept as an exception. `moneyRows`
+    // here has TWO displayed rows (the viewer's own zero row next to Beto) even
+    // though only Beto holds units. The second level is gated on the ROWS now:
+    // the global block must not share the rows' disclosure, or a two-row detail
+    // is the same wall with a different account holding the money.
+    const quota = computeQuota(3, 0, SNAPSHOT);
+    const { unmount } = render(
+      <SelectionCounter
+        quota={quota}
+        allowsOriginalSelection
+        counter={counter({
+          group: 3,
+          viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
+          people: [person(BETO, 3, share({ included: 3 }))],
+        })}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+    fireEvent.click(toggle("Ver detalle"));
+    expect(screen.getAllByRole("term").map((node) => node.textContent)).toEqual(["Tú", "Beto"]);
+
+    // Rows only: the global block is ABSENT, not merely scrolled out of view.
+    expect(screen.queryByText("Entre todos")).toBeNull();
+    expect(screen.queryByText(/^extras/)).toBeNull();
+    expect(screen.queryByText(/no se cobra nada/)).toBeNull();
+
+    // ...and the control that reveals it exists, closed.
+    const total = toggle("Ver total de la galería");
+    expect(total.getAttribute("aria-expanded")).toBe("false");
+    const region = regionFor(total);
+    expect(region).not.toBeNull();
+    expect(region?.textContent).toBe("");
+
+    // Opening it reveals the gallery arithmetic INSIDE that same region.
+    fireEvent.click(total);
+    expect(region?.contains(screen.getByText("Entre todos"))).toBe(true);
+    expect(region?.contains(screen.getByText(/^extras 0 × \$ 5\.000/))).toBe(true);
+    expect(screen.getAllByRole("term")).toHaveLength(2);
+    unmount();
+
+    // The same holds when the single holder is the unattributed bucket: two
+    // rows ("Tú" + "Sin registro"), rows first, total behind its own control.
+    render(
+      <SelectionCounter
+        quota={quota}
+        allowsOriginalSelection
+        counter={counter({
+          group: 2,
+          viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
+          unattributed: 2,
+        })}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+    fireEvent.click(toggle("Ver detalle"));
+    expect(screen.getAllByRole("term").map((node) => node.textContent)).toEqual([
+      "Tú",
+      "Sin registro",
+    ]);
+    expect(screen.queryByText(/^extras 0 × \$ 5\.000/)).toBeNull();
+    const legacyTotal = toggle("Ver total de la galería");
+    const legacyRegion = regionFor(legacyTotal);
+    fireEvent.click(legacyTotal);
+    expect(legacyRegion?.contains(screen.getByText(/^extras 0 × \$ 5\.000/))).toBe(true);
+  });
+
+  it("allocates a FIXED height to the multi-person detail — no `max-h`, no breakpoint override, unchanged when the total opens", () => {
+    // The review's own measurement of the first cut: `max-h-[40vh]` is a
+    // CEILING, so below it the box still sized to its contents — opening the
+    // total grew the bar 144px on a phone and 104px on a desktop. jsdom has no
+    // layout engine, so this test cannot measure pixels; what it CAN pin is the
+    // contract that makes the height content-independent in a browser: a
+    // `h-`-prefixed allocation (not `max-h-`) with no breakpoint variant, the
+    // same class string before and after the reveal, the same class string
+    // for a longer list of people, and both levels nested inside that region —
+    // a fixed height only bounds what is inside it.
+    const { unmount } = render(
+      <SelectionCounter
+        quota={QUOTA()}
+        allowsOriginalSelection
+        counter={twoHolders()}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+    fireEvent.click(toggle("Ver detalle"));
+
+    const closedRegion = regionFor(toggle("Ocultar detalle"));
+    expect(closedRegion).not.toBeNull();
+    const classes = closedRegion?.className ?? "";
+    const tokens = classes.split(/\s+/).filter(Boolean);
+
+    // A height, allocated — and it is the only height rule in the class list,
+    // so no `lg:` (or any other breakpoint) variant can change it later.
+    expect(tokens.filter((token) => /(^|:)(h|max-h)-/.test(token))).toEqual([
+      "h-[min(40vh,20rem)]",
+    ]);
+    expect(tokens).toContain("overflow-y-auto");
+    expect(tokens).toContain("overscroll-contain");
+    // The desktop escape hatch is exactly what turned the open detail into a
+    // wall: with it, the region grew to its content at lg and up.
+    expect(classes).not.toContain("lg:max-h-none");
+    expect(classes).not.toContain("lg:overflow-visible");
+
+    // Both levels live INSIDE that one height-allocated region. Fixed height and
+    // unchanged classes alone do not prove it: the second disclosure and the
+    // block it reveals must be children of the element the bar is sized by,
+    // otherwise opening the total grows the bar and pushes the grid.
+    const total = toggle("Ver total de la galería");
+    expect(closedRegion?.contains(total)).toBe(true);
+
+    // Revealing the total must not touch the box the bar is sized by: same
+    // element, and not one class added or removed — and the revealed content
+    // stays inside that same region, so it can only scroll it.
+    fireEvent.click(total);
+    const openRegion = regionFor(toggle("Ocultar detalle"));
+    expect(openRegion).toBe(closedRegion);
+    expect(openRegion?.className).toBe(classes);
+    expect(closedRegion?.contains(screen.getByText("Entre todos"))).toBe(true);
+    unmount();
+
+    // More people, same allocated height: only what scrolls inside changes.
+    render(
+      <SelectionCounter
+        quota={QUOTA()}
+        allowsOriginalSelection
+        counter={counter({
+          group: 9,
+          viewer: { yours: 3, shared: 0, toSend: 0, projection: emptyProjection() },
+          people: [
+            person(ANA, 3, ANA_SHARE),
+            person({ id: "client-b", label: "Beto" }, 1),
+            person({ id: "client-c", label: "Carla" }, 1),
+            person({ id: "client-d", label: "Diego" }, 1),
+            person({ id: "client-e", label: "Elena" }, 1),
+            person({ id: "client-f", label: "Fabián" }, 1),
+          ],
+        })}
+        viewerId={ANA.id}
+        collapsible
+      />,
+    );
+    fireEvent.click(toggle("Ver detalle"));
+    expect(screen.getAllByRole("term")).toHaveLength(6);
+    expect(regionFor(toggle("Ocultar detalle"))?.className).toBe(classes);
+  });
+
+  // The non-collapsible caller (`selected`, normal flow) shares the same
+  // two-level contract — it is the same wall on a desktop, just without the
+  // fold. Its single-payer output stays the old one (asserted by the
+  // byte-identical #264 tests above).
+  it("applies the same two levels to the non-collapsible detail", () => {
+    render(
+      <SelectionCounter
+        quota={QUOTA()}
+        allowsOriginalSelection
+        counter={twoHolders()}
+        viewerId={ANA.id}
+      />,
+    );
+
+    expect(screen.getAllByRole("term")).toHaveLength(2);
+    expect(screen.queryByText("Entre todos")).toBeNull();
+
+    fireEvent.click(toggle("Ver total de la galería"));
+    expect(screen.getByText("Entre todos")).toBeDefined();
+    expect(screen.getByText(/total \$ 12\.000/)).toBeDefined();
+  });
+});
+
+// Task #270 — the owner's screenshot (2026-10-18): with the detail open, the
+// submit button floated at mid-height among the person rows, the rows wrapped
+// early, and "Ocultar detalle" sat clipped at the bottom edge. All three are
+// one defect — the detail lived in the bar's own flex row, as a sibling of
+// <SubmitSelectionPanel> — so the multi-person detail now floats ABOVE the
+// bar and the bar keeps a single compact row.
+//
+// THE HARNESS IS THE POINT, not scaffolding: `bottom-full` resolves against
+// the nearest positioned ancestor, and "the button is not in the panel" is
+// only meaningful with a button in the tree. Neither exists inside
+// <SelectionCounter>, so the test reproduces proof-grid.tsx's bar markup
+// (`fixed inset-x-0 bottom-0 z-40`, then the `mx-auto flex max-w-[1280px]
+// items-center justify-between` row, proof-grid.tsx:820-824) and puts a
+// stand-in in the submit slot. The assertions are about STRUCTURE — which
+// subtree the panel and the button live in — so they hold for any button
+// mounted in that slot; they never pretend to exercise
+// <SubmitSelectionPanel>'s own behaviour, which its tests already own.
+describe("SelectionCounter — the money detail floats above the bar (task #270)", () => {
+  type SelectionCounterSnapshot = NonNullable<Parameters<typeof SelectionCounter>[0]["counter"]>;
+
+  function share(overrides: Partial<AttributionShare> = {}): AttributionShare {
+    return {
+      included: 0,
+      extras: 0,
+      originals: 0,
+      extrasSurchargeCop: 0,
+      originalsSurchargeCop: 0,
+      surchargeCop: 0,
+      ...overrides,
+    };
+  }
+
+  const TERMS = {
+    includedPhotosSnapshot: 4,
+    extraPhotoPriceCopSnapshot: 5_000,
+    extraPhotoPriceTiersSnapshot: null,
+    originalPhotoPriceCopSnapshot: 2_000,
+  };
+  const QUOTA = () => computeQuota(6, 1, TERMS);
+
+  /** Two bill-holders: the only condition that opens the two-level detail, and
+   * therefore the panel. */
+  const twoHolders = () =>
+    counter({
+      group: 4,
+      viewer: { yours: 3, shared: 0, toSend: 0, projection: emptyProjection() },
+      people: [
+        person(
+          ANA,
+          3,
+          share({ included: 1, extras: 2, extrasSurchargeCop: 10_000, surchargeCop: 10_000 }),
+        ),
+        person(BETO, 1),
+      ],
+    });
+
+  const toggle = (name: string) => screen.getByRole("button", { name });
+  const regionFor = (button: HTMLElement) =>
+    document.getElementById(button.getAttribute("aria-controls") ?? "");
+  const tokensOf = (element: HTMLElement | null) =>
+    (element?.className ?? "").split(/\s+/).filter(Boolean);
+
+  function BarHarness({ snapshot }: { snapshot: SelectionCounterSnapshot }) {
+    return (
+      <div
+        data-testid="bar"
+        className="border-line-2 bg-bg/95 fixed inset-x-0 bottom-0 z-40 border-t px-4 backdrop-blur-md"
+      >
+        <div className="mx-auto flex max-w-[1280px] items-center justify-between gap-3 lg:flex-wrap">
+          <SelectionCounter
+            quota={QUOTA()}
+            allowsOriginalSelection
+            counter={snapshot}
+            viewerId={ANA.id}
+            collapsible
+          />
+          <div data-testid="submit-slot">
+            <button type="button">Enviar las 3</button>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  it("renders the multi-person detail as a panel positioned on the bar's own top edge, carrying the bar's surface", () => {
+    render(<BarHarness snapshot={twoHolders()} />);
+    fireEvent.click(toggle("Ver detalle"));
+
+    // Positive control first: the rows are really rendered in that panel.
+    expect(screen.getAllByRole("term").map((node) => node.textContent)).toEqual(["Tú", "Beto"]);
+
+    const panel = regionFor(toggle("Ocultar detalle"));
+    expect(panel).not.toBeNull();
+    const tokens = tokensOf(panel);
+
+    // Out of flow and anchored ABOVE the bar: `bottom-full` is
+    // `bottom: 100%` of the containing block, and `absolute` is what takes the
+    // panel out of the row so opening it cannot change the bar's height.
+    expect(tokens).toEqual(
+      expect.arrayContaining(["absolute", "bottom-full", "inset-x-0", "mx-auto", "max-w-[1280px]"]),
+    );
+    // The bar's own surface, reused rather than a new one — except the
+    // background, which task #271 made opaque (asserted in full below).
+    expect(tokens).toEqual(expect.arrayContaining(["bg-bg", "border-line-2", "border-t"]));
+    // One height rule and it is the #269 allocation: fixed, breakpoint-free,
+    // and the only `h-`/`max-h-` token in the list.
+    expect(tokens.filter((token) => /(^|:)(h|max-h)-/.test(token))).toEqual([
+      "h-[min(40vh,20rem)]",
+    ]);
+    expect(tokens).toContain("overflow-y-auto");
+    expect(tokens).toContain("overscroll-contain");
+
+    // The containing block `bottom-full` resolves against is the BAR itself:
+    // nothing between the panel and the bar may establish one of its own, or
+    // the panel would float above the wrong box (jsdom applies no stylesheet,
+    // so — like the #269 height test — the contract is read off the classes).
+    const bar = screen.getByTestId("bar");
+    const BETWEEN = ["absolute", "relative", "fixed", "sticky"];
+    const ancestors: HTMLElement[] = [];
+    for (let node = panel?.parentElement; node && node !== bar; node = node.parentElement) {
+      ancestors.push(node);
+    }
+    expect(ancestors.length).toBeGreaterThan(0);
+    for (const ancestor of ancestors) {
+      expect(tokensOf(ancestor).filter((token) => BETWEEN.includes(token))).toEqual([]);
+    }
+  });
+
+  it("keeps the bar's single row: the submit button and the toggle are not inside the panel", () => {
+    render(<BarHarness snapshot={twoHolders()} />);
+    const bar = screen.getByTestId("bar");
+    const row = bar.firstElementChild as HTMLElement;
+    const submitSlot = screen.getByTestId("submit-slot");
+    const submit = screen.getByRole("button", { name: "Enviar las 3" });
+    const before = toggle("Ver detalle");
+    const closedPanel = regionFor(before);
+    expect(closedPanel).not.toBeNull();
+
+    fireEvent.click(before);
+
+    const open = toggle("Ocultar detalle");
+    const panel = regionFor(open);
+    // The disclosed region is the same element the toggle names before and
+    // after opening — the aria contract is untouched by the move.
+    expect(panel).toBe(closedPanel);
+
+    // The button is not in the panel, and the panel is not in the button's
+    // slot: they are branches of the same flex row, which is what keeps the
+    // button beside the headline instead of under the rows.
+    expect(panel?.contains(submit)).toBe(false);
+    expect(panel?.contains(submitSlot)).toBe(false);
+
+    // The counter's root is the button's SIBLING (its own flex item), and the
+    // panel hangs off that counter — so the panel can never widen or centre
+    // the button's column.
+    const counterRoot = panel?.parentElement?.parentElement as HTMLElement;
+    expect(counterRoot.parentElement).toBe(row);
+    expect(counterRoot.nextElementSibling).toBe(submitSlot);
+    expect(counterRoot.contains(open)).toBe(true);
+    expect(panel?.contains(open)).toBe(false);
+
+    // The row itself did not grow a second in-flow child: same two flex items
+    // and the same compact row before and after, so the bar's height is the
+    // one it has with the detail closed.
+    const compactRow = open.parentElement as HTMLElement;
+    const compactChildren = Array.from(compactRow.children);
+    expect(counterRoot.contains(compactRow)).toBe(true);
+    expect(compactRow.contains(panel)).toBe(false);
+    expect(Array.from(row.children)).toEqual([counterRoot, submitSlot]);
+    expect(Array.from(open.parentElement?.children ?? [])).toEqual(compactChildren);
+  });
+
+  it("keeps the bar's border and rhythm but paints the panel opaque — no /95 alpha, no backdrop blur (task #271)", () => {
+    render(<BarHarness snapshot={twoHolders()} />);
+    fireEvent.click(toggle("Ver detalle"));
+
+    // Positive control: the rows are in the panel, so the classes below are
+    // read off the element the owner actually saw bleed the page through.
+    expect(screen.getAllByRole("term").map((node) => node.textContent)).toEqual(["Tú", "Beto"]);
+    const panel = regionFor(toggle("Ocultar detalle"));
+    expect(panel).not.toBeNull();
+    const tokens = tokensOf(panel);
+
+    // SOLID background, and only the solid one: the alpha modifier is what
+    // let "Descargar" and the upload hint show through the rows.
+    expect(tokens).toContain("bg-bg");
+    expect(tokens.filter((token) => token.startsWith("bg-") && token.includes("/"))).toEqual([]);
+    // No backdrop filter at all — `backdrop-blur-md` on a solid background
+    // would be dead weight at best and is the other half of the same defect.
+    expect(tokens.filter((token) => token.startsWith("backdrop-"))).toEqual([]);
+
+    // Opacity is the ONLY thing that changed: the border and the rest of the
+    // panel's treatment (position, padding, the #269 allocated height, the
+    // internal scroll) are still there, so this did not become a layout fix.
+    expect(tokens).toEqual(
+      expect.arrayContaining([
+        "border-line-2",
+        "border-t",
+        "absolute",
+        "bottom-full",
+        "inset-x-0",
+        "mx-auto",
+        "max-w-[1280px]",
+        "px-4",
+        "py-3",
+        "min-[620px]:px-7",
+        "lg:px-12",
+        "h-[min(40vh,20rem)]",
+        "overflow-y-auto",
+        "overscroll-contain",
+      ]),
+    );
+
+    // And the BAR keeps its own treatment: the panel being opaque must not
+    // tempt anyone to flatten the bar's translucent surface too.
+    const barTokens = tokensOf(screen.getByTestId("bar"));
+    expect(barTokens).toEqual(expect.arrayContaining(["bg-bg/95", "backdrop-blur-md"]));
+  });
+
+  it("leaves the single payer's detail inline — no panel, the pre-#270 class string byte for byte", () => {
+    const solo = counter({
+      group: 3,
+      viewer: { yours: 3, shared: 0, toSend: 0, projection: emptyProjection() },
+      people: [
+        person(ANA, 3, share({ included: 3, extras: 0, extrasSurchargeCop: 0, surchargeCop: 0 })),
+      ],
+    });
+
+    render(<BarHarness snapshot={solo} />);
+
+    const closed = regionFor(toggle("Ver detalle"));
+    expect(closed?.className).toBe("max-h-[40vh] overflow-y-auto overscroll-contain max-lg:hidden");
+
+    fireEvent.click(toggle("Ver detalle"));
+    const open = regionFor(toggle("Ocultar detalle"));
+    expect(open?.className).toBe("max-h-[40vh] overflow-y-auto overscroll-contain");
+    expect(screen.queryByRole("term")).toBeNull();
+    // Nothing of the panel: a single payer's detail stays in the bar's column.
+    for (const token of ["absolute", "bottom-full", "max-w-[1280px]", "bg-bg", "bg-bg/95"]) {
+      expect(tokensOf(open)).not.toContain(token);
+    }
+  });
+
+  it("keeps the non-collapsible caller inline too — there is no bar there to float above", () => {
+    render(
+      <SelectionCounter
+        quota={QUOTA()}
+        allowsOriginalSelection
+        counter={twoHolders()}
+        viewerId={ANA.id}
+      />,
+    );
+
+    const region = screen.getAllByRole("term")[0]?.closest("dl")?.parentElement;
+    expect(region?.className).toBe("h-[min(40vh,20rem)] overflow-y-auto overscroll-contain");
+    expect(screen.getAllByRole("term")).toHaveLength(2);
   });
 });

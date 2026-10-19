@@ -4,7 +4,16 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { groupPicksByPicker, SelectionTray } from "./selection-tray";
-import type { SelectionPick } from "@/lib/selection-snapshot";
+import type { SelectionEntry, SelectionKind } from "@/lib/selection-snapshot";
+import { entry as fixtureEntry, pick as fixturePick } from "@/test-support/selection-fixtures";
+
+type SelectionPick = {
+  assetId: string;
+  selectedAt: string | null;
+  pickedBy: { id: string; label: string } | null;
+  selectionKind: SelectionKind;
+  requestedAt?: string | null;
+};
 
 function pick(overrides: Partial<SelectionPick> = {}): SelectionPick {
   return {
@@ -18,10 +27,42 @@ function pick(overrides: Partial<SelectionPick> = {}): SelectionPick {
   };
 }
 
-function renderTray(overrides: Partial<ComponentProps<typeof SelectionTray>> = {}) {
+function entryFor(pick: SelectionPick): SelectionEntry {
+  return {
+    assetId: pick.assetId,
+    claim: {
+      claimedAt: pick.selectedAt,
+      resolvedKind: pick.selectionKind,
+      billedTo: pick.pickedBy,
+      charge: "included",
+      canEscalate: false,
+    },
+    picks: pick.pickedBy
+      ? [
+          {
+            userId: pick.pickedBy.id,
+            label: pick.pickedBy.label,
+            kind: pick.selectionKind,
+            pickedAt: pick.selectedAt ?? "2026-07-30T12:00:00.000Z",
+            submittedAt: pick.selectedAt,
+            state: "billed",
+          },
+        ]
+      : [],
+  };
+}
+
+function entriesFrom(picks: SelectionPick[]): SelectionEntry[] {
+  return picks.map(entryFor);
+}
+
+type TrayOverrides = Partial<ComponentProps<typeof SelectionTray>> & { picks?: SelectionPick[] };
+
+function renderTray(overrides: TrayOverrides = {}) {
+  const { picks = [], ...rest } = overrides;
   return render(
     <SelectionTray
-      picks={[]}
+      entries={entriesFrom(picks)}
       urls={{ a1: "https://r2.example.com/a1", a2: "https://r2.example.com/a2" }}
       filenamesByAssetId={{ a1: "IMG_0001.JPG", a2: "IMG_0002.JPG" }}
       viewerId="client-a"
@@ -36,7 +77,7 @@ function renderTray(overrides: Partial<ComponentProps<typeof SelectionTray>> = {
       allowsOriginalSelection={true}
       onOpenAsset={() => {}}
       onImageError={() => {}}
-      {...overrides}
+      {...rest}
     />,
   );
 }
@@ -89,10 +130,10 @@ describe("SelectionTray", () => {
     expect(screen.getByText("Beto Ruiz")).toBeDefined();
   });
 
-  it("attributes the viewer's own pick as 'Vos'", () => {
+  it("attributes the viewer's own pick as 'Tú'", () => {
     renderTray({ picks: [pick({ pickedBy: { id: "client-a", label: "Ana Pérez" } })] });
 
-    expect(screen.getByText("Vos")).toBeDefined();
+    expect(screen.getByText("Tú")).toBeDefined();
     expect(screen.queryByText("Ana Pérez")).toBeNull();
   });
 
@@ -118,8 +159,10 @@ describe("SelectionTray", () => {
       ],
     });
 
-    const labels = screen.getAllByRole("listitem").map((item) => item.textContent);
-    expect(labels).toEqual(["Beto", "Vos"]);
+    const labels = screen
+      .getAllByRole("listitem")
+      .map((item) => item.querySelector("p")?.textContent);
+    expect(labels).toEqual(["Beto", "Tú"]);
   });
 
   it("opens the lightbox for the clicked pick rather than changing the selection", async () => {
@@ -255,10 +298,10 @@ describe("SelectionTray — collapsible tray with a height-capped list (task #20
 
     rerender(
       <SelectionTray
-        picks={[
+        entries={entriesFrom([
           pick({ assetId: "a1" }),
           pick({ assetId: "a2", pickedBy: { id: "client-c", label: "Caro" } }),
-        ]}
+        ])}
         urls={{ a1: "https://r2.example.com/a1", a2: "https://r2.example.com/a2" }}
         filenamesByAssetId={{ a1: "IMG_0001.JPG", a2: "IMG_0002.JPG" }}
         viewerId="client-a"
@@ -362,7 +405,10 @@ describe("SelectionTray — collapsible tray with a height-capped list (task #20
     // `FALLBACK_ROW_GAP_PX` comment for why 12px is the right fallback under
     // jsdom specifically (no compiled Tailwind stylesheet loaded here to
     // read the real `gap-3` value from).
-    const expectedMaxHeightPx = rowHeightPx * 2 + 12;
+    // The universal split (epic #250 S7) replaced the flat measured cap with
+    // a fixed pre-measure ceiling; the point that survives is that it does
+    // not grow with the pick count.
+    const expectedMaxHeightPx = 260;
     expect(scrollContainer.style.maxHeight).toBe(`${expectedMaxHeightPx}px`);
 
     // The bug this task fixes was height growing WITH the pick count. Prove
@@ -416,7 +462,7 @@ describe("SelectionTray — collapsible tray with a height-capped list (task #20
     const { container } = renderTray({ picks: manyPicks(50) });
 
     const scrollContainer = container.querySelector(".overflow-y-auto") as HTMLElement;
-    expect(scrollContainer.style.maxHeight).toBe(`${rowHeightPx * 2 + 12}px`);
+    expect(scrollContainer.style.maxHeight).toBe("260px");
   });
 });
 
@@ -548,7 +594,7 @@ describe("SelectionTray — the type line (task #206)", () => {
 
     expect(screen.getAllByRole("listitem")).toHaveLength(50);
     const scrollContainer = container.querySelector(".overflow-y-auto") as HTMLElement;
-    expect(scrollContainer.style.maxHeight).toBe(`${itemHeightPx * 2 + 12}px`);
+    expect(scrollContainer.style.maxHeight).toBe("260px");
   });
 
   it("shows the type line in by-person mode too, per item within each group", () => {
@@ -612,7 +658,7 @@ describe("groupPicksByPicker (task #204) — the pure grouping function", () => 
       pick({ assetId: "a2", pickedBy: { id: "client-y", label: "Ana" } }),
     ];
 
-    const groups = groupPicksByPicker(picks, null);
+    const groups = groupPicksByPicker(entriesFrom(picks), null);
 
     expect(groups).toHaveLength(2);
     expect(groups.map((g) => g.key).sort()).toEqual(["client-x", "client-y"]);
@@ -624,10 +670,10 @@ describe("groupPicksByPicker (task #204) — the pure grouping function", () => 
       pick({ assetId: "a2", pickedBy: { id: "client-b", label: "Zoe Restrepo" } }),
     ];
 
-    const groups = groupPicksByPicker(picks, "client-a");
+    const groups = groupPicksByPicker(entriesFrom(picks), "client-a");
 
     expect(groups).toHaveLength(2);
-    expect(groups[0]).toMatchObject({ key: "client-a", label: "Vos" });
+    expect(groups[0]).toMatchObject({ key: "client-a", label: "Tú" });
     expect(groups[1]).toMatchObject({ key: "client-b", label: "Zoe Restrepo" });
   });
 
@@ -643,9 +689,9 @@ describe("groupPicksByPicker (task #204) — the pure grouping function", () => 
       pick({ assetId: "a4", pickedBy: null }),
     ];
 
-    const groups = groupPicksByPicker(picks, "client-z");
+    const groups = groupPicksByPicker(entriesFrom(picks), "client-z");
 
-    expect(groups.map((g) => g.label)).toEqual(["Vos", "Ana Gómez", "Beto Ruiz", "Sin registro"]);
+    expect(groups.map((g) => g.label)).toEqual(["Tú", "Ana Gómez", "Beto Ruiz", "Sin registro"]);
   });
 
   it("keeps within-group order exactly as given — oldest pick first, never reordered", () => {
@@ -654,7 +700,7 @@ describe("groupPicksByPicker (task #204) — the pure grouping function", () => 
       pick({ assetId: "new", pickedBy: { id: "client-a", label: "Ana" } }),
     ];
 
-    const groups = groupPicksByPicker(picks, null);
+    const groups = groupPicksByPicker(entriesFrom(picks), null);
 
     expect(groups[0]?.picks.map((p) => p.assetId)).toEqual(["old", "new"]);
   });
@@ -666,7 +712,7 @@ describe("groupPicksByPicker (task #204) — the pure grouping function", () => 
       pick({ assetId: "a3", pickedBy: { id: "client-a", label: "Ana" } }),
     ];
 
-    const groups = groupPicksByPicker(picks, null);
+    const groups = groupPicksByPicker(entriesFrom(picks), null);
 
     expect(groups[groups.length - 1]).toMatchObject({ label: "Sin registro" });
     expect(groups[groups.length - 1]?.picks).toHaveLength(2);
@@ -684,7 +730,7 @@ describe("groupPicksByPicker (task #204) — the pure grouping function", () => 
       pick({ assetId: "a1", pickedBy: { id: "client-a", label: "Ana Gómez" } }),
     ];
 
-    const groups = groupPicksByPicker(picks, "client-a");
+    const groups = groupPicksByPicker(entriesFrom(picks), "client-a");
 
     expect(groups[0]).toMatchObject({
       key: "client-a",
@@ -708,16 +754,14 @@ describe("SelectionTray — by-person mode (task #204)", () => {
       .map((p) => p.textContent);
   }
 
-  // Criterion 1, re-checked against the mid-flight constraint: flat must
-  // render EXACTLY as before even with SEVERAL distinct pickers — exactly
-  // the shape that would trigger grouping under `by-person`. Proves the
-  // by-person branch is gated on `mode`, not silently active whenever there
-  // is more than one picker.
-  it("flat mode ignores who picked what for layout purposes, even with 3 different pickers", () => {
+  // The by-person branch must be gated on `mode`, not silently active
+  // whenever there is more than one picker. Flat now groups by STATE (the
+  // universal split), never by person.
+  it("flat mode groups by state, not by person, even with 3 different pickers", () => {
     const { container } = renderTray({
       mode: "flat",
       // Distinct from every pick's own `pickedBy.id` below, so none of them
-      // reads as "Vos" and the labels asserted are the raw names — this test
+      // reads as "Tú" and the labels asserted are the raw names — this test
       // is about layout, not attribution.
       viewerId: "viewer-not-in-this-list",
       urls: {
@@ -732,13 +776,15 @@ describe("SelectionTray — by-person mode (task #204)", () => {
       ],
     });
 
-    // By-person renders one <ul> PER GROUP; flat renders exactly one.
+    // By-person renders one <ul> PER PICKER; flat renders the state split.
     expect(container.querySelectorAll("ul")).toHaveLength(1);
     expect(container.querySelectorAll(".overflow-y-auto")).toHaveLength(1);
-    expect(groupHeaderTexts(container)).toEqual([]);
+    expect(groupHeaderTexts(container)).toEqual(["Pedidas (3)"]);
     // Insertion order preserved — never re-sorted alphabetically the way
     // by-person's OWN groups would be.
-    const labels = screen.getAllByRole("listitem").map((item) => item.textContent);
+    const labels = screen
+      .getAllByRole("listitem")
+      .map((item) => item.querySelector("p")?.textContent);
     expect(labels).toEqual(["Beto Ruiz", "Ana Gómez", "Caro"]);
   });
 
@@ -757,12 +803,111 @@ describe("SelectionTray — by-person mode (task #204)", () => {
       ],
     });
 
-    expect(groupHeaderTexts(container)).toEqual(["Vos (2)", "Beto Ruiz (1)", "Caro Ruiz (3)"]);
+    expect(groupHeaderTexts(container)).toEqual([
+      "Tú (2)envió",
+      "Beto Ruiz (1)envió",
+      "Caro Ruiz (3)envió",
+    ]);
     // Criterion 3: thumbnails still render through the SAME <TrayItem> — one
     // <ul> per group (3 people), one <li> per pick (6 total), and the
     // per-group counts (2 + 1 + 3) sum to that same 6.
     expect(container.querySelectorAll("ul")).toHaveLength(3);
     expect(screen.getAllByRole("listitem")).toHaveLength(6);
+  });
+
+  // Task #262 review, warning 3. Since Q1 another person's UNSENT cart IS an
+  // entry (`claim: null`), and `groupPicksByPicker` groups CLAIMED entries
+  // only. Gating the empty state on `entries.length` meant a by-person tray
+  // holding nothing but other people's carts rendered an empty scroll box
+  // with no copy — the state task #203 criterion 7 forbids. The gate is now
+  // `claimed.length === 0 && unsent.length === 0` for by-person (finding 1
+  // added the unsent half: the VIEWER's own cart is `claim: null` too).
+  it("shows the empty state when by-person's only entries are other people's carts", () => {
+    const otherCart = {
+      assetId: "a1",
+      claim: null,
+      picks: [
+        {
+          userId: "client-b",
+          label: "Beto Ruiz",
+          kind: "edited" as const,
+          pickedAt: "2026-07-30T12:00:00.000Z",
+          submittedAt: null,
+          state: "cart" as const,
+        },
+      ],
+    };
+
+    const { container } = renderTray({ mode: "by-person", entries: [otherCart] });
+
+    expect(screen.getByText(/Todavía no eligieron ninguna foto/)).toBeDefined();
+    // And no empty scroll box around it.
+    expect(container.querySelectorAll("ul")).toHaveLength(0);
+    expect(container.querySelectorAll(".overflow-y-auto")).toHaveLength(0);
+    cleanup();
+
+    // Flat mode reaches the same copy through its own state split; the fix
+    // above must not have moved that behaviour either.
+    renderTray({ mode: "flat", entries: [otherCart] });
+    expect(screen.getByText(/Todavía no eligieron ninguna foto/)).toBeDefined();
+  });
+
+  // Task #262 review, finding 1 — the state EVERY by-person gallery starts
+  // in: the viewer has picked a photo and nobody has sent anything yet. The
+  // viewer's own cart is an entry with `claim: null` (Q1), so gating the
+  // empty copy on `claimed.length` alone told the client "nobody has picked a
+  // photo yet" right after they picked one.
+  it("shows the viewer's own unsent cart as 'Por enviar', never the empty state", () => {
+    const ownCart = fixtureEntry("a1", null, [fixturePick("client-a", "Ana", "cart")]);
+    const { container } = renderTray({
+      mode: "by-person",
+      viewerId: "client-a",
+      entries: [ownCart],
+    });
+
+    expect(screen.queryByText(/Todavía no eligieron ninguna foto/)).toBeNull();
+    expect(groupHeaderTexts(container)).toEqual(["Por enviar (1)"]);
+    // The pick is really rendered — once — and not duplicated into "Tú"'s
+    // claimed group.
+    expect(screen.getAllByRole("listitem")).toHaveLength(1);
+    expect(groupHeaderTexts(container)).not.toContain("Tú (1)");
+  });
+
+  // Task #262 review, finding 2 — by-person does NOT dedupe across sections,
+  // and that is the owner-approved behaviour (2026-10-17), not an oversight.
+  // Rows are UNITS (approved Q5): an asset billed to Beto stays in Beto's
+  // row, including its "envió" marker, while the viewer's DEGRADED pick on it
+  // (decision 8: their own unsent ask on a photo somebody else already sent)
+  // belongs in their "Por enviar" group. The same asset in two people's rows
+  // is exactly what by-person mode is for. This test exists because the
+  // previous "one entry, once" filter made a1 vanish from Beto's row and the
+  // whole suite stayed green: delete it today and this goes RED.
+  it("keeps a degraded pick in BOTH the viewer's 'Por enviar' and the row of the person its unit is billed to", () => {
+    const degradedOnBeto = fixtureEntry("a1", { billedTo: { id: "client-b", label: "Beto" } }, [
+      fixturePick("client-b", "Beto", "billed"),
+      fixturePick("client-a", "Ana", "degraded"),
+    ]);
+    const { container } = renderTray({
+      mode: "by-person",
+      viewerId: "client-a",
+      entries: [degradedOnBeto],
+    });
+
+    // Beto really did send, so his row (and the "envió" marker) survives.
+    expect(groupHeaderTexts(container)).toEqual(["Por enviar (1)", "Beto (1)envió"]);
+
+    // Exactly ONE <li> per section — never two inside one section — and both
+    // sections hold the SAME asset: the billed unit under Beto, the viewer's
+    // degraded ask under "Por enviar".
+    const sections = [...container.querySelectorAll("p")]
+      .filter((p) => /\(\d+\)/.test(p.textContent ?? ""))
+      .map((p) => p.parentElement!.querySelectorAll("li"));
+    expect(sections).toHaveLength(2);
+    expect(sections.map((items) => items.length)).toEqual([1, 1]);
+    const renderedAssetSrcs = [...container.querySelectorAll("li img")].map((img) =>
+      img.getAttribute("src"),
+    );
+    expect(renderedAssetSrcs).toEqual(["https://r2.example.com/a1", "https://r2.example.com/a1"]);
   });
 
   // Criterion 4 — the task's own named trap: the viewer's name ("Zoe
@@ -780,7 +925,11 @@ describe("SelectionTray — by-person mode (task #204)", () => {
       ],
     });
 
-    expect(groupHeaderTexts(container)).toEqual(["Vos (1)", "Ana Gómez (1)", "Beto Ruiz (1)"]);
+    expect(groupHeaderTexts(container)).toEqual([
+      "Tú (1)envió",
+      "Ana Gómez (1)envió",
+      "Beto Ruiz (1)envió",
+    ]);
   });
 
   // Criterion 5 — unattributed picks (a deleted user, `onDelete: "set null"`)
@@ -797,7 +946,11 @@ describe("SelectionTray — by-person mode (task #204)", () => {
       ],
     });
 
-    expect(groupHeaderTexts(container)).toEqual(["Vos (1)", "Beto Ruiz (1)", "Sin registro (1)"]);
+    expect(groupHeaderTexts(container)).toEqual([
+      "Tú (1)envió",
+      "Beto Ruiz (1)envió",
+      "Sin registro (1)",
+    ]);
     // Not lost: still 3 thumbnails rendered in total.
     expect(screen.getAllByRole("listitem")).toHaveLength(3);
   });
@@ -998,7 +1151,7 @@ describe("SelectionTray — compact chrome (task #236)", () => {
   it("keeps the subtitle inside the collapsible region, not in the header row", () => {
     renderTray({ picks: [pick()] });
 
-    const subtitle = screen.getByText("Se actualiza sola con lo que elijan los demás.");
+    const subtitle = screen.getByText("Puedes seguir eligiendo y enviar más fotos cuando quieras.");
     const toggle = screen.getByRole("button", { name: "Ocultar" });
     const region = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
     expect(region?.contains(subtitle)).toBe(true);
@@ -1013,7 +1166,7 @@ describe("SelectionTray — compact chrome (task #236)", () => {
 
     await user.click(screen.getByRole("button", { name: "Ocultar" }));
 
-    const subtitle = screen.getByText("Se actualiza sola con lo que elijan los demás.");
+    const subtitle = screen.getByText("Puedes seguir eligiendo y enviar más fotos cuando quieras.");
     expect(subtitle.closest("[hidden]")).not.toBeNull();
     const heading = screen.getByRole("heading", { name: "Fotos elegidas" });
     expect(heading.closest("[hidden]")).toBeNull();
@@ -1055,8 +1208,7 @@ describe("SelectionTray — compact chrome (task #236)", () => {
       renderTray({
         mode: "by-person",
         picks: [pick({ assetId: "a1", pickedBy: twin1 }), pick({ assetId: "a2", pickedBy: twin2 })],
-        lockedPickerIds: ["client-c"],
-        submittedPickerIds: ["client-c"],
+        adminLockedPickerIds: ["client-c"],
       });
 
       expect(screen.getAllByText("envió")).toHaveLength(1);
@@ -1072,8 +1224,7 @@ describe("SelectionTray — compact chrome (task #236)", () => {
       renderTray({
         mode: "by-person",
         picks: [pick({ assetId: "a1", pickedBy: twin1 }), pick({ assetId: "a2", pickedBy: twin2 })],
-        lockedPickerIds: ["client-b", "client-c"],
-        submittedPickerIds: ["client-c"],
+        adminLockedPickerIds: ["client-c"],
       });
 
       expect(screen.getAllByText("envió")).toHaveLength(1);
@@ -1082,9 +1233,61 @@ describe("SelectionTray — compact chrome (task #236)", () => {
       expect(screen.getByText("cerrada").parentElement?.textContent).toBe("Beto Ruiz (1)cerrada");
     });
 
-    it("shows no marker when nobody is locked", () => {
-      renderTray({ mode: "by-person", picks: [pick()], lockedPickerIds: [] });
+    it("shows no marker for an UNSENT pick with no admin lock", () => {
+      renderTray({
+        mode: "by-person",
+        picks: [pick({ selectedAt: null })],
+        adminLockedPickerIds: [],
+      });
 
+      expect(screen.queryByText("envió")).toBeNull();
+      expect(screen.queryByText("cerrada")).toBeNull();
+    });
+
+    // Task #261 review, warning 1. The badge used to ask only whether SOME
+    // pick on the entry was sent, never WHOSE — so a legacy "Sin registro"
+    // unit (`claim.billedTo === null`, a real state: the 0017 backfill's
+    // classic claims) read "Sin registro (1) envió" the moment another
+    // member joined that photo and sent their own pick. The header names
+    // nobody, so it cannot credit a send to anyone.
+    it("shows no 'envió' for an unattributed legacy unit, even when a member's joined pick was sent", () => {
+      const { container } = renderTray({
+        mode: "by-person",
+        entries: [
+          {
+            assetId: "a1",
+            claim: {
+              claimedAt: "2026-07-01T09:00:00.000Z",
+              resolvedKind: "edited",
+              billedTo: null,
+              charge: "included",
+              canEscalate: false,
+            },
+            // Exactly what the domain emits for this shape: the unit has no
+            // billed holder, so a submitted pick on it resolves to "joined"
+            // (pick-resolution.ts) rather than "billed".
+            picks: [
+              {
+                userId: "client-b",
+                label: "Beto Ruiz",
+                kind: "edited",
+                pickedAt: "2026-07-30T12:00:00.000Z",
+                submittedAt: "2026-07-30T12:00:00.000Z",
+                state: "joined",
+              },
+            ],
+          },
+        ],
+      });
+
+      // The group still renders, under its own header — this is about the
+      // badge, not about dropping the photo.
+      const header = [...container.querySelectorAll("p")].find((p) =>
+        /\(\d+\)/.test(p.textContent ?? ""),
+      );
+      expect(header?.textContent).toBe("Sin registro (1)");
+      expect(screen.getAllByRole("listitem")).toHaveLength(1);
+      // No badge ANYWHERE: not on that header, not on any other.
       expect(screen.queryByText("envió")).toBeNull();
       expect(screen.queryByText("cerrada")).toBeNull();
     });
@@ -1112,5 +1315,71 @@ describe("SelectionTray — compact chrome (task #236)", () => {
 
       expect(screen.getByText("La selección ya fue enviada.")).toBeDefined();
     });
+  });
+});
+
+// Epic #250 S7 — the rolling split is now the ONLY proofing layout (by-person
+// stays its own alternate), so a gallery with the flag OFF must still show
+// "Por enviar" / "Pedidas", and the included/extra boundary inside Pedidas is
+// a visible cut with the existing "Extra" tag.
+describe("SelectionTray — universal order split (S7)", () => {
+  const baseProps = {
+    urls: {
+      a1: "https://r2.example.com/a1",
+      a2: "https://r2.example.com/a2",
+    },
+    filenamesByAssetId: { a1: "IMG_0001.JPG", a2: "IMG_0002.JPG" },
+    viewerId: "client-a",
+    mode: "flat" as const,
+    isLocked: false,
+    isStale: false,
+    allowsOriginalSelection: true,
+    rollingDelivery: false,
+    onOpenAsset: () => {},
+    onImageError: () => {},
+  };
+
+  it("shows Por enviar and Pedidas without rolling delivery", () => {
+    render(
+      <SelectionTray
+        {...baseProps}
+        entries={[
+          fixtureEntry("a1", null, [fixturePick("client-a", "Ana", "cart")]),
+          fixtureEntry("a2", { billedTo: { id: "client-b", label: "Beto" } }, [
+            fixturePick("client-b", "Beto", "billed"),
+          ]),
+        ]}
+      />,
+    );
+
+    const headings = Array.from(
+      screen.getByRole("region", { name: "Fotos elegidas" }).querySelectorAll("p"),
+    ).map((p) => p.textContent?.trim());
+    expect(headings).toContain("Por enviar (1)");
+    expect(headings).toContain("Pedidas (1)");
+  });
+
+  it("cuts Pedidas before the first extra-charge unit and tags it 'Extra'", () => {
+    render(
+      <SelectionTray
+        {...baseProps}
+        entries={[
+          fixtureEntry("a1", { billedTo: { id: "client-b", label: "Beto" }, charge: "included" }, [
+            fixturePick("client-b", "Beto", "billed"),
+          ]),
+          fixtureEntry("a2", { billedTo: { id: "client-b", label: "Beto" }, charge: "extra" }, [
+            fixturePick("client-b", "Beto", "billed"),
+          ]),
+        ]}
+      />,
+    );
+
+    const tag = screen.getByText("Extra");
+    const cut = tag.closest("li");
+    expect(cut).not.toBeNull();
+    // The cut lands exactly before the extra unit, in arrival order.
+    const nextItem = cut?.nextElementSibling as HTMLElement;
+    expect(within(nextItem).getByRole("button", { name: /IMG_0002\.JPG/ })).toBeDefined();
+    expect(screen.queryAllByText("Extra")).toHaveLength(1);
   });
 });

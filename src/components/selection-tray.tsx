@@ -132,38 +132,39 @@
 // markup flat mode uses — see the effect below), so it tracks the exact same
 // arithmetic #203 already established, just applied to a different ref.
 //
-// THIS DOES NOT TOUCH #203'S OWN MECHANISM. The flat branch below (`mode ===
-// "flat"`) is byte-for-byte what #203 shipped: same `listRef`, same
-// `maxListHeightPx` state, same effect, same JSX. A second, independent ref/
-// state/effect trio exists purely for the `by-person` branch — reusing (or
-// generalizing) the flat measurement here was deliberately rejected: a
-// "generalize the selector" refactor would touch code that also runs for
-// `flat`, and the app's own constraint on this slice is that flat's current
-// behavior must not depend on a mechanism shared with a mode it didn't have
-// yesterday, even if the two happen to compute the same number today.
-import { useEffect, useId, useMemo, useRef, useState } from "react";
+// TASK #262 REMOVED THE FLAT BRANCH. Under epic #250's order semantics every
+// proofing gallery shows the two-group split ("Por enviar" / "Pedidas"), so
+// the one-list layout #203 capped no longer exists. The measured pixel budget
+// #204 built for `by-person` survives unchanged and is the only height cap
+// left; `flat` is kept as a mode value for older galleries, and it now renders
+// the same split.
+import { Fragment, useEffect, useId, useMemo, useRef, useState } from "react";
 import type { Gallery } from "@/lib/db/schema";
 import {
   pickerLabelFor,
-  type SelectionPick,
   UNATTRIBUTED_PICKER_LABEL,
+  viewerPickOf,
+  type SelectionEntry,
+  type SelectionEntryPick,
+  type SelectionKind,
 } from "@/lib/selection-snapshot";
 
-/** One picker's row in `by-person` mode: a label, a count, and — deliberately
- * `SelectionPick[]`, not just a count — the picker's own picks, IN THE ORDER
- * `getGallerySelection()` returned them (oldest first). Grouping never
+/** One billed person's row in `by-person` mode: a label, a count, and the
+ * CLAIMED entries that person's unit is billed to, IN THE ORDER
+ * `getGallerySelection()` returned them (arrival first). Grouping never
  * reorders within a group; see `groupPicksByPicker`'s own comment. */
 export type PickGroup = {
-  /** `pickedBy.id`, or the sentinel below for the unattributed group. Used as
-   * the React key and as the identity a viewer/alphabetical sort compares
-   * against — never the label, which two different people can share. */
+  /** `claim.billedTo.id`, or the sentinel below for the unattributed group.
+   * Used as the React key and as the identity a viewer/alphabetical sort
+   * compares against — never the label, which two different people can
+   * share. */
   key: string;
-  /** From `pickerLabelFor`, same function (and same "Vos" convention) every
+  /** From `pickerLabelFor`, same function (and same "Tú" convention) every
    * individual thumbnail in this file already uses — see `groupPicksByPicker`
-   * for why the viewer's OWN group header also reads "Vos" rather than their
+   * for why the viewer's OWN group header also reads "Tú" rather than their
    * real name. */
   label: string;
-  picks: SelectionPick[];
+  picks: SelectionEntry[];
 };
 
 /** Not a real picker id (those are `users.id`, uuids) — a sentinel so the
@@ -192,23 +193,27 @@ const UNATTRIBUTED_GROUP_KEY = "__unattributed__";
  * WITHIN a group, picks keep the order they arrived in — this function never
  * reorders `picks` itself, only partitions it.
  */
-export function groupPicksByPicker(picks: SelectionPick[], viewerId: string | null): PickGroup[] {
+export function groupPicksByPicker(
+  entries: SelectionEntry[],
+  viewerId: string | null,
+): PickGroup[] {
   const groups = new Map<string, PickGroup>();
 
-  for (const pick of picks) {
+  for (const entry of entries) {
+    if (!entry.claim) continue;
     // The id, never the label — see this function's own header comment on
     // why grouping by name would silently merge two different people who
     // share one.
-    const key = pick.pickedBy?.id ?? UNATTRIBUTED_GROUP_KEY;
+    const key = entry.claim.billedTo?.id ?? UNATTRIBUTED_GROUP_KEY;
     const existing = groups.get(key);
     if (existing) {
-      existing.picks.push(pick);
+      existing.picks.push(entry);
       continue;
     }
     groups.set(key, {
       key,
-      label: pickerLabelFor(pick.pickedBy, viewerId),
-      picks: [pick],
+      label: pickerLabelFor(entry.claim.billedTo, viewerId),
+      picks: [entry],
     });
   }
 
@@ -255,7 +260,7 @@ const FALLBACK_ROW_GAP_PX = 12;
 const PRE_MEASURE_MAX_HEIGHT_PX = 260;
 
 export function SelectionTray({
-  picks,
+  entries,
   urls,
   filenamesByAssetId,
   viewerId,
@@ -263,19 +268,18 @@ export function SelectionTray({
   isLocked,
   isStale,
   allowsOriginalSelection,
-  lockedPickerIds = [],
-  submittedPickerIds = [],
+  adminLockedPickerIds = [],
   lockedByAdmin = false,
   isGalleryLocked = isLocked,
-  rollingDelivery = false,
   readableAssetIds,
   lastSubmittedAt = null,
   onOpenAsset,
   onImageError,
 }: {
-  /** The shared selection, oldest pick first — exactly what the server last
-   * said, never a locally-derived list. */
-  picks: SelectionPick[];
+  /** The shared selection, arrival first — exactly what the server last said,
+   * never a locally-derived list. Each entry is one asset with its claim and
+   * every person who asked for it. */
+  entries: SelectionEntry[];
   /** `<ProofGrid>`'s own presigned URL map, keyed by asset id. Shared, not
    * copied, so a URL already refreshed by a grid tile is already refreshed
    * here. */
@@ -283,8 +287,8 @@ export function SelectionTray({
   /** For the accessible label on each thumbnail. Same map the grid builds
    * from its server-rendered assets. */
   filenamesByAssetId: Record<string, string>;
-  /** The signed-in user's own id, so their picks read "Vos" — see
-   * `pickerLabelFor`. `null` is tolerated (nothing renders as "Vos") rather
+  /** The signed-in user's own id, so their picks read "Tú" — see
+   * `pickerLabelFor`. `null` is tolerated (nothing renders as "Tú") rather
    * than required, so this component stays renderable without a session in
    * tests. */
   viewerId: string | null;
@@ -308,14 +312,10 @@ export function SelectionTray({
    * — but this component does not trust its callers to guarantee that; see
    * `showType`'s own computation below). */
   allowsOriginalSelection: boolean;
-  /** Epic #239 — user ids of the people who already submitted (or were
-   * locked). Their group gets a small "envió" marker: their picks are frozen
-   * for everybody else. Includes the viewer when locked. */
-  lockedPickerIds?: string[];
-  /** Epic #239 — the subset of `lockedPickerIds` who submitted themselves.
-   * Only these get the "envió" marker; the other locked people were closed by
-   * the photographer and get "cerrada". Both stay frozen. */
-  submittedPickerIds?: string[];
+  /** Epic #239 — user ids of the people the PHOTOGRAPHER locked. Their group
+   * gets "cerrada". Only admin locks are listed now (S5 never writes a client
+   * lock); "envió" is derived from each entry's own `submittedAt`. */
+  adminLockedPickerIds?: string[];
   /** Epic #239 — the VIEWER was locked by the photographer without ever
    * submitting, so the note must not claim they sent anything. */
   lockedByAdmin?: boolean;
@@ -359,9 +359,39 @@ export function SelectionTray({
   // back for the grid.
   const [isCollapsed, setIsCollapsed] = useState(false);
   const listRegionId = useId();
-  const listRef = useRef<HTMLUListElement>(null);
-  const [maxListHeightPx, setMaxListHeightPx] = useState<number | null>(null);
-  const hasPicks = picks.length > 0;
+  const claimed = useMemo(() => entries.filter((entry) => entry.claim !== null), [entries]);
+
+  // Epic #250 S7 — the viewer's own unsent picks (cart + degraded), exactly
+  // what the "Enviar" button sends. Computed ONCE here and shared by BOTH
+  // layouts: flat mode's "Pedidas" split and by-person's "Por enviar" group.
+  // Task #262 review, finding 1 — by-person used to build its groups from
+  // `claimed` only, so an entry whose viewer pick is still unsent (Q1: an
+  // unsent cart carries `claim: null`) rendered NOWHERE, and gating the empty
+  // state on `claimed.length` made the tray claim nobody had picked while the
+  // viewer was looking at their own pick.
+  // Task #267 — this group is "exactly what submit sends", so it must NOT
+  // exclude assets whose final is already readable. Those picks ARE unsent
+  // asks (`submit-selection` claims them like any other), and the server's
+  // `counter.viewer.toSend` plus the "Enviar las N" button already count
+  // them; hiding them here made the tray list 2 of the 4 things the button
+  // was about to send. Flat mode still keeps each entry in ONE section because
+  // `requested` below subtracts `unsentIds`; by-person intentionally shows the
+  // same asset under both the viewer's "Por enviar" and the holder's row
+  // (task #262 finding 2 / owner decision 2026-10-17, unchanged by this fix).
+  const unsent = useMemo(
+    () =>
+      entries.filter((entry) => {
+        const own = viewerPickOf(entry, viewerId);
+        return own !== null && own.submittedAt === null;
+      }),
+    [entries, viewerId],
+  );
+  const unsentIds = useMemo(() => new Set(unsent.map((entry) => entry.assetId)), [unsent]);
+  // "Has picks" now means "has anything to render in the list", unsent
+  // included: with only a still-unsent own cart there IS a row to fold, so the
+  // mobile toggle must be offered (the empty-state gate below is separate).
+  const hasPicks = claimed.length > 0 || unsent.length > 0;
+  const hasAnyOriginal = claimed.some((entry) => entry.claim!.resolvedKind === "original");
 
   // Task #206, criterion 8 — the governing constraint: a gallery where
   // nobody marked an original looks and counts EXACTLY as before this slice.
@@ -375,62 +405,37 @@ export function SelectionTray({
   // that appeared on some items but not others would make that assumption
   // false again, in a smaller, easier-to-miss way than #204's own by-person
   // bug (task #208's own warning about this exact class of mistake).
-  const hasAnyOriginal = picks.some((pick) => pick.selectionKind === "original");
   // Task #214 — the ADDITIONAL gate: even with a real `original` pick in the
   // list, the type line stays absent while the gallery's own switch is off.
   // "Absent, not zeroed" (task #214's own governing constraint) applies to
   // this FLAG, not only to the derived `hasAnyOriginal` above — a gallery
   // that never turned the switch on must render byte-identically to one that
   // has zero originals, even in the narrow, should-never-happen case of a
-  // stray `selectionKind: "original"` row surviving past a switch flip.
+  // stray `resolvedKind: "original"` row surviving past a switch flip.
   const showType = allowsOriginalSelection && hasAnyOriginal;
-
-  // Measures the ACTUAL rendered height of one row rather than hardcoding a
-  // pixel figure — see this file's header comment for why a hand-computed
-  // number is a trap here. Runs once picks first exist, and again whenever
-  // the observed item's own box changes size (font swap, zoom, a future
-  // style change to the label) — the row height does NOT depend on how many
-  // picks there are, only on the fixed 96px image and the single-line label
-  // beneath it, so re-measuring on `picks.length` changing count is not
-  // needed once a first real measurement has landed.
-  useEffect(() => {
-    const list = listRef.current;
-    const firstItem = list?.querySelector("li") ?? null;
-    if (!firstItem) return;
-
-    const measure = () => {
-      const itemHeight = firstItem.getBoundingClientRect().height;
-      // A zero height means the row is currently not laid out (e.g. this ran
-      // while `hidden` is set on an ancestor, which forces every descendant's
-      // box to 0) — keep whatever was last measured rather than clobbering it
-      // with a bogus cap.
-      if (itemHeight <= 0) return;
-      // `|| FALLBACK_ROW_GAP_PX` alone would treat a real, legitimate `0px`
-      // gap (e.g. `gap-3` ever gets dropped from the `<ul>` below) as
-      // "unreadable" too, since `0` is falsy — silently overshooting the cap
-      // by 12px. `Number.isFinite` only falls back for the actual unreadable
-      // case (jsdom's empty string parses to `NaN`).
-      const parsedRowGapPx = parseFloat(window.getComputedStyle(list as HTMLUListElement).rowGap);
-      const rowGapPx = Number.isFinite(parsedRowGapPx) ? parsedRowGapPx : FALLBACK_ROW_GAP_PX;
-      setMaxListHeightPx(itemHeight * VISIBLE_ROWS + rowGapPx * (VISIBLE_ROWS - 1));
-    };
-
-    measure();
-
-    if (typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(measure);
-    observer.observe(firstItem);
-    return () => observer.disconnect();
-  }, [hasPicks]);
 
   // `by-person` mode's OWN grouping (task #204) — computed here, not by
   // `getGallerySelection()`, per that function's own header comment and this
   // slice's acceptance criterion 9: the query returns one flat list, and
   // partitioning it by picker is a presentation decision this component
-  // owns. Recomputed on every `picks`/`viewerId` change — `useMemo` only to
+  // owns. Recomputed on every `entries`/`viewerId` change — `useMemo` only to
   // avoid re-sorting on an unrelated re-render (a lightbox open/close, a
   // toggled `isStale`), not because the computation is expensive.
-  const groups = useMemo(() => groupPicksByPicker(picks, viewerId), [picks, viewerId]);
+  // By-person deliberately does NOT apply flat mode's one-entry-once rule
+  // here, and that asymmetry is the point (task #262 review, finding 2;
+  // owner decision 2026-10-17). Rows are UNITS, not picks (approved Q5): a
+  // sent unit billed to Beto stays in Beto's row — hiding it because the
+  // VIEWER also has an unsent ask on the same asset made a person who had
+  // already sent look like they had sent nothing, and dropped the row's
+  // "envió" marker with it. The viewer's own degraded pick (decision 8: an
+  // unsent ask on a photo somebody else already sent) still shows up in
+  // their "Por enviar" group, so the same asset plainly appears under two
+  // people — the thing by-person mode exists to show. Flat mode's own split
+  // below keeps the one-entry-once rule (`!unsentIds.has(...)`), because
+  // there the two sections are states of the SAME person's picks. The
+  // degraded-in-both-places state is pinned by the by-person test named
+  // "keeps a degraded pick in BOTH…".
+  const groups = useMemo(() => groupPicksByPicker(claimed, viewerId), [claimed, viewerId]);
 
   // `by-person`'s OWN height cap — a SEPARATE ref/state/effect from the flat
   // trio above, not a generalization of it. See this file's header comment
@@ -502,7 +507,7 @@ export function SelectionTray({
               never learn about it. Collapsing the list below must not leave
               that live region with nothing left to change when a pick
               lands; this count is what changes instead. */}
-          <span className="text-fg-mute text-sm">{picks.length}</span>
+          <span className="text-fg-mute text-sm">{claimed.length}</span>
         </div>
         <div className="flex items-center gap-3">
           {/* Task #236 criterion 5 — with zero picks there is nothing to
@@ -549,82 +554,43 @@ export function SelectionTray({
                 ? "Tu fotógrafo cerró tu selección. Los demás todavía están eligiendo."
                 : "Tu selección ya fue enviada. Los demás todavía están eligiendo."}
           </p>
-        ) : rollingDelivery ? (
-          // Task #244 — never the classic "enviada/cerrada" copy: a send here
-          // is an order and the person keeps choosing.
+        ) : (
+          // Epic #250 S7 — order semantics are universal now: sending sends
+          // YOUR "por enviar" and closes nothing for anyone else (decision
+          // 10), so every proofing gallery gets this copy, not only rolling
+          // delivery.
           <p className={`text-fg-mute mb-2 text-xs ${hasPicks ? "" : "max-lg:hidden"}`}>
             {lastSubmittedAt
               ? `Último envío: ${new Date(lastSubmittedAt).toLocaleDateString("es-CO")}. `
               : ""}
             Puedes seguir eligiendo y enviar más fotos cuando quieras.
           </p>
-        ) : (
-          <p className={`text-fg-mute mb-2 text-xs ${hasPicks ? "" : "max-lg:hidden"}`}>
-            Se actualiza sola con lo que elijan los demás.
-          </p>
         )}
-        {picks.length === 0 ? (
+        {(
+          mode === "by-person" ? claimed.length === 0 && unsent.length === 0 : entries.length === 0
+        ) ? (
           // No scroll chrome for the empty state (task #203 acceptance
           // criterion #7) — an empty scrollable box reads as broken, not as
-          // "nothing here yet". Shared by BOTH modes: zero picks means zero
-          // groups either way, so there is nothing `by-person` would show
-          // differently here.
+          // "nothing here yet".
+          //
+          // By-person is gated on CLAIMED **and** the viewer's own UNSENT
+          // picks, not `entries` (task #262 review, warnings 3 and finding
+          // 1): `groups` is built from `claimed`, and since Q1 another
+          // person's UNSENT cart is an entry with `claim: null`. A by-person
+          // tray holding only those carts has nothing to group, so gating on
+          // `entries` rendered an empty box with no copy — exactly the state
+          // criterion #7 forbids. But gating on `claimed` alone was worse: an
+          // unsent pick of the VIEWER'S OWN is also an entry with
+          // `claim: null`, so the tray told the client nobody had picked a
+          // photo right after they picked one. The viewer's unsent picks are
+          // a real "Por enviar" group now, so they count as content. Flat
+          // mode keeps the `entries` gate because its own split below decides
+          // between "Por enviar" and "Pedidas", and has its own copy when
+          // both are empty.
           <p className="text-fg-dim text-[15px] leading-relaxed max-lg:hidden">
             Todavía no eligieron ninguna foto. Las que elijan van a aparecer acá, con el nombre de
             quién las eligió.
           </p>
-        ) : rollingDelivery ? (
-          // Task #244 — two groups, "Por enviar" then "Pedidas". Its own
-          // container: the flat/by-person height-measuring refs stay unmounted
-          // (their effects are no-ops when the ref is null), so this uses the
-          // pre-measure cap as a plain fixed ceiling.
-          <div
-            className="flex flex-col gap-4 overflow-y-auto overscroll-contain"
-            style={{ maxHeight: PRE_MEASURE_MAX_HEIGHT_PX }}
-          >
-            {[
-              {
-                key: "unsent",
-                label: "Por enviar",
-                items: picks.filter((p) => !p.requestedAt && !readableAssetIds?.has(p.assetId)),
-              },
-              {
-                key: "requested",
-                label: "Pedidas",
-                items: picks.filter((p) => !!p.requestedAt || !!readableAssetIds?.has(p.assetId)),
-              },
-            ]
-              .filter((group) => group.items.length > 0)
-              .map((group) => (
-                <div key={group.key}>
-                  <p className="text-fg-dim mb-2 text-sm font-medium">
-                    {group.label}{" "}
-                    <span className="text-fg-mute font-normal">({group.items.length})</span>
-                  </p>
-                  <ul className="flex flex-wrap gap-3">
-                    {group.items.map((pick) => (
-                      <TrayItem
-                        key={pick.assetId}
-                        pick={pick}
-                        src={urls[pick.assetId]}
-                        originalFilename={filenamesByAssetId[pick.assetId]}
-                        viewerId={viewerId}
-                        onOpen={() => onOpenAsset(pick.assetId)}
-                        onError={() => onImageError(pick.assetId)}
-                        showType={showType}
-                        statusLabel={
-                          readableAssetIds?.has(pick.assetId)
-                            ? "Editada"
-                            : group.key === "unsent"
-                              ? "Por enviar"
-                              : "Pedida"
-                        }
-                      />
-                    ))}
-                  </ul>
-                </div>
-              ))}
-          </div>
         ) : mode === "by-person" ? (
           // Task #204 — one row per picker, viewer first, alphabetical rest,
           // unattributed last (`groupPicksByPicker` above). Same
@@ -637,6 +603,33 @@ export function SelectionTray({
             className="flex flex-col gap-4 overflow-y-auto overscroll-contain"
             style={{ maxHeight: groupedMaxHeightPx ?? PRE_MEASURE_MAX_HEIGHT_PX }}
           >
+            {unsent.length > 0 && (
+              // Epic #250 S7, task #262 review finding 1 — the viewer's own
+              // unsent picks, in the group name the approved copy uses (never
+              // "carrito" in UI). Rendered FIRST, before the per-picker
+              // groups, matching flat mode's own order: what you still have
+              // to do, then who asked for what.
+              <div key="unsent">
+                <p className="text-fg-dim mb-2 text-sm font-medium">
+                  Por enviar <span className="text-fg-mute font-normal">({unsent.length})</span>
+                </p>
+                <ul className="flex flex-wrap gap-3">
+                  {unsent.map((entry) => (
+                    <TrayItem
+                      key={entry.assetId}
+                      entry={entry}
+                      src={urls[entry.assetId]}
+                      originalFilename={filenamesByAssetId[entry.assetId]}
+                      viewerId={viewerId}
+                      onOpen={() => onOpenAsset(entry.assetId)}
+                      onError={() => onImageError(entry.assetId)}
+                      showType={showType}
+                      statusLabel="Por enviar"
+                    />
+                  ))}
+                </ul>
+              </div>
+            )}
             {groups.map((group) => (
               <div key={group.key}>
                 {/* "alejandro (5)" — the task's own example copy. The count
@@ -653,25 +646,38 @@ export function SelectionTray({
                 >
                   {group.label}{" "}
                   <span className="text-fg-mute font-normal">({group.picks.length})</span>
-                  {/* Epic #239 — this person submitted: their picks are
-                      frozen for everybody. Matched by id (the group key),
-                      never by label. Plain text, no new chrome. */}
-                  {lockedPickerIds.includes(group.key) && (
-                    <span className="text-accent ml-2 text-xs font-normal">
-                      {submittedPickerIds.includes(group.key) ? "envió" : "cerrada"}
-                    </span>
-                  )}
+                  {/* Epic #239 — the PHOTOGRAPHER closed this person: their
+                      picks are frozen for everybody. "Envió" is derived
+                      from the entries' own `submittedAt` (S6), so it stays
+                      truthful in proofing galleries too. Matched by id (the
+                      group key), never by label. Plain text, no new chrome.
+                      Task #261 review: "envió" needs a REAL named picker AND
+                      that picker's OWN sent pick. Checking only the entry's
+                      picks made a legacy "Sin registro" unit (billedTo null)
+                      claim "envió" as soon as a member joined it and sent
+                      theirs — a header that names nobody crediting a send to
+                      nobody. */}
+                  {adminLockedPickerIds.includes(group.key) ? (
+                    <span className="text-accent ml-2 text-xs font-normal">cerrada</span>
+                  ) : group.key !== UNATTRIBUTED_GROUP_KEY &&
+                    group.picks.some((entry) =>
+                      entry.picks.some(
+                        (pick) => pick.userId === group.key && pick.submittedAt !== null,
+                      ),
+                    ) ? (
+                    <span className="text-accent ml-2 text-xs font-normal">envió</span>
+                  ) : null}
                 </p>
                 <ul className="flex flex-wrap gap-3">
-                  {group.picks.map((pick) => (
+                  {group.picks.map((entry) => (
                     <TrayItem
-                      key={pick.assetId}
-                      pick={pick}
-                      src={urls[pick.assetId]}
-                      originalFilename={filenamesByAssetId[pick.assetId]}
+                      key={entry.assetId}
+                      entry={entry}
+                      src={urls[entry.assetId]}
+                      originalFilename={filenamesByAssetId[entry.assetId]}
                       viewerId={viewerId}
-                      onOpen={() => onOpenAsset(pick.assetId)}
-                      onError={() => onImageError(pick.assetId)}
+                      onOpen={() => onOpenAsset(entry.assetId)}
+                      onError={() => onImageError(entry.assetId)}
                       showType={showType}
                     />
                   ))}
@@ -680,29 +686,87 @@ export function SelectionTray({
             ))}
           </div>
         ) : (
-          // `overscroll-contain`: without it, a finger scrolling this list to
-          // its end on a phone chains into scrolling the PAGE — the exact
-          // "trapped/confused" feeling this whole fix exists to avoid at the
-          // list's outer sticky boundary.
-          <div
-            className="overflow-y-auto overscroll-contain"
-            style={{ maxHeight: maxListHeightPx ?? PRE_MEASURE_MAX_HEIGHT_PX }}
-          >
-            <ul ref={listRef} className="flex flex-wrap gap-3">
-              {picks.map((pick) => (
-                <TrayItem
-                  key={pick.assetId}
-                  pick={pick}
-                  src={urls[pick.assetId]}
-                  originalFilename={filenamesByAssetId[pick.assetId]}
-                  viewerId={viewerId}
-                  onOpen={() => onOpenAsset(pick.assetId)}
-                  onError={() => onImageError(pick.assetId)}
-                  showType={showType}
-                />
-              ))}
-            </ul>
-          </div>
+          // Epic #250 S7 — the rolling split is now universal: "Por enviar"
+          // (the viewer's own unsent cart/degraded picks, exactly what
+          // "Enviar" sends) then "Pedidas" (every claimed entry, plus
+          // readable finals). Each entry appears ONCE. A `.tray__cut` + the
+          // existing "Extra" tag marks the included/extra boundary inside
+          // Pedidas, using the charge the server already attributed.
+          (() => {
+            const requested = entries.filter(
+              (entry) =>
+                !unsentIds.has(entry.assetId) &&
+                (entry.claim !== null || readableAssetIds?.has(entry.assetId)),
+            );
+            const splitGroups = [
+              { key: "unsent", label: "Por enviar", items: unsent },
+              { key: "requested", label: "Pedidas", items: requested },
+            ].filter((group) => group.items.length > 0);
+
+            if (splitGroups.length === 0) {
+              return (
+                <p className="text-fg-dim text-[15px] leading-relaxed max-lg:hidden">
+                  Todavía no eligieron ninguna foto. Las que elijan van a aparecer acá, con el
+                  nombre de quién las eligió.
+                </p>
+              );
+            }
+
+            return (
+              <div
+                className="flex flex-col gap-4 overflow-y-auto overscroll-contain"
+                style={{ maxHeight: PRE_MEASURE_MAX_HEIGHT_PX }}
+              >
+                {splitGroups.map((group) => (
+                  <div key={group.key}>
+                    <p className="text-fg-dim mb-2 text-sm font-medium">
+                      {group.label}{" "}
+                      <span className="text-fg-mute font-normal">({group.items.length})</span>
+                    </p>
+                    <ul className="flex flex-wrap gap-3">
+                      {group.items.map((entry, index) => {
+                        const firstExtra =
+                          group.key === "requested" &&
+                          entry.claim?.charge === "extra" &&
+                          !group.items
+                            .slice(0, index)
+                            .some((other) => other.claim?.charge === "extra");
+                        return (
+                          <Fragment key={entry.assetId}>
+                            {firstExtra && (
+                              <li
+                                aria-hidden="true"
+                                className="text-accent-2 flex items-center gap-1 self-stretch text-[10px] font-medium"
+                              >
+                                <span className="bg-accent/60 h-full w-px" />
+                                Extra
+                              </li>
+                            )}
+                            <TrayItem
+                              entry={entry}
+                              src={urls[entry.assetId]}
+                              originalFilename={filenamesByAssetId[entry.assetId]}
+                              viewerId={viewerId}
+                              onOpen={() => onOpenAsset(entry.assetId)}
+                              onError={() => onImageError(entry.assetId)}
+                              showType={showType}
+                              statusLabel={
+                                readableAssetIds?.has(entry.assetId)
+                                  ? "Editada"
+                                  : group.key === "unsent"
+                                    ? "Por enviar"
+                                    : "Pedida"
+                              }
+                            />
+                          </Fragment>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                ))}
+              </div>
+            );
+          })()
         )}
       </div>
     </section>
@@ -710,7 +774,7 @@ export function SelectionTray({
 }
 
 function TrayItem({
-  pick,
+  entry,
   src,
   originalFilename,
   viewerId,
@@ -723,8 +787,8 @@ function TrayItem({
    * "Pedida" / "Editada"). Absent outside that mode, so every other gallery
    * renders exactly the markup it always did. */
   statusLabel?: string;
-  pick: SelectionPick;
-  /** `undefined` when this pick's asset was not in the page's initial render
+  entry: SelectionEntry;
+  /** `undefined` when this entry's asset was not in the page's initial render
    * — see this file's header comment on why that is a real, honest state. */
   src: string | undefined;
   originalFilename: string | undefined;
@@ -732,18 +796,24 @@ function TrayItem({
   onOpen: () => void;
   onError: () => void;
   /** Task #206, criterion 8 — `<SelectionTray>`'s own `hasAnyOriginal`,
-   * NEVER this item's own `pick.selectionKind`: whether the type line renders
-   * at all is a decision for the WHOLE gallery, made once, not per item. A
-   * gallery with zero originals must render this component with EXACTLY the
-   * markup it had before this slice — not a row that says "editada" either,
-   * which would still be new bytes nobody asked for and new height nobody
-   * turned on. See this file's own `hasAnyOriginal` comment for why, once
-   * true, every item gets the line rather than only the originals. */
+   * NEVER this entry's own kind: whether the type line renders at all is a
+   * decision for the WHOLE gallery, made once, not per item. A gallery with
+   * zero originals must render this component with EXACTLY the markup it had
+   * before this slice — not a row that says "editada" either, which would
+   * still be new bytes nobody asked for and new height nobody turned on. See
+   * this file's own `hasAnyOriginal` comment for why, once true, every item
+   * gets the line rather than only the originals. */
   showType: boolean;
 }) {
-  const label = pickerLabelFor(pick.pickedBy, viewerId);
+  const ownPick: SelectionEntryPick | null = viewerPickOf(entry, viewerId);
+  // The unit's billed holder when it is claimed; for an unclaimed own cart,
+  // the person looking at it (their own ask, not yet anybody's unit).
+  const attributedBy =
+    entry.claim?.billedTo ?? (ownPick ? { id: ownPick.userId, label: ownPick.label } : null);
+  const label = pickerLabelFor(attributedBy, viewerId);
   const filename = originalFilename ?? "una foto";
-  const isOriginal = pick.selectionKind === "original";
+  const resolvedKind: SelectionKind = entry.claim?.resolvedKind ?? ownPick?.kind ?? "edited";
+  const isOriginal = resolvedKind === "original";
 
   return (
     <li className="w-24">

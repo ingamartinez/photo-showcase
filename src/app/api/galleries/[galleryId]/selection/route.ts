@@ -1,9 +1,9 @@
 // GET /api/galleries/[galleryId]/selection — the shared selection of one
-// gallery, as the server currently holds it: which photos are picked, who
-// picked each of them, the recomputed quota, and whether the selection has
-// been submitted (task #95). This is now ALSO the route every open session
-// re-fetches from the instant it is told something changed (task #114's SSE
-// stream, `./stream/route.ts`) — see below.
+// gallery, as the server currently holds it: every asset somebody asked for,
+// its askers and its resolved claim, the server-computed quota and the
+// four-number counter (task #95, epic #250 S6). This is now ALSO the route
+// every open session re-fetches from the instant it is told something changed
+// (task #114's SSE stream, `./stream/route.ts`) — see below.
 //
 // ============================================================================
 // THE TRANSPORT DECISION — CORRECTED (task #114): pushed, off Postgres
@@ -130,10 +130,9 @@ import { db } from "@/lib/db";
 import { galleries } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
 import { isGalleryVisibleToClient } from "@/lib/galleries";
-import { isGalleryOwner } from "@/lib/gallery-access";
-import { getSelectionLockSnapshot } from "@/lib/gallery-client-locks";
+import { isGalleryOwner, resolveViewAs } from "@/lib/gallery-access";
 import { getGallerySelection } from "@/lib/gallery-selection";
-import { computeQuota } from "@/lib/quota";
+import { quotaSnapshotOf } from "@/lib/pick-claims";
 
 export const runtime = "nodejs";
 
@@ -153,7 +152,7 @@ function errorResponse(error: string, status: number): NextResponse {
 // `withApiSession()` (task #54) runs that check unconditionally before this
 // handler ever executes — there is no branch here to forget to return.
 export const GET = withApiSession(async function GET(
-  _request: NextRequest,
+  request: NextRequest,
   { params }: { params: Promise<{ galleryId: string }> },
   session,
 ): Promise<NextResponse> {
@@ -188,52 +187,32 @@ export const GET = withApiSession(async function GET(
     return errorResponse("gallery_not_found", 404);
   }
 
-  const picks = await getGallerySelection(gallery.id);
-  // Epic #239 — the per-client lock state, for slice #241's UI. `viewerLock`
-  // is the CALLER's own (null while open, and for an admin, who has no
-  // membership); `lockedPickerIds` says whose picks are frozen.
-  const lockSnapshot = await getSelectionLockSnapshot(gallery.id, session.user.id);
+  // Gate 3 — epic #250 S6's optional admin "view as" subject. AFTER
+  // ownership, so a stranger still gets 403 and learns nothing. A client
+  // sending it is a bug and is refused loudly (400, not 403: the hook treats
+  // 403 as lost access and goes stale). A removed / never-attached id is a
+  // 404 for symmetry with S5's `acting_client_not_member`.
+  const viewAs = await resolveViewAs(
+    session,
+    gallery.id,
+    request.nextUrl.searchParams.getAll("viewAs"),
+  );
+  if (!viewAs.ok) {
+    return errorResponse(viewAs.error, viewAs.error === "view_as_not_member" ? 404 : 400);
+  }
 
-  // `picks.length` IS the derived count (PLAN.md §3) — the same rows, counted
-  // once. Off the gallery's own FROZEN snapshot terms, never the live
-  // `packages` row: a gallery created under last year's price list keeps last
-  // year's numbers forever.
-  //
-  // Task #206 — `getGallerySelection()` now carries each pick's own
-  // `selectionKind`, so the edited/original split the included-photos quota
-  // needs comes straight off THIS list, not a second read. Anything that
-  // isn't literally `"original"` counts as edited — matching
-  // `assets.selectionKind`'s own `notNull().default("edited")` (schema.ts):
-  // `edited` is the domain's default, so a pick this route somehow can't
-  // interpret falls back to the same value the column itself would.
-  const selectedOriginal = picks.filter((pick) => pick.selectionKind === "original").length;
-  const selectedEdited = picks.length - selectedOriginal;
-  const quota = computeQuota(selectedEdited, selectedOriginal, {
-    includedPhotosSnapshot: gallery.includedPhotosSnapshot,
-    extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot,
-    extraPhotoPriceTiersSnapshot: gallery.extraPhotoPriceTiersSnapshot,
-    originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot,
+  const view = await getGallerySelection(gallery.id, quotaSnapshotOf(gallery), viewAs.subjectId, {
+    allowsOriginal: gallery.allowsOriginalSelection !== false,
   });
 
   return NextResponse.json({
-    // THE GALLERY-LEVEL LOCK, live. Since epic #239 `selected` means EVERY
-    // active client has submitted (one client submitting no longer closes the
-    // gallery — their own lock is `viewerLock` below), so `<ProofGrid>`'s
-    // read-only state from this status now means "everybody is done". The
-    // status is the SERVER's, so this converges in both directions: an admin
-    // unlocking a submitted selection (task #73) reopens every open tab on
-    // the next tick just as surely as the last submit closes them.
-    // `submittedAt` is the gallery's closing time (null while any client is
-    // still choosing); the per-person times live in `viewerLock`.
     status: gallery.status,
     submittedAt: gallery.selectionSubmittedAt ? gallery.selectionSubmittedAt.toISOString() : null,
-    quota,
-    picks,
-    viewerLock: lockSnapshot.viewerLock,
-    lockedPickerIds: lockSnapshot.lockedPickerIds,
-    submittedPickerIds: lockSnapshot.submittedPickerIds,
-    // Task #244 — "Último envío" under rolling delivery (a submit there never
-    // locks, so `viewerLock` cannot carry it).
-    viewerSubmittedAt: lockSnapshot.viewerSubmittedAt ?? null,
+    quota: view.quota,
+    counter: view.counter,
+    entries: view.entries,
+    viewerLock: view.lock.viewerLock,
+    adminLockedPickerIds: view.lock.adminLockedPickerIds,
+    viewerSubmittedAt: view.lock.viewerSubmittedAt,
   });
 });

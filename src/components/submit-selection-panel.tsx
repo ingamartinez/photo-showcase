@@ -5,34 +5,22 @@
 // same reason those two live together in the same render already
 // (proof-grid.tsx's own header comment).
 //
-// Confirmation step, deliberately a native `window.confirm()`: this mirrors
-// the ONE other irreversible, confirmation-gated action already in this
-// codebase (`<AssetTile>`'s delete, src/components/asset-tile.tsx) rather
-// than introducing a bespoke modal component for a single button. Task #147
-// re-examined this decision against the mock's own bottom-sheet confirmation
-// (design/system/client.html:840-872, `screen-enviar`) and kept it: the
-// sheet's CONTENT is what this task owns, and every fact it states —
-// irreversible, closes for everyone, extras settle outside the app — is
-// already carried by `confirmationMessage` below; building a bespoke sheet
-// component to re-skin a dialog this codebase already has a working,
-// reviewed pattern for was judged not worth the risk this pass, given how
-// much of this same slice already touches the tray, the counter and the
-// grid's layout. Revisit if the owner wants a bottom-sheet's PIXELS
-// specifically, not just its words.
-//
-// The dialog's own text is the task's explicit acceptance criterion —
-// "states what happens next, including that extras are settled outside the
-// app" — spelled out plainly rather than assumed obvious. Task #147 widened
-// it to the SHARED-BOARD framing `confirmationMessage` below carries: this
-// button closes the selection for every client attached to the gallery
-// (task #94), not only the one tapping it, matching the mock's own warning
-// (client.html:858-863) without inventing presence data this app does not
-// have (no viewer list — selection-tray.tsx's own "NO PRESENCE" stance).
+// Confirmation step, since task #268 a real sheet (`<SubmitConfirmSheet>`)
+// instead of the native `window.confirm()` this component used to open. That
+// retires #147's deliberate native-dialog decision: the owner asked for the
+// mock's bottom sheet (`design/system/client.html:840-872`) AND for a
+// per-person projection, and a native dialog cannot show either. The sheet's
+// copy stays the C10 acceptance criterion — irreversible, send again later,
+// whoever sends a shared photo first gets the unit, the gallery closes on its
+// own — and adds the viewer's own "what happens to me" rows, computed by the
+// same planner the submit executes.
 //
 // This confirmation is UX, not the gate: `POST
 // /api/galleries/[galleryId]/submit-selection` re-checks everything itself
 // (empty selection, gallery status, ownership) regardless of what this
-// button ever shows — see that route's own header comment.
+// button ever shows — see that route's own header comment. The projection is
+// read-time and can go stale if somebody else submits first; that is accepted
+// staleness, never a block.
 //
 // The locked message deliberately says "tu fotógrafo ya tiene acceso a esta
 // selección", not "ya fue notificado" — the submit route's own notification
@@ -42,8 +30,9 @@
 // the admin dashboard regardless of the email); "was notified" would be a
 // claim this component cannot back up.
 import { useState } from "react";
-import { formatCop } from "@/lib/format";
+import { SubmitConfirmSheet } from "@/components/submit-confirm-sheet";
 import type { QuotaResult } from "@/lib/quota";
+import type { SubmitProjection } from "@/lib/selection-snapshot";
 
 export type SubmitSelectionOutcome = {
   quota: QuotaResult;
@@ -58,80 +47,21 @@ export type SubmitSelectionOutcome = {
   requestedCount?: number;
 };
 
-function confirmationMessage(
-  quota: QuotaResult,
-  ownPickCount: number,
-  allowsOriginalSelection: boolean,
-): string {
-  const lines = [
-    // Epic #239: submitting closes only THIS person's selection. The earlier
-    // (task #147) wording warned that the whole shared board closed for
-    // everyone; that stopped being true when the lock became per person.
-    `¿Cerrar tu selección (${ownPickCount} foto${ownPickCount === 1 ? "" : "s"} tuya${ownPickCount === 1 ? "" : "s"})?`,
-    "Solo se cierra tu selección: las demás personas de la galería pueden seguir eligiendo las suyas.",
-    "Una vez enviada, no se puede modificar sola — si hace falta cambiarla, hay que escribirle a tu fotógrafo para que la reabra.",
-    // The quota and the extras are NOT per person: they are computed over the
-    // whole gallery's picks, and the lines below say so.
-    "Ojo: la cuota incluida y los extras se cuentan sobre las fotos de toda la galería, no solo las tuyas.",
-  ];
-
-  // Task #206 — one line per tariff that actually applies, built off
-  // `computeQuota`'s own pre-multiplied halves (`extrasSurchargeCop`/
-  // `originalsSurchargeCop`, src/lib/quota.ts) rather than this component
-  // multiplying anything itself. Same "always states the situation, even at
-  // zero" stance <SelectionCounter> follows, extended to two independent
-  // terms: whether EACH one shows a line depends on ITS OWN count, not on
-  // the other — a gallery with originals but no edited extras must not lose
-  // the originals line just because `quota.extras` happens to be 0.
-  const chargeLines: string[] = [];
-  if (quota.extras > 0) {
-    chargeLines.push(
-      `Extras: ${quota.extras} × ${formatCop(quota.extraUnitPriceCop)} = ${formatCop(quota.extrasSurchargeCop)}.`,
-    );
-  }
-  // Task #214 — ANDed with the gallery's own switch, same "absent, not
-  // zeroed" stance <SelectionCounter> applies to this same line: a gallery
-  // with the switch off must never show this sentence, even in the narrow,
-  // should-never-happen case of `quota.originals` being non-zero anyway.
-  if (allowsOriginalSelection && quota.originals > 0) {
-    chargeLines.push(
-      `Originales: ${quota.originals} × ${formatCop(quota.originalPhotoPriceCopSnapshot)} = ${formatCop(quota.originalsSurchargeCop)}. Un original nunca cuenta para la cuota incluida — siempre se cobra aparte.`,
-    );
-  }
-  if (chargeLines.length === 0) {
-    // Neither term applies — the ORIGINAL pre-#206 sentence, unchanged, for
-    // the gallery this task must not visibly change (the owner's own
-    // governing constraint).
-    lines.push("No tienes extras con esta selección.");
-  } else {
-    lines.push(...chargeLines);
-    // A TOTAL line only when there are TWO tariffs to add — with just one,
-    // that line's own number already IS the total, and repeating it would
-    // read as redundant rather than clarifying.
-    if (chargeLines.length > 1) {
-      lines.push(`Total: ${formatCop(quota.surchargeCop)}.`);
-    }
-  }
-  lines.push("El cobro de los extras (si los hay) se coordina por fuera de la app, no acá.");
-  return lines.join("\n\n");
-}
-
 export function SubmitSelectionPanel({
   galleryId,
   quota,
   isLocked,
   submittedAt,
   onSubmitted,
-  allowsOriginalSelection,
   isGalleryLocked = isLocked,
   lockedByAdmin = false,
-  ownPickCount = quota.selected,
   isAdminPreview = false,
-  rollingDelivery = false,
   unsentCount = 0,
-  lastSubmittedAt = null,
+  projection = null,
 }: {
   galleryId: string;
+  /** Still carried for the outcomes' type and for callers that shared the
+   * server's quota; the C10 confirmation no longer quotes money. */
   quota: QuotaResult;
   // Whether THIS viewer can no longer change anything: the gallery is past
   // `proofing`, OR (epic #239) this person submitted / was locked while the
@@ -143,8 +73,8 @@ export function SubmitSelectionPanel({
   isLocked: boolean;
   submittedAt: string | null;
   onSubmitted: (outcome: SubmitSelectionOutcome) => void;
-  /** Task #214 — threaded through to `confirmationMessage` below, same gate
-   * <SelectionCounter> applies. */
+  /** Task #214 — kept on the wire so every caller keeps compiling; the C10
+   * confirmation is about the SEND, not the tariffs. */
   allowsOriginalSelection: boolean;
   /** Epic #239 — the gallery itself is past `proofing` (everybody is done).
    * Defaults to `isLocked`, the pre-#239 meaning. When `isLocked` but this is
@@ -153,23 +83,25 @@ export function SubmitSelectionPanel({
   isGalleryLocked?: boolean;
   /** Epic #239 — the photographer locked this person (never submitted). */
   lockedByAdmin?: boolean;
-  /** Epic #239 — how many photos THIS person picked (the submit route refuses
-   * an empty selection per person, so this gates the button and fills the
-   * confirmation). Defaults to the gallery-wide count. */
+  /** Epic #239 — kept for callers; the button counts `unsentCount` now. */
   ownPickCount?: number;
   /** Epic #239 — the photographer previewing the client page. The submit
    * route refuses admins (`admin_cannot_submit`), so no button is offered. */
   isAdminPreview?: boolean;
-  /** Task #244 — rolling delivery: the submit places an ORDER for the photos
-   * still "por enviar" and never locks. The button then counts those photos
-   * (`unsentCount`) instead of the whole selection, and the panel shows the
-   * last time this person sent (`lastSubmittedAt`). */
-  rollingDelivery?: boolean;
+  /** Epic #250 S7 — the submit sends the viewer's own "por enviar"; the
+   * button counts exactly those photos (decision 19). */
   unsentCount?: number;
+  /** Task #268 — what this viewer's submit will do, from the server's own
+   * `planCartClaim`. `null` only when there is no subject (defensive: no
+   * trigger is rendered then). */
+  projection?: SubmitProjection | null;
+  /** Task #244 — kept on the wire; the tray owns "Último envío". */
+  rollingDelivery?: boolean;
   lastSubmittedAt?: string | null;
 }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [open, setOpen] = useState(false);
 
   if (isLocked) {
     if (isGalleryLocked) {
@@ -207,12 +139,9 @@ export function SubmitSelectionPanel({
 
   async function handleSubmit() {
     if (pending) return;
-    const confirmation = rollingDelivery
-      ? `¿Enviar ${unsentCount} foto${unsentCount === 1 ? "" : "s"} a tu fotógrafo para que las edite? ` +
-        "Una vez enviadas no las puedes quitar por tu cuenta."
-      : confirmationMessage(quota, ownPickCount, allowsOriginalSelection);
-    if (!window.confirm(confirmation)) return;
-
+    // The sheet is closed BEFORE the POST (task #268): the pending state and
+    // the error live on the bar behind it, exactly where they were before.
+    setOpen(false);
     setPending(true);
     setError(null);
     try {
@@ -268,23 +197,27 @@ export function SubmitSelectionPanel({
           for this exact mock shape (that file's own comment on
           `.btn.btn--primary.btn--wide`), reused here rather than invented a
           second time. */}
-      <button
-        type="button"
-        onClick={() => void handleSubmit()}
-        disabled={pending || (rollingDelivery ? unsentCount === 0 : ownPickCount === 0)}
-        className="border-accent bg-accent hover:border-accent-2 hover:bg-accent-2 text-ink inline-flex min-h-11 items-center justify-center rounded-[3px] border px-3 text-sm font-semibold tracking-[0.02em] whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-12 lg:px-5"
-      >
-        {pending
-          ? "Enviando…"
-          : rollingDelivery
-            ? `Enviar ${unsentCount} foto${unsentCount === 1 ? "" : "s"}`
-            : "Enviar selección"}
-      </button>
-      {rollingDelivery && lastSubmittedAt && (
-        <p className="text-fg-mute text-xs" role="status">
-          Último envío: {new Date(lastSubmittedAt).toLocaleDateString("es-CO")}
-        </p>
-      )}
+      <SubmitConfirmSheet
+        open={open}
+        onOpenChange={setOpen}
+        unsentCount={unsentCount}
+        includedPhotos={quota.includedPhotosSnapshot}
+        projection={projection}
+        onConfirm={() => void handleSubmit()}
+        trigger={
+          <button
+            type="button"
+            disabled={pending || unsentCount === 0}
+            className="border-accent bg-accent hover:border-accent-2 hover:bg-accent-2 text-ink inline-flex min-h-11 items-center justify-center rounded-[3px] border px-3 text-sm font-semibold tracking-[0.02em] whitespace-nowrap transition-colors disabled:cursor-not-allowed disabled:opacity-50 lg:min-h-12 lg:px-5"
+          >
+            {pending
+              ? "Enviando…"
+              : unsentCount === 1
+                ? "Enviar la foto"
+                : `Enviar las ${unsentCount}`}
+          </button>
+        }
+      />
       {error && (
         <p role="alert" className="text-danger text-sm">
           {error}

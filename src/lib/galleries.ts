@@ -9,7 +9,7 @@
 // epic's central rule).
 import "server-only";
 
-import { and, asc, count, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import { and, asc, count, countDistinct, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets, galleries, galleryClients } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
@@ -36,6 +36,12 @@ export type GalleryWithDetails = {
   includedPhotosSnapshot: number;
   extraPhotoPriceCopSnapshot: number;
   photoCount: number;
+  // Epic #250 (#263) — how many CLAIMED photos of this gallery still have no
+  // uploaded final, i.e. the photographer's outstanding work. Derived on read
+  // from the same joined assets this function already fetches; `0` for a
+  // gallery whose status cannot hold work (`draft`/`delivered`/`archived`),
+  // exactly like `getPendingSelectionCount`.
+  pendingWorkCount: number;
 };
 
 /** Every gallery, with the client and package it is bound to, its frozen
@@ -87,10 +93,11 @@ export async function getGalleriesWithDetails(): Promise<GalleryWithDetails[]> {
         with: { user: { columns: { id: true, name: true, email: true } } },
       },
       package: { columns: { id: true, name: true } },
-      // Only the id is needed to count — pulling full asset rows here would
-      // be wasted work for a list that only ever shows a number (same
-      // reasoning as getClientsWithGalleryCount in src/lib/clients.ts).
-      assets: { columns: { id: true } },
+      // Epic #250 (#263): `isSelected`/`finalKey` joined the projection so the
+      // pending-work tally is DERIVED from the same array this function
+      // already fetches, on the same predicate as `getPendingSelectionCount`
+      // (below). Never a second query.
+      assets: { columns: { id: true, isSelected: true, finalKey: true } },
     },
   });
 
@@ -116,21 +123,61 @@ export async function getGalleriesWithDetails(): Promise<GalleryWithDetails[]> {
     includedPhotosSnapshot: row.includedPhotosSnapshot,
     extraPhotoPriceCopSnapshot: row.extraPhotoPriceCopSnapshot,
     photoCount: row.assets.length,
+    pendingWorkCount: countsAsPendingWork(row.status)
+      ? row.assets.filter((asset) => asset.isSelected && asset.finalKey === null).length
+      : 0,
   }));
 }
 
-/** How many galleries are sitting in `selected` — submitted by a client and
- * awaiting the photographer's review. Powers the "N selecciones esperando"
- * count on `/dashboard` (task #75), which today reads no database at all;
- * without this, a submission is only visible by opening
- * `/dashboard/galleries` and reading every row's status text. A dedicated
- * `count()` query rather than reusing `getGalleriesWithDetails()` — the
- * dashboard home only needs a number, not every client/package/asset join. */
+/**
+ * The statuses where the photographer can still have work outstanding: a
+ * gallery still being picked (`proofing`) or reviewed (`selected`). Exported
+ * so the SQL predicate and the JS one below are visibly the same rule.
+ */
+export const PENDING_WORK_STATUSES = [
+  "proofing",
+  "selected",
+] as const satisfies readonly Gallery["status"][];
+
+/** Whether this gallery's status can hold pending work at all. */
+function countsAsPendingWork(status: Gallery["status"]): boolean {
+  return (PENDING_WORK_STATUSES as readonly Gallery["status"][]).includes(status);
+}
+
+/**
+ * How many galleries have CLAIMED photos with no uploaded final — the
+ * photographer's outstanding work. Powers the "N selecciones esperando" count
+ * on `/dashboard` (task #75), the galleries list's own tally and the nav
+ * badge.
+ *
+ * TASK #263 (epic #250) REWROTE THE PREDICATE. It used to count galleries
+ * whose status is `selected`, i.e. "a client pressed Enviar". Two things broke
+ * that meaning: decision 10 made a submit an ORDER that never locks, so work
+ * now arrives while the gallery is still `proofing`; and a `selected` gallery
+ * whose finals are all uploaded is not waiting on anybody. The predicate is
+ * now the DELIVER GATE's own rule — `is_selected AND final_key IS NULL`
+ * (`actions.ts`'s deliver guard, `<GalleryWorkspace>`'s live counter) — for
+ * galleries in `PENDING_WORK_STATUSES`.
+ *
+ * The NAME is kept on purpose: three call sites depend on it
+ * (`/dashboard`, `api/galleries/pending-count/route.ts`, the nav) and what it
+ * MEANS is "selections awaiting your review", which is still exactly right.
+ *
+ * A dedicated `count(DISTINCT)` query rather than reusing
+ * `getGalleriesWithDetails()` — the dashboard home only needs a number.
+ */
 export async function getPendingSelectionCount(): Promise<number> {
   const [row] = await db
-    .select({ value: count() })
+    .select({ value: countDistinct(galleries.id) })
     .from(galleries)
-    .where(eq(galleries.status, "selected"));
+    .innerJoin(assets, eq(assets.galleryId, galleries.id))
+    .where(
+      and(
+        inArray(galleries.status, [...PENDING_WORK_STATUSES]),
+        eq(assets.isSelected, true),
+        isNull(assets.finalKey),
+      ),
+    );
   return row?.value ?? 0;
 }
 
@@ -195,7 +242,7 @@ const ACTIVE_CLIENT_RULE_MESSAGES: Record<ActiveClientRuleAction, string> = {
   // only where the condition lives.
   "remove-client":
     "No puedes quitar al último cliente activo de una galería que ya no está en borrador — " +
-    "agregá otro cliente antes de quitar este, o la galería queda sin nadie que pueda entrar.",
+    "agrega otro cliente antes de quitar este, o la galería queda sin nadie que pueda entrar.",
 };
 
 /**
@@ -423,6 +470,13 @@ export type GalleryDetailAsset = {
   // before/after preview fed `computeQuota` a hardcoded 0 originals — true
   // only while task #206 hadn't shipped selectable originals yet.
   selectionKind: (typeof assets.$inferSelect)["selectionKind"];
+  // Epic #250 (#263) — whose unit this is, for the admin selected-photos list's
+  // attribution line. `null` = a legacy claim with no recorded holder; the
+  // complete set of people who asked for this photo lives in `asset_picks`,
+  // read by `getDashboardSelection`, never here. Optional for the same reason
+  // `requestedAt` above is: older fixtures describe the shape from before this
+  // column was read, and a missing value means "no holder recorded".
+  billedTo?: string | null;
   // Task #223 — the photographer deliberately delivered this photo despite
   // the client never picking it. See `assets.isExtra`'s own schema comment
   // for why this is a stored decision rather than derived from `finalKey &&
@@ -560,6 +614,8 @@ const galleryDetailWith = {
       // Task #210 — see `GalleryDetailAsset.selectionKind`'s own comment
       // above for why this joined the projection.
       selectionKind: true,
+      // Epic #250 (#263) — see `GalleryDetailAsset.billedTo`'s own comment.
+      billedTo: true,
       // Task #223 — see `GalleryDetailAsset.isExtra`/`deliveredFor`'s own
       // comments above. Both are read by the admin workspace (which offers
       // the person picker) and `isExtra` by the client gallery page (which
@@ -730,79 +786,6 @@ export async function getGalleryClients(galleryId: string): Promise<GalleryClien
     with: { user: { columns: { id: true, name: true, email: true } } },
   });
   return rows.map((row) => ({ id: row.user.id, name: row.user.name, email: row.user.email }));
-}
-
-export type GalleryClientSelection = {
-  userId: string;
-  lockedAt: Date | null;
-  submittedAt: Date | null;
-  /** `assets.selected_by = userId` within THIS gallery. */
-  pickCount: number;
-  /** Task #244 (rolling delivery) — of those picks: ORDERED (`requested_at`
-   * set), ordered AND with an uploaded final ("editadas"), and still not sent
-   * ("por enviar"). Always derived here, never stored. */
-  requestedCount: number;
-  editedCount: number;
-  unsentCount: number;
-};
-
-/** Epic #239 (slice #242) — per ACTIVE client on one gallery: the per-client
- * lock columns and how many assets they currently hold, plus which client owns
- * each picked asset (so the admin's selected-photos list can filter by person).
- * Admin dashboard only; derived on read, nothing stored. `removedAt IS NULL`
- * on memberships — a removed client has no row here — and picks are scoped to
- * this gallery's assets. */
-export async function getGalleryClientSelections(galleryId: string): Promise<{
-  clients: GalleryClientSelection[];
-  pickOwnerByAssetId: Record<string, string>;
-}> {
-  const members = await db
-    .select({
-      userId: galleryClients.userId,
-      lockedAt: galleryClients.selectionLockedAt,
-      submittedAt: galleryClients.selectionSubmittedAt,
-    })
-    .from(galleryClients)
-    .where(and(eq(galleryClients.galleryId, galleryId), isNull(galleryClients.removedAt)));
-
-  const picked = await db
-    .select({
-      id: assets.id,
-      selectedBy: assets.selectedBy,
-      requestedAt: assets.requestedAt,
-      isEdited: assets.isEdited,
-      finalKey: assets.finalKey,
-    })
-    .from(assets)
-    .where(and(eq(assets.galleryId, galleryId), eq(assets.isSelected, true)));
-
-  const pickOwnerByAssetId: Record<string, string> = {};
-  const tally = new Map<string, { picks: number; requested: number; edited: number }>();
-  for (const asset of picked) {
-    if (asset.selectedBy === null) continue;
-    pickOwnerByAssetId[asset.id] = asset.selectedBy;
-    const entry = tally.get(asset.selectedBy) ?? { picks: 0, requested: 0, edited: 0 };
-    entry.picks += 1;
-    if (asset.requestedAt != null) {
-      entry.requested += 1;
-      if (asset.isEdited && asset.finalKey) entry.edited += 1;
-    }
-    tally.set(asset.selectedBy, entry);
-  }
-
-  return {
-    clients: members.map((member) => {
-      const entry = tally.get(member.userId) ?? { picks: 0, requested: 0, edited: 0 };
-      return {
-        ...member,
-        pickCount: entry.picks,
-        requestedCount: entry.requested,
-        editedCount: entry.edited,
-        unsentCount: entry.picks - entry.requested,
-      };
-    }),
-    pickOwnerByAssetId,
-  };
 }
 
 export type ClientGalleryListItem = {

@@ -6,7 +6,108 @@ import userEvent from "@testing-library/user-event";
 import { ProofGrid, SELECTION_POLL_INTERVAL_MS } from "./proof-grid";
 import type { GalleryStatus, ProofAsset } from "./proof-grid";
 import { computeQuota } from "@/lib/quota";
-import type { SelectionPick } from "@/lib/selection-snapshot";
+import { emptyShare } from "@/lib/quota-attribution";
+import type { SelectionEntry } from "@/lib/selection-snapshot";
+import { emptyProjection } from "@/test-support/selection-fixtures";
+
+type SelectionPick = {
+  assetId: string;
+  selectedAt: string | null;
+  pickedBy: { id: string; label: string } | null;
+  selectionKind: "edited" | "original";
+  requestedAt?: string | null;
+};
+
+type LegacyPick = {
+  assetId: string;
+  selectedAt: string | null;
+  pickedBy: { id: string; label: string } | null;
+  selectionKind: "edited" | "original";
+  requestedAt?: string | null;
+  /** `false` = an UNSENT pick on a still-free photo (a true cart). Defaults
+   * to `true` so the 40-odd older fixtures keep meaning "claimed". */
+  claimed?: boolean;
+};
+
+type GridOverrides = Partial<ComponentProps<typeof ProofGrid>> & {
+  /** Pre-S6 fixture shape: a flat list of claimed picks. The helper adapts it
+   * to the entry wire shape so 40-odd grid tests did not have to change. */
+  initialPicks?: LegacyPick[];
+  initialLockedPickerIds?: string[];
+  includedPhotosSnapshot?: number;
+  extraPhotoPriceCopSnapshot?: number;
+  extraPhotoPriceTiersSnapshot?: { minExtras: number; priceCop: number }[] | null;
+  originalPhotoPriceCopSnapshot?: number;
+};
+
+function entriesFor(picks: LegacyPick[]): SelectionEntry[] {
+  return picks.map((pick) => {
+    const claimed = pick.claimed ?? true;
+    return {
+      assetId: pick.assetId,
+      claim:
+        pick.pickedBy && claimed
+          ? {
+              claimedAt: pick.selectedAt,
+              resolvedKind: pick.selectionKind,
+              billedTo: pick.pickedBy,
+              charge: "included",
+              canEscalate: false,
+            }
+          : null,
+      picks: pick.pickedBy
+        ? [
+            {
+              userId: pick.pickedBy.id,
+              label: pick.pickedBy.label,
+              kind: pick.selectionKind,
+              pickedAt: pick.selectedAt ?? "2026-07-30T12:00:00.000Z",
+              // Most fixtures here predate the order semantics; treating them
+              // as unsent keeps their toggles/type controls live, which is what
+              // those tests are about. A test that needs a sent pick sets
+              // `requestedAt`.
+              submittedAt: pick.requestedAt ?? null,
+              state: pick.requestedAt ? "billed" : claimed ? "degraded" : "cart",
+            },
+          ]
+        : [],
+    };
+  });
+}
+
+function counterFor(picks: LegacyPick[], viewerId: string) {
+  const units = new Map<string, number>();
+  let group = 0;
+  let yours = 0;
+  let shared = 0;
+  let toSend = 0;
+  for (const pick of picks) {
+    const sent = pick.requestedAt != null;
+    if (sent && pick.pickedBy) {
+      group += 1;
+      units.set(pick.pickedBy.id, (units.get(pick.pickedBy.id) ?? 0) + 1);
+      if (pick.pickedBy.id === viewerId) yours += 1;
+      else shared += 1;
+    } else if (pick.pickedBy?.id === viewerId) {
+      toSend += 1;
+    }
+  }
+  return {
+    group,
+    viewer: { yours, shared, toSend, projection: emptyProjection() },
+    people: [...units].map(([userId, count]) => ({
+      userId,
+      label: picks.find((pick) => pick.pickedBy?.id === userId)?.pickedBy?.label ?? userId,
+      units: count,
+      // Task #264 — this fixture predates the per-person money wire and is not
+      // about money; the required share is the all-zero one, produced by the
+      // same module the server uses.
+      share: emptyShare(),
+    })),
+    unattributed: picks.filter((pick) => pick.pickedBy === null).length,
+    unattributedShare: emptyShare(),
+  };
+}
 
 // <ProofGrid> renders <SelectionCounter>, which imports `formatCop` off
 // `@/lib/format` — a plain module with no `server-only`/`@/lib/db` import
@@ -15,6 +116,56 @@ import type { SelectionPick } from "@/lib/selection-snapshot";
 // no mock needed here, the real `formatCop` runs.
 
 function jsonResponse(status: number, body: unknown): Response {
+  // Pre-S6 PATCH fixtures carry only the legacy `asset` block. Adapt them to
+  // the S6 response shape (entry + counter) here, so the tests keep asserting
+  // what the client does with a confirmed write rather than its wire spelling.
+  if (body && typeof body === "object" && "asset" in body && !("entry" in body)) {
+    const legacy = body as {
+      asset: {
+        id: string;
+        isSelected: boolean;
+        selectedAt?: string | null;
+        pickedBy?: { id: string; label: string } | null;
+        selectionKind?: "edited" | "original";
+      };
+      quota?: { selected?: number };
+    };
+    const { asset } = legacy;
+    body = {
+      ...legacy,
+      entry: asset.isSelected
+        ? {
+            assetId: asset.id,
+            claim: {
+              claimedAt: asset.selectedAt ?? null,
+              resolvedKind: asset.selectionKind ?? "edited",
+              billedTo: asset.pickedBy ?? null,
+              charge: "included",
+              canEscalate: false,
+            },
+            picks: asset.pickedBy
+              ? [
+                  {
+                    userId: asset.pickedBy.id,
+                    label: asset.pickedBy.label,
+                    kind: asset.selectionKind ?? "edited",
+                    pickedAt: asset.selectedAt ?? "2026-07-30T12:00:00.000Z",
+                    submittedAt: asset.selectedAt ?? null,
+                    state: "billed",
+                  },
+                ]
+              : [],
+          }
+        : null,
+      counter: {
+        group: legacy.quota?.selected ?? 0,
+        viewer: null,
+        people: [],
+        unattributed: 0,
+        unattributedShare: emptyShare(),
+      },
+    };
+  }
   return {
     ok: status >= 200 && status < 300,
     status,
@@ -43,27 +194,55 @@ function assetsFor(overrides: Partial<ProofAsset>[] = [{}]): ProofAsset[] {
 // Every test wants the same Estándar snapshot terms (PLAN.md §3's table)
 // unless it's specifically exercising the quota — this only overrides
 // `initialAssets` most of the time.
-function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
+function renderGrid(overrides: GridOverrides = {}) {
+  const {
+    initialPicks = [],
+    initialLockedPickerIds = [],
+    includedPhotosSnapshot = 13,
+    extraPhotoPriceCopSnapshot = 5_000,
+    extraPhotoPriceTiersSnapshot = null,
+    originalPhotoPriceCopSnapshot = 2_000,
+    ...rest
+  } = overrides;
+  const terms = {
+    includedPhotosSnapshot,
+    extraPhotoPriceCopSnapshot,
+    extraPhotoPriceTiersSnapshot,
+    originalPhotoPriceCopSnapshot,
+  };
+  // Most fixtures spell "the viewer picked this" as `asset.isSelected: true`
+  // without an explicit entry. Under epic #250 that flag is the CLAIM, so the
+  // helper mirrors each such flag as the viewer's own UNSENT pick — which is
+  // what those tests mean, and what keeps their toggle assertions about the
+  // viewer instead of about somebody else's claim.
+  const initialAssets = rest.initialAssets ?? assetsFor();
+  const effectivePicks = [...initialPicks];
+  for (const asset of initialAssets) {
+    if (asset.isSelected && !effectivePicks.some((pick) => pick.assetId === asset.id)) {
+      effectivePicks.push({
+        assetId: asset.id,
+        selectedAt: null,
+        pickedBy: { id: "client-a", label: "Ana" },
+        selectionKind: "edited",
+      });
+    }
+  }
+  const edited = effectivePicks.filter((pick) => pick.selectionKind === "edited").length;
+  const original = effectivePicks.length - edited;
+
   return render(
     <ProofGrid
       galleryId="g1"
-      initialAssets={assetsFor()}
+      initialAssets={initialAssets}
       initialStatus="proofing"
       initialSubmittedAt={null}
-      // Task #95: the collaborative tray's first paint. Most tests here
-      // predate it and are about the grid, so the default is "nobody has
-      // picked anything yet" — the tests that exercise the tray or the live
-      // sync override it.
-      initialPicks={[]}
+      // Epic #250 S6 — the server hands the entries, quota and counter; the
+      // legacy `initialPicks` fixture above is adapted once, here.
+      initialEntries={entriesFor(effectivePicks)}
+      initialQuota={computeQuota(edited, original, terms)}
+      initialCounter={counterFor(effectivePicks, "client-a")}
+      initialAdminLockedPickerIds={initialLockedPickerIds}
       viewerId="client-a"
-      includedPhotosSnapshot={13}
-      extraPhotoPriceCopSnapshot={5_000}
-      extraPhotoPriceTiersSnapshot={null}
-      // Task #206 — the third frozen snapshot term, matching the value
-      // `scripts/seed-packages.ts` and the migration default use. Most tests
-      // here only exercise `includedPhotosSnapshot`/`extraPhotoPriceCopSnapshot`;
-      // the ones exercising originals override this explicitly.
-      originalPhotoPriceCopSnapshot={2_000}
       // Task #204 — default to `flat`, today's only behavior; the tray's own
       // test file covers `by-person` grouping directly.
       selectionTrayMode="flat"
@@ -73,7 +252,7 @@ function renderGrid(overrides: Partial<ComponentProps<typeof ProofGrid>> = {}) {
       // switch itself (the "allowsOriginalSelection is OFF" describe block)
       // override this explicitly.
       allowsOriginalSelection={true}
-      {...overrides}
+      {...rest}
     />,
   );
 }
@@ -88,6 +267,21 @@ function counterText(): string {
   const first = screen.getByText(/incluidas/).textContent ?? "";
   const second = screen.getByText(/^extras/).textContent ?? "";
   return `${first} ${second}`.replace(/\s+/g, " ");
+}
+
+// Task #269 (fix round) — the gallery's own arithmetic now sits behind its own
+// control whenever the breakdown has more than one row (the viewer's own zero
+// row and the "Sin registro" bucket are each a row), so a test that reads
+// `^extras` off the counter has to open that level first, exactly as a reader
+// would. Returns whether a control was there at all, so a fixture can assert
+// its presence instead of clicking nothing: `getByRole` for a button that only
+// sometimes exists would make the failure a query error rather than a
+// statement about the UI.
+function openGalleryTotal(): boolean {
+  const button = screen.queryByRole("button", { name: "Ver total de la galería" });
+  if (!button) return false;
+  fireEvent.click(button);
+  return true;
 }
 
 afterEach(() => {
@@ -321,6 +515,47 @@ describe("ProofGrid", () => {
   });
 
   describe("live quota counter", () => {
+    // Task #264 — <ProofGrid> is the only caller of <SelectionCounter> in the
+    // product, and `counter` is an OPTIONAL prop there (the single-payer
+    // contract, and every pre-#264 test in this repo, depend on that). So
+    // forgetting to pass it still compiles and still renders — it just puts
+    // every client back on the gallery-wide bill. This is the test that
+    // notices.
+    it("hands the bar the per-person counter: two holders render two money rows, the viewer's own name on top", () => {
+      const anaShare = {
+        included: 1,
+        extras: 2,
+        originals: 0,
+        extrasSurchargeCop: 10_000,
+        originalsSurchargeCop: 0,
+        surchargeCop: 10_000,
+      };
+      renderGrid({
+        initialCounter: {
+          group: 4,
+          viewer: { yours: 3, shared: 0, toSend: 0, projection: emptyProjection() },
+          people: [
+            { userId: "client-a", label: "Ana", units: 3, share: anaShare },
+            { userId: "client-b", label: "Beto", units: 1, share: emptyShare() },
+          ],
+          unattributed: 0,
+          unattributedShare: emptyShare(),
+        },
+        // The bar is the one collapsible caller; the folded row is where a
+        // phone reads the amount before opening the detail.
+        extraPhotoPriceCopSnapshot: 5_000,
+        includedPhotosSnapshot: 1,
+      });
+
+      expect(screen.getAllByRole("term").map((node) => node.textContent)).toEqual(["Tú", "Beto"]);
+      expect(screen.getAllByRole("definition")[0]?.textContent?.replace(/\s+/g, " ")).toContain(
+        "3 fotos · 2 extras · $ 10.000",
+      );
+      expect(
+        screen.getByRole("button", { name: "Ver detalle" }).parentElement?.textContent,
+      ).toContain("a tu nombre");
+    });
+
     it("renders the initial counter computed from the FIRST-PAINT PICKS, not the assets' own isSelected flags", () => {
       // Task #206, round-2 review — the initial quota is derived from
       // `initialPicks` alone (see use-shared-selection.ts's own comment on
@@ -339,6 +574,10 @@ describe("ProofGrid", () => {
         extraPhotoPriceTiersSnapshot: null,
       });
 
+      // Task #269 (fix round) — this fixture's counter has a two-row
+      // breakdown (the viewer's own zero row plus "Sin registro"), so the
+      // arithmetic is one level down and has to be opened to be read.
+      expect(openGalleryTotal()).toBe(true);
       const text = counterText();
       expect(text).toContain("seleccionadas 2");
       expect(text).toContain("extras 1");
@@ -374,6 +613,10 @@ describe("ProofGrid", () => {
       // (1, since "a2" reads stale there) and subtracted `initialPicks`' own
       // originals count from that stale total would report "seleccionadas 1"
       // here — losing "a1" from the count entirely.
+      //
+      // Task #269 (fix round) — same two-row breakdown as the test above, so
+      // `counterText` reads the arithmetic only once its level is open.
+      expect(openGalleryTotal()).toBe(true);
       expect(counterText()).toContain("seleccionadas 2");
     });
 
@@ -563,12 +806,12 @@ describe("ProofGrid", () => {
     });
   });
 
-  // Task #206, round-2 review — proves the PATCH response's own `pickedBy`
-  // (not just `selectionKind`) is genuinely applied to local state after a
-  // type-only change, closing the exact gap the review found: a `users`
-  // lookup on the server whose result nothing on the client ever read.
+  // Epic #250 S7 — a type-only response carries the asset's WHOLE entry
+  // (claim + every asker), and the client must replace that entry wholesale.
+  // This is the local-merge half of "one person's cart next to somebody
+  // else's pick cannot be reconstructed from a single `pick`".
   describe("type control (task #206)", () => {
-    it("updates the tray's picker label from the response after a type-only change, not just the type", async () => {
+    it("applies the response's whole entry after a type-only change, picks and chips included", async () => {
       const fetchMock = vi.fn(() =>
         Promise.resolve(
           jsonResponse(200, {
@@ -576,11 +819,43 @@ describe("ProofGrid", () => {
               id: "a1",
               isSelected: true,
               selectedAt: "2026-07-30T12:00:00.000Z",
-              // A DIFFERENT picker than the tray's own server-rendered
-              // seed below — proving this label came from THIS response,
-              // not from the pick's existing local copy.
-              pickedBy: { id: "client-c", label: "Caro Ruiz" },
+              pickedBy: { id: "client-a", label: "Ana" },
               selectionKind: "original",
+            },
+            entry: {
+              assetId: "a1",
+              claim: {
+                claimedAt: "2026-07-30T12:00:00.000Z",
+                resolvedKind: "original",
+                billedTo: { id: "client-a", label: "Ana" },
+                charge: "included",
+                canEscalate: false,
+              },
+              picks: [
+                {
+                  userId: "client-a",
+                  label: "Ana",
+                  kind: "original",
+                  pickedAt: "2026-07-30T11:00:00.000Z",
+                  submittedAt: null,
+                  state: "degraded",
+                },
+                {
+                  userId: "client-c",
+                  label: "Sara",
+                  kind: "edited",
+                  pickedAt: "2026-07-30T11:30:00.000Z",
+                  submittedAt: null,
+                  state: "degraded",
+                },
+              ],
+            },
+            counter: {
+              group: 1,
+              viewer: { yours: 0, shared: 0, toSend: 1, projection: emptyProjection() },
+              people: [],
+              unattributed: 0,
+              unattributedShare: emptyShare(),
             },
             quota: computeQuota(0, 1, {
               includedPhotosSnapshot: 13,
@@ -595,19 +870,17 @@ describe("ProofGrid", () => {
       const user = userEvent.setup();
 
       renderGrid({
-        initialAssets: assetsFor([{ isSelected: true }]),
+        initialAssets: assetsFor([{ isSelected: false }]),
         initialPicks: [
           {
             assetId: "a1",
             selectedAt: "2026-07-30T11:00:00.000Z",
-            pickedBy: { id: "client-b", label: "Beto Ruiz" },
+            pickedBy: { id: "client-a", label: "Ana" },
             selectionKind: "edited",
+            claimed: false,
           },
         ],
       });
-
-      const tray = screen.getByRole("region", { name: "Fotos elegidas" });
-      expect(within(tray).getByText("Beto Ruiz")).toBeDefined();
 
       await user.click(screen.getByRole("button", { name: "Marcar como original: IMG_0001.JPG" }));
 
@@ -616,10 +889,16 @@ describe("ProofGrid", () => {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ selectionKind: "original" }),
       });
+      // The unseen Sara pick arrives with the response — proof the entry, not
+      // just the kind, was applied.
       await vi.waitFor(() => {
-        expect(within(tray).getByText("Caro Ruiz")).toBeDefined();
+        expect(screen.getByText(/Eligieron esta foto: Tú, Sara/)).toBeDefined();
       });
-      expect(within(tray).queryByText("Beto Ruiz")).toBeNull();
+      expect(
+        screen
+          .getByRole("button", { name: "Marcar como original: IMG_0001.JPG" })
+          .getAttribute("aria-pressed"),
+      ).toBe("true");
     });
   });
 
@@ -686,7 +965,7 @@ describe("ProofGrid", () => {
     it("renders the submit button and enabled toggles for a gallery still in proofing", () => {
       renderGrid({ initialStatus: "proofing", initialAssets: assetsFor([{ isSelected: true }]) });
 
-      expect(screen.getByRole("button", { name: "Enviar selección" })).toBeDefined();
+      expect(screen.getByRole("button", { name: /^Enviar/ })).toBeDefined();
       expect(screen.getByRole("button", { name: /Quitar de seleccionadas/ })).toHaveProperty(
         "disabled",
         false,
@@ -700,7 +979,7 @@ describe("ProofGrid", () => {
         initialAssets: assetsFor([{ isSelected: true }]),
       });
 
-      expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Enviar/ })).toBeNull();
       // Pinned to the CORRECTED copy, not just the shared "Selección
       // enviada" prefix — see submit-selection-panel.test.tsx's own comment
       // on this exact assertion for why the prefix alone doesn't catch a
@@ -713,7 +992,6 @@ describe("ProofGrid", () => {
     });
 
     it("locks every toggle button and replaces the submit button with the confirmation message once a submission succeeds", async () => {
-      vi.spyOn(window, "confirm").mockReturnValue(true);
       const submittedQuota = {
         selected: 1,
         includedPhotosSnapshot: 13,
@@ -722,17 +1000,58 @@ describe("ProofGrid", () => {
         extras: 0,
         surchargeCop: 0,
       };
-      const fetchMock = vi.fn(() =>
-        Promise.resolve(
+      const fetchMock = vi.fn((url: string) => {
+        if (url.endsWith("/submit-selection")) {
+          return Promise.resolve(
+            jsonResponse(200, {
+              status: "submitted",
+              quota: submittedQuota,
+              submittedAt: "2026-07-28T12:00:00.000Z",
+              // Single-client gallery: this submission closes the gallery too.
+              gallerySelected: true,
+            }),
+          );
+        }
+        return Promise.resolve(
           jsonResponse(200, {
-            status: "submitted",
-            quota: submittedQuota,
+            status: "selected",
             submittedAt: "2026-07-28T12:00:00.000Z",
-            // Single-client gallery: this submission closes the gallery too.
-            gallerySelected: true,
+            entries: [
+              {
+                assetId: "a1",
+                claim: {
+                  claimedAt: "2026-07-28T12:00:00.000Z",
+                  resolvedKind: "edited",
+                  billedTo: { id: "client-a", label: "Ana" },
+                  charge: "included",
+                  canEscalate: false,
+                },
+                picks: [
+                  {
+                    userId: "client-a",
+                    label: "Ana",
+                    kind: "edited",
+                    pickedAt: "2026-07-28T12:00:00.000Z",
+                    submittedAt: "2026-07-28T12:00:00.000Z",
+                    state: "billed",
+                  },
+                ],
+              },
+            ],
+            counter: {
+              group: 1,
+              viewer: { yours: 1, shared: 0, toSend: 0, projection: emptyProjection() },
+              people: [{ userId: "client-a", label: "Ana", units: 1 }],
+              unattributed: 0,
+              unattributedShare: emptyShare(),
+            },
+            quota: submittedQuota,
+            viewerLock: null,
+            adminLockedPickerIds: [],
+            viewerSubmittedAt: null,
           }),
-        ),
-      );
+        );
+      });
       vi.stubGlobal("fetch", fetchMock);
       const user = userEvent.setup();
 
@@ -757,14 +1076,15 @@ describe("ProofGrid", () => {
         ],
       });
 
-      await user.click(screen.getByRole("button", { name: "Enviar selección" }));
+      await user.click(screen.getByRole("button", { name: /^Enviar/ }));
+      await user.click(screen.getByRole("button", { name: /^Sí, enviar/ }));
 
       expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/submit-selection", {
         method: "POST",
       });
       // Pinned to the CORRECTED copy — see the previous test's own comment.
       await vi.waitFor(() => expect(screen.getByText(/tiene acceso/)).toBeDefined());
-      expect(screen.queryByRole("button", { name: "Enviar selección" })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Enviar/ })).toBeNull();
       expect(screen.getByRole("button", { name: /Quitar de seleccionadas/ })).toHaveProperty(
         "disabled",
         true,
@@ -884,7 +1204,7 @@ describe("ProofGrid", () => {
       });
 
       expect(screen.getByText("¿Qué pasa ahora?")).toBeDefined();
-      expect(screen.getByText(/escribile a tu fotógrafo/)).toBeDefined();
+      expect(screen.getByText(/escríbele a tu fotógrafo/)).toBeDefined();
     });
 
     it("still shows the live quota counter while the client waits", () => {
@@ -901,6 +1221,10 @@ describe("ProofGrid", () => {
         includedPhotosSnapshot: 1,
       });
 
+      // Task #269 (fix round) — the `selected` view is not folded, but it
+      // still splits rows from the gallery's arithmetic, and two unattributed
+      // picks plus the viewer's own row is a two-row breakdown.
+      expect(openGalleryTotal()).toBe(true);
       expect(counterText()).toContain("seleccionadas 2");
       // Task #236 — this view is not sticky: no "Ver detalle" fold.
       expect(screen.queryByRole("button", { name: /detalle/ })).toBeNull();
@@ -910,7 +1234,7 @@ describe("ProofGrid", () => {
       // The tray above (still rendered for `selected`, see this file's own
       // "THREE STATES" comment) attributes each PICK the same way — so this
       // queries the recap's own <dl>, not the page as a whole, since both
-      // surfaces legitimately render "Vos"/"Beto Ruiz" at once.
+      // surfaces legitimately render "Tú"/"Beto Ruiz" at once.
       const { container } = renderGrid({
         initialStatus: "selected",
         initialSubmittedAt: "2026-07-28T12:00:00.000Z",
@@ -922,19 +1246,21 @@ describe("ProofGrid", () => {
             selectedAt: "2026-07-28T11:00:00.000Z",
             pickedBy: { id: "client-a", label: "Ana Pérez" },
             selectionKind: "edited",
+            requestedAt: "2026-07-28T11:00:00.000Z",
           },
           {
             assetId: "a2",
             selectedAt: "2026-07-28T11:05:00.000Z",
             pickedBy: { id: "client-b", label: "Beto Ruiz" },
             selectionKind: "edited",
+            requestedAt: "2026-07-28T11:05:00.000Z",
           },
         ],
       });
 
       const recap = container.querySelector("dl");
       expect(recap).not.toBeNull();
-      expect(recap?.textContent).toContain("Vos");
+      expect(recap?.textContent).toContain("Tú");
       expect(recap?.textContent).toContain("Beto Ruiz");
     });
 
@@ -1370,13 +1696,13 @@ describe("ProofGrid", () => {
           {
             assetId: "a2",
             selectedAt: "2026-07-30T12:00:00.000Z",
-            pickedBy: { id: "client-a", label: "Vos" },
+            pickedBy: { id: "client-a", label: "Tú" },
             selectionKind: "edited",
           },
           {
             assetId: "a4",
             selectedAt: "2026-07-30T12:05:00.000Z",
-            pickedBy: { id: "client-a", label: "Vos" },
+            pickedBy: { id: "client-a", label: "Tú" },
             selectionKind: "edited",
           },
         ],
@@ -1681,18 +2007,21 @@ describe("ProofGrid", () => {
       }> = {},
     ) {
       const picks = overrides.picks ?? [];
+      const quota = computeQuota(overrides.selectedCount ?? picks.length, 0, {
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
+        originalPhotoPriceCopSnapshot: 2_000,
+      });
       return {
         status: overrides.status ?? "proofing",
         submittedAt: overrides.submittedAt ?? null,
-        picks,
-        // Task #205 — 0 originals: nothing writes `assets.selectionKind` to
-        // anything but `edited` yet (task #206).
-        quota: computeQuota(overrides.selectedCount ?? picks.length, 0, {
-          includedPhotosSnapshot: 13,
-          extraPhotoPriceCopSnapshot: 5_000,
-          extraPhotoPriceTiersSnapshot: null,
-          originalPhotoPriceCopSnapshot: 2_000,
-        }),
+        entries: entriesFor(picks),
+        counter: counterFor(picks, "client-a"),
+        quota,
+        viewerLock: null,
+        adminLockedPickerIds: [],
+        viewerSubmittedAt: null,
       };
     }
 
@@ -1791,12 +2120,15 @@ describe("ProofGrid", () => {
       await onePollTick();
 
       expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
-      expect(screen.getByText("Beto Ruiz")).toBeDefined();
-      // And the grid tile agrees — the tray and the grid are two views of one
-      // fact, never two independently-derived ones.
+      // Scoped to the tray: since task #264 the bar's breakdown names the
+      // same person in its own row, so an unscoped query is ambiguous.
       expect(
-        screen.getByRole("button", { name: "Quitar de seleccionadas: IMG_0001.JPG" }),
+        within(screen.getByRole("region", { name: "Fotos elegidas" })).getByText("Beto Ruiz"),
       ).toBeDefined();
+      // And the grid tile agrees — the tray and the grid are two views of one
+      // fact. The fact this tile renders is the VIEWER'S pick, and Beto is
+      // somebody else, so the viewer may still join it (epic #250 S7).
+      expect(screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" })).toBeDefined();
     });
 
     it("removes a pick that ANOTHER session deselected, from the tray and the tile alike", async () => {
@@ -1866,8 +2198,8 @@ describe("ProofGrid", () => {
       vi.stubGlobal("fetch", fetchMock);
 
       renderGrid({
-        initialAssets: assetsFor([{ isSelected: true }]),
-        initialPicks: [pickBy("a1", "client-a", "Ana")],
+        initialAssets: assetsFor([{ isSelected: false }]),
+        initialPicks: [{ ...pickBy("a1", "client-a", "Ana"), claimed: false }],
       });
 
       await clickAndSettle(
@@ -1946,8 +2278,8 @@ describe("ProofGrid", () => {
       vi.stubGlobal("fetch", fetchMock);
 
       renderGrid({
-        initialAssets: assetsFor([{ isSelected: true }]),
-        initialPicks: [pickBy("a1", "client-a", "Ana")],
+        initialAssets: assetsFor([{ isSelected: false }]),
+        initialPicks: [{ ...pickBy("a1", "client-a", "Ana"), claimed: false }],
       });
 
       // Poll issued and hangs — this is the "photograph of the past" whose
@@ -2000,13 +2332,13 @@ describe("ProofGrid", () => {
       vi.stubGlobal("fetch", fetchMock);
 
       renderGrid({ initialAssets: assetsFor([{ isSelected: true }]) });
-      expect(screen.getByRole("button", { name: /enviar selección/i })).toBeDefined();
+      expect(screen.getByRole("button", { name: /^Enviar/ })).toBeDefined();
 
       await onePollTick();
 
-      expect(screen.queryByRole("button", { name: /enviar selección/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Enviar/ })).toBeNull();
       expect(
-        screen.getByRole("button", { name: "Quitar de seleccionadas: IMG_0001.JPG" }),
+        screen.getByRole("button", { name: /Seleccionar:|Quitar de seleccionadas:/ }),
       ).toHaveProperty("disabled", true);
       expect(screen.getByText(/la selección ya fue enviada/i)).toBeDefined();
     });
@@ -2019,11 +2351,11 @@ describe("ProofGrid", () => {
       vi.stubGlobal("fetch", fetchMock);
 
       renderGrid({ initialStatus: "selected", initialSubmittedAt: "2026-07-30T13:00:00.000Z" });
-      expect(screen.queryByRole("button", { name: /enviar selección/i })).toBeNull();
+      expect(screen.queryByRole("button", { name: /^Enviar/ })).toBeNull();
 
       await onePollTick();
 
-      expect(screen.getByRole("button", { name: /enviar selección/i })).toBeDefined();
+      expect(screen.getByRole("button", { name: /^Enviar/ })).toBeDefined();
     });
 
     it("spends nothing polling a gallery whose selection can no longer change", async () => {
@@ -2059,9 +2391,9 @@ describe("ProofGrid", () => {
       renderGrid();
       await clickAndSettle(screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" }));
 
-      // Attributed as "Vos" — from the id the SERVER reported, not a local
+      // Attributed as "Tú" — from the id the SERVER reported, not a local
       // assumption about who is clicking.
-      expect(screen.getByText("Vos")).toBeDefined();
+      expect(screen.getByText("Tú")).toBeDefined();
       expect(fetchMock).not.toHaveBeenCalledWith("/api/galleries/g1/selection");
     });
 
@@ -2117,14 +2449,14 @@ describe("ProofGrid", () => {
       await onePollTick(); // poll issued, hangs
 
       await clickAndSettle(screen.getByRole("button", { name: "Seleccionar: IMG_0001.JPG" }));
-      expect(screen.getByText("Vos")).toBeDefined();
+      expect(screen.getByText("Tú")).toBeDefined();
 
       // The stale snapshot finally lands, still reporting nothing selected.
       await act(async () => {
         resolvePoll?.(jsonResponse(200, snapshot({ picks: [] })));
       });
 
-      expect(screen.getByText("Vos")).toBeDefined();
+      expect(screen.getByText("Tú")).toBeDefined();
       expect(
         screen.getByRole("button", { name: "Quitar de seleccionadas: IMG_0001.JPG" }),
       ).toBeDefined();
@@ -2157,7 +2489,7 @@ describe("ProofGrid", () => {
 
       // The snapshot said "nothing selected" — but it was dropped, so the tray
       // still shows what this session last knew rather than half-applying.
-      expect(screen.getByText("Vos")).toBeDefined();
+      expect(screen.getByText("Tú")).toBeDefined();
 
       await act(async () => {
         resolveToggle?.(
@@ -2500,19 +2832,44 @@ describe("ProofGrid", () => {
           jsonResponse(200, {
             status: "proofing",
             submittedAt: null,
-            picks: [
+            entries: [
               {
                 assetId: "a1",
-                selectedAt: "2026-07-30T12:00:00.000Z",
-                pickedBy: { id: "client-b", label: "Beto Ruiz" },
+                claim: {
+                  claimedAt: "2026-07-30T12:00:00.000Z",
+                  resolvedKind: "edited",
+                  billedTo: { id: "client-b", label: "Beto Ruiz" },
+                  charge: "included",
+                  canEscalate: false,
+                },
+                picks: [
+                  {
+                    userId: "client-b",
+                    label: "Beto Ruiz",
+                    kind: "edited",
+                    pickedAt: "2026-07-30T12:00:00.000Z",
+                    submittedAt: null,
+                    state: "degraded",
+                  },
+                ],
               },
             ],
+            counter: {
+              group: 1,
+              viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
+              people: [{ userId: "client-b", label: "Beto Ruiz", units: 1, share: emptyShare() }],
+              unattributed: 0,
+              unattributedShare: emptyShare(),
+            },
             quota: computeQuota(1, 0, {
               includedPhotosSnapshot: 13,
               extraPhotoPriceCopSnapshot: 5_000,
               extraPhotoPriceTiersSnapshot: null,
               originalPhotoPriceCopSnapshot: 2_000,
             }),
+            viewerLock: null,
+            adminLockedPickerIds: [],
+            viewerSubmittedAt: null,
           }),
         ),
       );
@@ -2525,7 +2882,11 @@ describe("ProofGrid", () => {
       });
 
       expect(fetchMock).toHaveBeenCalledWith("/api/galleries/g1/selection");
-      expect(screen.getByText("Beto Ruiz")).toBeDefined();
+      // Scoped to the tray: since task #264 the bar's breakdown names the
+      // same person in its own row, so an unscoped query is ambiguous.
+      expect(
+        within(screen.getByRole("region", { name: "Fotos elegidas" })).getByText("Beto Ruiz"),
+      ).toBeDefined();
     });
 
     it("queues exactly one more fetch when a `changed` push arrives while a fetch is already in flight", async () => {
@@ -2670,6 +3031,7 @@ describe("ProofGrid — volume scale on first paint (task #231)", () => {
       ],
     });
 
+    expect(openGalleryTotal()).toBe(true);
     expect(counterText()).toContain("extras 3 × $ 13.000 = $ 39.000");
     expect(screen.getByText(/Precio por foto extra/)).toBeDefined();
   });
@@ -2683,7 +3045,62 @@ describe("ProofGrid — volume scale on first paint (task #231)", () => {
       extraPhotoPriceTiersSnapshot: null,
     });
 
+    expect(openGalleryTotal()).toBe(true);
     expect(counterText()).toContain("extras 3 × $ 5.000 = $ 15.000");
     expect(screen.queryByText(/Precio por foto extra/)).toBeNull();
+  });
+});
+
+// Epic #250 S6 — THE SUM TEST. The client must never count `entries`,
+// `picks.length` or `assets.isSelected` again: the four numbers come from the
+// server. The fixture is deliberately incompatible with any local recount —
+// only 2 claimed entries and 1 cart, while the server says 7 selected and 4 to
+// send — so a component that derives either number from the list it renders
+// goes red here.
+describe("ProofGrid — no surface recounts the selection (epic #250 S6)", () => {
+  it("renders the server's selected count and to-send count even when the entry list would count differently", () => {
+    const entries = entriesFor([
+      {
+        assetId: "a1",
+        selectedAt: "2026-10-01T12:00:00.000Z",
+        pickedBy: { id: "client-a", label: "Ana" },
+        selectionKind: "edited",
+      },
+      {
+        assetId: "a2",
+        selectedAt: "2026-10-01T12:01:00.000Z",
+        pickedBy: { id: "client-b", label: "Beto" },
+        selectionKind: "edited",
+      },
+      {
+        assetId: "a3",
+        selectedAt: null,
+        pickedBy: { id: "client-a", label: "Ana" },
+        selectionKind: "edited",
+      },
+    ]);
+
+    renderGrid({
+      initialEntries: entries,
+      initialQuota: computeQuota(7, 0, {
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+        extraPhotoPriceTiersSnapshot: null,
+        originalPhotoPriceCopSnapshot: 2_000,
+      }),
+      initialCounter: {
+        group: 7,
+        viewer: { yours: 2, shared: 1, toSend: 4, projection: emptyProjection() },
+        people: [{ userId: "client-a", label: "Ana", units: 3, share: emptyShare() }],
+        unattributed: 0,
+        unattributedShare: emptyShare(),
+      },
+      rollingDelivery: true,
+    });
+
+    expect(counterText()).toContain("seleccionadas 7");
+    expect(screen.getByRole("button", { name: "Enviar las 4" })).toBeDefined();
+    // The tray still renders only what the entries say: 3, never 7.
+    expect(screen.getByText("3", { selector: "section span" })).toBeDefined();
   });
 });

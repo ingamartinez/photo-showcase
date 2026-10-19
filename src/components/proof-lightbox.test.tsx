@@ -58,10 +58,47 @@ afterEach(() => {
 function lightboxProps(
   overrides: Partial<ComponentProps<typeof ProofLightbox>> = {},
 ): ComponentProps<typeof ProofLightbox> {
+  const assets = overrides.assets ?? assetsFor(3);
+  const viewerId = overrides.viewerId ?? "viewer";
+  // Most tests predate epic #250 and spell "the viewer picked this" as
+  // `asset.isSelected: true`. That flag is the CLAIM now, so the helper
+  // mirrors it as the viewer's own UNSENT pick — which is what those tests
+  // mean. Tests that need a foreign or sent pick override `entryById`.
+  const entryById =
+    overrides.entryById ??
+    Object.fromEntries(
+      assets
+        .filter((asset) => asset.isSelected)
+        .map((asset) => [
+          asset.id,
+          {
+            assetId: asset.id,
+            claim: {
+              claimedAt: "2026-10-17T12:00:00.000Z",
+              resolvedKind: "edited" as const,
+              billedTo: { id: viewerId, label: "Ana" },
+              charge: "included" as const,
+              canEscalate: false,
+            },
+            picks: [
+              {
+                userId: viewerId,
+                label: "Ana",
+                kind: "edited" as const,
+                pickedAt: "2026-10-17T12:00:00.000Z",
+                submittedAt: null,
+                state: "cart" as const,
+              },
+            ],
+          },
+        ]),
+    );
   return {
-    assets: assetsFor(3),
+    assets,
     urls: {},
     index: 1,
+    viewerId,
+    entryById,
     quota: QUOTA,
     onClose,
     onNavigate,
@@ -127,7 +164,7 @@ describe("ProofLightbox", () => {
       }),
     });
 
-    expect(screen.getByText("9 elegidas · 13 incluidas")).toBeDefined();
+    expect(screen.getByText("9 pedidas · 13 incluidas")).toBeDefined();
   });
 
   it("announces the running count politely, since it changes while the client looks at the photo", () => {
@@ -140,7 +177,7 @@ describe("ProofLightbox", () => {
       }),
     });
 
-    expect(screen.getByText("9 elegidas · 13 incluidas").getAttribute("aria-live")).toBe("polite");
+    expect(screen.getByText("9 pedidas · 13 incluidas").getAttribute("aria-live")).toBe("polite");
   });
 
   it("prefers the shared refreshed URL over the asset's own stale proofUrl", () => {
@@ -920,5 +957,312 @@ describe("ProofLightbox — desktop zoom to 1:1", () => {
     const second = primeStage("IMG_0002.JPG");
 
     expect(painted(second.img)).toBeNull();
+  });
+});
+
+// Epic #250 S7 — the full lightbox line set (D11 §1b). The line describes the
+// VIEWER'S own pick and names the person the unit is BILLED to; the other
+// askers live on the tile's chips. The button is the viewer's pick, never
+// `assets.isSelected`.
+describe("ProofLightbox — the owner's copy set (S7)", () => {
+  const A = { id: "client-a", label: "Ana" };
+  const B = { id: "client-b", label: "Beto" };
+  const sent = "2026-10-17T12:00:00.000Z";
+  const base = {
+    userId: A.id,
+    label: A.label,
+    kind: "edited" as const,
+    pickedAt: sent,
+  };
+  const claim = (
+    billedTo: { id: string; label: string } | null,
+    canEscalate = false,
+    resolvedKind: "edited" | "original" = "edited",
+  ) => ({
+    claimedAt: sent,
+    resolvedKind,
+    billedTo,
+    charge: "included" as const,
+    canEscalate,
+  });
+
+  function renderWithEntry(
+    entry: ComponentProps<typeof ProofLightbox>["entryById"] extends infer _T
+      ? NonNullable<ComponentProps<typeof ProofLightbox>["entryById"]>[string]
+      : never,
+    overrides: Partial<ComponentProps<typeof ProofLightbox>> = {},
+  ) {
+    return renderLightbox({
+      assets: assetsFor(1),
+      index: 0,
+      viewerId: A.id,
+      entryById: { a1: entry },
+      ...overrides,
+    });
+  }
+
+  it("C3: the viewer's own unsent pick on a free photo", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: null,
+      picks: [{ ...base, submittedAt: null, state: "cart" }],
+    });
+
+    expect(screen.getByRole("button", { name: "Elegida" })).toBeDefined();
+    expect(screen.getByText("Todavía no la enviaste · puedes sacarla")).toBeDefined();
+  });
+
+  it("C4: a degraded pick names the billed holder and only removes the viewer's own", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: claim(B),
+      picks: [
+        { ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" },
+        { ...base, submittedAt: null, state: "degraded" },
+      ],
+    });
+
+    const line = screen.getByText(/Ya la pidió/);
+    expect(line.querySelector("b")?.textContent).toBe("Beto");
+    expect(line.textContent).toContain("así que la reciben todos");
+    expect(line.textContent).toContain("puedes sacar la tuya");
+  });
+
+  it("C5: claimed by somebody else and the viewer has no pick", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: claim(B),
+      picks: [{ ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" }],
+    });
+
+    expect(screen.getByRole("button", { name: "Elegir esta foto" })).toBeDefined();
+    expect(screen.getByText(/Ya la pidió/).textContent).toContain("Beto");
+  });
+
+  it("C6: billed to the viewer -> 'La pediste tú', disabled", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: claim(A),
+      picks: [{ ...base, submittedAt: sent, state: "billed" }],
+    });
+
+    const button = screen.getByRole("button", { name: "Pedida" });
+    expect(button).toHaveProperty("disabled", true);
+    expect(screen.getByText(/La pediste/).textContent).toContain("tú");
+    expect(screen.getByText(/escríbele a tu fotógrafo/)).toBeDefined();
+  });
+
+  it("C7: joined -> names the billed holder, disabled", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: claim(B),
+      picks: [
+        { ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" },
+        { ...base, submittedAt: sent, state: "joined" },
+      ],
+    });
+
+    const line = screen.getByText(/La pidió/);
+    expect(line.querySelector("b")?.textContent).toBe("Beto");
+    expect(line.textContent).toContain("tú también la pediste");
+    expect(screen.getByRole("button", { name: "Pedida" })).toHaveProperty("disabled", true);
+  });
+
+  it("C8: a legacy unit with no attribution", () => {
+    renderWithEntry({ assetId: "a1", claim: claim(null), picks: [] });
+
+    expect(screen.getByRole("button", { name: "Elegir esta foto" })).toBeDefined();
+    expect(screen.getByText("Ya está pedida")).toBeDefined();
+  });
+
+  // Task #268 — the escalation line: somebody else's ORIGINAL, no final yet,
+  // the viewer's own pick unsent and (effectively) edited.
+  it("promises the escalation when the original has no final and the pick is edited", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: claim(B, true, "original"),
+      picks: [
+        { ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" },
+        { ...base, submittedAt: null, state: "degraded" },
+      ],
+    });
+
+    const line = screen.getByText(/la pidió original/);
+    expect(line.querySelector("b")?.textContent).toBe("Beto");
+    expect(line.textContent).toContain("si la envías editada, pasa a tu nombre");
+  });
+
+  it("does not promise it when canEscalate is false (a final exists)", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: claim(B, false, "original"),
+      picks: [
+        { ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" },
+        { ...base, submittedAt: null, state: "degraded" },
+      ],
+    });
+
+    expect(screen.queryByText(/la pidió original/)).toBeNull();
+    expect(screen.getByText(/así que la reciben todos/)).toBeDefined();
+  });
+
+  it("does not promise it when the viewer's local kind is original", () => {
+    renderWithEntry(
+      {
+        assetId: "a1",
+        claim: claim(B, true, "original"),
+        picks: [
+          { ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" },
+          { ...base, submittedAt: null, state: "degraded", kind: "original" },
+        ],
+      },
+      { selectionKindById: { a1: "original" } },
+    );
+
+    expect(screen.queryByText(/la pidió original/)).toBeNull();
+  });
+
+  it("shows it with originals OFF, mirroring planCartClaim's coercion", () => {
+    renderWithEntry(
+      {
+        assetId: "a1",
+        claim: claim(B, true, "original"),
+        picks: [
+          { ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" },
+          { ...base, submittedAt: null, state: "degraded", kind: "original" },
+        ],
+      },
+      { allowsOriginalSelection: false, selectionKindById: { a1: "original" } },
+    );
+
+    expect(screen.getByText(/la pidió original/)).toBeDefined();
+  });
+
+  it("follows selectionKindById live", () => {
+    const entry = {
+      assetId: "a1",
+      claim: claim(B, true, "original"),
+      picks: [
+        { ...base, userId: B.id, label: B.label, submittedAt: sent, state: "billed" as const },
+        { ...base, submittedAt: null, state: "degraded" as const },
+      ],
+    };
+    const { rerender } = renderWithEntry(entry, { selectionKindById: { a1: "original" } });
+    expect(screen.queryByText(/la pidió original/)).toBeNull();
+
+    rerender(
+      <ProofLightbox
+        assets={assetsFor(1)}
+        urls={{}}
+        index={0}
+        quota={QUOTA}
+        onClose={vi.fn()}
+        onNavigate={vi.fn()}
+        onImageError={vi.fn()}
+        onToggleSelection={vi.fn()}
+        pendingAssetIds={new Set()}
+        isLocked={false}
+        isDelivered={false}
+        selectionKindById={{ a1: "edited" }}
+        onSetSelectionKind={vi.fn()}
+        allowsOriginalSelection
+        viewerId={A.id}
+        entryById={{ a1: entry }}
+      />,
+    );
+
+    expect(screen.getByText(/la pidió original/)).toBeDefined();
+  });
+
+  it("keeps 'Ya está pedida' for a legacy original with no holder", () => {
+    renderWithEntry({
+      assetId: "a1",
+      claim: claim(null, true, "original"),
+      picks: [{ ...base, submittedAt: null, state: "degraded" }],
+    });
+
+    expect(screen.getByText("Ya está pedida")).toBeDefined();
+    expect(screen.queryByText(/la pidió original/)).toBeNull();
+  });
+
+  it("shows no line at all on a free photo with no pick", () => {
+    renderWithEntry(null);
+
+    expect(screen.getByRole("button", { name: "Elegir esta foto" })).toBeDefined();
+    expect(
+      screen.queryByText(/Todavía no|Ya la pidió|Ya está pedida|La pediste|La pidió/),
+    ).toBeNull();
+  });
+});
+
+// Epic #250 S11 — the owner's screenshot: on the C5 state the button split over
+// two lines, the status line sat to its RIGHT and the next arrow dropped UNDER
+// the previous one. Cause was structural, not cosmetic: `centerAction` was a
+// fragment with two children, so `<PhotoViewer>`'s
+// `grid-cols-[auto_1fr_auto]` row received FOUR grid items (fragment creates no
+// node) and wrapped the third. The row's three-cell contract is the viewer's
+// and is correct — it is shared with the flash gallery — so the fix is one cell
+// on this side, and this test pins that, not pixels.
+describe("ProofLightbox — the action row is three cells (S11)", () => {
+  const A = { id: "client-a", label: "Ana" };
+  const B = { id: "client-b", label: "Beto" };
+  const sent = "2026-10-17T12:00:00.000Z";
+
+  it("puts the pick button and its status line in ONE cell, so the arrows stay in the same row", () => {
+    // The exact reported state: somebody else already asked for the photo and
+    // the viewer has no pick of their own (C5) — the only state that renders a
+    // button AND a line with this shape.
+    renderLightbox({
+      assets: assetsFor(1),
+      index: 0,
+      viewerId: A.id,
+      entryById: {
+        a1: {
+          assetId: "a1",
+          claim: {
+            claimedAt: sent,
+            resolvedKind: "edited" as const,
+            billedTo: B,
+            charge: "included" as const,
+            canEscalate: false,
+          },
+          picks: [
+            {
+              userId: B.id,
+              label: B.label,
+              kind: "edited",
+              pickedAt: sent,
+              submittedAt: sent,
+              state: "billed",
+            },
+          ],
+        },
+      },
+    });
+
+    const prev = screen.getByRole("button", { name: "Foto anterior" });
+    const next = screen.getByRole("button", { name: "Foto siguiente" });
+    const button = screen.getByRole("button", { name: "Elegir esta foto" });
+    const line = screen.getByText(/Ya la pidió/);
+
+    // The row IS the grid: prev and next share one parent, and that parent
+    // must hold exactly three element children — two arrows and one cell.
+    const row = prev.parentElement;
+    expect(row).not.toBeNull();
+    expect(next.parentElement).toBe(row);
+    expect(row!.children).toHaveLength(3);
+
+    // The pick control is not itself a cell of the row: it lives one level
+    // down, which is what keeps the row at three cells.
+    expect(button.parentElement).not.toBe(row);
+    expect(Array.from(row!.children)).toContain(button.parentElement);
+
+    // And the status line shares that one cell with the button instead of
+    // taking the third column for itself.
+    expect(line.parentElement).toBe(button.parentElement);
+
+    // `min-w-0`: without it the `1fr` cell keeps its min-content width and the
+    // button cannot shrink below the label's intrinsic width.
+    expect(button.parentElement!.className).toContain("min-w-0");
   });
 });

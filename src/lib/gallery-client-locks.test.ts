@@ -4,13 +4,13 @@ import type { FakeDb } from "@/test-support/fake-db";
 vi.mock("server-only", () => ({}));
 
 vi.mock("@/lib/db", async () => {
-  const { galleries, galleryClients } = await import("@/lib/db/schema");
+  const { galleries, galleryClients, assetPicks } = await import("@/lib/db/schema");
   const { createFakeDb } = await import("@/test-support/fake-db");
-  return { db: createFakeDb([galleries, galleryClients]) };
+  return { db: createFakeDb([galleries, galleryClients, assetPicks]) };
 });
 
 import { db } from "@/lib/db";
-import { galleries, galleryClients } from "@/lib/db/schema";
+import { galleries, galleryClients, assetPicks } from "@/lib/db/schema";
 import {
   getClientLock,
   getSelectionLockSnapshot,
@@ -21,6 +21,7 @@ import {
 const fake = db as unknown as FakeDb;
 const galleryRows = () => fake.__tables.get(galleries)!;
 const clientRows = () => fake.__tables.get(galleryClients)!;
+const pickRows = () => fake.__tables.get(assetPicks)!;
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
 const LOCKED_AT = new Date("2026-10-15T10:00:00.000Z");
@@ -42,6 +43,19 @@ const locked = {
   selectionLockedBy: "client",
 };
 const adminLocked = { selectionLockedAt: LOCKED_AT, selectionLockedBy: "admin" };
+// Decision 10: an ORDER sets the submit stamp and never locks.
+const submitted = { selectionSubmittedAt: LOCKED_AT };
+
+function cart(userId: string, assetId = "asset-a", galleryId = GALLERY_ID) {
+  return {
+    assetId,
+    galleryId,
+    userId,
+    kind: "edited",
+    pickedAt: LOCKED_AT,
+    submittedAt: null,
+  };
+}
 
 function settle() {
   return settleGalleryLockStatus(db as unknown as DbTransaction, GALLERY_ID);
@@ -50,6 +64,7 @@ function settle() {
 beforeEach(() => {
   galleryRows().length = 0;
   clientRows().length = 0;
+  pickRows().length = 0;
   fake.__log.length = 0;
   galleryRows().push({ id: GALLERY_ID, status: "proofing", selectionSubmittedAt: null });
 });
@@ -78,35 +93,32 @@ describe("getClientLock", () => {
 });
 
 describe("getSelectionLockSnapshot", () => {
-  it("is open for the viewer and lists only OTHER locked pickers when the viewer is open", async () => {
+  it("is open for the viewer and lists no admin lock when only a CLIENT lock exists (closed-gallery history)", async () => {
     clientRows().push(member("a"), member("b", locked));
 
     await expect(getSelectionLockSnapshot(GALLERY_ID, "a")).resolves.toEqual({
       viewerLock: null,
-      lockedPickerIds: ["b"],
-      submittedPickerIds: ["b"],
+      adminLockedPickerIds: [],
       viewerSubmittedAt: null,
     });
   });
 
-  it("exposes the viewer's own lock as ISO strings, and lists them among the locked pickers", async () => {
+  it("exposes the viewer's own admin lock as ISO strings, and lists them among the admin-locked pickers", async () => {
     clientRows().push(member("a", adminLocked), member("b"));
 
     await expect(getSelectionLockSnapshot(GALLERY_ID, "a")).resolves.toEqual({
       viewerLock: { lockedAt: LOCKED_AT.toISOString(), submittedAt: null, lockedBy: "admin" },
-      lockedPickerIds: ["a"],
-      submittedPickerIds: [],
+      adminLockedPickerIds: ["a"],
       viewerSubmittedAt: null,
     });
   });
 
-  it("splits submitted from photographer-locked pickers, and omits open ones from both", async () => {
+  it("lists only admin locks; a client lock (closed-gallery history) is excluded", async () => {
     clientRows().push(member("a"), member("sub", locked), member("adm", adminLocked));
 
     const snapshot = await getSelectionLockSnapshot(GALLERY_ID, "a");
 
-    expect(snapshot.lockedPickerIds).toEqual(["sub", "adm"]);
-    expect(snapshot.submittedPickerIds).toEqual(["sub"]);
+    expect(snapshot.adminLockedPickerIds).toEqual(["adm"]);
   });
 
   // Task #244 — the lock source is READ from `selection_locked_by`, never
@@ -126,30 +138,37 @@ describe("getSelectionLockSnapshot", () => {
     const snapshot = await getSelectionLockSnapshot(GALLERY_ID, "a");
 
     expect(snapshot.viewerLock?.lockedBy).toBe("admin");
-    expect(snapshot.lockedPickerIds).toEqual(["a", "b"]);
-    expect(snapshot.submittedPickerIds).toEqual(["b"]);
+    expect(snapshot.adminLockedPickerIds).toEqual(["a"]);
   });
 
-  it("never reports a removed client as a locked or submitted picker", async () => {
+  it("never reports a removed client as a locked picker", async () => {
     clientRows().push(member("a"), member("gone", { ...locked, removedAt: new Date() }));
 
     const snapshot = await getSelectionLockSnapshot(GALLERY_ID, "a");
 
-    expect(snapshot.lockedPickerIds).toEqual([]);
-    expect(snapshot.submittedPickerIds).toEqual([]);
+    expect(snapshot.adminLockedPickerIds).toEqual([]);
   });
 
   it("gives an admin (no membership at all) a null viewerLock", async () => {
-    clientRows().push(member("a", locked));
+    clientRows().push(member("a", adminLocked));
 
     const snapshot = await getSelectionLockSnapshot(GALLERY_ID, "admin-1");
 
     expect(snapshot).toEqual({
       viewerLock: null,
-      lockedPickerIds: ["a"],
-      submittedPickerIds: ["a"],
+      adminLockedPickerIds: ["a"],
       viewerSubmittedAt: null,
     });
+  });
+
+  it("gives a null SUBJECT null viewer fields, even when members are locked", async () => {
+    clientRows().push(member("a", adminLocked), member("sub", locked));
+
+    const snapshot = await getSelectionLockSnapshot(GALLERY_ID, null);
+
+    expect(snapshot.viewerLock).toBeNull();
+    expect(snapshot.viewerSubmittedAt).toBeNull();
+    expect(snapshot.adminLockedPickerIds).toEqual(["a"]);
   });
 
   it("exposes the viewer's own submit time even when they are NOT locked (rolling delivery, task #244)", async () => {
@@ -203,13 +222,66 @@ describe("settleGalleryLockStatus", () => {
     expect(galleryRows()[0]).toMatchObject({ status: "proofing" });
   });
 
-  it("reopens a selected gallery when some active client is unlocked", async () => {
+  // Decision 13, the half that keeps order semantics safe: a member who
+  // ordered (submitted, never locked — exactly every member after an
+  // order-semantic submit, and every member migration 4.5 unlocked) is DONE.
+  // The pre-S5 rule reopened any `selected` gallery with an unlocked member,
+  // which meant the next admin action would reopen every rolling gallery.
+  it("does NOT reopen when the unlocked member submitted and has no cart", async () => {
+    galleryRows()[0]!.status = "selected";
+    clientRows().push(member("a", submitted), member("b", submitted));
+
+    await expect(settle()).resolves.toBeNull();
+
+    expect(galleryRows()[0]).toMatchObject({ status: "selected" });
+  });
+
+  it("reopens a selected gallery when an active member neither submitted nor was locked", async () => {
     galleryRows()[0]!.status = "selected";
     clientRows().push(member("a", locked), member("b"));
 
     await expect(settle()).resolves.toBe("proofing");
 
     expect(galleryRows()[0]).toMatchObject({ status: "proofing" });
+  });
+
+  it("an unsubmitted CART keeps a proofing gallery open even when everyone else is done", async () => {
+    clientRows().push(member("a", submitted), member("b", submitted));
+    pickRows().push(cart("b"));
+
+    await expect(settle()).resolves.toBeNull();
+
+    expect(galleryRows()[0]).toMatchObject({ status: "proofing" });
+  });
+
+  it("an admin lock counts as done (decision 18 guarantees it leaves no cart)", async () => {
+    clientRows().push(member("a", adminLocked), member("b", submitted));
+
+    await expect(settle()).resolves.toBe("selected");
+  });
+
+  it("a LOCKED member who still has a cart is not done — the fail-safe direction", async () => {
+    clientRows().push(member("a", locked), member("b", locked));
+    pickRows().push(cart("a"));
+
+    await expect(settle()).resolves.toBeNull();
+
+    expect(galleryRows()[0]).toMatchObject({ status: "proofing" });
+  });
+
+  it("reopens a selected gallery when an active member still has a cart", async () => {
+    galleryRows()[0]!.status = "selected";
+    clientRows().push(member("a", locked), member("b", locked));
+    pickRows().push(cart("b"));
+
+    await expect(settle()).resolves.toBe("proofing");
+  });
+
+  it("ignores a REMOVED member's cart", async () => {
+    clientRows().push(member("a", locked), member("gone", { removedAt: new Date() }));
+    pickRows().push(cart("gone"));
+
+    await expect(settle()).resolves.toBe("selected");
   });
 
   it("keeps a selected gallery selected while everyone is locked", async () => {
@@ -279,23 +351,28 @@ describe("gallery scoping — the same users in another gallery with the opposit
 
     await expect(getSelectionLockSnapshot(GALLERY_ID, "a")).resolves.toEqual({
       viewerLock: null,
-      lockedPickerIds: [],
-      submittedPickerIds: [],
+      adminLockedPickerIds: [],
       viewerSubmittedAt: null,
     });
   });
 
-  it("getSelectionLockSnapshot does not take another gallery's submission as this gallery's (admin-locked here, submitted there)", async () => {
+  it("getSelectionLockSnapshot does not take another gallery's admin lock as this gallery's", async () => {
     clientRows().push(
-      other("b", locked),
-      member("b", { selectionLockedAt: LOCKED_AT }),
+      other("b", adminLocked),
+      member("b", { selectionLockedAt: LOCKED_AT, selectionLockedBy: "admin" }),
       member("a"),
     );
 
     const snapshot = await getSelectionLockSnapshot(GALLERY_ID, "a");
 
-    expect(snapshot.lockedPickerIds).toEqual(["b"]);
-    expect(snapshot.submittedPickerIds).toEqual([]);
+    expect(snapshot.adminLockedPickerIds).toEqual(["b"]);
+  });
+
+  it("settle ignores another gallery's cart for the same user", async () => {
+    clientRows().push(other("a", locked), member("a", locked));
+    pickRows().push(cart("a", "asset-other", OTHER_GALLERY_ID));
+
+    await expect(settle()).resolves.toBe("selected");
   });
 
   it("settle closes this gallery even though the same user is still OPEN in another gallery", async () => {

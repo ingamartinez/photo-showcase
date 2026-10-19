@@ -110,6 +110,7 @@ describe("getGalleriesWithDetails", () => {
         includedPhotosSnapshot: 13,
         extraPhotoPriceCopSnapshot: 5_000,
         photoCount: 2,
+        pendingWorkCount: 0,
       },
     ]);
     // The returned shape never carries the live package's priceCop/
@@ -143,6 +144,60 @@ describe("getGalleriesWithDetails", () => {
     );
   });
 
+  // Task #263 — the row's pending-work tally, derived from the SAME joined
+  // assets this query already fetches (never a second query), on the deliver
+  // gate's predicate: claimed and no final. A `proofing` gallery counts —
+  // that is the case the old `status = 'selected'` count could not see.
+  it("counts claimed assets without a final, and only for proofing/selected galleries", async () => {
+    findManyMock.mockResolvedValue([
+      {
+        id: "g1",
+        title: "En pruebas",
+        publicSlug: "abc123",
+        status: "proofing",
+        sessionDate: "2026-08-01",
+        createdAt: new Date("2026-07-01"),
+        selectionSubmittedAt: null,
+        galleryClients: [],
+        package: { id: 1, name: "Estándar" },
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+        assets: [
+          // Claimed, no final -> work.
+          { id: "a1", isSelected: true, finalKey: null },
+          // Claimed, final uploaded -> done.
+          { id: "a2", isSelected: true, finalKey: "final/a2.jpg" },
+          // Never claimed -> not work.
+          { id: "a3", isSelected: false, finalKey: null },
+        ],
+      },
+      {
+        // A delivered gallery with a claimed asset and no final is a
+        // contradiction, but the tally must still not claim it is work.
+        id: "g2",
+        title: "Entregada",
+        publicSlug: "def456",
+        status: "delivered",
+        sessionDate: "2026-08-01",
+        createdAt: new Date("2026-07-01"),
+        selectionSubmittedAt: null,
+        galleryClients: [],
+        package: { id: 1, name: "Estándar" },
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+        assets: [{ id: "a4", isSelected: true, finalKey: null }],
+      },
+    ]);
+    const { getGalleriesWithDetails } = await import("./galleries");
+
+    const result = await getGalleriesWithDetails();
+
+    expect(result.map((gallery) => [gallery.status, gallery.pendingWorkCount])).toEqual([
+      ["proofing", 1],
+      ["delivered", 0],
+    ]);
+  });
+
   // Task #97: a removed client must not appear in this list's `clients` —
   // asserted as a QUERY-SHAPE fact (the relational `with` asks for
   // `removedAt IS NULL`), same reasoning/limits as the `orderBy` test above:
@@ -165,27 +220,69 @@ describe("getGalleriesWithDetails", () => {
 });
 
 describe("getPendingSelectionCount", () => {
-  it("counts galleries in 'selected' via a dedicated count() query, not the full detail query", async () => {
-    const whereMock = vi.fn().mockResolvedValue([{ value: 2 }]);
-    const fromMock = vi.fn().mockReturnValue({ where: whereMock });
-    selectMock.mockReturnValue({ from: fromMock });
-    const { eq } = await import("drizzle-orm");
-    const { galleries } = await import("./db/schema");
+  // Task #263 (epic #250) rewrote the predicate: it used to be
+  // `status = 'selected'`, which stopped meaning "waits on you" once decision
+  // 10 made a submit an order that never locks (work arrives in `proofing`)
+  // and every `selected` gallery with its finals uploaded became a row nobody
+  // is waiting on. It is now the DELIVER GATE's own rule — a gallery in
+  // `proofing|selected` with a claimed asset and no final — so this renders
+  // the REAL query through the real drizzle builder (never executed) and
+  // asserts the three pieces of that predicate by name.
+  it("counts DISTINCT galleries with a claimed asset and no final, in proofing|selected", async () => {
+    let rendered: { sql: string; params: unknown[] } = { sql: "", params: [] };
+    // The fake returns the shape the function awaits, but the SQL comes from
+    // the REAL builder chained in the same order the implementation chains it.
+    selectMock.mockImplementation((...args: unknown[]) => {
+      type Builder = {
+        from: (table: unknown) => {
+          innerJoin: (
+            table: unknown,
+            on: unknown,
+          ) => { where: (condition: unknown) => { toSQL: () => typeof rendered } };
+        };
+      };
+      const real = realSelectHolder.current!(...args) as Builder;
+      return {
+        from: (table: unknown) =>
+          (() => {
+            const from = real.from(table);
+            return {
+              innerJoin: (joined: unknown, on: unknown) => ({
+                where: (condition: unknown) => {
+                  rendered = from.innerJoin(joined, on).where(condition).toSQL();
+                  return Promise.resolve([{ value: 2 }]);
+                },
+              }),
+            };
+          })(),
+      };
+    });
     const { getPendingSelectionCount } = await import("./galleries");
 
     const result = await getPendingSelectionCount();
 
     expect(result).toBe(2);
-    expect(fromMock).toHaveBeenCalledWith(galleries);
-    // The predicate itself, not just that SOME predicate was passed — this
-    // is the one fact the whole "N selecciones esperando" banner depends on;
-    // a filter accidentally changed to another status must fail this test.
-    expect(whereMock).toHaveBeenCalledWith(eq(galleries.status, "selected"));
+    // ONE row per gallery, even with several pending photos: a gallery with
+    // three photos awaiting finals is one gallery, not three.
+    expect(rendered.sql).toContain('count(distinct "galleries"."id")');
+    expect(rendered.sql).toContain('inner join "assets"');
+    // The predicate, piece by piece.
+    expect(rendered.sql).toContain('"galleries"."status" in ($1, $2)');
+    expect(rendered.sql).toContain('"assets"."is_selected" = $3');
+    expect(rendered.sql).toContain('"assets"."final_key" is null');
+    expect(rendered.params).toEqual(["proofing", "selected", true]);
+    // ...and it is NOT the old status-only predicate, which is the whole
+    // point of the rewrite.
+    expect(rendered.sql).not.toContain('"galleries"."status" =');
     expect(findManyMock).not.toHaveBeenCalled();
   });
 
   it("returns 0 when no row comes back", async () => {
-    selectMock.mockReturnValue({ from: () => ({ where: () => Promise.resolve([]) }) });
+    selectMock.mockReturnValue({
+      from: () => ({
+        innerJoin: () => ({ where: () => Promise.resolve([]) }),
+      }),
+    });
     const { getPendingSelectionCount } = await import("./galleries");
 
     await expect(getPendingSelectionCount()).resolves.toBe(0);

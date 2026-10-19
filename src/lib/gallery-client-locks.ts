@@ -1,23 +1,40 @@
-// Per-client selection locks (epic #239). Until this epic the lock was
-// gallery-wide: one client's "Enviar selección" moved the whole gallery
-// `proofing -> selected` and froze the shared board for everybody. Now each
-// `gallery_clients` row carries its own `selectionLockedAt` /
-// `selectionSubmittedAt` (schema.ts), and the GALLERY status is derived from
-// them: `selected` exactly when it has at least one active client and every
-// active client is locked.
+// Per-client selection locks (epic #239, revised by epic #250 decisions 10
+// and 13). Until epic #239 the lock was gallery-wide: one client's "Enviar
+// selección" moved the whole gallery `proofing -> selected` and froze the
+// shared board for everybody. Then each `gallery_clients` row carried its own
+// `selectionLockedAt` / `selectionSubmittedAt` (schema.ts), and the GALLERY
+// status was derived from the locks.
 //
-// This module is the single home of that derivation, so the submit route, the
-// gallery-wide unlock, `removeGalleryClient` and the admin per-client actions
-// of slice #242 cannot each grow their own idea of when a gallery closes.
+// EPIC #250 REPLACED THE RULE. Choosing became asking: a submit places an
+// order and does NOT lock the member (decision 10), so "every member is
+// locked" can never be true for a gallery whose members order. Decision 13:
+// the gallery is `selected` exactly when it has at least one active member and
+// EVERY active member is DONE, where
+//
+//     done(member) = that member has no pick with `submitted_at IS NULL`
+//                    (no cart) AND
+//                    (`selection_submitted_at` is set OR
+//                     `selection_locked_at` is set)
+//
+// An admin lock counts as done (decision 18 guarantees it leaves no cart), and
+// a locked member with a cart is NOT done — unreachable after S5, and the
+// fail-safe direction (open and visible, never closed with work pending).
+//
+// The derivation is SYMMETRIC on that predicate, which is what makes an
+// unlocked-but-submitted member safe: they never reopen a closed gallery. Only
+// an explicit act that clears BOTH stamps reopens one — attach (a new member),
+// a per-client unlock, or an admin removing their picks.
 //
 // EVERY read of `gallery_clients` here filters `removedAt IS NULL` — a removed
 // client's lock is history, and counting it would keep a gallery open (or
-// closed) on the say-so of somebody who is no longer part of it.
+// closed) on the say-so of somebody who is no longer part of it. Carts of
+// removed members are ignored for the same reason: the cart set is only ever
+// consulted for ACTIVE members.
 import "server-only";
 
 import { and, eq, isNull } from "drizzle-orm";
 import { db, type DB } from "@/lib/db";
-import { galleries, galleryClients } from "@/lib/db/schema";
+import { galleries, galleryClients, assetPicks } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 import type { SelectionLockSnapshot } from "@/lib/selection-snapshot";
 
@@ -56,12 +73,20 @@ export async function getClientLock(
 }
 
 /** What the client page and the selection snapshot route hand `<ProofGrid>`
- * (slice #241 consumes it): the viewer's own lock, and which pickers are
- * locked so their picks can render as frozen. `viewerLock` is `null` while the
- * viewer is open — and always for an admin, who has no membership. */
+ * (slice #241 consumes it): the subject's own lock, and which pickers the
+ * PHOTOGRAPHER locked so their picks can render as frozen. `viewerLock` is
+ * `null` while the subject is open — and always when there is no subject
+ * (`viewerId === null`: an admin without view-as).
+ *
+ * `adminLockedPickerIds` lists ADMIN locks only. Since epic #250 S5 a client
+ * submit never locks (it places an order), and migration 0017 cleared every
+ * client lock in `proofing`; a `'client'` lock therefore survives only as
+ * history in `selected`/`delivered`/`archived` galleries, where the gallery
+ * status already freezes every control. "Envió" is derived per pick from
+ * `asset_picks.submitted_at`, not from a list here. */
 export async function getSelectionLockSnapshot(
   galleryId: string,
-  viewerId: string,
+  viewerId: string | null,
   executor: DbExecutor = db,
 ): Promise<SelectionLockSnapshot> {
   const members = await executor
@@ -74,9 +99,10 @@ export async function getSelectionLockSnapshot(
     .from(galleryClients)
     .where(and(eq(galleryClients.galleryId, galleryId), isNull(galleryClients.removedAt)));
 
-  const locked = members.filter((member) => member.lockedAt !== null);
-  const own = locked.find((member) => member.userId === viewerId);
-  const ownMembership = members.find((member) => member.userId === viewerId);
+  const locked = members.filter((member) => member.lockedAt != null);
+  const own = viewerId === null ? undefined : locked.find((member) => member.userId === viewerId);
+  const ownMembership =
+    viewerId === null ? undefined : members.find((member) => member.userId === viewerId);
   return {
     viewerSubmittedAt: ownMembership?.submittedAt ? ownMembership.submittedAt.toISOString() : null,
     viewerLock: own
@@ -86,12 +112,10 @@ export async function getSelectionLockSnapshot(
           lockedBy: own.lockedBy,
         }
       : null,
-    lockedPickerIds: locked.map((member) => member.userId),
-    // Task #244: "submitted" = locked BY THE CLIENT (`selection_locked_by`),
-    // not "has a submit timestamp" — under rolling delivery an order sets the
-    // timestamp without locking, and a photographer lock can follow it.
-    submittedPickerIds: locked
-      .filter((member) => member.lockedBy === "client")
+    // Only the photographer's locks are written since S5; a `'client'` lock is
+    // closed-gallery history and would be a lie about who froze whom.
+    adminLockedPickerIds: locked
+      .filter((member) => member.lockedBy === "admin")
       .map((member) => member.userId),
   };
 }
@@ -116,26 +140,35 @@ export async function lockGalleryRow(
 export type LockTransition = "selected" | "proofing" | null;
 
 /**
- * Reconciles the gallery's status with its clients' locks, inside the
+ * Reconciles the gallery's status with its members' progress, inside the
  * caller's transaction:
  *
- *   - `proofing` with >= 1 active client, ALL of them locked -> `selected`
+ *   - `proofing` with >= 1 active member, ALL of them done -> `selected`
  *     (stamping `galleries.selectionSubmittedAt`);
- *   - `selected` with some active client unlocked -> back to `proofing`.
+ *   - `selected` with some active member NOT done -> back to `proofing`.
  *
- * Anything else (`draft`, `delivered`, `archived`, or no change needed) is
- * left alone. A gallery with ZERO active clients never closes — "every client
- * is locked" is vacuously true there, and closing a gallery nobody can open
- * would be a dead end (the same reason `activeClientRuleViolation` exists).
+ * `done` is decision 13's predicate (module header). Anything else (`draft`,
+ * `delivered`, `archived`, or no change needed) is left alone. A gallery with
+ * ZERO active members never closes — "every member is done" is vacuously true
+ * there, and closing a gallery nobody can open would be a dead end (the same
+ * reason `activeClientRuleViolation` exists).
  *
- * CONCURRENCY. Two clients submitting last at the same moment each lock their
- * OWN membership row, so neither blocks the other, and under READ COMMITTED
- * each would then read the other as still open — and nobody would close the
- * gallery. The gallery row lock taken first (`lockGalleryRow`) serializes
- * them: the second transaction's membership read starts only after the first
- * committed. On top of that the status flip is a compare-and-swap
- * (`WHERE status = <what we read>`), so even a caller that skipped the lock
- * could never produce two transitions — only the winner gets a row back.
+ * CONCURRENCY. Two members submitting last at the same moment each write
+ * their OWN membership row, so neither blocks the other, and under READ
+ * COMMITTED each would then read the other as still open — and nobody would
+ * close the gallery. The gallery row lock taken first (`lockGalleryRow`)
+ * serializes them: the second transaction's membership and cart reads start
+ * only after the first committed. On top of that the status flip is a
+ * compare-and-swap (`WHERE status = <what we read>`), so even a caller that
+ * skipped the lock could never produce two transitions — only the winner gets
+ * a row back.
+ *
+ * ACCEPTED WINDOW, stated rather than papered over: the cart read happens
+ * under this lock, but the client PATCH route inserts cart picks WITHOUT it.
+ * A cart inserted between this read and this commit therefore lands in a
+ * `selected` gallery. It is non-monetary (carts never bill), it is cleared by
+ * an unlock or by the member's own remove, and closing it properly would put a
+ * transaction and a `FOR SHARE` on the hottest route. Accepted deliberately.
  *
  * Returns which transition happened (`null` for none).
  */
@@ -148,13 +181,26 @@ export async function settleGalleryLockStatus(
   if (gallery.status !== "proofing" && gallery.status !== "selected") return null;
 
   const members = await tx
-    .select({ lockedAt: galleryClients.selectionLockedAt })
+    .select({
+      userId: galleryClients.userId,
+      lockedAt: galleryClients.selectionLockedAt,
+      submittedAt: galleryClients.selectionSubmittedAt,
+    })
     .from(galleryClients)
     .where(and(eq(galleryClients.galleryId, galleryId), isNull(galleryClients.removedAt)));
 
-  const everyoneLocked = members.length > 0 && members.every((member) => member.lockedAt !== null);
+  const carts = await tx
+    .select({ userId: assetPicks.userId })
+    .from(assetPicks)
+    .where(and(eq(assetPicks.galleryId, galleryId), isNull(assetPicks.submittedAt)));
+  const hasCart = new Set(carts.map((cart) => cart.userId));
 
-  if (gallery.status === "proofing" && everyoneLocked) {
+  const isDone = (member: { userId: string; lockedAt: Date | null; submittedAt: Date | null }) =>
+    !hasCart.has(member.userId) && (member.lockedAt !== null || member.submittedAt !== null);
+
+  const everyoneDone = members.length > 0 && members.every(isDone);
+
+  if (gallery.status === "proofing" && everyoneDone) {
     const updated = await tx
       .update(galleries)
       .set({ status: "selected", selectionSubmittedAt: new Date() })
@@ -163,7 +209,7 @@ export async function settleGalleryLockStatus(
     return updated.length === 1 ? "selected" : null;
   }
 
-  if (gallery.status === "selected" && !everyoneLocked) {
+  if (gallery.status === "selected" && !everyoneDone) {
     const updated = await tx
       .update(galleries)
       .set({ status: "proofing" })

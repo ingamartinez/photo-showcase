@@ -1,6 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { NextRequest } from "next/server";
 import type { Session } from "next-auth";
+import { computeQuota, type GalleryQuotaSnapshot } from "@/lib/quota";
+import { emptyProjection } from "@/test-support/selection-fixtures";
 
 // `import "server-only"` (transitively, via src/lib/auth-guards.ts and
 // src/lib/galleries.ts) only resolves inside a real Next.js bundle — see
@@ -27,9 +29,9 @@ vi.mock("@/auth", () => ({ auth: (...args: unknown[]) => authMock(...args) }));
 // "refuses a client who was removed" both fail with a 200 (run and verified
 // while writing these tests, not asserted on faith).
 const getGallerySelectionMock =
-  vi.fn<(galleryId: string) => Promise<{ assetId: string; selectedAt: string | null }[]>>();
+  vi.fn<(galleryId: string, terms: unknown, subject: unknown) => Promise<unknown>>();
 vi.mock("@/lib/gallery-selection", () => ({
-  getGallerySelection: (...args: [string]) => getGallerySelectionMock(...args),
+  getGallerySelection: (...args: [string, unknown, unknown]) => getGallerySelectionMock(...args),
 }));
 
 // The shared in-memory double (src/test-support/fake-db.ts) — filters for real
@@ -59,6 +61,7 @@ async function seededDb() {
 }
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
+const OTHER_GALLERY_ID = "22222222-2222-4222-8222-222222222222";
 
 function clientASession(): Session {
   return {
@@ -99,6 +102,42 @@ function galleryRow(overrides: Partial<Row> = {}): Row {
   };
 }
 
+const TERMS: GalleryQuotaSnapshot = {
+  includedPhotosSnapshot: 13,
+  extraPhotoPriceCopSnapshot: 5_000,
+  extraPhotoPriceTiersSnapshot: null,
+  originalPhotoPriceCopSnapshot: 2_000,
+};
+
+function view(
+  overrides: {
+    entries?: unknown[];
+    quota?: ReturnType<typeof computeQuota>;
+    counter?: unknown;
+    lock?: {
+      viewerLock?: unknown;
+      adminLockedPickerIds?: string[];
+      viewerSubmittedAt?: string | null;
+    };
+  } = {},
+) {
+  return {
+    entries: overrides.entries ?? [],
+    quota: overrides.quota ?? computeQuota(0, 0, TERMS),
+    counter: overrides.counter ?? {
+      group: 0,
+      viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
+      people: [],
+      unattributed: 0,
+    },
+    lock: {
+      viewerLock: overrides.lock?.viewerLock ?? null,
+      adminLockedPickerIds: overrides.lock?.adminLockedPickerIds ?? [],
+      viewerSubmittedAt: overrides.lock?.viewerSubmittedAt ?? null,
+    },
+  };
+}
+
 function requestFor(galleryId: string): NextRequest {
   return new NextRequest(`http://localhost:3300/api/galleries/${galleryId}/selection`);
 }
@@ -110,7 +149,7 @@ function paramsFor(galleryId: string) {
 beforeEach(async () => {
   authMock.mockReset();
   getGallerySelectionMock.mockReset();
-  getGallerySelectionMock.mockResolvedValue([]);
+  getGallerySelectionMock.mockResolvedValue(view());
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
 
   const db = await seededDb();
@@ -180,7 +219,12 @@ describe("GET /api/galleries/[galleryId]/selection — the guard", () => {
     const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
 
     expect(response.status).toBe(200);
-    expect(getGallerySelectionMock).toHaveBeenCalledWith(GALLERY_ID);
+    expect(getGallerySelectionMock).toHaveBeenCalledWith(
+      GALLERY_ID,
+      expect.any(Object),
+      "client-a",
+      { allowsOriginal: true },
+    );
   });
 
   it("serves an admin regardless of which clients the gallery has", async () => {
@@ -246,154 +290,128 @@ describe("GET /api/galleries/[galleryId]/selection — the guard", () => {
 });
 
 describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
-  it("reports the picks exactly as getGallerySelection resolved them", async () => {
-    getGallerySelectionMock.mockResolvedValue([
+  it("passes the entries and counter through exactly as the builder produced them", async () => {
+    const entries = [
       {
         assetId: "asset-1",
-        selectedAt: "2026-07-30T12:00:00.000Z",
-        pickedBy: { id: "client-b", label: "Beto Ruiz" },
+        claim: {
+          claimedAt: "2026-07-30T12:00:00.000Z",
+          resolvedKind: "edited",
+          billedTo: { id: "client-b", label: "Beto Ruiz" },
+          charge: "included",
+          canEscalate: false,
+        },
+        picks: [],
       },
-    ] as never);
+    ];
+    const counter = {
+      group: 1,
+      viewer: { yours: 0, shared: 0, toSend: 0, projection: emptyProjection() },
+      people: [{ userId: "client-b", label: "Beto Ruiz", units: 1 }],
+      unattributed: 0,
+    };
+    getGallerySelectionMock.mockResolvedValue(view({ entries, counter }));
     authMock.mockResolvedValue(clientASession());
     const { GET } = await import("./route");
 
     const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
-    const body = (await response.json()) as { picks: { assetId: string }[] };
+    const body = (await response.json()) as { entries: unknown; counter: unknown };
 
-    expect(body.picks).toEqual([
-      {
-        assetId: "asset-1",
-        selectedAt: "2026-07-30T12:00:00.000Z",
-        pickedBy: { id: "client-b", label: "Beto Ruiz" },
-      },
-    ]);
+    expect(body.entries).toEqual(entries);
+    expect(body.counter).toEqual(counter);
   });
 
-  // Task #231 — a gallery with a frozen volume scale must be priced by the
-  // tier its extras reach, off the row's own jsonb snapshot.
-  it("prices extras by the gallery's frozen volume scale once the row carries one", async () => {
-    getGallerySelectionMock.mockResolvedValue(
-      Array.from({ length: 13 + 3 }, (_, i) => ({
-        assetId: `asset-${i}`,
-        selectedAt: null,
-        pickedBy: null,
-      })) as never,
-    );
+  // Task #264 — the per-person money has to reach the browser; a route that
+  // whitelisted counter fields would drop it and the bar would silently fall
+  // back to the gallery-wide total, which is the bug this slice fixes.
+  it("delivers each person's money share and the unattributed share unchanged", async () => {
+    const anaShare = {
+      included: 1,
+      extras: 2,
+      originals: 0,
+      extrasSurchargeCop: 10_000,
+      originalsSurchargeCop: 0,
+      surchargeCop: 10_000,
+    };
+    const legacyShare = {
+      included: 1,
+      extras: 0,
+      originals: 0,
+      extrasSurchargeCop: 0,
+      originalsSurchargeCop: 0,
+      surchargeCop: 0,
+    };
+    const counter = {
+      group: 4,
+      viewer: { yours: 3, shared: 0, toSend: 0, projection: emptyProjection() },
+      people: [{ userId: "client-a", label: "Ana", units: 3, share: anaShare }],
+      unattributed: 1,
+      unattributedShare: legacyShare,
+    };
+    getGallerySelectionMock.mockResolvedValue(view({ counter }));
+    authMock.mockResolvedValue(clientASession());
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
+    const body = (await response.json()) as {
+      counter: {
+        people: { userId: string; share: typeof anaShare }[];
+        unattributedShare: typeof legacyShare;
+      };
+    };
+
+    expect(body.counter.people[0]?.share).toEqual(anaShare);
+    expect(body.counter.unattributedShare).toEqual(legacyShare);
+  });
+
+  it("asks the builder for the gallery's FROZEN terms and the caller's subject", async () => {
     const db = await seededDb();
     db.__rows.galleries.length = 0;
     db.__rows.galleries.push(
       galleryRow({
-        extraPhotoPriceCopSnapshot: 15_000,
+        includedPhotosSnapshot: 7,
+        extraPhotoPriceCopSnapshot: 9_000,
+        originalPhotoPriceCopSnapshot: 3_000,
         extraPhotoPriceTiersSnapshot: [
-          { minExtras: 1, priceCop: 15_000 },
-          { minExtras: 3, priceCop: 13_000 },
+          { minExtras: 1, priceCop: 9_000 },
+          { minExtras: 3, priceCop: 7_000 },
         ],
       }),
     );
     authMock.mockResolvedValue(clientASession());
     const { GET } = await import("./route");
 
-    const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
-    const body = (await response.json()) as {
-      quota: { extras: number; extraUnitPriceCop: number; surchargeCop: number };
-    };
+    await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
 
-    // 3 extras x 13.000 (the 3+ tier), not 3 x 15.000.
-    expect(body.quota).toMatchObject({
-      extras: 3,
-      extraUnitPriceCop: 13_000,
-      surchargeCop: 39_000,
-    });
-  });
-
-  it("recomputes the quota from the number of picks and the gallery's FROZEN terms", async () => {
-    // Never the live `packages` row — a gallery created under last year's
-    // price list keeps last year's numbers forever (PLAN.md §3).
-    getGallerySelectionMock.mockResolvedValue(
-      Array.from({ length: 15 }, (_, i) => ({
-        assetId: `asset-${i}`,
-        selectedAt: null,
-        pickedBy: null,
-      })) as never,
+    expect(getGallerySelectionMock).toHaveBeenCalledWith(
+      GALLERY_ID,
+      {
+        includedPhotosSnapshot: 7,
+        extraPhotoPriceCopSnapshot: 9_000,
+        extraPhotoPriceTiersSnapshot: [
+          { minExtras: 1, priceCop: 9_000 },
+          { minExtras: 3, priceCop: 7_000 },
+        ],
+        originalPhotoPriceCopSnapshot: 3_000,
+      },
+      "client-a",
+      { allowsOriginal: true },
     );
+  });
+
+  it("passes the builder's quota through unchanged (the route no longer computes it)", async () => {
+    const quota = computeQuota(15, 3, TERMS);
+    getGallerySelectionMock.mockResolvedValue(view({ quota }));
     authMock.mockResolvedValue(clientASession());
     const { GET } = await import("./route");
 
     const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
-    const body = (await response.json()) as {
-      quota: { selected: number; extras: number; surchargeCop: number };
-    };
+    const body = (await response.json()) as { quota: unknown };
 
-    // This fixture's picks carry no `selectionKind` at all (a pre-#206-shaped
-    // mock, `as never` below) — the route treats anything that isn't
-    // literally `"original"` as edited (see this route's own comment), so
-    // all 15 count as edited with 0 originals here.
-    expect(body.quota).toEqual({
-      selected: 15,
-      selectedEdited: 15,
-      selectedOriginal: 0,
-      includedPhotosSnapshot: 13,
-      extraPhotoPriceCopSnapshot: 5_000,
-      extraPhotoPriceTiersSnapshot: null,
-      extraUnitPriceCop: 5_000,
-      originalPhotoPriceCopSnapshot: 2_000,
-      extras: 2,
-      originals: 0,
-      extrasSurchargeCop: 10_000,
-      originalsSurchargeCop: 0,
-      surchargeCop: 10_000,
-    });
+    expect(body.quota).toEqual(quota);
   });
 
-  // Task #206, criterion 4 — a mixed case verified end to end through THIS
-  // route, with both summands non-zero and neither a multiple of the other,
-  // so an implementation that drops either term (or lets an original draw
-  // from the quota) reports a different, wrong total.
-  it("splits picks by selectionKind before computing the quota, with both edited-extras and originals non-zero", async () => {
-    const db = await seededDb();
-    db.__rows.galleries.length = 0;
-    db.__rows.galleries.push(galleryRow({ includedPhotosSnapshot: 7 }));
-    getGallerySelectionMock.mockResolvedValue([
-      ...Array.from({ length: 9 }, (_, i) => ({
-        assetId: `edited-${i}`,
-        selectedAt: null,
-        pickedBy: null,
-        selectionKind: "edited",
-      })),
-      ...Array.from({ length: 3 }, (_, i) => ({
-        assetId: `original-${i}`,
-        selectedAt: null,
-        pickedBy: null,
-        selectionKind: "original",
-      })),
-    ] as never);
-    authMock.mockResolvedValue(clientASession());
-    const { GET } = await import("./route");
-
-    const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
-    const body = (await response.json()) as {
-      quota: {
-        selectedEdited: number;
-        selectedOriginal: number;
-        extras: number;
-        originals: number;
-        surchargeCop: number;
-      };
-    };
-
-    // 9 edited -> 2 over the 7 included -> 2 * 5_000 = 10_000.
-    // 3 originals -> 3 * 2_000 = 6_000 more, additive.
-    // Total 16_000, reachable only by summing both terms.
-    expect(body.quota.selectedEdited).toBe(9);
-    expect(body.quota.selectedOriginal).toBe(3);
-    expect(body.quota.extras).toBe(2);
-    expect(body.quota.originals).toBe(3);
-    expect(body.quota.surchargeCop).toBe(16_000);
-  });
-
-  it("reports the gallery's own status and submission timestamp — this is the live submit lock", async () => {
-    // The field every OTHER open session reads to go read-only the moment one
-    // client submits.
+  it("reports the gallery's own status and submission timestamp", async () => {
     const db = await seededDb();
     db.__rows.galleries.length = 0;
     db.__rows.galleries.push(
@@ -423,10 +441,7 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
     expect(body.submittedAt).toBeNull();
   });
 
-  it("returns no R2 key, no presigned URL and no slug — only what the tray needs", async () => {
-    // Task #95's constraint: the tray reuses the grid's presigned URLs and
-    // must never become a second way to obtain image bytes. Pinned as a shape
-    // assertion so a convenience field added later fails loudly here.
+  it("returns no R2 key, no presigned URL and no slug, and no retired submittedPickerIds", async () => {
     authMock.mockResolvedValue(clientASession());
     const { GET } = await import("./route");
 
@@ -434,62 +449,35 @@ describe("GET /api/galleries/[galleryId]/selection — the snapshot", () => {
     const body = (await response.json()) as Record<string, unknown>;
 
     expect(Object.keys(body).sort()).toEqual([
-      "lockedPickerIds",
-      "picks",
+      "adminLockedPickerIds",
+      "counter",
+      "entries",
       "quota",
       "status",
       "submittedAt",
-      "submittedPickerIds",
       "viewerLock",
       "viewerSubmittedAt",
     ]);
+    expect(body).not.toHaveProperty("submittedPickerIds");
+    expect(body).not.toHaveProperty("picks");
+    expect(body).not.toHaveProperty("lockedPickerIds");
   });
 });
 
-// Epic #239 — what slice #241 renders from.
-describe("GET /api/galleries/[galleryId]/selection — per-client lock snapshot (epic #239)", () => {
-  const LOCKED_AT = new Date("2026-10-15T10:00:00.000Z");
-
-  it("reports an open viewer as viewerLock null and lists the OTHER locked pickers", async () => {
-    const db = await seededDb();
-    db.__rows.galleryClients.push({
-      galleryId: GALLERY_ID,
-      userId: "client-b",
-      removedAt: null,
-      selectionLockedAt: LOCKED_AT,
-      selectionSubmittedAt: LOCKED_AT,
-      selectionLockedBy: "client",
-    });
-    authMock.mockResolvedValue(clientASession());
-    const { GET } = await import("./route");
-
-    const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
-    const body = (await response.json()) as Record<string, unknown>;
-
-    expect(body.viewerLock).toBeNull();
-    expect(body.lockedPickerIds).toEqual(["client-b"]);
-    expect(body.submittedPickerIds).toEqual(["client-b"]);
-    // Gallery-level fields keep working: nobody closed the gallery.
-    expect(body.status).toBe("proofing");
-  });
-
-  it("ignores locks the same users hold in ANOTHER gallery (viewer and picker list)", async () => {
-    const db = await seededDb();
-    db.__rows.galleryClients.unshift(
-      {
-        galleryId: "22222222-2222-4222-8222-222222222222",
-        userId: "client-a",
-        removedAt: null,
-        selectionLockedAt: LOCKED_AT,
-        selectionSubmittedAt: LOCKED_AT,
-      },
-      {
-        galleryId: "22222222-2222-4222-8222-222222222222",
-        userId: "client-z",
-        removedAt: null,
-        selectionLockedAt: LOCKED_AT,
-        selectionSubmittedAt: LOCKED_AT,
-      },
+describe("GET /api/galleries/[galleryId]/selection — the lock snapshot", () => {
+  it("passes the subject's viewerLock, the admin locks and the submit time through", async () => {
+    getGallerySelectionMock.mockResolvedValue(
+      view({
+        lock: {
+          viewerLock: {
+            lockedAt: "2026-10-15T10:00:00.000Z",
+            submittedAt: null,
+            lockedBy: "admin",
+          },
+          adminLockedPickerIds: ["client-b"],
+          viewerSubmittedAt: "2026-10-14T09:00:00.000Z",
+        },
+      }),
     );
     authMock.mockResolvedValue(clientASession());
     const { GET } = await import("./route");
@@ -497,55 +485,165 @@ describe("GET /api/galleries/[galleryId]/selection — per-client lock snapshot 
     const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
     const body = (await response.json()) as Record<string, unknown>;
 
-    expect(body.viewerLock).toBeNull();
-    expect(body.lockedPickerIds).toEqual([]);
-    expect(body.submittedPickerIds).toEqual([]);
+    expect(body.viewerLock).toEqual({
+      lockedAt: "2026-10-15T10:00:00.000Z",
+      submittedAt: null,
+      lockedBy: "admin",
+    });
+    expect(body.adminLockedPickerIds).toEqual(["client-b"]);
+    expect(body.viewerSubmittedAt).toBe("2026-10-14T09:00:00.000Z");
+  });
+});
+
+describe("GET /api/galleries/[galleryId]/selection — view as (epic #250 S6)", () => {
+  function viewAsRequest(galleryId: string, values: string[]): NextRequest {
+    const url = new URL(`http://localhost:3300/api/galleries/${galleryId}/selection`);
+    for (const value of values) url.searchParams.append("viewAs", value);
+    return new NextRequest(url);
+  }
+
+  it("refuses a client sending viewAs, even with their own id, with 400", async () => {
+    authMock.mockResolvedValue(clientASession());
+    const { GET } = await import("./route");
+
+    for (const values of [["client-b"], ["client-a"]]) {
+      const response = await GET(viewAsRequest(GALLERY_ID, values), paramsFor(GALLERY_ID));
+      expect(response.status).toBe(400);
+      await expect(response.json()).resolves.toEqual({ error: "view_as_admin_only" });
+    }
+    expect(getGallerySelectionMock).not.toHaveBeenCalled();
   });
 
-  it("lists a photographer-locked picker as locked but NOT submitted, scoped to this gallery", async () => {
+  it("refuses a STRANGER with 403 before ever parsing viewAs (ownership first)", async () => {
+    authMock.mockResolvedValue(clientBSession());
+    const { GET } = await import("./route");
+
+    const response = await GET(viewAsRequest(GALLERY_ID, ["client-a"]), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(403);
+    expect(getGallerySelectionMock).not.toHaveBeenCalled();
+  });
+
+  it("passes an active member as the subject for an admin", async () => {
     const db = await seededDb();
-    db.__rows.galleryClients.unshift({
-      galleryId: "22222222-2222-4222-8222-222222222222",
-      userId: "client-b",
-      removedAt: null,
-      selectionLockedAt: LOCKED_AT,
-      selectionSubmittedAt: LOCKED_AT,
-    });
     db.__rows.galleryClients.push({
       galleryId: GALLERY_ID,
       userId: "client-b",
       removedAt: null,
-      selectionLockedAt: LOCKED_AT,
+      selectionLockedAt: null,
       selectionSubmittedAt: null,
     });
-    authMock.mockResolvedValue(clientASession());
+    authMock.mockResolvedValue(adminSession());
     const { GET } = await import("./route");
 
-    const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
-    const body = (await response.json()) as Record<string, unknown>;
+    const response = await GET(viewAsRequest(GALLERY_ID, ["client-b"]), paramsFor(GALLERY_ID));
 
-    expect(body.lockedPickerIds).toEqual(["client-b"]);
-    expect(body.submittedPickerIds).toEqual([]);
+    expect(response.status).toBe(200);
+    expect(getGallerySelectionMock).toHaveBeenCalledWith(
+      GALLERY_ID,
+      expect.any(Object),
+      "client-b",
+      { allowsOriginal: true },
+    );
   });
 
-  it("reports the viewer's own lock, with their own submittedAt", async () => {
+  it("ALLOWS a removed member as a subject (owner Q1: their sent picks stay attributed)", async () => {
     const db = await seededDb();
-    const row = db.__rows.galleryClients.find((r) => r.userId === "client-a")!;
-    row.selectionLockedAt = LOCKED_AT;
-    row.selectionSubmittedAt = LOCKED_AT;
-    row.selectionLockedBy = "client";
+    db.__rows.galleryClients.push({
+      galleryId: GALLERY_ID,
+      userId: "client-b",
+      removedAt: new Date("2026-07-29"),
+      selectionLockedAt: null,
+      selectionSubmittedAt: null,
+    });
+    authMock.mockResolvedValue(adminSession());
+    const { GET } = await import("./route");
+
+    const response = await GET(viewAsRequest(GALLERY_ID, ["client-b"]), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(200);
+    expect(getGallerySelectionMock).toHaveBeenCalledWith(
+      GALLERY_ID,
+      expect.any(Object),
+      "client-b",
+      { allowsOriginal: true },
+    );
+  });
+
+  it("404s a NON-member with view_as_not_member", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const { GET } = await import("./route");
+
+    const response = await GET(viewAsRequest(GALLERY_ID, ["stranger"]), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "view_as_not_member" });
+    expect(getGallerySelectionMock).not.toHaveBeenCalled();
+  });
+
+  // Task #261 review, warning 2 — through the ROUTE, not just the helper. The
+  // "stranger" case above has no membership row at all, so it also passes if
+  // the gallery scope is dropped from the query. This one seeds a valid,
+  // active membership in a DIFFERENT gallery and requires the same 404: an
+  // admin must not reach across galleries through `viewAs`. Without this
+  // case, deleting `eq(galleryClients.galleryId, galleryId)` from
+  // `resolveViewAs` left this whole suite green.
+  it("404s a user who is a member of ANOTHER gallery, not this one", async () => {
+    const db = await seededDb();
+    db.__rows.galleryClients.push({
+      galleryId: OTHER_GALLERY_ID,
+      userId: "other-gallery-client",
+      removedAt: null,
+      selectionLockedAt: null,
+      selectionSubmittedAt: null,
+    });
+    authMock.mockResolvedValue(adminSession());
+    const { GET } = await import("./route");
+
+    const response = await GET(
+      viewAsRequest(GALLERY_ID, ["other-gallery-client"]),
+      paramsFor(GALLERY_ID),
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "view_as_not_member" });
+    expect(getGallerySelectionMock).not.toHaveBeenCalled();
+  });
+
+  it.each([["a", "b"], [""]])("400s invalid viewAs (%j)", async (...values) => {
+    authMock.mockResolvedValue(adminSession());
+    const { GET } = await import("./route");
+
+    const response = await GET(viewAsRequest(GALLERY_ID, values), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(400);
+    await expect(response.json()).resolves.toEqual({ error: "invalid_view_as" });
+  });
+
+  it("gives an admin without the parameter no subject", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const { GET } = await import("./route");
+
+    const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
+
+    expect(response.status).toBe(200);
+    expect(getGallerySelectionMock).toHaveBeenCalledWith(GALLERY_ID, expect.any(Object), null, {
+      allowsOriginal: true,
+    });
+  });
+
+  it("gives a client without the parameter their own id", async () => {
     authMock.mockResolvedValue(clientASession());
     const { GET } = await import("./route");
 
     const response = await GET(requestFor(GALLERY_ID), paramsFor(GALLERY_ID));
-    const body = (await response.json()) as Record<string, unknown>;
 
-    expect(body.viewerLock).toEqual({
-      lockedAt: LOCKED_AT.toISOString(),
-      submittedAt: LOCKED_AT.toISOString(),
-      lockedBy: "client",
-    });
-    expect(body.lockedPickerIds).toEqual(["client-a"]);
-    expect(body.submittedPickerIds).toEqual(["client-a"]);
+    expect(response.status).toBe(200);
+    expect(getGallerySelectionMock).toHaveBeenCalledWith(
+      GALLERY_ID,
+      expect.any(Object),
+      "client-a",
+      { allowsOriginal: true },
+    );
   });
 });

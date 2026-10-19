@@ -337,13 +337,22 @@ export function SelectionCounter({
   // comment). Either one alone would move the detail somewhere it does not
   // belong.
   const floatsAboveBar = showBreakdown && collapsible;
-  // The bar's own surface, reused verbatim: bg, hairline and blur are the
-  // ones <ProofGrid> puts on the bar (proof-grid.tsx's `bg-bg/95 border-t
-  // backdrop-blur-md`), plus the same horizontal rhythm so the rows line up
-  // with the headline above them. `bottom-full` is what makes it sit ON the
-  // bar's top edge with no gap and no height contribution.
+  // The bar's own surface, reused: bg and hairline are the ones <ProofGrid>
+  // puts on the bar, plus the same horizontal rhythm so the rows line up with
+  // the headline above them. `bottom-full` is what makes it sit ON the bar's
+  // top edge with no gap and no height contribution.
+  //
+  // TASK #271 — THE PANEL IS OPAQUE, NOT THE BAR'S TRANSLUCENT SURFACE. It
+  // reused the bar's `bg-bg/95 backdrop-blur-md` verbatim in #270, and the
+  // owner read the page's own "Descargar" button and upload hint THROUGH the
+  // open panel, behind the person rows. A panel that floats over content it
+  // does not hide is unreadable at exactly the moment it matters (money), so
+  // the surface is solid `bg-bg` and the blur is gone. The BORDER and every
+  // other class (position, the #269 allocated height, scroll, padding) stay:
+  // this is a background fix, not a layout change. The bar itself keeps
+  // `bg-bg/95 backdrop-blur-md` in proof-grid.tsx — untouched by this task.
   const panelClasses =
-    "border-line-2 bg-bg/95 absolute inset-x-0 bottom-full z-10 mx-auto max-w-[1280px] border-t px-4 py-3 backdrop-blur-md min-[620px]:px-7 lg:px-12";
+    "border-line-2 bg-bg absolute inset-x-0 bottom-full z-10 mx-auto max-w-[1280px] border-t px-4 py-3 min-[620px]:px-7 lg:px-12";
   // Assembled as a list so the non-floating branches keep the pre-#270 class
   // string exactly (single payer: `max-h-[40vh]`; multi-person without a bar:
   // `h-[min(40vh,20rem)]`), with no dangling separator either way.

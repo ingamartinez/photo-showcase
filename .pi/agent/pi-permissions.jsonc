@@ -33,6 +33,17 @@
     // exact matches (a wildcard there would also catch `rm -rf /tmp/…`, which seats legitimately
     // use); the flag rule and the home rule are substring matches and fire wherever they appear.
     "*sudo *": "deny",
+
+    // Read-only SQL against the production photoshowcase DB (droplet 147.182.138.79,
+    // the findash_do box). The DB only accepts peer auth, so the only way in is
+    // `sudo -u postgres psql` on the droplet — read-only, and nothing like the
+    // irreversible local commands the deny above exists for. Sits AFTER that deny
+    // on purpose: last matching rule wins. The allow is narrow by construction — it
+    // needs a leading `ssh`, the exact `sudo -u postgres psql -d photoshowcase`
+    // argv, and trailing whitespace, so it cannot cover `sudo rm`, `sudo systemctl`,
+    // `sudo su`, or any sudo on this machine.
+    "ssh *sudo -u postgres psql -d photoshowcase *": "allow",
+
     "*--no-preserve-root*": "deny",
     "rm -rf /": "deny",
     "rm -rf ~": "deny",

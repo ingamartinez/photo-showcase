@@ -63,6 +63,7 @@ import {
   type AmbiguousMatch,
   type FinalMatchPlan,
 } from "@/lib/final-filename-match";
+import { cn } from "@/lib/utils";
 
 type UploadItemStatus = "pending" | "uploading" | "done" | "error";
 
@@ -156,6 +157,7 @@ export function FinalsBulkUploader({
   const [pendingFiles, setPendingFiles] = useState<File[]>([]);
   const [items, setItems] = useState<UploadItem[]>([]);
   const [busy, setBusy] = useState(false);
+  const [dragActive, setDragActive] = useState(false);
 
   if (assets.length === 0) return null;
 
@@ -257,12 +259,60 @@ export function FinalsBulkUploader({
   const extraMatches = plan?.matches.filter((match) => !match.asset.isSelected) ?? [];
   const chosenMatchCount = (plan?.matches.length ?? 0) - extraMatches.length;
 
+  // Task #285 — the drop is a second door into `handleFilesChosen`, nothing
+  // else. ONE gate: while a plan is on screen the box takes no drops, which
+  // is exactly the state in which the file button does not exist either
+  // (`{!plan && …}` below). That gate also covers `busy` by construction:
+  // `handleConfirm` only ever sets `busy` after a non-null plan exists, and
+  // "Cancelar" (the only way back to `plan === null`) is disabled while it
+  // runs. No `busy` term here on purpose — it would be dead code, and a
+  // mutation deleting it would survive every test.
+  const acceptsDrop = plan === null;
+
   return (
-    <div className="border-line-2 flex flex-col gap-3 rounded-[6px] border border-dashed p-4">
+    <div
+      onDragOver={(event) => {
+        // ALWAYS, even when the drop is refused: without it the browser
+        // navigates to the dropped file, which during an upload would blow
+        // the page (and the sequential loop's state) away.
+        event.preventDefault();
+        if (acceptsDrop) setDragActive(true);
+      }}
+      onDragLeave={(event) => {
+        // Moving onto one of the box's own text children fires `dragleave`
+        // on the box too; only clear when the drag really left it.
+        if (
+          event.relatedTarget instanceof Node &&
+          event.currentTarget.contains(event.relatedTarget)
+        ) {
+          return;
+        }
+        setDragActive(false);
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        setDragActive(false);
+        if (!acceptsDrop) return;
+        // No `<input>` behind a drop, so `null`: `resetInput` already
+        // tolerates it. Same `matchFinalFiles` path as the button — the
+        // review screen is still the only thing that happens here.
+        handleFilesChosen(event.dataTransfer.files, null);
+      }}
+      className={cn(
+        "border-line-2 flex flex-col gap-3 rounded-[6px] border border-dashed p-4 transition-colors",
+        dragActive && "border-accent bg-accent/5",
+      )}
+    >
       <span className="text-fg text-sm font-medium">Subir finales en lote</span>
-      <span className="text-fg-dim text-xs">
+      {/* Two copies, one CSS switch by INPUT CAPABILITY, same as
+          proof-uploader.tsx: "arrastra" means nothing on a touch screen. */}
+      <span className="text-fg-dim hidden text-xs pointer-coarse:block">
         Elige varios archivos exportados de una vez — se proponen las coincidencias por nombre antes
         de subir nada.
+      </span>
+      <span className="text-fg-dim text-xs pointer-coarse:hidden">
+        Arrastra aquí los archivos exportados o elígelos — se proponen las coincidencias por nombre
+        antes de subir nada.
       </span>
 
       {!plan && (

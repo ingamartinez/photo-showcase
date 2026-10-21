@@ -21,6 +21,7 @@ import { getActivePackages } from "@/lib/packages";
 import { DashboardGalleryCreateDialog } from "@/components/dashboard-gallery-create-dialog";
 import { DashboardGalleryListControls } from "@/components/dashboard-gallery-list-controls";
 import {
+  DEFAULT_SORT_DIRECTION,
   GALLERY_PAGE_SIZE,
   GALLERY_SORT_KEYS,
   GALLERY_STATUSES,
@@ -176,14 +177,23 @@ export default async function GalleriesPage({
     value: status,
     label: formatGalleryStatus(status),
   }));
+  // Approved plan §4's option ORDER: each column's default direction first,
+  // its reverse second. That is `asc, desc` for the four A→Z / workflow
+  // columns, and `desc, asc` for Sesión and Fotos — where "más reciente" /
+  // "más primero" is the order that reads as the obvious one, and therefore
+  // belongs at the top of the list. `DEFAULT_SORT_DIRECTION` is the single
+  // declaration of that per-column default, so the first option here and the
+  // first click on the column heading can never disagree.
   const sortOptions = [
     { value: "", label: "Actividad reciente" },
-    ...GALLERY_SORT_KEYS.flatMap((key) =>
-      (["asc", "desc"] as const).map((dir) => ({
+    ...GALLERY_SORT_KEYS.flatMap((key) => {
+      const first = DEFAULT_SORT_DIRECTION[key];
+      const second: SortDirection = first === "asc" ? "desc" : "asc";
+      return [first, second].map((dir) => ({
         value: `${key}:${dir}`,
         label: SORT_LABELS[key][dir],
-      })),
-    ),
+      }));
+    }),
   ];
 
   return (

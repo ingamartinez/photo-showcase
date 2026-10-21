@@ -12,6 +12,7 @@ import {
   DEFAULT_SORT_DIRECTION,
   GALLERY_SORT_KEYS,
   GALLERY_STATUSES,
+  withSortOption,
   withStatus,
   type GalleryListQuery,
 } from "@/lib/gallery-list-query";
@@ -138,28 +139,85 @@ describe("DashboardGalleryListControls", () => {
   // transition that scheduled it commits, and `router.push` is synchronous.
   // The control therefore keeps the user's choice until the server's prop
   // arrives, and then the prop wins.
-  it("shows the chosen filter while the server's props are still stale", async () => {
+  //
+  // W1 (task #276 review round 2): the filter select is RE-QUERIED after every
+  // step and compared by NODE IDENTITY, with `document.activeElement` asserted
+  // too. Keeping a reference to the original element and reading its value is
+  // not enough: replacing a focused `<select>` with a changed `key` resyncs the
+  // value while silently dropping the user's focus, which is precisely what the
+  // approved plan forbids. That mutation used to leave all 8 tests green.
+  it("shows the chosen filter while the server's props are still stale, without re-keying or stealing focus", async () => {
     const user = userEvent.setup();
     const stale = { ...DEFAULT_GALLERY_LIST_QUERY };
     const { rerender } = render(controls(stale));
 
     const select = screen.getByRole("combobox", { name: "Estado" }) as HTMLSelectElement;
+    const sortSelect = screen.getByRole("combobox", { name: "Ordenar por" });
     expect(select.value).toBe("");
 
     await user.selectOptions(select, "draft");
 
     // The `query` prop has NOT changed — this is the window between the click
     // and the RSC payload.
-    expect(select.value).toBe("draft");
+    const afterClick = screen.getByRole("combobox", { name: "Estado" }) as HTMLSelectElement;
+    expect(afterClick).toBe(select);
+    expect(afterClick.value).toBe("draft");
+    expect(document.activeElement).toBe(afterClick);
     expect(push).toHaveBeenCalledWith("/dashboard/galleries?status=draft");
 
-    // A client-only re-render (same prop reference) keeps the override.
+    // A client-only re-render (same prop reference) keeps the override, the
+    // node and the focus.
     rerender(controls(stale));
-    expect(select.value).toBe("draft");
+    const afterRerender = screen.getByRole("combobox", { name: "Estado" }) as HTMLSelectElement;
+    expect(afterRerender).toBe(select);
+    expect(afterRerender.value).toBe("draft");
+    expect(document.activeElement).toBe(afterRerender);
 
-    // A new prop object means the server landed; the URL is the truth again.
+    // A new prop object means the server landed; the URL is the truth again —
+    // and it is still the SAME element, still focused.
     rerender(controls(withStatus(stale, "draft")));
-    expect(select.value).toBe("draft");
+    const afterServerProps = screen.getByRole("combobox", { name: "Estado" }) as HTMLSelectElement;
+    expect(afterServerProps).toBe(select);
+    expect(afterServerProps.value).toBe("draft");
+    expect(document.activeElement).toBe(afterServerProps);
+
+    // The other control kept its node through all of it too — a key derived
+    // from the whole pending query would have replaced both.
+    expect(screen.getByRole("combobox", { name: "Ordenar por" })).toBe(sortSelect);
+  });
+
+  // W1, the sort half: the same identity + focus contract, driven through the
+  // "Ordenar por" select, which is the ONLY sort affordance below 1024px.
+  it("keeps the sort select's node and focus across a pending update and new server props", async () => {
+    const user = userEvent.setup();
+    const stale = { ...DEFAULT_GALLERY_LIST_QUERY };
+    const { rerender } = render(controls(stale));
+
+    const sortSelect = screen.getByRole("combobox", { name: "Ordenar por" }) as HTMLSelectElement;
+    expect(sortSelect.value).toBe("");
+
+    await user.selectOptions(sortSelect, "photos:desc");
+
+    const afterClick = screen.getByRole("combobox", { name: "Ordenar por" }) as HTMLSelectElement;
+    expect(afterClick).toBe(sortSelect);
+    expect(afterClick.value).toBe("photos:desc");
+    expect(document.activeElement).toBe(afterClick);
+
+    rerender(controls(stale));
+    const afterRerender = screen.getByRole("combobox", {
+      name: "Ordenar por",
+    }) as HTMLSelectElement;
+    expect(afterRerender).toBe(sortSelect);
+    expect(afterRerender.value).toBe("photos:desc");
+    expect(document.activeElement).toBe(afterRerender);
+
+    rerender(controls(withSortOption(stale, "photos:desc")));
+    const afterServerProps = screen.getByRole("combobox", {
+      name: "Ordenar por",
+    }) as HTMLSelectElement;
+    expect(afterServerProps).toBe(sortSelect);
+    expect(afterServerProps.value).toBe("photos:desc");
+    expect(document.activeElement).toBe(afterServerProps);
   });
 
   it("lets a later server value win over the pending override", async () => {

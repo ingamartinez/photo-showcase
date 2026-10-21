@@ -23,18 +23,27 @@ import type { GalleryWithDetails } from "@/lib/galleries";
 import type { ClientForPicker } from "@/lib/clients";
 import type { PackageForPicker } from "@/lib/packages";
 import type { CreateGalleryState } from "./actions";
-import { GALLERY_PAGE_SIZE, type GalleryListQuery } from "@/lib/gallery-list-query";
+import {
+  GALLERY_PAGE_SIZE,
+  type GalleryListQuery,
+  type GalleryStatus,
+} from "@/lib/gallery-list-query";
 
 const requireAdminMock = vi.fn<() => Promise<Session>>();
 vi.mock("@/lib/auth-guards", () => ({ requireAdmin: () => requireAdminMock() }));
 
 const getGalleriesWithDetailsMock =
   vi.fn<(query: GalleryListQuery) => Promise<GalleryWithDetails[]>>();
-const getGalleryListCountsMock = vi.fn<() => Promise<{ studioTotal: number; matching: number }>>();
+// Task #276 correction C1 — the counts mock must KEEP its argument: a mock
+// that throws it away cannot prove the filter reached the count query, so
+// `getGalleryListCounts(parsed.status)` → `getGalleryListCounts(null)` (i.e.
+// unfiltered totals under a filter) would stay green.
+const getGalleryListCountsMock =
+  vi.fn<(status: GalleryStatus | null) => Promise<{ studioTotal: number; matching: number }>>();
 const getPendingSelectionCountMock = vi.fn<() => Promise<number>>();
 vi.mock("@/lib/galleries", () => ({
   getGalleriesWithDetails: (query: GalleryListQuery) => getGalleriesWithDetailsMock(query),
-  getGalleryListCounts: () => getGalleryListCountsMock(),
+  getGalleryListCounts: (status: GalleryStatus | null) => getGalleryListCountsMock(status),
   getPendingSelectionCount: () => getPendingSelectionCountMock(),
   formatGalleryStatus: (status: string) => {
     const labels: Record<string, string> = {
@@ -128,6 +137,12 @@ async function renderPage(params: Record<string, string | string[] | undefined> 
 
 function deskGroup() {
   return screen.getByRole("group", { name: "Ordenar por columna" });
+}
+
+/** Task #276 — the "Ordenar por" combobox AS THE PAGE RENDERED IT (the option
+ * list comes from the RSC, not from a test-owned array). */
+function sortCombobox() {
+  return screen.getByRole("combobox", { name: "Ordenar por" });
 }
 
 beforeEach(() => {
@@ -350,6 +365,58 @@ describe("GalleriesPage chrome", () => {
     expect(photos.getAttribute("href")).toBe("/dashboard/galleries?status=draft&sort=photos");
   });
 
+  // C2 (task #276 review round 2) — the controls test renders a TEST-OWNED
+  // options array, so it proves the component renders its props; it can never
+  // prove the RSC SUPPLIES them. This is the assertion that does, and it is
+  // the only one that could: mutating page.tsx to
+  // `sortOptions={[{ value: "", label: "Actividad reciente" }]}` removed every
+  // explicit sort choice below 1024px (where the heading links are hidden) and
+  // left the whole focused suite green.
+  //
+  // It also pins approved plan §4's ORDER: Sesión and Fotos list their
+  // DESCENDING choice first ("más reciente" / "más primero"), the other four
+  // columns their ascending one.
+  it("offers the real 13 sort choices from the page, in the approved order", async () => {
+    getGalleriesWithDetailsMock.mockResolvedValue([gallery()]);
+
+    await renderPage();
+
+    const options = [...sortCombobox().querySelectorAll("option")].map((option) => [
+      option.value,
+      option.textContent,
+    ]);
+
+    expect(options).toEqual([
+      ["", "Actividad reciente"],
+      ["title:asc", "Galería (A–Z)"],
+      ["title:desc", "Galería (Z–A)"],
+      ["clients:asc", "Clientes (A–Z)"],
+      ["clients:desc", "Clientes (Z–A)"],
+      ["status:asc", "Estado (de borrador a archivada)"],
+      ["status:desc", "Estado (de archivada a borrador)"],
+      ["package:asc", "Paquete (A–Z)"],
+      ["package:desc", "Paquete (Z–A)"],
+      ["session:desc", "Sesión (más reciente)"],
+      ["session:asc", "Sesión (más antigua)"],
+      ["photos:desc", "Fotos (más primero)"],
+      ["photos:asc", "Fotos (menos primero)"],
+    ]);
+  });
+
+  // C2, second half: a choice made from the REAL page reaches the canonical
+  // URL, keeps the filter and drops the page. `session:asc` is deliberately a
+  // NON-default direction, so the emitted `dir` is asserted too.
+  it("writes a sort chosen on the page into the canonical URL, keeping the filter and resetting the page", async () => {
+    getGalleriesWithDetailsMock.mockResolvedValue([gallery()]);
+    const user = userEvent.setup();
+
+    await renderPage({ status: "draft", page: "2" });
+
+    await user.selectOptions(sortCombobox(), "session:asc");
+
+    expect(push).toHaveBeenCalledWith("/dashboard/galleries?status=draft&sort=session&dir=asc");
+  });
+
   // Epic #125's rule from #129/#174: a counter that lies is worse than one
   // that is absent. Task #276 RETIRED the "counted off the very rows
   // rendered" invariant, because pagination makes it impossible — this
@@ -383,6 +450,8 @@ describe("GalleriesPage chrome", () => {
 
     await renderPage({ status: "draft" });
 
+    // The counts query is asked about the SAME filter the header presents.
+    expect(getGalleryListCountsMock).toHaveBeenCalledWith("draft");
     expect(screen.getByText(/3 de 63 galerías · 2 selecciones esperando/)).toBeDefined();
   });
 
@@ -526,6 +595,53 @@ describe("GalleriesPage chrome", () => {
     expect(
       within(screen.getByRole("navigation", { name: "Paginación" })).getByText("Página 3 de 3"),
     ).toBeDefined();
+  });
+
+  // C1 (task #276 review round 2) — the three mutations that stayed green all
+  // lived in this area, so this ONE case is built to kill all three: a
+  // FILTERED, SORTED, OUT-OF-RANGE URL where the studio's page count and the
+  // filtered page count DIFFER.
+  //
+  //   studioTotal 63 → 3 studio pages; matching 26 → 2 filtered pages.
+  //   ?page=99 must clamp to the last FILTERED page (2), never to studio page 3,
+  //   and the rows must be read with the filter, not without it.
+  //
+  // Each mutation fails a DIFFERENT assertion:
+  //   - counts asked with `null` instead of the status  → the call arg below;
+  //   - rows read with `{ ...query, status: null }`      → the full query;
+  //   - clamp against `counts.studioTotal`              → page 2 vs 3, the
+  //     "Página 2 de 2" label, the range line and the Anterior href.
+  it("clamps a filtered out-of-range page against the MATCHING total, keeping filter and sort", async () => {
+    getGalleriesWithDetailsMock.mockResolvedValue(rows(1, 25));
+    getGalleryListCountsMock.mockResolvedValue({ studioTotal: 63, matching: 26 });
+
+    await renderPage({ status: "draft", sort: "photos", dir: "asc", page: "99" });
+
+    // The count query is asked about the SAME filter the rows query is.
+    expect(getGalleryListCountsMock).toHaveBeenCalledWith("draft");
+
+    // The COMPLETE query the row read receives: filter kept, order kept, page
+    // clamped against the filtered total (26 → 2 pages), not the studio's 63.
+    expect(getGalleriesWithDetailsMock).toHaveBeenCalledWith({
+      status: "draft",
+      sort: "photos",
+      dir: "asc",
+      page: 2,
+    });
+
+    // The header, the range line and the pager all describe that same filtered
+    // page-2 set.
+    expect(screen.getByText(/26 de 63 galerías/)).toBeDefined();
+    expect(screen.getByText("Mostrando 26–26 de 26")).toBeDefined();
+    const nav = screen.getByRole("navigation", { name: "Paginación" });
+    expect(within(nav).getByText("Página 2 de 2")).toBeDefined();
+    // Pager hrefs keep the filter and the order; page 1 is those params alone.
+    expect(within(nav).getByRole("link", { name: "Anterior" }).getAttribute("href")).toBe(
+      "/dashboard/galleries?status=draft&sort=photos&dir=asc",
+    );
+    const next = within(nav).getByRole("link", { name: "Siguiente" });
+    expect(next.getAttribute("aria-disabled")).toBe("true");
+    expect(next.hasAttribute("href")).toBe(false);
   });
 
   it("falls back to page 1 for a malformed page param", async () => {

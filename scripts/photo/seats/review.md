@@ -52,7 +52,12 @@ context.
    - Does anything assume `.env.local` exists, or a database is reachable at build time?
    - If the slice touches routes, env or build config, verify the build yourself in a clean
      worktree without `.env.local`:
-     `git worktree add /tmp/ci-review <branch> && cd /tmp/ci-review && bun install && bun run build`
+     `git worktree add --detach /tmp/ci-review <ref> && cd /tmp/ci-review && bun install && bun run build`
+     — and then **remove it** (`git worktree remove --force /tmp/ci-review`) before you report.
+     A worktree is registered in the shared `.git/worktrees`, so a leftover keeps showing up in
+     `git worktree list` and in Orca's sidebar as a phantom workspace of this repository with a
+     detached HEAD, long after the check is over. Measured 2026-10-21: a review seat left 843 MB
+     at `/private/tmp/ci-review-276.P5OnG3` and the owner asked why an extra workspace existed.
 
 5. **Tests** — do they exist, run green, and actually exercise the behavior (including edge and
    error cases)? Run them yourself to confirm.

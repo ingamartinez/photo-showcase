@@ -23,19 +23,26 @@ export type CreateFlashGalleryState =
   | { status: "error"; message: string }
   | { status: "created"; flashGalleryId: string };
 
+// Shared by create and edit so the two can never validate differently. NOT
+// the `galleries` rules: a flash gallery's date is optional and nullable
+// (schema.ts:888). `z.iso.date()` (not a `YYYY-MM-DD` regex) so calendar-
+// impossible values like `2026-02-31` fail here instead of reaching Postgres
+// and surfacing as an unhandled 500 (task #283, owner-authorized).
+const flashTitleField = z
+  .string()
+  .trim()
+  .min(1, "Escribe un título.")
+  .max(200, "El título es muy largo.");
+const flashSessionDateField = z
+  .string()
+  .trim()
+  .transform((value) => (value === "" ? undefined : value))
+  .pipe(z.iso.date("La fecha no es válida.").optional());
+
 const createFlashGallerySchema = z.object({
-  title: z.string().trim().min(1, "Escribe un título.").max(200, "El título es muy largo."),
+  title: flashTitleField,
   // `""` (field left blank) collapses to undefined: a gift has no session.
-  sessionDate: z
-    .string()
-    .trim()
-    .transform((value) => (value === "" ? undefined : value))
-    .pipe(
-      z
-        .string()
-        .regex(/^\d{4}-\d{2}-\d{2}$/, "La fecha no es válida.")
-        .optional(),
-    ),
+  sessionDate: flashSessionDateField,
 });
 
 export async function createFlashGallery(
@@ -98,6 +105,53 @@ export async function setFlashGalleryPublic(
   revalidatePath(`/dashboard/flash/${flashGalleryId}`);
   revalidatePath("/dashboard/flash");
   return { ok: true };
+}
+
+export type UpdateFlashGalleryMetaState =
+  { status: "idle" } | { status: "error"; message: string } | { status: "updated" };
+
+const updateFlashGalleryMetaSchema = z.object({
+  flashGalleryId: z.uuid("Galería no válida."),
+  title: flashTitleField,
+  sessionDate: flashSessionDateField,
+});
+
+/** Corrects the title and/or date of an existing flash gallery. Never touches
+ * `publicSlug` (the link already in circulation) or `isPublic` (that is
+ * `setFlashGalleryPublic`'s job). An empty date clears it to NULL. */
+export async function updateFlashGalleryMeta(
+  _prevState: UpdateFlashGalleryMetaState,
+  formData: FormData,
+): Promise<UpdateFlashGalleryMetaState> {
+  await requireAdmin();
+
+  const parsed = updateFlashGalleryMetaSchema.safeParse({
+    flashGalleryId: formData.get("flashGalleryId") ?? "",
+    title: formData.get("title") ?? "",
+    sessionDate: formData.get("sessionDate") ?? "",
+  });
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Revisa los datos del formulario.",
+    };
+  }
+
+  // `?? null` is load-bearing: drizzle DROPS `undefined` keys from `.set()`, so
+  // an omitted date would silently keep the old value instead of clearing it.
+  const [updated] = await db
+    .update(flashGalleries)
+    .set({ title: parsed.data.title, sessionDate: parsed.data.sessionDate ?? null })
+    .where(eq(flashGalleries.id, parsed.data.flashGalleryId))
+    .returning({ id: flashGalleries.id, publicSlug: flashGalleries.publicSlug });
+  if (!updated) return { status: "error", message: "La galería no existe." };
+
+  revalidatePath(`/dashboard/flash/${updated.id}`);
+  revalidatePath("/dashboard/flash");
+  revalidatePath(`/flash/${updated.publicSlug}`);
+  // The client's own index lists assigned flash galleries too.
+  revalidatePath("/galleries");
+  return { status: "updated" };
 }
 
 export type AttachFlashClientsState = {

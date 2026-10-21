@@ -3019,7 +3019,12 @@ export async function deleteGallery(galleryId: string): Promise<DeleteGalleryRes
 
     await tx.delete(galleries).where(eq(galleries.id, gallery.id));
 
-    return { publicSlug: gallery.publicSlug, photos };
+    // `gallery.id` — the CANONICAL id — travels with the snapshot instead of
+    // the argument. Postgres resolves `ABCDEF…` to the same `uuid` row, but R2
+    // keys are case-sensitive: deriving one from the caller's spelling would
+    // address an object that does not exist, and deleting an absent key does
+    // not reject, so nothing would report it.
+    return { galleryId: gallery.id, publicSlug: gallery.publicSlug, photos };
   });
 
   if (snapshot === null) {
@@ -3036,7 +3041,10 @@ export async function deleteGallery(galleryId: string): Promise<DeleteGalleryRes
     if (photo.finalKey !== null) {
       // The display derivative has no column; it exists exactly when a final
       // does (`src/lib/r2.ts`), so it is deleted with the final, never alone.
-      keys.push(storedKey(photo.finalKey), displayKey(galleryId, photo.id));
+      // Its key is the one thing here that is DERIVED rather than stored, so
+      // it must be built from the canonical id (`snapshot.galleryId`), never
+      // from the argument — see the snapshot above.
+      keys.push(storedKey(photo.finalKey), displayKey(snapshot.galleryId, photo.id));
     }
     const results = await Promise.allSettled(keys.map((key) => deleteObject(key)));
     r2Failures += results.filter((result) => result.status === "rejected").length;
@@ -3048,7 +3056,10 @@ export async function deleteGallery(galleryId: string): Promise<DeleteGalleryRes
   // `getGalleryCount()`/`getPendingSelectionCount()`, both of which change
   // when a gallery disappears.
   revalidatePath("/dashboard/galleries");
-  revalidatePath(`/dashboard/galleries/${galleryId}`);
+  // Same reason as the display key: the detail route is spelled with the
+  // canonical id, so the caller's spelling would revalidate a path that does
+  // not exist.
+  revalidatePath(`/dashboard/galleries/${snapshot.galleryId}`);
   revalidatePath(`/galleries/${snapshot.publicSlug}`);
   revalidatePath("/dashboard");
 

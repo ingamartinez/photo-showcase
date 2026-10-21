@@ -158,6 +158,10 @@ const resendGalleryAccessEmailMock = vi.fn();
 // (no status gate — that is the whole point of this task); its module
 // imports `updateGalleryTerms` from here too.
 const updateGalleryTermsMock = vi.fn();
+// Task #281: the page now renders <EditGalleryMetaDialog> (title + session
+// date) unconditionally — no status gate, same decision as #200; its module
+// imports `updateGalleryMeta` from here too.
+const updateGalleryMetaMock = vi.fn();
 // Task #204: the page now renders <SelectionTrayModeControl> unconditionally
 // (no status gate — same "presentation, not a commercial term" reasoning
 // schema.ts's own comment on `selectionTrayMode` explains); its module
@@ -176,6 +180,7 @@ vi.mock("@/app/dashboard/galleries/actions", () => ({
   removeGalleryClient: (...args: unknown[]) => removeGalleryClientMock(...args),
   resendGalleryAccessEmail: (...args: unknown[]) => resendGalleryAccessEmailMock(...args),
   updateGalleryTerms: (...args: unknown[]) => updateGalleryTermsMock(...args),
+  updateGalleryMeta: (...args: unknown[]) => updateGalleryMetaMock(...args),
   updateSelectionTrayMode: (...args: unknown[]) => updateSelectionTrayModeMock(...args),
   // Task #244 — <RollingDeliveryControl> imports this too.
   updateRollingDelivery: vi.fn(),
@@ -1675,4 +1680,22 @@ describe("GalleryDetailPage — client grid collapse (task #273)", () => {
       screen.getByRole("button", { name: "Mostrar menos" }).getAttribute("aria-expanded"),
     ).toBe("true");
   });
+});
+
+// Task #281's own wiring seam: the unit suite for <EditGalleryMetaDialog>
+// proves it renders and submits GIVEN its props, never whether THIS page
+// renders the trigger at all — or gated it behind a status. The slice's core
+// criterion is "editable in every status", so this asserts the trigger exists
+// in all four, on the page that actually carries it.
+describe("GalleryDetailPage — the edit-gallery meta trigger is wired and ungated (task #281)", () => {
+  it.each(["draft", "proofing", "selected", "delivered"] as const)(
+    "renders the 'Editar galería' trigger for a gallery in status %s",
+    async (status) => {
+      getGalleryDetailMock.mockResolvedValue(galleryDetail({ status }));
+
+      render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+
+      expect(screen.getByRole("button", { name: "Editar galería" })).toBeDefined();
+    },
+  );
 });

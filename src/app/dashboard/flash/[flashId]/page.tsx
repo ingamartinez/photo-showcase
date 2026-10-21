@@ -8,6 +8,7 @@ import { flashGalleryPath, getFlashGalleryDetail } from "@/lib/flash";
 import { formatSessionDate } from "@/lib/galleries";
 import { flashDisplayKey, getPresignedUrl } from "@/lib/r2";
 import { FlashGalleryControls } from "@/components/flash-gallery-controls";
+import { EditFlashGalleryMetaDialog } from "@/components/edit-flash-gallery-meta-dialog";
 import { FlashUploader } from "@/components/flash-uploader";
 import { FlashClientsPanel } from "@/components/flash-clients-panel";
 import { FlashPhotoGrid } from "@/components/flash-photo-grid";
@@ -63,6 +64,13 @@ export default async function FlashGalleryDetailPage({
             {formatSessionDate(flash.sessionDate)}
           </p>
         )}
+        <div className="mt-2">
+          <EditFlashGalleryMetaDialog
+            flashGalleryId={flash.id}
+            title={flash.title}
+            sessionDate={flash.sessionDate}
+          />
+        </div>
       </div>
 
       <section

@@ -161,6 +161,17 @@ function parseTiersField(raw: FormDataEntryValue | null): TiersParse {
   return result.ok ? { ok: true, tiers: result.tiers } : { ok: false, message: result.message };
 }
 
+// Shared by createGallery and updateGalleryMeta (#281) so a correction is
+// validated exactly as strictly, with exactly the same messages, as creation.
+const galleryTitleField = z.string().trim().min(1, "Ingresa un título.");
+// `<input type="date">` posts "YYYY-MM-DD", the exact shape
+// `galleries.sessionDate` (a `date()` column in string mode) stores.
+const gallerySessionDateField = z
+  .string()
+  .trim()
+  .min(1, "Elige la fecha de la sesión.")
+  .pipe(z.iso.date("Ingresa una fecha de sesión válida."));
+
 const createGallerySchema = z.object({
   // Fed by a `<select multiple>` picker backed by getClientsForPicker()
   // (src/lib/clients.ts) — a plain presence + shape check here is enough; a
@@ -186,14 +197,8 @@ const createGallerySchema = z.object({
       message: "Elige un paquete válido.",
     })
     .transform(Number),
-  title: z.string().trim().min(1, "Ingresa un título."),
-  // `<input type="date">` posts "YYYY-MM-DD", the exact shape
-  // `galleries.sessionDate` (a `date()` column in string mode) stores.
-  sessionDate: z
-    .string()
-    .trim()
-    .min(1, "Elige la fecha de la sesión.")
-    .pipe(z.iso.date("Ingresa una fecha de sesión válida.")),
+  title: galleryTitleField,
+  sessionDate: gallerySessionDateField,
   // Task #193 — both OPTIONAL, both independent of one another. An admin can
   // override only the quota, only the extra-photo price, both, or neither
   // (the untouched default, which reproduces today's behavior bit for bit).
@@ -382,6 +387,105 @@ export async function createGallery(
 
   revalidatePath("/dashboard/galleries");
   return { status: "created" };
+}
+
+// ---------------------------------------------------------------------------
+// Correct an EXISTING gallery's `title` and `sessionDate` (task #281) — the
+// two columns `createGallery` above writes once and, until this action, nothing
+// ever wrote again. A typo in either was irreversible from the dashboard.
+//
+// Follows the mould `updateGalleryTerms` below already established for every
+// editing decision this slice also needs:
+//
+//   - NO state gate. Editable in `draft`, `proofing`, `selected` and
+//     `delivered`, the same owner decision #200 recorded for terms.
+//   - NO email. The photographer tells the client out of band; a corrected
+//     title reaches them in the NEXT access/delivery email, because
+//     `gallery-access-email.ts`/`gallery-delivery-email.ts` read
+//     `gallery.title` at send time. No migration needed.
+//
+// DELIBERATELY OUT OF SCOPE, never written by this action: `publicSlug` (the
+// identifier of a link already in a client's hands) and every term snapshot
+// (`*Snapshot`, `termsOverridden`, `terms*` — their own slice, #200/#205). The
+// UPDATE's `.set()` carries exactly `title` and `sessionDate`.
+// ---------------------------------------------------------------------------
+
+const updateGalleryMetaSchema = z.object({
+  galleryId: z.uuid(),
+  title: galleryTitleField,
+  sessionDate: gallerySessionDateField,
+});
+
+export type UpdateGalleryMetaState = {
+  status: "idle" | "error" | "updated";
+  message?: string;
+};
+
+/**
+ * Overwrites a gallery's `title` and `sessionDate` with whatever the admin
+ * typed, in any status. No audit stamp: no `*UpdatedBy` column exists for
+ * either and this task adds no migration. No state gate, no email — see this
+ * section's own header comment for both.
+ *
+ * `revalidatePath` for EVERY surface that reads either value: the dashboard
+ * detail page, the dashboard list, the client's own gallery
+ * (`/galleries/[publicSlug]`) and the client's gallery index (`/galleries`,
+ * whose title and lede year both come from these columns). The epic's rule is
+ * every reader, not just the page the admin happens to be looking at.
+ */
+export async function updateGalleryMeta(
+  _prevState: UpdateGalleryMetaState,
+  formData: FormData,
+): Promise<UpdateGalleryMetaState> {
+  // Admin-only surface, checked at the data-access path itself — not only by
+  // the page above it, per src/lib/auth-guards.ts's header comment and the
+  // epic's "every route and action is admin-only" rule.
+  await requireAdmin();
+
+  const parsed = updateGalleryMetaSchema.safeParse({
+    galleryId: formData.get("galleryId"),
+    // `?? ""` normalizes a genuinely absent field (`formData.get` returning
+    // `null`) into the empty string the shared fields' own `.min(1, …)`
+    // rejects with a clear message — never `||`, same reasoning as
+    // `updateGalleryTerms` below.
+    title: formData.get("title") ?? "",
+    sessionDate: formData.get("sessionDate") ?? "",
+  });
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Revisa los datos del formulario.",
+    };
+  }
+
+  const [gallery] = await db
+    .select({ id: galleries.id, publicSlug: galleries.publicSlug })
+    .from(galleries)
+    .where(eq(galleries.id, parsed.data.galleryId))
+    .limit(1);
+  if (!gallery) {
+    return { status: "error", message: "La galería no existe." };
+  }
+
+  // `RETURNING` on top of the pre-read: #282 makes "the row vanished between
+  // my read and my write" reachable (deleted in one tab, saved in another).
+  // Without it this action would report `updated` for a write that hit zero
+  // rows — exactly the "update silencioso" the slice forbids.
+  const updated = await db
+    .update(galleries)
+    .set({ title: parsed.data.title, sessionDate: parsed.data.sessionDate })
+    .where(eq(galleries.id, gallery.id))
+    .returning({ id: galleries.id });
+  if (updated.length === 0) {
+    return { status: "error", message: "La galería no existe." };
+  }
+
+  revalidatePath(`/dashboard/galleries/${gallery.id}`);
+  revalidatePath("/dashboard/galleries");
+  revalidatePath(`/galleries/${gallery.publicSlug}`);
+  revalidatePath("/galleries");
+
+  return { status: "updated" };
 }
 
 // ---------------------------------------------------------------------------

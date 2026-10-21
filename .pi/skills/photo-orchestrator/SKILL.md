@@ -24,25 +24,47 @@ worktree; pi supplies each seat. Nothing here goes through herdr or OpenCode —
 
 Never infer an ID from creation order. Read it.
 
+## The seats, and why each one runs on that model
+
+| Step      | Seat                   | Provider / model                | Thinking | Tools                          |
+| --------- | ---------------------- | ------------------------------- | -------- | ------------------------------ |
+| Explore   | `photo-explore-seat`   | `deepseek/deepseek-flash`       | low      | `read,bash` + codegraph        |
+| Plan      | `photo-plan-seat`      | `claude-bridge/claude-opus-5-5` | high     | `read,bash` + codegraph        |
+| Implement | `photo-implement-seat` | `deepseek/deepseek-flash`       | high     | `read,bash,edit,write` + graph |
+| Review    | `photo-review-seat`    | `openai/gpt-6.1-sol`            | high     | `read,bash` + codegraph        |
+| Ship      | `photo-ship-seat`      | `deepseek/deepseek-flash`       | low      | `read,bash` + codegraph        |
+
+The map lives in `scripts/photo/seats/start-seat.sh`; you never type a model by hand. Two things
+about it that are not obvious:
+
+- **The deepseek seats run DeepSeek's own API, and that model maps only `low`, `high` and `max`.**
+  `medium` does not exist. A deepseek seat launched with `medium` dies after 3-4 tool calls with
+  `status=empty` and `output-bytes=0`, leaving its tab open — it looks like a timeout and is not one.
+  Implement runs `high` on purpose: it is the seat that is most expensive to under-think.
+- **Plan and review on different model lines** is the reason review exists. If you ever see the same
+  model in both, the seat map was reverted by accident.
+
 ## The slice, end to end
 
 ```
 1. Pick work     kanban-md list --status backlog --unblocked --priority critical --compact
 2. Claim         kanban-md move <id> in-progress --claim agent-1
-3. Explore       scripts/photo/seats/start-seat.sh explore --wait
-4. Plan          scripts/photo/seats/start-seat.sh plan --wait
+3. Explore       start-seat.sh explore --id <id>      (optional when the body fixes the how)
+4. Plan          start-seat.sh plan --id <id>
    ── GATE ──    show the plan to the owner. Only their explicit approval lets you append
                  "APPROVED by owner (<date>)" to the task body. Do not start step 5 without it.
-5. Implement     scripts/photo/seats/start-seat.sh implement --wait
-6. Review        scripts/photo/seats/start-seat.sh review --wait   (after the implementer commits)
-7. Ship          kanban-md move <id> shipping --claim agent-1, then start-seat.sh ship --wait
+5. Implement     start-seat.sh implement --id <id>
+6. Review        start-seat.sh review --id <id>        (after the implementer commits)
+7. Ship          kanban-md move <id> shipping --claim agent-1, then start-seat.sh ship --id <id>
 8. Close         kanban-md move <id> done --claim agent-1 — only when live and verified, or its
                  unverifiable-behind-login gap is written into the body.
 ```
 
-Every step that launches a seat ends in `seat-status.sh --wait <output>`, and every turn begins with
-`seat-status.sh` — see "You cannot be notified" below. A step is never "in flight" in your memory:
-it is whatever the handoff files say when you look.
+**No step passes `--wait`.** Each launch returns in seconds with `terminal=` and `output=`; you then
+start one `process` watcher for that seat and **end your turn**. See "Waiting without blocking".
+
+Every turn begins with `seat-status.sh` — see "Reconcile, don't remember". A step is never "in
+flight" in your memory: it is whatever the handoff files say when you look.
 
 Explore is optional when the task body already fixes the how. It is mandatory for unfamiliar
 modules, multi-area slices, and ambiguous traps.
@@ -52,77 +74,94 @@ modules, multi-area slices, and ambiguous traps.
 One seat, start to finish. Read the handoff block the launcher prints, then read the file:
 
 ```bash
-handoff="$(scripts/photo/seats/start-seat.sh plan --wait --timeout-ms 900000 \
+handoff="$(scripts/photo/seats/start-seat.sh plan --id <id> \
   --prompt "Task <id>, epic <pid>, explore digest <digest-path>.
 Decide the technical path. Read your contract first.")"
 
-status="$(printf '%s\n' "$handoff" | sed -n 's/^status=//p')
-output="$(printf '%s\n' "$handoff" | sed -n 's/^output=//p')
-tab_cleanup="$(printf '%s\n' "$handoff" | sed -n 's/^cleanup=//p')"
+output="$(printf '%s\n' "$handoff" | sed -n 's/^output=//p')"
 terminal="$(printf '%s\n' "$handoff" | sed -n 's/^terminal=//p')"
-agent="$(printf '%s\n' "$handoff" | sed -n 's/^agent=//p')"
-
-cat "$output"
+title="$(printf '%s\n' "$handoff" | sed -n 's/^title=//p')"
 ```
 
 - **The output path is the only delivery channel.** pi runs fullscreen with no scrollback, so
   `orca terminal read` cannot recover a transcript; `--screen` shows only the current frame. The
   launcher mints the path (`mktemp`) and appends it to the brief, so pass `--output` only when you
   already have one.
-- **You do not clean up after a successful seat: the launcher does.** `cleanup=tab-closed` means the
-  tab is gone. Leave it that way — a leftover tab is not free, because pi rewrites its title, so it
-  cannot be found by the seat's name later and has to be closed by hand. `--keep-open` exists for
-  the rare case you want to watch it.
-- `status` is `ok`, `empty` or `timeout`. `empty` means the seat finished and wrote nothing —
-  a failure, not an empty success. Prompt a **new** seat once with the same brief; if it fails
-  again, report and stop. Never invent the content.
-- `timeout` means the seat was still working when the ceiling was reached. Read the screen
-  (`orca terminal read --terminal <handle> --screen`) to see whether it is working or stuck, then
-  decide; do not report it as done.
-- A failed seat keeps its tab open on purpose (`cleanup=left-open`), because that is the one worth
-  looking at. Read the screen, then close it yourself with
-  `orca terminal close --terminal <handle> --tab`. Nothing else should outlive the run.
+- **Without `--wait`, closing the tab is yours.** `orca terminal close --terminal <handle> --tab`
+  once you have read the delivery, or `seat-status.sh --close-settled` in bulk. A finished seat's
+  tab holds nothing but repaint fragments, and pi rewrites the title to `π - photo-showcase`, so a
+  leftover cannot be found later by `photo-<seat>-<id>`. `--keep-open` exists for a seat you are
+  watching yourself.
+- **`status=empty` is a failure, not an empty success** (only visible under `--wait`; without it a
+  failed seat shows up as its own `TIMEOUT <seat>`). Re-prompt a **new** seat once with the same
+  brief; if it fails again, report and stop. Never invent the content.
+- A failed seat keeps its tab open on purpose, because that is the one worth looking at. Read the
+  screen (`orca terminal read --terminal <handle> --screen`), then close it. Nothing else should
+  outlive the run.
 - Seats are disposable (`--no-session`) and each gets a fresh terminal. A correction is a new seat
-  with the findings, never a resumed one.
+  with the findings, never a resumed one — and a retry of the same seat on the same slice carries
+  `--attempt <n>`, which is what makes its title `photo-<seat>-<id>-r2`.
 - To re-prompt a seat that is still running, use `orca terminal send --terminal <handle> --text
 "…" --enter` — but a new seat is the normal path.
 
-### You cannot be notified. Reconcile, don't remember.
+### Waiting without blocking: the seat tells you
 
-A seat has no way to tell you it finished. pi is turn-based and its `bash` tool has no
-run-in-background-and-callback; the `agent_settled` extension event is about pi's own run, not about
-some other terminal writing a file. Nothing will ever wake you because a seat wrote its output.
+**Do not pass `--wait` to coordinate.** It blocks your turn until _that_ seat delivers, so while you
+wait the others deliver unseen. Measured in the sibling SYC lane on 2026-10-20, with the owner
+watching: two reviews in parallel, the first delivered, and the coordinator was still blocking on the
+second while the PR sat open.
 
-This is not a theory. It has already cost a run: the implement seat delivered at 01:23 and the
-owner found it hours later, because the only thing watching for it was a `--wait` call that had been
-interrupted. The seat was fine. The protocol was the defect.
+The protocol, with the `@aliou/pi-processes` extension:
 
-So there are exactly two rules, and the second exists because the first cannot be trusted:
+1. **Launch without `--wait`** — returns in seconds with `terminal=` and `output=`.
+2. **Start ONE `process` per seat** — never one combined watcher — and end the turn:
 
-1. **A seat step ends in the blocking wait, not in "I will check later".**
-   ```bash
-   scripts/photo/seats/seat-status.sh --wait <the path printed as output=> --timeout-ms 1800000
+   ```jsonc
+   {
+     "action": "start",
+     "name": "seat-implement-<id>",
+     "command": "bash scripts/photo/seats/watch-seat.sh implement-<id> <output> 2400",
+     "notify": {
+       "logMatches": [
+         { "pattern": "DELIVERED implement-<id>", "on": "turn" },
+         { "pattern": "TIMEOUT", "on": "turn" },
+       ],
+     },
+   }
    ```
-   Exit `0` delivered, `3` empty/gone (a failure), `4` timed out — a checkpoint, not a failure.
-   Keep the wait inside ONE bash call so the result lands in your context instead of in a tab.
-2. **Every turn starts by reconciling, and never by remembering.**
-   ```bash
-   scripts/photo/seats/seat-status.sh
-   ```
-   `delivered` means a seat is finished and NOBODY HAS READ IT — read it now. `empty` means it
-   finished and wrote nothing, which is a failure, not an empty success: re-prompt a NEW seat once.
-   `gone` means its terminal died with no delivery. `settled` means a completed launcher already
-   recorded the outcome.
 
-Why two rules and not one: an interrupted or aborted wait is normal — a Ctrl-C, an owner's question,
-a harness that kills the command. The wait is an optimisation for latency; the reconciliation is the
-safety net. Because `start-seat.sh` writes `<output>.handoff` **before** it blocks, an interrupted
-run still leaves the seat's identity on disk, so a turn that begins with rule 2 loses nothing no
-matter how the previous one ended.
+   `watch-seat.sh <name> <delivery-path> <seconds>` polls `wc -c` every ~8 s and prints exactly one
+   line: `DELIVERED <name> bytes=<n>`, `TIMEOUT <name> after <n>s`, or `MISSING <name> <path>`.
+   The extension wakes you on the match — no polling from your side, no retained turn.
 
-Close what has been read: `seat-status.sh --close-settled` closes the tabs of delivered and empty
-seats, and never touches a running one. A leftover tab cannot be found later by its seat name,
-because pi rewrites the title.
+3. Read the file, act, **close that tab**, and `process clear` the finished watcher.
+
+Ceilings are per seat because a combined watcher would have to use the slowest one for everyone:
+ship 20 min (`1200`), implement 40 (`2400`), review 30 (`1800`). A combined ALL-DELIVERED watcher is
+the `--wait` defect at a smaller scale: it serialises behind the slowest seat and loses the isolation
+of a failure. Naming the seat in the pattern is what stops one seat's event waking you for another.
+`MISSING` (exit 3) is a typo in the launcher's `output=`, not a slow seat.
+
+Launch every seat you need before reading any of them. The parallelism is not a shell `&`: each seat
+runs in its own Orca terminal and you never wait on it.
+
+### Reconcile, don't remember
+
+**Every turn starts with the reconciliation, never with your memory of what you launched:**
+
+```bash
+scripts/photo/seats/seat-status.sh
+```
+
+`delivered` means a seat finished and NOBODY HAS READ IT — read it now. `empty` means it finished and
+wrote nothing, which is a failure: re-prompt a NEW seat once. `gone` means its terminal died with no
+delivery. `settled` means a completed launcher already recorded the outcome.
+
+This is the safety net under the watcher, and it exists because the watcher can be lost: a Ctrl-C, an
+owner's question, a harness that kills the command. `start-seat.sh` writes `<output>.handoff`
+**before** it returns, so a wake-up at an arbitrary moment — or a turn that begins after an aborted
+wait — loses nothing. `seat-status.sh --close-settled` closes delivered and empty seats' tabs and
+never touches a running one.
 
 ### What each prompt must carry
 
@@ -166,19 +205,31 @@ nobody could verify live: that is the part you will want to find in six weeks.
 
 ## Parallel slices
 
-One Orca worktree per lane, one seat per step, same launcher with `--worktree <selector>`. Read
-"Running lanes in parallel" in `KANBAN.md` before opening a second lane: group by file overlap,
-require branch and commit SHAs in every report, review a committed ref, and serialise shipping.
-A new lane worktree has no `.husky/_` until it installs, so the lane must run the checks itself.
+One Orca worktree per lane, one seat per step, same launcher with `--worktree <selector>` (and
+`--id <id>` so the tab, the watcher and the board slice share one name). Read "Running lanes in
+parallel" in `KANBAN.md` before opening a second lane: group by file overlap, require branch and
+commit SHAs in every report, review a committed ref, and serialise shipping.
+
+**A new workspace needs two things, and both get forgotten** (`.pi/` is tracked here, so unlike the
+SYC umbrella there is nothing to symlink):
+
+```bash
+orca worktree create --name slice-<id> --parent-worktree active --json
+codegraph init -y <the new worktree>   # its own index; never reuse another checkout's
+cd <the new worktree> && bun install   # node_modules AND .husky/_ (no install, no hook)
+```
+
+A seat whose cwd has no `.codegraph/` has no graph and greps instead, silently.
 
 ## Hard rules
 
 1. **You do not write code.** No edits, no patches, no "just this one line". The seat contracts are
    the enforcement; pi does not sandbox them for you.
 2. **The reviewer is never the implementer.** The review seat reviews what another actor
-   committed. An unreviewed slice does not ship.
-3. **Never merge.** Merging to `main` deploys to production. That is the owner's decision on a
-   specific PR, never an inference from "finish it", "ship it" or "end to end".
+   committed. An unreviewed slice does not ship. Plan and review also run different models.
+3. **Never merge.** Merging to `main` deploys to production — that is the owner's decision on a
+   specific PR, never an inference from "finish it", "ship it" or "end to end". The **ship seat**
+   merges the PR the owner approved; you do not.
 4. **Never touch `main`.** The implementer works on its own branch; the shipper opens a PR.
 5. **The board is appended, never rewritten.** Use `--append-body`. Overwriting a task body is not
    recoverable.
@@ -187,6 +238,12 @@ A new lane worktree has no `.husky/_` until it installs, so the lane must run th
 8. **Report what happened, not what you wanted.** Read the diff and the actual command output
    before calling anything done.
 9. **Do not repeat conventions.** `AGENTS.md`, `KANBAN.md` and Engram are the source.
+10. **Never block a turn on a seat.** No `--wait` while coordinating: one `process` watcher per
+    seat, then end the turn. Several seats in parallel make `--wait` lose the ones that delivered
+    while you waited for the slowest.
+11. **Close what you have read.** That seat's tab (`orca terminal close --terminal <handle> --tab`)
+    and its finished `process` (`process clear`). A leftover tab is indistinguishable later, and a
+    watcher left alive on a seat you already read wakes you for nothing.
 
 ## Orca state
 
@@ -204,5 +261,6 @@ tools are yours directly — no `tool_search` hop. Call `mem_current_project` be
 it reports the detected project and how it was detected. Then pass `project: "photo-showcase"`
 explicitly when you persist a plan, a verdict or a discovery.
 
-The seats run with `ENGRAM_STARTUP_POLICY=disabled` and `--no-mcp`, so anything worth keeping must be
-persisted by you.
+The seats run with `ENGRAM_STARTUP_POLICY=disabled` and with MCP scoped to `mcp__codegraph__*`, so
+anything worth keeping must be persisted by you. Their graph access is the one MCP surface they get —
+it is read-only, and the writers (`figma`) stay out of it.

@@ -30,17 +30,71 @@ vi.mock("@/lib/selection-events", () => ({
 }));
 
 const deleteObjectMock = vi.fn();
+// Both spellings of the same key space are recorded so a suite can assert WHICH
+// gallery id the derived display key was built from.
+const displayKeyArgs: string[] = [];
 vi.mock("@/lib/r2", () => ({
   deleteObject: (...args: unknown[]) => deleteObjectMock(...args),
   storedKey: (key: string) => key,
-  displayKey: (galleryId: string, assetId: string) =>
-    `galleries/${galleryId}/display/${assetId}.webp`,
+  displayKey: (galleryId: string, assetId: string) => {
+    displayKeyArgs.push(galleryId);
+    return `galleries/${galleryId}/display/${assetId}.webp`;
+  },
 }));
 
 vi.mock("@/lib/db", async () => {
   const { assets, galleries, galleryClients } = await import("@/lib/db/schema");
   const { createFakeDb } = await import("@/test-support/fake-db");
   const fake = createFakeDb([galleries, galleryClients, assets]);
+  type Fake = ReturnType<typeof createFakeDb>;
+
+  // PostgreSQL compares `uuid` values in canonical form, so `ABCDEF…` and
+  // `abcdef…` are the same row. The shared double compares strings with `===`,
+  // and `src/test-support/fake-db.ts` is outside this slice's edit surface, so
+  // the equivalence is modelled here: every uuid-shaped string PARAMETER of a
+  // SELECT is matched in canonical lowercase form. A caller spelling that is
+  // already canonical takes this path unchanged, and writes (including the
+  // DELETE and its WHERE) are left alone — a delete scoped by the caller's
+  // spelling must still fail here, as it would not in Postgres's eyes.
+  const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  const canonicalise = (condition: unknown): unknown => {
+    const chunks = (condition as { queryChunks?: unknown[] } | null)?.queryChunks;
+    for (const chunk of chunks ?? []) {
+      const candidate = chunk as { value?: unknown; queryChunks?: unknown[] };
+      if (Array.isArray(candidate.queryChunks)) {
+        canonicalise(chunk);
+      } else if (typeof candidate.value === "string" && UUID.test(candidate.value)) {
+        candidate.value = candidate.value.toLowerCase();
+      }
+    }
+    return condition;
+  };
+  const select = fake.select as (columns?: Record<string, unknown>) => unknown;
+  type Statement = { from: (table: unknown) => { where: (condition: unknown) => unknown } };
+  fake.select = (columns) => {
+    const statement = select(columns) as Statement;
+    return {
+      from: (table) => {
+        const scoped = statement.from(table);
+        return { where: (condition) => scoped.where(canonicalise(condition)) };
+      },
+    };
+  };
+
+  // Transaction lifecycle. The double runs the callback against itself and
+  // models no rollback, so "the callback returned" IS the commit here. The
+  // suites use this to prove no R2 delete starts before that point: R2 work
+  // inside the transaction would turn a later rollback into a live row
+  // pointing at a deleted object.
+  const lifecycle = { finished: false };
+  const transaction: Fake["transaction"] = fake.transaction;
+  fake.transaction = async <T>(fn: (tx: Fake) => Promise<T>): Promise<T> => {
+    lifecycle.finished = false;
+    const result = await transaction(fn);
+    lifecycle.finished = true;
+    return result;
+  };
+
   return {
     db: Object.assign(fake, {
       __rows: {
@@ -48,6 +102,7 @@ vi.mock("@/lib/db", async () => {
         galleryClients: fake.__tables.get(galleryClients)!,
         assets: fake.__tables.get(assets)!,
       },
+      __lifecycle: lifecycle,
     }),
   };
 });
@@ -65,6 +120,13 @@ async function log(): Promise<string[]> {
   return db.__log;
 }
 
+async function transactionLifecycle(): Promise<{ finished: boolean }> {
+  const { db } = (await import("@/lib/db")) as unknown as {
+    db: { __lifecycle: { finished: boolean } };
+  };
+  return db.__lifecycle;
+}
+
 const adminSession = (): Session =>
   ({
     user: { id: "admin-1", role: "admin", email: "photographer@example.com" },
@@ -76,16 +138,20 @@ const clientSession = (): Session =>
     expires: "2099-01-01T00:00:00.000Z",
   }) as Session;
 
-const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
+// Alphabetic hex digits on purpose: an all-numeric id cannot expose a
+// case-sensitivity bug, because its uppercase spelling is itself.
+const GALLERY_ID = "abcdefab-cdef-4abc-8abc-abcdefabcdef";
 const OTHER_GALLERY_ID = "22222222-2222-4222-8222-222222222222";
 const ASSET_WITH_FINAL = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
 const ASSET_NO_FINAL = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const OTHER_ASSET = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
-
 const FINAL_KEY = `galleries/${GALLERY_ID}/finals/${ASSET_WITH_FINAL}.png`;
 const PROOF_A = `galleries/${GALLERY_ID}/proofs/${ASSET_WITH_FINAL}.webp`;
 const PROOF_B = `galleries/${GALLERY_ID}/proofs/${ASSET_NO_FINAL}.webp`;
 const DISPLAY_A = `galleries/${GALLERY_ID}/display/${ASSET_WITH_FINAL}.webp`;
+// An asset id that appears in BOTH galleries: it is what makes an unscoped
+// asset read visible in the keys the action deletes.
+const OTHER_PROOF_A = `galleries/${OTHER_GALLERY_ID}/proofs/${ASSET_WITH_FINAL}.webp`;
 
 function gallery(id: string, overrides: Row = {}): Row {
   return { id, status: "proofing", publicSlug: `${id.slice(0, 4)}-slug`, ...overrides };
@@ -130,6 +196,8 @@ beforeEach(async () => {
   revalidatePathMock.mockReset();
   deleteObjectMock.mockReset();
   deleteObjectMock.mockResolvedValue(undefined);
+  displayKeyArgs.length = 0;
+  (await transactionLifecycle()).finished = false;
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
   await seed();
 });
@@ -192,6 +260,71 @@ describe("deleteGallery — the R2 keys it deletes", () => {
   });
 });
 
+describe("deleteGallery — the transaction it runs", () => {
+  it("locks the gallery row, then reads its assets, then deletes it — in that order", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const r = await rows();
+    // The same asset id also lives in the other gallery. The asset read is
+    // scoped by the LOCKED row's id — the fake db's log records query kinds
+    // and affected counts, never conditions, so the scope is proven by this
+    // row's stored key never reaching `deleteObject`.
+    r.assets.push({
+      id: ASSET_WITH_FINAL,
+      galleryId: OTHER_GALLERY_ID,
+      proofKey: OTHER_PROOF_A,
+      finalKey: null,
+    });
+    const { deleteGallery } = await import("./actions");
+
+    const result = await deleteGallery(GALLERY_ID);
+
+    expect(result).toEqual({ ok: true, r2Failures: 0 });
+    // `for:update` REPLACES the select it locks, so the log reads as the three
+    // statements in order: the row lock, the asset read, and one gallery row
+    // deleted. Dropping `.for("update")` turns the first entry into `select`.
+    expect(await log()).toEqual(["for:update", "select", "delete:1"]);
+    expect(calledKeys().sort()).toEqual([DISPLAY_A, FINAL_KEY, PROOF_A, PROOF_B].sort());
+    expect(r.galleries.map((row) => row.id)).toEqual([OTHER_GALLERY_ID]);
+  });
+
+  it("does no R2 work until the transaction has finished", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const lifecycle = await transactionLifecycle();
+    // Read INSIDE the mock, at call time: the flag must already be true when
+    // the first delete goes out, not merely by the end of the action. R2 work
+    // before the commit would let a later rollback leave live rows pointing at
+    // deleted objects; a post-DELETE row check cannot tell those apart.
+    const finishedAtCall: boolean[] = [];
+    deleteObjectMock.mockImplementation(async () => {
+      finishedAtCall.push(lifecycle.finished);
+    });
+    const { deleteGallery } = await import("./actions");
+
+    const result = await deleteGallery(GALLERY_ID);
+
+    expect(result).toEqual({ ok: true, r2Failures: 0 });
+    expect(finishedAtCall).toEqual([true, true, true, true]);
+  });
+});
+
+describe("deleteGallery — the canonical id, not the caller's spelling", () => {
+  it("an uppercase uuid still deletes the DISPLAY object of the row it resolves to", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const { deleteGallery } = await import("./actions");
+
+    const result = await deleteGallery(GALLERY_ID.toUpperCase());
+
+    // Postgres resolves the uppercase spelling to the same row; R2 keys are
+    // case-sensitive and deleting an ABSENT key does not reject, so a display
+    // key built from the argument leaves the object in the bucket while the
+    // action still reports a clean delete.
+    expect(result).toEqual({ ok: true, r2Failures: 0 });
+    expect(displayKeyArgs).toEqual([GALLERY_ID]);
+    expect(calledKeys().sort()).toEqual([DISPLAY_A, FINAL_KEY, PROOF_A, PROOF_B].sort());
+    expect(revalidatePathMock).toHaveBeenCalledWith(`/dashboard/galleries/${GALLERY_ID}`);
+  });
+});
+
 describe("deleteGallery — DB first, R2 second, best-effort", () => {
   it("the gallery row is already gone when every R2 delete is attempted", async () => {
     authMock.mockResolvedValue(adminSession());
@@ -223,6 +356,23 @@ describe("deleteGallery — DB first, R2 second, best-effort", () => {
     // Every other key was still attempted — no abort on the first failure.
     expect(calledKeys().sort()).toEqual([DISPLAY_A, FINAL_KEY, PROOF_A, PROOF_B].sort());
     expect(r.galleries.some((row) => row.id === GALLERY_ID)).toBe(false);
+  });
+
+  it("counts rejected CALLS, not photos: two failures on one photo both count", async () => {
+    authMock.mockResolvedValue(adminSession());
+    // Two keys of the SAME photo (its proof and its display). A count of photos
+    // that had a failure would report 1 and hide the second object still in the
+    // bucket; `r2Failures` is the number of rejected deletes.
+    deleteObjectMock.mockImplementation(async (key: string) => {
+      if (key === PROOF_A || key === DISPLAY_A) throw new Error("R2 said no");
+    });
+    const { deleteGallery } = await import("./actions");
+
+    const result = await deleteGallery(GALLERY_ID);
+
+    expect(result).toEqual({ ok: true, r2Failures: 2 });
+    // The later photo was still cleaned up, despite the earlier photo failing.
+    expect(calledKeys()).toContain(PROOF_B);
   });
 });
 
@@ -288,7 +438,7 @@ describe("deleteGallery — the reader surfaces it revalidates", () => {
     expect(revalidatePathMock).toHaveBeenCalledTimes(4);
     expect(revalidatePathMock).toHaveBeenCalledWith("/dashboard/galleries");
     expect(revalidatePathMock).toHaveBeenCalledWith(`/dashboard/galleries/${GALLERY_ID}`);
-    expect(revalidatePathMock).toHaveBeenCalledWith("/galleries/1111-slug");
+    expect(revalidatePathMock).toHaveBeenCalledWith("/galleries/abcd-slug");
     expect(revalidatePathMock).toHaveBeenCalledWith("/dashboard");
   });
 });

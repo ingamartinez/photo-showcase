@@ -72,6 +72,14 @@ describe("every flash action is admin-only and writes nothing otherwise", () => 
         ),
     ],
     ["removeFlashClient", (a) => a.removeFlashClient(FLASH_ID, "client-a")],
+    [
+      "updateFlashGalleryMeta",
+      (a) =>
+        a.updateFlashGalleryMeta(
+          { status: "idle" },
+          form({ flashGalleryId: FLASH_ID, title: "x" }),
+        ),
+    ],
     ["deleteFlashAsset", (a) => a.deleteFlashAsset(ASSET_ID)],
     ["deleteFlashGallery", (a) => a.deleteFlashGallery(FLASH_ID)],
   ];
@@ -138,6 +146,14 @@ describe("createFlashGallery", () => {
     ).toMatchObject({ status: "error" });
     expect(current.ofOp("insert")).toHaveLength(0);
   });
+
+  it("rejects a calendar-impossible date instead of letting Postgres fail it", async () => {
+    const { createFlashGallery } = await import("./actions");
+    expect(
+      await createFlashGallery({ status: "idle" }, form({ title: "x", sessionDate: "2026-02-31" })),
+    ).toEqual({ status: "error", message: "La fecha no es válida." });
+    expect(current.ofOp("insert")).toHaveLength(0);
+  });
 });
 
 describe("setFlashGalleryPublic", () => {
@@ -162,6 +178,105 @@ describe("setFlashGalleryPublic", () => {
     expect(await setFlashGalleryPublic(FLASH_ID, true)).toMatchObject({ ok: false });
     current = createRecordingDb();
     expect(await setFlashGalleryPublic("not-a-uuid", true)).toMatchObject({ ok: false });
+    expect(current.calls).toHaveLength(0);
+  });
+});
+
+describe("updateFlashGalleryMeta", () => {
+  beforeEach(() => authMock.mockResolvedValue(admin));
+
+  it("writes only title and date, scoped to one row, and revalidates all four readers", async () => {
+    current = createRecordingDb({ update: [[{ id: FLASH_ID, publicSlug: "slug-abc" }]] });
+    const { updateFlashGalleryMeta } = await import("./actions");
+
+    const result = await updateFlashGalleryMeta(
+      { status: "idle" },
+      form({ flashGalleryId: FLASH_ID, title: "  Nuevo título ", sessionDate: "2026-10-18" }),
+    );
+
+    expect(result).toEqual({ status: "updated" });
+    const [update] = current.ofOp("update");
+    expect(update!.table).toBe(flashGalleries);
+    // Exactly these two keys: `publicSlug` and `isPublic` must never enter the SET.
+    expect(update!.set).toEqual({ title: "Nuevo título", sessionDate: "2026-10-18" });
+    expect(update!.where!.sql).toContain('"flash_galleries"."id" = $1');
+    expect(update!.where!.params).toEqual([FLASH_ID]);
+    // `/flash/<slug>` comes from RETURNING, never from the posted form.
+    expect(revalidatePathMock.mock.calls.map(([path]) => path)).toEqual([
+      `/dashboard/flash/${FLASH_ID}`,
+      "/dashboard/flash",
+      "/flash/slug-abc",
+      "/galleries",
+    ]);
+  });
+
+  it("clears the date with an explicit null, never a dropped undefined", async () => {
+    current = createRecordingDb({ update: [[{ id: FLASH_ID, publicSlug: "slug-abc" }]] });
+    const { updateFlashGalleryMeta } = await import("./actions");
+
+    await updateFlashGalleryMeta(
+      { status: "idle" },
+      form({ flashGalleryId: FLASH_ID, title: "Con fecha", sessionDate: "" }),
+    );
+
+    const [update] = current.ofOp("update");
+    // `toEqual` with a present `null` key: an `undefined` date would be silently
+    // dropped by drizzle's `.set()`, i.e. a success that clears nothing.
+    expect(update!.set).toEqual({ title: "Con fecha", sessionDate: null });
+  });
+
+  const invalidCases: [string, Record<string, string>, string][] = [
+    ["a blank title", { title: "   " }, "Escribe un título."],
+    ["a title over 200 characters", { title: "x".repeat(201) }, "El título es muy largo."],
+    ["a malformed date", { title: "x", sessionDate: "mañana" }, "La fecha no es válida."],
+  ];
+
+  it.each(invalidCases)(
+    "rejects %s without writing or revalidating",
+    async (_name, fields, message) => {
+      const { updateFlashGalleryMeta } = await import("./actions");
+
+      expect(
+        await updateFlashGalleryMeta(
+          { status: "idle" },
+          form({ flashGalleryId: FLASH_ID, ...fields }),
+        ),
+      ).toEqual({ status: "error", message });
+      expect(current.calls).toHaveLength(0);
+      expect(revalidatePathMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("accepts a title of exactly 200 characters", async () => {
+    current = createRecordingDb({ update: [[{ id: FLASH_ID, publicSlug: "slug-abc" }]] });
+    const { updateFlashGalleryMeta } = await import("./actions");
+    const title = "x".repeat(200);
+
+    expect(
+      await updateFlashGalleryMeta({ status: "idle" }, form({ flashGalleryId: FLASH_ID, title })),
+    ).toEqual({ status: "updated" });
+    expect((current.ofOp("update")[0]!.set as { title: string }).title).toBe(title);
+  });
+
+  it("reports a gallery that does not exist and rejects a non-uuid id before the db", async () => {
+    current = createRecordingDb({ update: [[]] });
+    const { updateFlashGalleryMeta } = await import("./actions");
+
+    expect(
+      await updateFlashGalleryMeta(
+        { status: "idle" },
+        form({ flashGalleryId: FLASH_ID, title: "x" }),
+      ),
+    ).toEqual({ status: "error", message: "La galería no existe." });
+    expect(revalidatePathMock).not.toHaveBeenCalled();
+
+    current = createRecordingDb();
+    expect(
+      await updateFlashGalleryMeta(
+        { status: "idle" },
+        form({ flashGalleryId: "not-a-uuid", title: "x" }),
+      ),
+    ).toEqual({ status: "error", message: "Galería no válida." });
     expect(current.calls).toHaveLength(0);
   });
 });

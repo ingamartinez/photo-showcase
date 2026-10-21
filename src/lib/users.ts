@@ -9,6 +9,13 @@
 // and the form it is looked up by ever drift apart, a client the photographer
 // just created simply cannot sign in, and nothing anywhere is red.
 //
+// Task #279 added `updateClient` (same file), which RE-KEYS that identity —
+// epic decision 3 allows editing a client's email, with a warning in the
+// dialog. It goes through the very same `createClientSchema` normalization
+// chain, by `.extend()`-ing that schema rather than copying it, which is what
+// keeps this seam intact when an address changes: the new address is stored in
+// exactly the form this lookup is called with.
+//
 // Task #51: the seam test in src/app/dashboard/clients/actions.test.ts used to
 // prove that by hand-copying auth.ts's query. That test killed real
 // regressions, but it was pinned to a COPY — rewriting the query in auth.ts

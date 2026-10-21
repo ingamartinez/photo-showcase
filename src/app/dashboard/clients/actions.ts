@@ -8,6 +8,7 @@
 
 import { z } from "zod";
 import postgres from "postgres";
+import { and, eq } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
 import { users } from "@/lib/db/schema";
@@ -158,4 +159,115 @@ export async function createClient(
   // and ready for the next client, which is exactly what React 19's own reset
   // already does.
   return { status: "created" };
+}
+
+// ---------------------------------------------------------------------------
+// TASK #279 — editing an existing client.
+// ---------------------------------------------------------------------------
+
+// `createClientSchema` EXTENDED, not copied (task #279's own trap: "La
+// edición tiene que pasar por LA MISMA cadena"): name, email and phone go
+// through the very object create uses, so there is no second definition of
+// normalization that could drift from it. `.extend()` returns a new object;
+// `createClient` keeps using the original untouched.
+//
+// The one addition is the row selector. `users.id` is a text column, but
+// every id in this app is minted by `crypto.randomUUID()` (see schema.ts's
+// `$defaultFn`), and it arrives from a hidden input — a value that is not a
+// UUID means the form was tampered with, not that someone mistyped it.
+const updateClientSchema = createClientSchema.extend({
+  userId: z.uuid("Cliente no válido."),
+});
+
+export type UpdateClientState = {
+  status: "idle" | "error" | "updated";
+  message?: string;
+  // Same contract as `CreateClientState.values` above — present ONLY on
+  // `status: "error"`, the RAW submitted strings. Read that comment (and
+  // src/components/client-form.tsx's) for why `defaultValue` + React 19's
+  // reset is the mechanism, and why normalization must not leak into the echo.
+  values?: CreateClientValues;
+};
+
+export async function updateClient(
+  _prevState: UpdateClientState,
+  formData: FormData,
+): Promise<UpdateClientState> {
+  // Epic #278's rule: every new action starts with `requireAdmin()` and never
+  // relies on the page above it having done so.
+  await requireAdmin();
+
+  const parsed = updateClientSchema.safeParse({
+    userId: formData.get("userId"),
+    name: formData.get("name"),
+    email: formData.get("email"),
+    // Same `null` -> `undefined` reason as `createClient` above: the schema's
+    // `phone` is `optional()`, which accepts `undefined` but not `null`.
+    phone: formData.get("phone") ?? undefined,
+  });
+
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Revisa los datos del formulario.",
+      values: submittedValues(formData),
+    };
+  }
+
+  let updated: { id: string }[];
+  try {
+    updated = await db
+      .update(users)
+      // Exactly three columns, and `email` is already NFKC/trim/lowercased by
+      // the shared schema. `role`, `createdAt`, `emailVerified` and `image`
+      // are deliberately absent: this action corrects identity details, it
+      // does not re-issue the account. `phone: ?? null` is what lets a blank
+      // field CLEAR a stored number — `undefined` would be dropped from the
+      // SET clause by drizzle and the old phone would silently survive.
+      .set({
+        name: parsed.data.name,
+        email: parsed.data.email,
+        phone: parsed.data.phone ?? null,
+      })
+      // `role = 'client'` in the WHERE, not only `id` (epic #278's rule): a
+      // hand-posted admin id can never be edited through this action. Both
+      // conditions in ONE statement — no read-then-write window.
+      .where(and(eq(users.id, parsed.data.userId), eq(users.role, "client")))
+      .returning({ id: users.id });
+  } catch (error) {
+    // Same detector (and same reason for walking `.cause`) as `createClient`:
+    // the email index is the one unique constraint this UPDATE can hit.
+    if (isUniqueViolation(error)) {
+      return {
+        status: "error",
+        message: "Ya existe un cliente con ese correo electrónico.",
+        values: submittedValues(formData),
+      };
+    }
+    throw error;
+  }
+
+  if (updated.length === 0) {
+    // A nonexistent id and an admin's id are the same answer on purpose:
+    // one message means this action cannot be used to probe which users are
+    // admins. Zero rows is never reported as a success (task #279: "nunca un
+    // update silencioso de 0 filas").
+    return { status: "error", message: "El cliente no existe.", values: submittedValues(formData) };
+  }
+
+  // Every surface that renders this client's name/email/phone. The list
+  // itself, the two admin pages whose pickers are built from the same rows,
+  // and the two galleries surfaces that label a co-client by name-or-email.
+  // `revalidatePath(route, "page")` is the documented way to invalidate a
+  // dynamic segment without enumerating every slug (Next's own revalidatePath
+  // reference). `/flash/[publicSlug]` renders no client identity, so it is
+  // not here.
+  revalidatePath("/dashboard/clients");
+  revalidatePath("/dashboard/galleries");
+  revalidatePath("/dashboard/galleries/[galleryId]", "page");
+  revalidatePath("/dashboard/flash/[flashId]", "page");
+  revalidatePath("/galleries");
+  revalidatePath("/galleries/[publicSlug]", "page");
+
+  return { status: "updated" };
 }

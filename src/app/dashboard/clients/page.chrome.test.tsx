@@ -34,7 +34,7 @@ import userEvent from "@testing-library/user-event";
 import type { Session } from "next-auth";
 import ClientsPage from "./page";
 import type { ClientWithGalleryCount } from "@/lib/clients";
-import type { CreateClientState } from "./actions";
+import type { CreateClientState, UpdateClientState } from "./actions";
 
 const requireAdminMock = vi.fn<() => Promise<Session>>();
 vi.mock("@/lib/auth-guards", () => ({ requireAdmin: () => requireAdminMock() }));
@@ -47,6 +47,11 @@ vi.mock("@/lib/clients", () => ({
 vi.mock("./actions", () => ({
   createClient:
     vi.fn<(state: CreateClientState, formData: FormData) => Promise<CreateClientState>>(),
+  // Task #279: the row's "⋯" menu (<ClientRowActions>) imports this, so the
+  // page's import graph reaches it. A mock without it would fail at module
+  // evaluation, not at a click.
+  updateClient:
+    vi.fn<(state: UpdateClientState, formData: FormData) => Promise<UpdateClientState>>(),
 }));
 
 /** One client fixture, overridable field by field. */
@@ -181,8 +186,32 @@ describe("ClientsPage chrome", () => {
     const { container } = render(element);
 
     const [withPhone, withoutPhone] = rowsIn(container);
-    expect(withPhone.children).toHaveLength(4);
-    expect(withoutPhone.children).toHaveLength(4);
+    // Four data cells (name, email, phone, gallery count) plus the "⋯"
+    // row-actions control task #279 added as the fifth. The invariant is the
+    // CONSTANT count, with or without a phone — not the number itself.
+    expect(withPhone.children).toHaveLength(5);
+    expect(withoutPhone.children).toHaveLength(5);
+  });
+
+  // Task #279: every row carries its own actions menu, named after the client
+  // — the epic's row-menu pattern, wired per row rather than once per page.
+  it("gives every row its own actions menu named after that client", async () => {
+    getClientsWithGalleryCountMock.mockResolvedValue([
+      client({ id: "u1", name: "Ana Pérez" }),
+      client({ id: "u2", name: "Beto Ruiz" }),
+      client({ id: "u3", name: null, email: "carla@example.com" }),
+    ]);
+
+    const element = await ClientsPage();
+    const { container } = render(element);
+
+    const rows = rowsIn(container);
+    expect(within(rows[0]).getByRole("button", { name: "Acciones para Ana Pérez" })).toBeDefined();
+    expect(within(rows[1]).getByRole("button", { name: "Acciones para Beto Ruiz" })).toBeDefined();
+    // The nameless fallback, same as the row's own name cell.
+    expect(
+      within(rows[2]).getByRole("button", { name: "Acciones para carla@example.com" }),
+    ).toBeDefined();
   });
 
   it("renders the empty state when there are no clients yet", async () => {

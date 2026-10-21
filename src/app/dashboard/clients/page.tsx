@@ -3,6 +3,7 @@ import { requireAdmin } from "@/lib/auth-guards";
 import { getClientsWithGalleryCount } from "@/lib/clients";
 import { formatClientCount, formatClientGalleryCount } from "@/lib/format";
 import { DashboardClientCreateDialog } from "@/components/dashboard-client-create-dialog";
+import { ClientRowActions } from "@/components/client-row-actions";
 import { cn } from "@/lib/utils";
 
 export const metadata: Metadata = {
@@ -13,15 +14,21 @@ export const metadata: Metadata = {
 };
 
 // The four columns the desk shows, in the order the rows place them.
-// design/system/dashboard.html:872.
+// design/system/dashboard.html:872. Task #279 added a fifth, HEADING-LESS desk
+// track after them for the row's "⋯" menu (the mock draws no row actions on
+// this list — see <ClientRowActions>' own comment); nothing is announced, so it
+// gets no heading.
 const COLUMN_HEADINGS = ["Cliente", "Correo", "Teléfono", "Galerías"] as const;
 
 // The 1024px column track, shared verbatim by the header row and every client
-// row — design/system/dashboard.html:585-586. Four columns, no status column:
-// epic #125's own body states the reason plainly — "Sin franja de estado: un
-// cliente no tiene estado." — so there is no fifth track and no `--row-status`
-// channel here, unlike the galleries table this file otherwise mirrors.
-const DESK_COLUMNS = "lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_150px_70px] lg:gap-3.5";
+// row — design/system/dashboard.html:585-586. Four data columns, no status
+// column: epic #125's own body states the reason plainly — "Sin franja de
+// estado: un cliente no tiene estado." — so there is no status track and no
+// `--row-status` channel here, unlike the galleries table this file otherwise
+// mirrors. Task #279 appends a fifth, 24px track: the width of the "⋯"
+// trigger's own `lg:min-w-6`, so the menu column costs no more than the
+// control that fills it.
+const DESK_COLUMNS = "lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)_150px_70px_24px] lg:gap-3.5";
 
 // Calls requireAdmin() itself, same as every other page under /dashboard —
 // see src/lib/auth-guards.ts's header comment for why a page must never rely
@@ -102,23 +109,30 @@ export default async function ClientsPage() {
               className={cn(
                 "text-fg-mute text-app-micro bg-app-raised hidden items-center py-[9px] pr-[var(--app-cell-x)] pl-[calc(var(--app-cell-x)+3px)] tracking-[0.06em] uppercase lg:grid",
                 DESK_COLUMNS,
-                "[&>:last-child]:text-right",
+                "[&>:nth-child(4)]:text-right",
               )}
             >
               {COLUMN_HEADINGS.map((heading) => (
                 <span key={heading}>{heading}</span>
               ))}
+              {/* The row-actions track: empty on purpose, present so the
+                  header and the rows share the same number of tracks. Its
+                  alignment is handled by the `nth-child(4)` rule above —
+                  `last-child` now names this empty span instead of
+                  "Galerías". */}
+              <span />
             </li>
 
             {clients.map((client) => (
               <li
                 key={client.id}
                 data-client-id={client.id}
-                // No `<Link>` here — this task's own trap. A client row is
-                // not a link today: there is no client detail page, and this
-                // slice does not invent one. If the table ever wants row
-                // actions, they are actions, not navigation to a route that
-                // does not exist.
+                // No `<Link>` here — this task's own trap, and task #279's
+                // answer to it: a client row is not navigation, because there
+                // is no client detail page. Its actions are actions, so
+                // "Editar" lives behind a "⋯" menu in the row's last cell
+                // (<ClientRowActions>, task #279). The row itself stays a
+                // plain, non-interactive element.
                 //
                 // Touch target: three stacked lines plus 12px of vertical
                 // padding on a phone; `--app-row-h` (52px) is the floor on the
@@ -129,9 +143,9 @@ export default async function ClientsPage() {
                 // signal, so no `cursor-pointer` and no interactive role ride
                 // along with it.
                 className={cn(
-                  "hover:bg-fg/[2.8%] grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-2.5 gap-y-[3px] px-[var(--app-cell-x)] py-3 transition-colors",
-                  "[grid-template-areas:'title_n''who_who''meta_meta']",
-                  "min-[600px]:grid-cols-[minmax(0,1fr)_auto_auto] min-[600px]:gap-x-3.5 min-[600px]:gap-y-1 min-[600px]:[grid-template-areas:'title_n_n''who_meta_meta']",
+                  "hover:bg-fg/[2.8%] grid grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-x-2.5 gap-y-[3px] px-[var(--app-cell-x)] py-3 transition-colors",
+                  "[grid-template-areas:'title_n_more''who_who_more''meta_meta_more']",
+                  "min-[600px]:grid-cols-[minmax(0,1fr)_auto_auto_auto] min-[600px]:gap-x-3.5 min-[600px]:gap-y-1 min-[600px]:[grid-template-areas:'title_n_n_more''who_meta_meta_more']",
                   "lg:min-h-[var(--app-row-h)] lg:py-0 lg:[grid-template-areas:none]",
                   DESK_COLUMNS,
                 )}
@@ -172,6 +186,19 @@ export default async function ClientsPage() {
                 <span className="text-fg-mute text-app-meta justify-self-end tabular-nums [grid-area:n] lg:[grid-area:auto]">
                   {formatClientGalleryCount(client.galleryCount)}
                 </span>
+
+                {/* Task #279: the row's single "⋯" control, and the LAST
+                    grid child by design — one root element, so the row keeps
+                    its constant cell count (four data cells plus this one)
+                    at every breakpoint. */}
+                <ClientRowActions
+                  client={{
+                    id: client.id,
+                    name: client.name,
+                    email: client.email,
+                    phone: client.phone,
+                  }}
+                />
               </li>
             ))}
           </ul>

@@ -406,11 +406,30 @@ describe("GalleriesPage chrome", () => {
   // C2, second half: a choice made from the REAL page reaches the canonical
   // URL, keeps the filter and drops the page. `session:asc` is deliberately a
   // NON-default direction, so the emitted `dir` is asserted too.
+  //
+  // W3 (review round 3): the reset claim is only meaningful if the controls are
+  // really rendering page 2 when the choice is made. The shared 1/1 fixture
+  // clamped `?page=2` down to page 1 BEFORE the controls rendered, so this test
+  // could not tell "resets the page" from "keeps the already-clamped page 1".
+  // Hence the LOCAL 63/26 override (2 filtered pages of 25 — deliberately not
+  // the shared fixture, which other cases depend on) plus the precondition on
+  // the row query below: with 26 matching rows, page 2 survives the clamp.
   it("writes a sort chosen on the page into the canonical URL, keeping the filter and resetting the page", async () => {
-    getGalleriesWithDetailsMock.mockResolvedValue([gallery()]);
+    getGalleriesWithDetailsMock.mockResolvedValue(rows(1, 25));
+    getGalleryListCountsMock.mockResolvedValue({ studioTotal: 63, matching: 26 });
     const user = userEvent.setup();
 
     await renderPage({ status: "draft", page: "2" });
+
+    // PRECONDITION, asserted on the production path: the rows were read as
+    // FILTERED PAGE 2 — not as page 1 after a clamp against 1 matching row.
+    // Without this, the push assertion below could pass for the wrong reason.
+    expect(getGalleriesWithDetailsMock).toHaveBeenCalledWith({
+      status: "draft",
+      sort: null,
+      dir: "desc",
+      page: 2,
+    });
 
     await user.selectOptions(sortCombobox(), "session:asc");
 

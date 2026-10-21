@@ -26,6 +26,7 @@ import { GalleryClientList } from "@/components/gallery-client-list";
 import { AttachGalleryClientsForm } from "@/components/attach-gallery-clients-form";
 import { EditGalleryTermsDialog } from "@/components/edit-gallery-terms-dialog";
 import { EditGalleryMetaDialog } from "@/components/edit-gallery-meta-dialog";
+import { DeleteGalleryDialog } from "@/components/delete-gallery-dialog";
 import { AllowsOriginalSelectionControl } from "@/components/allows-original-selection-control";
 import { RollingDeliveryControl } from "@/components/rolling-delivery-control";
 import { SelectionTrayModeControl } from "@/components/selection-tray-mode-control";
@@ -716,6 +717,18 @@ export default async function GalleryDetailPage({
               {unlockAudit.unlockReason ? ` — "${unlockAudit.unlockReason}"` : ""}
             </p>
           )}
+
+          {/* Task #282 — the destructive action, last in the aside on
+              purpose. Deleting is NOT a step of the workflow, so it does
+              not belong in the header's "Qué puedes hacer ahora" block,
+              which is flow guidance (and only renders for draft/selected
+              anyway). There is no status condition here either: owner
+              decision 1 allows deleting in ANY status, `archived` included
+              (the archive policy, #42, does not reserve those). Its own
+              card keeps it visually separate from every flow action above. */}
+          <div className="border-line-2 rounded-[6px] border p-4">
+            <DeleteGalleryDialog galleryId={gallery.id} title={gallery.title} />
+          </div>
         </aside>
       </div>
 

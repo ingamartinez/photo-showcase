@@ -109,8 +109,12 @@ outlive the worktree that made them.
   `lint-staged` never fired, so neither `prettier --write` nor `eslint --fix` ran on the way in.
   Do not assume the hooks are protecting you; run the commands yourself.
 - If your slice adds or changes anything a route imports, also confirm the CI build:
-  `git worktree add /tmp/ci-check <branch> && cd /tmp/ci-check && bun install && bun run build`.
+  `git worktree add --detach /tmp/ci-check <ref> && cd /tmp/ci-check && bun install && bun run build`.
   A green local build proves nothing — your machine has `.env.local`, CI does not.
+- **Delete that throwaway worktree before you report** (`git worktree remove --force /tmp/ci-check`).
+  It is registered in the shared `.git/worktrees`, so a leftover keeps appearing in
+  `git worktree list` and in Orca's sidebar as a phantom workspace of this repo with a detached
+  HEAD. It is a build artifact, not a deliverable.
 
 ## How you deliver the report
 

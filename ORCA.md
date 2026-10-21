@@ -366,6 +366,15 @@ Read "Running lanes in parallel" in `KANBAN.md` before opening a second lane, an
 workspace when the slice merges (`orca worktree remove`, tab closed, `process` cleared) instead of
 half-cleaning it.
 
+**A throwaway `/tmp` worktree is a workspace too, and it does not clean itself up.** Both the
+implement and the review contracts build in a detached worktree to reproduce CI without
+`.env.local`, and a registered worktree lives in the shared `.git/worktrees` — so it appears in
+`git worktree list` AND in Orca's sidebar as a phantom workspace of this repository with a
+detached HEAD. Measured 2026-10-21: a review seat left 843 MB at
+`/private/tmp/ci-review-276.P5OnG3`, and the owner reasonably asked why an extra workspace
+existed. The contracts now require `git worktree remove --force <path>` before the seat reports;
+when one slips through, `git worktree prune` after removing it by hand.
+
 `orca worktree create --agent pi --prompt "…"` starts an agent the way Orca's new-agent tab does
 (chat or terminal, per your Chat UI setting) — useful for ad-hoc work, but **not** for seats: it
 cannot pass the contract, the model, the thinking level or the tool set. Seats go through the

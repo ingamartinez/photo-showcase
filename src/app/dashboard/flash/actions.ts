@@ -107,6 +107,53 @@ export async function setFlashGalleryPublic(
   return { ok: true };
 }
 
+export type UpdateFlashGalleryMetaState =
+  { status: "idle" } | { status: "error"; message: string } | { status: "updated" };
+
+const updateFlashGalleryMetaSchema = z.object({
+  flashGalleryId: z.uuid("Galería no válida."),
+  title: flashTitleField,
+  sessionDate: flashSessionDateField,
+});
+
+/** Corrects the title and/or date of an existing flash gallery. Never touches
+ * `publicSlug` (the link already in circulation) or `isPublic` (that is
+ * `setFlashGalleryPublic`'s job). An empty date clears it to NULL. */
+export async function updateFlashGalleryMeta(
+  _prevState: UpdateFlashGalleryMetaState,
+  formData: FormData,
+): Promise<UpdateFlashGalleryMetaState> {
+  await requireAdmin();
+
+  const parsed = updateFlashGalleryMetaSchema.safeParse({
+    flashGalleryId: formData.get("flashGalleryId") ?? "",
+    title: formData.get("title") ?? "",
+    sessionDate: formData.get("sessionDate") ?? "",
+  });
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Revisa los datos del formulario.",
+    };
+  }
+
+  // `?? null` is load-bearing: drizzle DROPS `undefined` keys from `.set()`, so
+  // an omitted date would silently keep the old value instead of clearing it.
+  const [updated] = await db
+    .update(flashGalleries)
+    .set({ title: parsed.data.title, sessionDate: parsed.data.sessionDate ?? null })
+    .where(eq(flashGalleries.id, parsed.data.flashGalleryId))
+    .returning({ id: flashGalleries.id, publicSlug: flashGalleries.publicSlug });
+  if (!updated) return { status: "error", message: "La galería no existe." };
+
+  revalidatePath(`/dashboard/flash/${updated.id}`);
+  revalidatePath("/dashboard/flash");
+  revalidatePath(`/flash/${updated.publicSlug}`);
+  // The client's own index lists assigned flash galleries too.
+  revalidatePath("/galleries");
+  return { status: "updated" };
+}
+
 export type AttachFlashClientsState = {
   status: "idle" | "error" | "attached";
   message?: string;

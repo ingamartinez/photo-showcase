@@ -34,6 +34,7 @@ import {
 } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 import { requireAdmin } from "@/lib/auth-guards";
+import { deleteObject, displayKey, storedKey } from "@/lib/r2";
 import {
   activeClientRuleViolation,
   getGalleryClients,
@@ -2945,4 +2946,122 @@ export async function assignExtraToPerson(
   if (gallery) revalidatePath(`/galleries/${gallery.publicSlug}`);
 
   return { status: "updated" };
+}
+
+// ---------------------------------------------------------------------------
+// Deleting a gallery (task #282)
+// ---------------------------------------------------------------------------
+//
+// THE ROW STORES THE COMPLETE R2 KEY, so every delete below reads the key off
+// the `assets` row (`storedKey(...)`) instead of rebuilding it with
+// `proofKey()`/`finalKey()`. The builders namespace with the CURRENT
+// `APP_ENV`, while a stored value carries the namespace that was active when
+// the object was written — rebuilding can point at a different object. Same
+// rule the asset delete paths already follow (`api/assets/[assetId]/route.ts`,
+// `api/assets/bulk-delete/route.ts`).
+//
+// ORDER: DB FIRST, R2 SECOND, BEST-EFFORT. Identical to those two routes and
+// to `deleteFlashGallery`: a leaked object costs storage nobody can reach
+// again (every read path resolves keys through the `assets` row, already
+// gone), while the reverse order risks a live row pointing at a 404.
+//
+// The `asset_picks` composites are reached through `assets`/`gallery_clients`,
+// and both of those cascade from `galleries.id` — no FK referencing
+// `galleries` is `restrict`, so the cascades do all of it. `assets.gallery_id`
+// and `gallery_clients.gallery_id` are the only direct referrers;
+// `actions.delete.test.ts` asserts that structurally so a future table that
+// changes it fails here instead of in production.
+//
+// TRANSACTION, and why: a single `DELETE` is already atomic, so the
+// transaction is not there for atomicity. It holds `SELECT … FOR UPDATE` on
+// the gallery row between reading its assets and deleting it, so a concurrent
+// proof upload either commits before this snapshot (and its objects are
+// included) or blocks on the FK's key-share lock and fails its own insert
+// after the commit (its own catch then removes the object it just wrote). It
+// is also what makes the asset read below safe: after the delete, those ids
+// are gone for good.
+
+export type DeleteGalleryResult = { ok: true; r2Failures: number } | { ok: false; message: string };
+
+const deleteGalleryIdSchema = z.uuid();
+
+/**
+ * Deletes a gallery, every row that depends on it, and every R2 object its
+ * assets own.
+ *
+ * Allowed in ANY status (owner decision, 2026-10-20): `delivered`/`archived`
+ * are not reserved for the archive policy (#42), because the problem this
+ * closes is literally not being able to undo. There is deliberately no status
+ * filter below.
+ *
+ * `r2Failures` is the number of R2 deletes that rejected. `0` is a clean
+ * delete; a non-zero count is reported rather than thrown, and never rolls
+ * back the row delete that already committed.
+ */
+export async function deleteGallery(galleryId: string): Promise<DeleteGalleryResult> {
+  await requireAdmin();
+
+  if (!deleteGalleryIdSchema.safeParse(galleryId).success) {
+    return { ok: false, message: "Galería no válida." };
+  }
+
+  const snapshot = await db.transaction(async (tx) => {
+    const gallery = await lockGalleryRow(tx, galleryId);
+    if (!gallery) return null;
+
+    // BEFORE the delete: once the gallery row is gone, its assets are gone
+    // through the cascade and their ids — from which the display key is
+    // derived — can never be recovered.
+    const photos = await tx
+      .select({ id: assets.id, proofKey: assets.proofKey, finalKey: assets.finalKey })
+      .from(assets)
+      .where(eq(assets.galleryId, gallery.id));
+
+    await tx.delete(galleries).where(eq(galleries.id, gallery.id));
+
+    // `gallery.id` — the CANONICAL id — travels with the snapshot instead of
+    // the argument. Postgres resolves `ABCDEF…` to the same `uuid` row, but R2
+    // keys are case-sensitive: deriving one from the caller's spelling would
+    // address an object that does not exist, and deleting an absent key does
+    // not reject, so nothing would report it.
+    return { galleryId: gallery.id, publicSlug: gallery.publicSlug, photos };
+  });
+
+  if (snapshot === null) {
+    return { ok: false, message: "La galería no existe." };
+  }
+
+  // Only after COMMIT. Sequential across photos (same precedent as the two
+  // delete routes) so at most three requests are in flight; inside one photo
+  // the three keys go together, which is the latency win on ~100-photo
+  // galleries. A rejection is counted, never thrown and never aborts the rest.
+  let r2Failures = 0;
+  for (const photo of snapshot.photos) {
+    const keys = [storedKey(photo.proofKey)];
+    if (photo.finalKey !== null) {
+      // The display derivative has no column; it exists exactly when a final
+      // does (`src/lib/r2.ts`), so it is deleted with the final, never alone.
+      // Its key is the one thing here that is DERIVED rather than stored, so
+      // it must be built from the canonical id (`snapshot.galleryId`), never
+      // from the argument — see the snapshot above.
+      keys.push(storedKey(photo.finalKey), displayKey(snapshot.galleryId, photo.id));
+    }
+    const results = await Promise.allSettled(keys.map((key) => deleteObject(key)));
+    r2Failures += results.filter((result) => result.status === "rejected").length;
+  }
+
+  // Every surface that reads this gallery. The public page is dynamic and
+  // 404s off the missing row on its own; revalidating it is cheap and keeps
+  // the epic's "every reader" rule honest. The dashboard home reads
+  // `getGalleryCount()`/`getPendingSelectionCount()`, both of which change
+  // when a gallery disappears.
+  revalidatePath("/dashboard/galleries");
+  // Same reason as the display key: the detail route is spelled with the
+  // canonical id, so the caller's spelling would revalidate a path that does
+  // not exist.
+  revalidatePath(`/dashboard/galleries/${snapshot.galleryId}`);
+  revalidatePath(`/galleries/${snapshot.publicSlug}`);
+  revalidatePath("/dashboard");
+
+  return { ok: true, r2Failures };
 }

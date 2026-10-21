@@ -313,8 +313,10 @@ export const POST = withApiSession(async function POST(
   // recovery path for a missed email is the photographer noticing the
   // gallery themselves: `/dashboard/galleries` (src/app/dashboard/galleries/
   // page.tsx, via `getGalleriesWithDetails`) DOES render every gallery's
-  // `status` unconditionally, including `selected`. AT THE TIME this route
-  // was written, that status rendered as a muted label indistinguishable in
+  // `status` unconditionally, including `selected` (paginated since #276; the
+  // default recency order still puts a just-submitted gallery on page 1). AT
+  // THE TIME this route was written, that status rendered as a muted label
+  // indistinguishable in
   // weight from "Borrador", the list sorted by `createdAt` (not by who most
   // recently submitted), and `/dashboard`'s own root read no database at
   // all — so a `selected`-with-no-notification gallery was PRESENT there,

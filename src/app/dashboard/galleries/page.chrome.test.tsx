@@ -23,13 +23,19 @@ import type { GalleryWithDetails } from "@/lib/galleries";
 import type { ClientForPicker } from "@/lib/clients";
 import type { PackageForPicker } from "@/lib/packages";
 import type { CreateGalleryState } from "./actions";
+import { GALLERY_PAGE_SIZE, type GalleryListQuery } from "@/lib/gallery-list-query";
 
 const requireAdminMock = vi.fn<() => Promise<Session>>();
 vi.mock("@/lib/auth-guards", () => ({ requireAdmin: () => requireAdminMock() }));
 
-const getGalleriesWithDetailsMock = vi.fn<() => Promise<GalleryWithDetails[]>>();
+const getGalleriesWithDetailsMock =
+  vi.fn<(query: GalleryListQuery) => Promise<GalleryWithDetails[]>>();
+const getGalleryListCountsMock = vi.fn<() => Promise<{ studioTotal: number; matching: number }>>();
+const getPendingSelectionCountMock = vi.fn<() => Promise<number>>();
 vi.mock("@/lib/galleries", () => ({
-  getGalleriesWithDetails: () => getGalleriesWithDetailsMock(),
+  getGalleriesWithDetails: (query: GalleryListQuery) => getGalleriesWithDetailsMock(query),
+  getGalleryListCounts: () => getGalleryListCountsMock(),
+  getPendingSelectionCount: () => getPendingSelectionCountMock(),
   formatGalleryStatus: (status: string) => {
     const labels: Record<string, string> = {
       draft: "Borrador",
@@ -45,6 +51,15 @@ vi.mock("@/lib/galleries", () => ({
     return `${day}/${month}/${year}`;
   },
 }));
+
+// Task #276 — the control strip is a client component and calls
+// `router.push`. The rest of `next/navigation` stays real (nothing on this
+// page calls it as an RSC), so this is a partial mock.
+const push = vi.fn();
+vi.mock("next/navigation", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("next/navigation")>();
+  return { ...actual, useRouter: () => ({ ...actual, push }) };
+});
 
 const getClientsForPickerMock = vi.fn<() => Promise<ClientForPicker[]>>();
 vi.mock("@/lib/clients", () => ({
@@ -83,6 +98,13 @@ function gallery(overrides: Partial<GalleryWithDetails> = {}): GalleryWithDetail
   };
 }
 
+/** A page's worth of rows, for the pager tests. */
+function rows(count: number, start = 0): GalleryWithDetails[] {
+  return Array.from({ length: count }, (_, index) =>
+    gallery({ id: `g${start + index}`, title: `Galería ${start + index}` }),
+  );
+}
+
 /** Every gallery row on the page, in DOM order.
  *
  * Task #131 made the row itself the link (the whole row is the target), and
@@ -97,6 +119,17 @@ function rowsIn(container: HTMLElement): HTMLAnchorElement[] {
   );
 }
 
+/** Task #276 — the page reads the URL through `searchParams`; every test
+ * renders through this helper so the shape lives in one place. */
+async function renderPage(params: Record<string, string | string[] | undefined> = {}) {
+  const element = await GalleriesPage({ searchParams: Promise.resolve(params) });
+  return render(element);
+}
+
+function deskGroup() {
+  return screen.getByRole("group", { name: "Ordenar por columna" });
+}
+
 beforeEach(() => {
   requireAdminMock.mockReset();
   requireAdminMock.mockResolvedValue({
@@ -104,12 +137,18 @@ beforeEach(() => {
     expires: "2099-01-01T00:00:00.000Z",
   } as Session);
   getGalleriesWithDetailsMock.mockReset();
+  getGalleriesWithDetailsMock.mockResolvedValue([]);
+  getGalleryListCountsMock.mockReset();
+  getGalleryListCountsMock.mockResolvedValue({ studioTotal: 1, matching: 1 });
+  getPendingSelectionCountMock.mockReset();
+  getPendingSelectionCountMock.mockResolvedValue(0);
   getClientsForPickerMock.mockReset();
   getClientsForPickerMock.mockResolvedValue([
     { id: "u1", name: "Ana Pérez", email: "ana@example.com" },
   ]);
   getActivePackagesMock.mockReset();
   getActivePackagesMock.mockResolvedValue([{ id: 1, name: "Estándar", includedPhotos: 13 }]);
+  push.mockReset();
 });
 
 afterEach(() => {
@@ -120,8 +159,7 @@ describe("GalleriesPage chrome", () => {
   it("renders each gallery's title, client, package, status, session date and photo count", async () => {
     getGalleriesWithDetailsMock.mockResolvedValue([gallery()]);
 
-    const element = await GalleriesPage();
-    const { container } = render(element);
+    const { container } = await renderPage();
 
     // Scoped to the gallery's own row, not the whole page — the same client
     // also appears (by design) in the <GalleryForm> picker inside the dialog.
@@ -150,8 +188,7 @@ describe("GalleriesPage chrome", () => {
   it("makes the WHOLE row the link to that gallery, not just its title", async () => {
     getGalleriesWithDetailsMock.mockResolvedValue([gallery({ id: "g-42" })]);
 
-    const element = await GalleriesPage();
-    const { container } = render(element);
+    const { container } = await renderPage();
 
     const [row] = rowsIn(container);
     expect(row.getAttribute("href")).toBe("/dashboard/galleries/g-42");
@@ -174,8 +211,7 @@ describe("GalleriesPage chrome", () => {
       }),
     ]);
 
-    const element = await GalleriesPage();
-    const { container } = render(element);
+    const { container } = await renderPage();
 
     const [row] = rowsIn(container);
     expect(within(row).getByText("Ana Pérez · Beto Gómez")).toBeDefined();
@@ -212,12 +248,18 @@ describe("GalleriesPage chrome", () => {
       }),
     );
     getGalleriesWithDetailsMock.mockResolvedValue(galleries);
+    getGalleryListCountsMock.mockResolvedValue({ studioTotal: 24, matching: 24 });
 
-    const element = await GalleriesPage();
-    const { container } = render(element);
+    const { container } = await renderPage();
 
     const rows = rowsIn(container);
     expect(rows).toHaveLength(24);
+    // Task #276's own guard: this fixture is a ONE-page list only while the
+    // page size is at least 24. Lowering GALLERY_PAGE_SIZE must fail loudly
+    // here rather than silently turn this into a two-page test that no longer
+    // proves what its name says.
+    expect(GALLERY_PAGE_SIZE).toBeGreaterThanOrEqual(24);
+    expect(screen.queryByRole("navigation", { name: "Paginación" })).toBeNull();
 
     // Machine-readable, and unique — buried at index 12 of 24, not
     // conveniently first.
@@ -232,26 +274,32 @@ describe("GalleriesPage chrome", () => {
     for (const row of rows.filter((candidate) => candidate !== selected[0])) {
       expect(row.dataset.status).toBe("proofing");
       expect(row.textContent).not.toContain("esperando tu revisión");
+      // Scoped to the ROW: the Estado <select> above also contains an
+      // `<option>` labelled "En pruebas".
+      expect(within(row).getByText("En pruebas")).toBeDefined();
     }
-
-    // ...and every other row still shows its own status label, unchanged.
-    expect(screen.getAllByText("En pruebas")).toHaveLength(23);
   });
 
   // The column legend is the ONE element on this page that exists at a single
   // width. It is a legend for columns, not a second copy of the rows (epic
-  // #125 forbids a per-breakpoint duplicate markup outright), and it is
-  // `aria-hidden` because a <ul> is not a <table>: unhidden it would read as
-  // six stray words with nothing associated to them.
-  it("renders exactly one column legend, hidden from assistive technology", async () => {
+  // #125 forbids a per-breakpoint duplicate markup outright).
+  //
+  // TASK #276 INVALIDATED THE OLD ASSERTION (one `li[aria-hidden]`) ON
+  // PURPOSE. The headings are now LINKS, so `aria-hidden` would hide focusable
+  // content; and living inside the <ul> would make a screen reader announce
+  // "list, 26 items" for 25 galleries. They are a labelled `role="group"` of
+  // links OUTSIDE the <ul>, and `aria-sort` is absent because it is only valid
+  // on a columnheader — epic #125 forbids fake table roles on a <ul>. The
+  // active direction travels in the link's accessible NAME instead.
+  it("renders the desk legend as a labelled group of sort links, with no fake table roles", async () => {
     getGalleriesWithDetailsMock.mockResolvedValue([gallery()]);
 
-    const element = await GalleriesPage();
-    const { container } = render(element);
+    const { container } = await renderPage();
 
-    const legends = container.querySelectorAll('li[aria-hidden="true"]');
-    expect(legends).toHaveLength(1);
-    expect(Array.from(legends[0].children).map((child) => child.textContent)).toEqual([
+    expect(container.querySelectorAll('li[aria-hidden="true"]')).toHaveLength(0);
+
+    const links = within(deskGroup()).getAllByRole("link");
+    expect(links.map((link) => link.textContent)).toEqual([
       "Galería",
       "Clientes",
       "Estado",
@@ -259,53 +307,104 @@ describe("GalleriesPage chrome", () => {
       "Sesión",
       "Fotos",
     ]);
+    // No sort active → every link is the FIRST click on its column, so the
+    // default directions are encoded (and defaults are omitted).
+    expect(links.map((link) => link.getAttribute("href"))).toEqual([
+      "/dashboard/galleries?sort=title",
+      "/dashboard/galleries?sort=clients",
+      "/dashboard/galleries?sort=status",
+      "/dashboard/galleries?sort=package",
+      "/dashboard/galleries?sort=session",
+      "/dashboard/galleries?sort=photos",
+    ]);
+
+    expect(container.querySelector("[aria-sort]")).toBeNull();
+    expect(screen.queryByRole("table")).toBeNull();
+    expect(screen.queryByRole("row")).toBeNull();
+    expect(screen.queryByRole("columnheader")).toBeNull();
+
+    // The list count is honest: every <li> is a gallery row with exactly one
+    // row link — the legend is not an extra list item.
+    for (const item of container.querySelectorAll("li")) {
+      expect(item.querySelectorAll("a[data-status]")).toHaveLength(1);
+    }
+  });
+
+  it("names the active sort's direction and clicking it reverses it", async () => {
+    getGalleriesWithDetailsMock.mockResolvedValue([gallery()]);
+
+    await renderPage({ sort: "title" });
+
+    const active = within(deskGroup()).getByRole("link", {
+      name: "Galería, orden ascendente",
+    });
+    expect(active.getAttribute("href")).toBe("/dashboard/galleries?sort=title&dir=desc");
+  });
+
+  it("keeps the filter and resets the page when a desk heading is clicked", async () => {
+    getGalleriesWithDetailsMock.mockResolvedValue([gallery()]);
+
+    await renderPage({ status: "draft", page: "2" });
+
+    const photos = within(deskGroup()).getByRole("link", { name: "Fotos" });
+    expect(photos.getAttribute("href")).toBe("/dashboard/galleries?status=draft&sort=photos");
   });
 
   // Epic #125's rule from #129/#174: a counter that lies is worse than one
-  // that is absent. Both numbers here are counted off the very rows rendered,
-  // so this asserts they AGREE with the list rather than merely that they
-  // render.
-  //
-  // Task #263 fix round (C1): the fixture mixes a `selected` row WITH work and
-  // a `proofing` row WITH work, so the two candidate predicates disagree on
-  // the tally (2 under `pendingWorkCount`, 1 under `status === "selected"`).
-  // Without that disagreement this test could not tell them apart.
-  it("summarises the list with counts taken from the rows themselves", async () => {
+  // that is absent. Task #276 RETIRED the "counted off the very rows
+  // rendered" invariant, because pagination makes it impossible — this
+  // fixture is the DISAGREEMENT one that proves it: only 3 rows are on
+  // screen, their own pending tallies sum to 2, and the queries say 63 and 5.
+  // Every number here comes from the count queries, so 3 and 2 must be absent.
+  it("summarises the studio with counts from the count queries, not the rows", async () => {
     getGalleriesWithDetailsMock.mockResolvedValue([
       gallery({ id: "g1", title: "Uno", status: "selected", pendingWorkCount: 2 }),
       gallery({ id: "g2", title: "Dos", status: "proofing", pendingWorkCount: 1 }),
       gallery({ id: "g3", title: "Tres", status: "draft" }),
     ]);
+    getGalleryListCountsMock.mockResolvedValue({ studioTotal: 63, matching: 63 });
+    getPendingSelectionCountMock.mockResolvedValue(5);
 
-    const element = await GalleriesPage();
-    const { container } = render(element);
+    const { container } = await renderPage();
 
     expect(rowsIn(container)).toHaveLength(3);
-    expect(screen.getByText(/3 galerías en total/)).toBeDefined();
-    expect(screen.getByText(/2 selecciones esperando/)).toBeDefined();
+    expect(screen.getByText(/63 galerías en total/)).toBeDefined();
+    expect(screen.getByText(/5 selecciones esperando/)).toBeDefined();
+    // Exact strings, not substrings: "3 galerías en total" is a substring of
+    // "63 galerías en total", so an unanchored regex would pass for the wrong
+    // reason.
+    expect(screen.queryByText("3 galerías en total · 2 selecciones esperando")).toBeNull();
+  });
+
+  it("shows the filtered total in the header line, with the global pending tally", async () => {
+    getGalleriesWithDetailsMock.mockResolvedValue([gallery()]);
+    getGalleryListCountsMock.mockResolvedValue({ studioTotal: 63, matching: 3 });
+    getPendingSelectionCountMock.mockResolvedValue(2);
+
+    await renderPage({ status: "draft" });
+
+    expect(screen.getByText(/3 de 63 galerías · 2 selecciones esperando/)).toBeDefined();
   });
 
   // Epic #250, decisions 10+11, task #263: a submit no longer locks, so work
   // arrives while the gallery is still `proofing` — and a `selected` gallery
   // whose finals are all uploaded is waiting on nobody. The count and the
-  // row's own words are keyed on `pendingWorkCount`, NOT on the status badge,
-  // so the page's "the tally is the subset whose row says so" invariant holds.
+  // row's own words are keyed on `pendingWorkCount`, NOT on the status badge.
   //
-  // THE FIXTURE IS THE PROOF (task #263 fix round, C1). Two `proofing` rows
-  // with work plus one `selected` row without means the status-based predicate
-  // answers 1 while `pendingWorkCount` answers 2 — so the tally assertion
-  // below can actually tell them apart. The previous fixture (one proofing row
-  // with work, one selected row without) gave 1 under BOTH predicates and
-  // stayed green with the old predicate restored.
+  // TASK #276: the summary's tally now comes from `getPendingSelectionCount`
+  // (the same function the nav badge reads), not from the rendered rows — so
+  // its PROOF moved to the mock. The "a status-based predicate would say 1"
+  // case lives with `getPendingSelectionCount`'s own predicate test in
+  // galleries.test.ts.
   it("counts and emphasises a PROOFING row with pending work, and not a selected one without", async () => {
     getGalleriesWithDetailsMock.mockResolvedValue([
       gallery({ id: "g1", title: "Boda uno", status: "proofing", pendingWorkCount: 3 }),
       gallery({ id: "g2", title: "Boda dos", status: "proofing", pendingWorkCount: 1 }),
       gallery({ id: "g3", title: "Boda tres", status: "selected", pendingWorkCount: 0 }),
     ]);
+    getPendingSelectionCountMock.mockResolvedValue(2);
 
-    const element = await GalleriesPage();
-    const { container } = render(element);
+    const { container } = await renderPage();
 
     const [proofing, second, selected] = rowsIn(container);
     expect(proofing.textContent).toContain("esperando tu revisión");
@@ -314,9 +413,9 @@ describe("GalleriesPage chrome", () => {
     // The badge text itself is unchanged — it is still the status.
     expect(within(selected).getByText("Selección enviada")).toBeDefined();
     expect(within(proofing).getByText("En pruebas")).toBeDefined();
-    // ...and the summary agrees with the ROWS, not with the statuses: TWO of
-    // the three galleries wait on the photographer. `status === "selected"`
-    // would say 1 here, and "1" is asserted absent to keep it that way.
+    // ...and the summary agrees with the GLOBAL count: two galleries wait on
+    // the photographer. A status-based predicate would say 1, and "1" is
+    // asserted absent to keep it that way.
     expect(screen.getByText(/2 selecciones esperando/)).toBeDefined();
     expect(screen.queryByText(/1 selección esperando/)).toBeNull();
   });
@@ -324,18 +423,17 @@ describe("GalleriesPage chrome", () => {
   it("says nothing about pending selections when none are waiting", async () => {
     getGalleriesWithDetailsMock.mockResolvedValue([gallery({ status: "draft" })]);
 
-    const element = await GalleriesPage();
-    render(element);
+    await renderPage();
 
     expect(screen.getByText(/1 galería en total/)).toBeDefined();
     expect(screen.queryByText(/esperando/)).toBeNull();
   });
 
-  it("renders the empty state when there are no galleries yet", async () => {
+  it("renders the genuine empty state when the studio has no galleries", async () => {
     getGalleriesWithDetailsMock.mockResolvedValue([]);
+    getGalleryListCountsMock.mockResolvedValue({ studioTotal: 0, matching: 0 });
 
-    const element = await GalleriesPage();
-    const { container } = render(element);
+    const { container } = await renderPage();
 
     expect(screen.getByText("Todavía no armaste ninguna galería.")).toBeDefined();
     expect(screen.getByText(/Arma la primera desde «Nueva galería»/)).toBeDefined();
@@ -343,6 +441,120 @@ describe("GalleriesPage chrome", () => {
     // "0 galerías en total" either.
     expect(rowsIn(container)).toHaveLength(0);
     expect(screen.queryByText(/en total/)).toBeNull();
+    // Task #276: the genuine-empty studio shows none of the list chrome —
+    // there is nothing to filter, sort or page.
+    expect(screen.queryByRole("combobox", { name: "Estado" })).toBeNull();
+    expect(screen.queryByRole("group", { name: "Ordenar por columna" })).toBeNull();
+    expect(screen.queryByRole("navigation", { name: "Paginación" })).toBeNull();
+  });
+
+  // Task #276 — a filter that matches nothing is NOT an empty studio: the
+  // studio has galleries, this status does not. The copy must say so and offer
+  // a way back, and the control strip must stay so the filter can be changed.
+  it("renders a filter-empty block, distinct from the genuine empty state", async () => {
+    getGalleriesWithDetailsMock.mockResolvedValue([]);
+    getGalleryListCountsMock.mockResolvedValue({ studioTotal: 5, matching: 0 });
+
+    const { container } = await renderPage({ status: "archived", sort: "title" });
+
+    expect(screen.getByText("Ninguna galería en «Archivada».")).toBeDefined();
+    expect(screen.getByText(/Prueba con otro estado\./)).toBeDefined();
+    expect(screen.queryByText("Todavía no armaste ninguna galería.")).toBeNull();
+
+    // Quitar filtro drops the status but keeps the sort.
+    expect(screen.getByRole("link", { name: "Quitar filtro" }).getAttribute("href")).toBe(
+      "/dashboard/galleries?sort=title",
+    );
+    // The filter can still be changed; there are no rows and no desk legend.
+    expect(screen.getByRole("combobox", { name: "Estado" })).toBeDefined();
+    expect(rowsIn(container)).toHaveLength(0);
+    expect(screen.queryByRole("group", { name: "Ordenar por columna" })).toBeNull();
+    // The header line still names the filtered total.
+    expect(screen.getByText(/0 de 5 galerías/)).toBeDefined();
+  });
+
+  // Task #276 — the pager. Only appears past ONE page, shows the range in a
+  // live region, and carries filter/sort/dir across pages.
+  it("paginates with a range line, Anterior and Siguiente", async () => {
+    getGalleriesWithDetailsMock.mockResolvedValue(rows(25, 25));
+    getGalleryListCountsMock.mockResolvedValue({ studioTotal: 63, matching: 63 });
+
+    await renderPage({ page: "2" });
+
+    const range = screen.getByText("Mostrando 26–50 de 63");
+    expect(range.getAttribute("aria-live")).toBe("polite");
+
+    const nav = screen.getByRole("navigation", { name: "Paginación" });
+    expect(within(nav).getByText("Página 2 de 3")).toBeDefined();
+    // Page 1 is the default state, so its href omits `page` entirely.
+    expect(within(nav).getByRole("link", { name: "Anterior" }).getAttribute("href")).toBe(
+      "/dashboard/galleries",
+    );
+    expect(within(nav).getByRole("link", { name: "Siguiente" }).getAttribute("href")).toBe(
+      "/dashboard/galleries?page=3",
+    );
+  });
+
+  it("disables Siguiente on the last page with no href", async () => {
+    getGalleriesWithDetailsMock.mockResolvedValue(rows(13, 50));
+    getGalleryListCountsMock.mockResolvedValue({ studioTotal: 63, matching: 63 });
+
+    await renderPage({ page: "3" });
+
+    expect(screen.getByText("Mostrando 51–63 de 63")).toBeDefined();
+    const nav = screen.getByRole("navigation", { name: "Paginación" });
+    const next = within(nav).getByRole("link", { name: "Siguiente" });
+    expect(next.getAttribute("aria-disabled")).toBe("true");
+    expect(next.hasAttribute("href")).toBe(false);
+    expect(within(nav).getByRole("link", { name: "Anterior" }).getAttribute("href")).toBe(
+      "/dashboard/galleries?page=2",
+    );
+  });
+
+  it("clamps an out-of-range page in render, and queries the clamped page", async () => {
+    getGalleriesWithDetailsMock.mockResolvedValue(rows(13, 50));
+    getGalleryListCountsMock.mockResolvedValue({ studioTotal: 63, matching: 63 });
+
+    await renderPage({ page: "99" });
+
+    expect(getGalleriesWithDetailsMock).toHaveBeenCalledWith({
+      status: null,
+      sort: null,
+      dir: "desc",
+      page: 3,
+    });
+    expect(
+      within(screen.getByRole("navigation", { name: "Paginación" })).getByText("Página 3 de 3"),
+    ).toBeDefined();
+  });
+
+  it("falls back to page 1 for a malformed page param", async () => {
+    getGalleriesWithDetailsMock.mockResolvedValue(rows(25, 0));
+    getGalleryListCountsMock.mockResolvedValue({ studioTotal: 63, matching: 63 });
+
+    await renderPage({ page: "abc" });
+
+    expect(getGalleriesWithDetailsMock).toHaveBeenCalledWith({
+      status: null,
+      sort: null,
+      dir: "desc",
+      page: 1,
+    });
+  });
+
+  it("carries the filter and order across pages", async () => {
+    getGalleriesWithDetailsMock.mockResolvedValue(rows(25, 25));
+    getGalleryListCountsMock.mockResolvedValue({ studioTotal: 63, matching: 63 });
+
+    await renderPage({ status: "draft", sort: "photos", dir: "asc", page: "2" });
+
+    const nav = screen.getByRole("navigation", { name: "Paginación" });
+    expect(within(nav).getByRole("link", { name: "Anterior" }).getAttribute("href")).toBe(
+      "/dashboard/galleries?status=draft&sort=photos&dir=asc",
+    );
+    expect(within(nav).getByRole("link", { name: "Siguiente" }).getAttribute("href")).toBe(
+      "/dashboard/galleries?status=draft&sort=photos&dir=asc&page=3",
+    );
   });
 
   // ---------------------------------------------------------------------
@@ -357,8 +569,7 @@ describe("GalleriesPage chrome", () => {
     getGalleriesWithDetailsMock.mockResolvedValue([]);
     const user = userEvent.setup();
 
-    const element = await GalleriesPage();
-    render(element);
+    await renderPage();
 
     // Closed to begin with — the 360px column is genuinely gone, not hidden.
     expect(screen.queryByRole("dialog")).toBeNull();
@@ -376,8 +587,7 @@ describe("GalleriesPage chrome", () => {
     getGalleriesWithDetailsMock.mockResolvedValue([]);
     const user = userEvent.setup();
 
-    const element = await GalleriesPage();
-    render(element);
+    await renderPage();
 
     const trigger = screen.getByRole("button", { name: "Nueva galería" });
     await user.click(trigger);
@@ -404,8 +614,7 @@ describe("GalleriesPage chrome", () => {
     getClientsForPickerMock.mockResolvedValue([]);
     const user = userEvent.setup();
 
-    const element = await GalleriesPage();
-    render(element);
+    await renderPage();
 
     await user.click(screen.getByRole("button", { name: "Nueva galería" }));
     const dialog = await screen.findByRole("dialog");
@@ -427,8 +636,7 @@ describe("GalleriesPage chrome", () => {
       gallery({ title: "Sesión sin cliente", clients: [] }),
     ]);
 
-    const element = await GalleriesPage();
-    const { container } = render(element);
+    const { container } = await renderPage();
 
     const [row] = rowsIn(container);
     const fallback = within(row).getByText("Todavía sin cliente");

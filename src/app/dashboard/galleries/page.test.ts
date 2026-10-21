@@ -33,11 +33,18 @@ vi.mock("next-auth", () => ({
 // src/lib/clients.test.ts and src/lib/packages.test.ts — this file only
 // needs SOME resolved values so the page can render past the guard.
 const getGalleriesWithDetailsMock = vi.fn();
+const getGalleryListCountsMock = vi.fn();
+const getPendingSelectionCountMock = vi.fn();
 vi.mock("@/lib/galleries", async () => {
   const actual = await vi.importActual<typeof import("@/lib/galleries")>("@/lib/galleries");
   return {
     ...actual,
     getGalleriesWithDetails: (...args: unknown[]) => getGalleriesWithDetailsMock(...args),
+    // Task #276 — these MUST be mocked: this is a PARTIAL mock, so without
+    // them the page would call the REAL functions, which reach for the
+    // postgres socket from a unit test.
+    getGalleryListCounts: (...args: unknown[]) => getGalleryListCountsMock(...args),
+    getPendingSelectionCount: (...args: unknown[]) => getPendingSelectionCountMock(...args),
   };
 });
 
@@ -63,12 +70,22 @@ beforeEach(() => {
   authMock.mockReset();
   getGalleriesWithDetailsMock.mockReset();
   getGalleriesWithDetailsMock.mockResolvedValue([]);
+  getGalleryListCountsMock.mockReset();
+  getGalleryListCountsMock.mockResolvedValue({ studioTotal: 0, matching: 0 });
+  getPendingSelectionCountMock.mockReset();
+  getPendingSelectionCountMock.mockResolvedValue(0);
   getClientsForPickerMock.mockReset();
   getClientsForPickerMock.mockResolvedValue([]);
   getActivePackagesMock.mockReset();
   getActivePackagesMock.mockResolvedValue([]);
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
 });
+
+/** Task #276 — the page reads the URL through `searchParams`. Every call in
+ * this file passes an empty query unless a test is about URL state. */
+function renderPage(params: Record<string, string | string[] | undefined> = {}) {
+  return GalleriesPage({ searchParams: Promise.resolve(params) });
+}
 
 function sessionFor(role: "admin" | "client"): Session {
   return {
@@ -81,7 +98,7 @@ describe("GalleriesPage", () => {
   it("resolves for an admin session instead of throwing", async () => {
     authMock.mockResolvedValue(sessionFor("admin"));
 
-    await expect(GalleriesPage()).resolves.toBeTruthy();
+    await expect(renderPage()).resolves.toBeTruthy();
   });
 
   // The acceptance criterion this proves at the route level: a signed-in
@@ -89,7 +106,7 @@ describe("GalleriesPage", () => {
   it("refuses a signed-in CLIENT with a 403 when the route is requested directly", async () => {
     authMock.mockResolvedValue(sessionFor("client"));
 
-    await expect(GalleriesPage()).rejects.toMatchObject({
+    await expect(renderPage()).rejects.toMatchObject({
       digest: "NEXT_HTTP_ERROR_FALLBACK;403",
     });
   });
@@ -97,16 +114,18 @@ describe("GalleriesPage", () => {
   it("redirects to /login when there is no session at all", async () => {
     authMock.mockResolvedValue(null);
 
-    await expect(GalleriesPage()).rejects.toMatchObject({
+    await expect(renderPage()).rejects.toMatchObject({
       digest: "NEXT_REDIRECT;replace;/login;307;",
     });
   });
 
-  it("never queries galleries, clients or packages before the admin check passes", async () => {
+  it("never queries galleries, counts, pending work, clients or packages before the admin check passes", async () => {
     authMock.mockResolvedValue(null);
 
-    await expect(GalleriesPage()).rejects.toMatchObject({ digest: expect.any(String) });
+    await expect(renderPage()).rejects.toMatchObject({ digest: expect.any(String) });
     expect(getGalleriesWithDetailsMock).not.toHaveBeenCalled();
+    expect(getGalleryListCountsMock).not.toHaveBeenCalled();
+    expect(getPendingSelectionCountMock).not.toHaveBeenCalled();
     expect(getClientsForPickerMock).not.toHaveBeenCalled();
     expect(getActivePackagesMock).not.toHaveBeenCalled();
   });

@@ -257,29 +257,50 @@ describe("deleteClient — the happy path: one transaction, tombstones first, us
     expect(revalidatePathMock).toHaveBeenCalledWith("/dashboard");
   });
 
-  it("runs every read and write inside ONE transaction", async () => {
+  // A COUNTING transaction wrapper is not enough to prove this, and a first
+  // version of this test was wrong for exactly that reason: recording-db's
+  // `transaction` hands its callback the SAME `db` object, so
+  // `db.select(...)` written lexically inside the callback looks identical to
+  // `tx.select(...)` — an implementation that escaped the transaction on the
+  // outer handle would still have been green. The wrapper below hands the
+  // action a PROXY instead and records every top-level query issued through
+  // it, so "all 7 statements went through `tx`" is what is actually asserted.
+  it("issues every read and write through the transaction handle", async () => {
     current = createRecordingDb({
       ...scriptedReads(),
       delete: [[], [], [{ id: CLIENT_ID }]],
     });
-    // Recording-db's `transaction` runs its callback against the same object, so
-    // a counter is enough to prove the call went through it: `begin` = the
-    // recorded-call count before, `end` = after. If any statement ran outside,
-    // the count inside would be lower than the total.
-    let insideCalls = 0;
-    const realTransaction = current.db.transaction;
+    const viaTransaction: string[] = [];
     current.db.transaction = async (fn: (tx: unknown) => Promise<unknown>) => {
-      const before = current.calls.length;
-      const result = await realTransaction(fn);
-      insideCalls += current.calls.length - before;
-      return result;
+      const target = current.db as unknown as Record<string | symbol, unknown>;
+      const tx = new Proxy(target, {
+        get(object, prop) {
+          const value = object[prop];
+          if (typeof value !== "function") return value;
+          return (...args: unknown[]) => {
+            viaTransaction.push(String(prop));
+            return (value as (...a: unknown[]) => unknown).apply(object, args);
+          };
+        },
+      });
+      return fn(tx);
     };
     const { deleteClient } = await import("./actions");
 
     expect(await deleteClient(CLIENT_ID)).toEqual({ ok: true });
 
-    expect(insideCalls).toBe(current.calls.length);
-    expect(insideCalls).toBe(7); // 4 reads + 3 writes
+    // 4 reads + 3 writes, all of them through `tx` — no statement escaped to
+    // the outer `db` handle, which is what "one transaction" has to mean.
+    expect(viaTransaction).toEqual([
+      "select",
+      "select",
+      "select",
+      "select",
+      "delete",
+      "delete",
+      "delete",
+    ]);
+    expect(viaTransaction).toHaveLength(current.calls.length);
   });
 
   it("reports a concurrent delete as 'no existe' instead of a success", async () => {

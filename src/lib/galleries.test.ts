@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { DEFAULT_GALLERY_LIST_QUERY } from "./gallery-list-query";
 
 // `import "server-only"` only resolves inside a real Next.js bundle — see
 // src/lib/auth-guards.test.ts for the same stub, needed here transitively.
@@ -94,7 +95,7 @@ describe("getGalleriesWithDetails", () => {
     ]);
     const { getGalleriesWithDetails } = await import("./galleries");
 
-    const result = await getGalleriesWithDetails();
+    const result = await getGalleriesWithDetails(DEFAULT_GALLERY_LIST_QUERY);
 
     expect(result).toEqual([
       {
@@ -118,30 +119,6 @@ describe("getGalleriesWithDetails", () => {
     // gallery's own frozen snapshot columns.
     expect(result[0]).not.toHaveProperty("package.priceCop");
     expect(result[0]).not.toHaveProperty("package.includedPhotos");
-  });
-
-  // Task #75's core acceptance criterion: recency of SUBMISSION, not
-  // creation, must drive placement. This is expressed as a SQL `orderBy`
-  // (`COALESCE(selection_submitted_at, created_at) DESC`) rather than a
-  // post-fetch JS `.sort()` — see this function's own header comment for why
-  // (pagination safety) — so a mocked `findMany` (which doesn't actually run
-  // SQL) can only prove the SHAPE of the expression sent to the DB, not
-  // observe it reordering rows. That the expression is correct is the one
-  // thing worth asserting here; that Postgres honors its own `ORDER BY` is
-  // not this codebase's job to re-prove.
-  it("asks the DB to order by COALESCE(selectionSubmittedAt, createdAt) descending, not createdAt alone", async () => {
-    findManyMock.mockResolvedValue([]);
-    const { desc, sql } = await import("drizzle-orm");
-    const { galleries } = await import("./db/schema");
-    const { getGalleriesWithDetails } = await import("./galleries");
-
-    await getGalleriesWithDetails();
-
-    expect(findManyMock).toHaveBeenCalledTimes(1);
-    const args = findManyMock.mock.calls[0]?.[0] as { orderBy: unknown };
-    expect(args.orderBy).toEqual(
-      desc(sql`coalesce(${galleries.selectionSubmittedAt}, ${galleries.createdAt})`),
-    );
   });
 
   // Task #263 — the row's pending-work tally, derived from the SAME joined
@@ -190,7 +167,7 @@ describe("getGalleriesWithDetails", () => {
     ]);
     const { getGalleriesWithDetails } = await import("./galleries");
 
-    const result = await getGalleriesWithDetails();
+    const result = await getGalleriesWithDetails(DEFAULT_GALLERY_LIST_QUERY);
 
     expect(result.map((gallery) => [gallery.status, gallery.pendingWorkCount])).toEqual([
       ["proofing", 1],
@@ -200,22 +177,93 @@ describe("getGalleriesWithDetails", () => {
 
   // Task #97: a removed client must not appear in this list's `clients` —
   // asserted as a QUERY-SHAPE fact (the relational `with` asks for
-  // `removedAt IS NULL`), same reasoning/limits as the `orderBy` test above:
-  // this mocked `findMany` never actually applies the filter itself, so this
-  // only proves the SHAPE sent to the DB, not that Postgres honors it.
+  // `removedAt IS NULL`): this mocked `findMany` never actually applies the
+  // filter itself, so this only proves the SHAPE sent to the DB, not that
+  // Postgres honors it.
+  //
+  // Task #276 DELETED the sibling deep-equal on `orderBy` ("asks the DB to
+  // order by COALESCE(...) descending") ON PURPOSE. It compared the
+  // expression against an independently built `desc(sql…)` — a change
+  // detector that would also have passed with the #98 alias bug, because it
+  // never rendered the query inside the RQB context where aliasing happens.
+  // The real order is now proven by galleries.query-rendering.test.ts, which
+  // spies the REAL findMany and compiles it with `.toSQL()`.
   it("asks the DB to filter the joined galleryClients relation to removedAt IS NULL", async () => {
     findManyMock.mockResolvedValue([]);
     const { isNull } = await import("drizzle-orm");
     const { galleryClients } = await import("./db/schema");
     const { getGalleriesWithDetails } = await import("./galleries");
 
-    await getGalleriesWithDetails();
+    await getGalleriesWithDetails(DEFAULT_GALLERY_LIST_QUERY);
 
     expect(findManyMock).toHaveBeenCalledTimes(1);
     const args = findManyMock.mock.calls[0]?.[0] as {
       with: { galleryClients: { where: unknown } };
     };
     expect(args.with.galleryClients.where).toEqual(isNull(galleryClients.removedAt));
+  });
+
+  // Task #276, decision §0.6 — the SAME order the SQL `clients` key uses
+  // applies inside each row, so "Clientes (A–Z)" reads true on a row with
+  // several clients. The `Ángela`/`Zoe` pair is the disagreement fixture: a
+  // codepoint sort puts `Á` (U+00C1) AFTER `Z`, a locale collator puts it
+  // first, and only the latter matches `collate "es-x-icu"`. The
+  // email-fallback client proves the `name ?? email` half, which SQL's
+  // `coalesce` mirrors.
+  it("sorts each row's clients alphabetically in Spanish, falling back to email", async () => {
+    findManyMock.mockResolvedValue([
+      {
+        id: "g1",
+        title: "Boda",
+        publicSlug: "abc123",
+        status: "draft",
+        sessionDate: "2026-08-01",
+        createdAt: new Date("2026-07-01"),
+        selectionSubmittedAt: null,
+        galleryClients: [
+          { user: { id: "u1", name: "Zoe", email: "zoe@example.com" } },
+          { user: { id: "u2", name: "Ángela", email: "angela@example.com" } },
+          { user: { id: "u3", name: null, email: "carla@example.com" } },
+          { user: { id: "u4", name: "Beto", email: "beto@example.com" } },
+        ],
+        package: { id: 1, name: "Estándar" },
+        includedPhotosSnapshot: 13,
+        extraPhotoPriceCopSnapshot: 5_000,
+        assets: [],
+      },
+    ]);
+    const { getGalleriesWithDetails } = await import("./galleries");
+
+    const [result] = await getGalleriesWithDetails(DEFAULT_GALLERY_LIST_QUERY);
+
+    expect(result.clients.map((client) => client.name ?? client.email)).toEqual([
+      "Ángela",
+      "Beto",
+      "carla@example.com",
+      "Zoe",
+    ]);
+  });
+});
+
+describe("getGalleryListCounts", () => {
+  it("maps the studio total and the filtered matching count straight through", async () => {
+    selectMock.mockReturnValue({
+      from: () => Promise.resolve([{ studioTotal: 63, matching: 3 }]),
+    });
+    const { getGalleryListCounts } = await import("./galleries");
+
+    await expect(getGalleryListCounts("draft")).resolves.toEqual({
+      studioTotal: 63,
+      matching: 3,
+    });
+    expect(findManyMock).not.toHaveBeenCalled();
+  });
+
+  it("returns zeros when no row comes back", async () => {
+    selectMock.mockReturnValue({ from: () => Promise.resolve([]) });
+    const { getGalleryListCounts } = await import("./galleries");
+
+    await expect(getGalleryListCounts(null)).resolves.toEqual({ studioTotal: 0, matching: 0 });
   });
 });
 

@@ -57,6 +57,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 vi.mock("server-only", () => ({}));
 
 import { db } from "@/lib/db";
+import {
+  DEFAULT_GALLERY_LIST_QUERY,
+  DEFAULT_SORT_DIRECTION,
+  GALLERY_SORT_KEYS,
+  type GalleryListQuery,
+} from "./gallery-list-query";
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -127,5 +133,207 @@ describe("getGalleriesForClient — real query rendering", () => {
       'select "gallery_id" from "gallery_clients" where ("gallery_clients"."user_id" = $1 and "gallery_clients"."removed_at" is null)',
     );
     expect(renderedParams).toContain("user-1");
+  });
+});
+
+describe("getGalleriesWithDetails — real query rendering", () => {
+  /** Compiles the REAL query `getGalleriesWithDetails` builds, without
+   * executing it. Same technique as the suite above: the spy hands the args
+   * to the REAL builder, `.toSQL()` compiles, and the fake returns `[]` so
+   * the caller's `await` never waits on a socket. */
+  async function renderGalleryList(query: GalleryListQuery) {
+    const originalFindMany = db.query.galleries.findMany.bind(db.query.galleries);
+    let rendered: { sql: string; params: unknown[] } = { sql: "", params: [] };
+
+    vi.spyOn(db.query.galleries, "findMany").mockImplementation(((args: unknown) => {
+      rendered = originalFindMany(args as Parameters<typeof originalFindMany>[0]).toSQL();
+      return Promise.resolve([]);
+    }) as unknown as typeof db.query.galleries.findMany);
+
+    const { getGalleriesWithDetails } = await import("./galleries");
+    await getGalleriesWithDetails(query);
+    return rendered;
+  }
+
+  /** Only the ORDER BY tail — so an assertion cannot be satisfied by the
+   * same expression appearing anywhere else in the query. */
+  function orderByOf(sql: string) {
+    return sql.slice(sql.lastIndexOf(" order by "));
+  }
+
+  const RECENCY_TAIL =
+    'coalesce("galleries"."selection_submitted_at", "galleries"."created_at") desc, "galleries"."id" asc';
+
+  it.each([
+    ["title", '"galleries"."title"', ['"galleries"."title" collate "es-x-icu" asc']],
+    [
+      "clients",
+      '("gallery_clients"."gallery_id" = "galleries"."id" and "gallery_clients"."removed_at" is null)',
+      [
+        'from "gallery_clients" inner join "users" on "users"."id" = "gallery_clients"."user_id" where ("gallery_clients"."gallery_id" = "galleries"."id" and "gallery_clients"."removed_at" is null)',
+        'min(coalesce("users"."name", "users"."email") collate "es-x-icu")',
+        "asc nulls last",
+      ],
+    ],
+    [
+      "package",
+      '"packages"."id" = "galleries"."package_id"',
+      [
+        'from "packages" where "packages"."id" = "galleries"."package_id"',
+        'collate "es-x-icu"',
+        "asc",
+      ],
+    ],
+    ["session", '"galleries"."session_date"', ['"galleries"."session_date" desc']],
+    [
+      "photos",
+      '"assets"."gallery_id" = "galleries"."id"',
+      ['(select count(*) from "assets" where "assets"."gallery_id" = "galleries"."id")', ") desc"],
+    ],
+  ] as const)("renders the %s key inside the ORDER BY", async (sort, present, expected) => {
+    const { sql } = await renderGalleryList({
+      ...DEFAULT_GALLERY_LIST_QUERY,
+      sort,
+      dir: DEFAULT_SORT_DIRECTION[sort],
+    });
+    const orderBy = orderByOf(sql);
+
+    expect(sql).toContain(present);
+    for (const fragment of expected) {
+      expect(orderBy).toContain(fragment);
+    }
+  });
+
+  it("renders Estado as a CASE in workflow order, never alphabetically", async () => {
+    const { sql, params } = await renderGalleryList({
+      ...DEFAULT_GALLERY_LIST_QUERY,
+      sort: "status",
+      dir: "asc",
+    });
+
+    expect(orderByOf(sql)).toMatch(/case "galleries"\."status" when \$\d+ then \$\d+/);
+
+    // The paired values are the contract: draft→0 … archived→4. Asserted as a
+    // contiguous slice so a reordering of the branches is caught, and so the
+    // strings cannot be satisfied by the filter or the select list.
+    const start = params.findIndex((value) => value === "draft");
+    expect(start).toBeGreaterThanOrEqual(0);
+    expect(params.slice(start, start + 10)).toEqual([
+      "draft",
+      0,
+      "proofing",
+      1,
+      "selected",
+      2,
+      "delivered",
+      3,
+      "archived",
+      4,
+    ]);
+  });
+
+  it("reverses a text key's direction (title desc)", async () => {
+    const { sql } = await renderGalleryList({
+      ...DEFAULT_GALLERY_LIST_QUERY,
+      sort: "title",
+      dir: "desc",
+    });
+
+    expect(orderByOf(sql)).toContain('"galleries"."title" collate "es-x-icu" desc');
+  });
+
+  it("keeps clientless galleries last in the DESC direction too", async () => {
+    const { sql } = await renderGalleryList({
+      ...DEFAULT_GALLERY_LIST_QUERY,
+      sort: "clients",
+      dir: "desc",
+    });
+
+    expect(orderByOf(sql)).toContain("desc nulls last");
+  });
+
+  it.each(GALLERY_SORT_KEYS)("ends every %s sort with recency then id", async (sort) => {
+    const { sql } = await renderGalleryList({
+      ...DEFAULT_GALLERY_LIST_QUERY,
+      sort,
+      dir: DEFAULT_SORT_DIRECTION[sort],
+    });
+
+    expect(orderByOf(sql)).toContain(RECENCY_TAIL);
+  });
+
+  // THE #98 GUARD, for every key. A derived sort written as a raw `sql`
+  // template would render its non-root columns against the root alias
+  // (`"galleries"."gallery_id"`, `"galleries"."removed_at"`, …) — columns
+  // that do not exist — and 500 the page in production while every mocked
+  // test stays green. That is exactly how #98 shipped. This suite proves the
+  // real render, so it is the only place that can catch a "simplification".
+  it.each(GALLERY_SORT_KEYS)("never aliases a subquery's columns to %s's root", async (sort) => {
+    const { sql } = await renderGalleryList({
+      ...DEFAULT_GALLERY_LIST_QUERY,
+      sort,
+      dir: DEFAULT_SORT_DIRECTION[sort],
+    });
+
+    for (const wrongAlias of [
+      '"galleries"."gallery_id"',
+      '"galleries"."user_id"',
+      '"galleries"."removed_at"',
+      '"galleries"."name"',
+      '"galleries"."email"',
+    ]) {
+      expect(sql).not.toContain(wrongAlias);
+    }
+  });
+
+  it("renders the default query as recency desc then id asc, in the ORDER BY", async () => {
+    const { sql } = await renderGalleryList(DEFAULT_GALLERY_LIST_QUERY);
+
+    expect(orderByOf(sql)).toMatch(
+      new RegExp(
+        `^ order by ${RECENCY_TAIL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} limit \\$\\d+$`,
+      ),
+    );
+  });
+
+  it("renders the status filter as a root-column equality", async () => {
+    const { sql, params } = await renderGalleryList({
+      ...DEFAULT_GALLERY_LIST_QUERY,
+      status: "draft",
+    });
+
+    expect(sql).toContain('where "galleries"."status" = ');
+    expect(params).toContain("draft");
+  });
+
+  it("renders no status filter when the filter is null", async () => {
+    const { sql } = await renderGalleryList(DEFAULT_GALLERY_LIST_QUERY);
+    expect(sql).not.toContain('"galleries"."status" = ');
+  });
+
+  it("renders limit 25 and offset 50 for page 3", async () => {
+    const { params } = await renderGalleryList({
+      ...DEFAULT_GALLERY_LIST_QUERY,
+      page: 3,
+    });
+
+    expect(params.slice(-2)).toEqual([25, 50]);
+  });
+
+  it("renders one core count query with the filtered half as a FILTER", async () => {
+    const { buildGalleryListCountsQuery } = await import("./galleries");
+
+    const filtered = buildGalleryListCountsQuery("draft").toSQL();
+    // A single-table CORE select renders its columns UNQUALIFIED — unlike
+    // `getPendingSelectionCount`, which joins `assets` and therefore gets
+    // `"galleries"."status"`. The plan expected the qualified form; the real
+    // render (and this test, which compiles it) says otherwise. The SQL is
+    // still unambiguous, and it is a count over one table by construction.
+    expect(filtered.sql).toContain('count(*) filter (where "status" = $1)');
+    expect(filtered.sql).toContain('from "galleries"');
+    expect(filtered.params).toEqual(["draft"]);
+
+    const unfiltered = buildGalleryListCountsQuery(null).toSQL();
+    expect(unfiltered.sql).not.toContain("filter (");
   });
 });

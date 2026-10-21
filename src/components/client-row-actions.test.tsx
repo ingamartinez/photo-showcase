@@ -205,7 +205,7 @@ describe("ClientRowActions — delete", () => {
   // Acceptance criterion: nothing happens without the confirmation. The
   // negative is what matters — a declined confirm must not reach the action.
   it("deletes nothing when the confirmation is declined", async () => {
-    const confirmSpy = vi.fn(() => false);
+    const confirmSpy = vi.fn((_message?: string) => false);
     window.confirm = confirmSpy;
     const user = userEvent.setup();
     render(<ClientRowActions client={CLIENT} />);
@@ -219,7 +219,7 @@ describe("ClientRowActions — delete", () => {
   });
 
   it("deletes this row's client once the confirmation is accepted", async () => {
-    const confirmSpy = vi.fn(() => true);
+    const confirmSpy = vi.fn((_message?: string) => true);
     window.confirm = confirmSpy;
     deleteClientMock.mockResolvedValue({ ok: true });
     const user = userEvent.setup();
@@ -240,7 +240,7 @@ describe("ClientRowActions — delete", () => {
   // (`users.name` is nullable), so the email alone has to be enough — and only
   // once, not "(null) ana@example.com".
   it("names only the email when the client has no name", async () => {
-    const confirmSpy = vi.fn(() => true);
+    const confirmSpy = vi.fn((_message?: string) => true);
     window.confirm = confirmSpy;
     deleteClientMock.mockResolvedValue({ ok: true });
     const user = userEvent.setup();

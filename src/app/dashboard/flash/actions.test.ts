@@ -138,6 +138,14 @@ describe("createFlashGallery", () => {
     ).toMatchObject({ status: "error" });
     expect(current.ofOp("insert")).toHaveLength(0);
   });
+
+  it("rejects a calendar-impossible date instead of letting Postgres fail it", async () => {
+    const { createFlashGallery } = await import("./actions");
+    expect(
+      await createFlashGallery({ status: "idle" }, form({ title: "x", sessionDate: "2026-02-31" })),
+    ).toEqual({ status: "error", message: "La fecha no es válida." });
+    expect(current.ofOp("insert")).toHaveLength(0);
+  });
 });
 
 describe("setFlashGalleryPublic", () => {

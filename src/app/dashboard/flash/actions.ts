@@ -23,19 +23,26 @@ export type CreateFlashGalleryState =
   | { status: "error"; message: string }
   | { status: "created"; flashGalleryId: string };
 
+// Shared by create and edit so the two can never validate differently. NOT
+// the `galleries` rules: a flash gallery's date is optional and nullable
+// (schema.ts:888). `z.iso.date()` (not a `YYYY-MM-DD` regex) so calendar-
+// impossible values like `2026-02-31` fail here instead of reaching Postgres
+// and surfacing as an unhandled 500 (task #283, owner-authorized).
+const flashTitleField = z
+  .string()
+  .trim()
+  .min(1, "Escribe un título.")
+  .max(200, "El título es muy largo.");
+const flashSessionDateField = z
+  .string()
+  .trim()
+  .transform((value) => (value === "" ? undefined : value))
+  .pipe(z.iso.date("La fecha no es válida.").optional());
+
 const createFlashGallerySchema = z.object({
-  title: z.string().trim().min(1, "Escribe un título.").max(200, "El título es muy largo."),
+  title: flashTitleField,
   // `""` (field left blank) collapses to undefined: a gift has no session.
-  sessionDate: z
-    .string()
-    .trim()
-    .transform((value) => (value === "" ? undefined : value))
-    .pipe(
-      z
-        .string()
-        .regex(/^\d{4}-\d{2}-\d{2}$/, "La fecha no es válida.")
-        .optional(),
-    ),
+  sessionDate: flashSessionDateField,
 });
 
 export async function createFlashGallery(

@@ -25,6 +25,7 @@ import { GalleryClientRow } from "@/components/gallery-client-row";
 import { GalleryClientList } from "@/components/gallery-client-list";
 import { AttachGalleryClientsForm } from "@/components/attach-gallery-clients-form";
 import { EditGalleryTermsDialog } from "@/components/edit-gallery-terms-dialog";
+import { EditGalleryMetaDialog } from "@/components/edit-gallery-meta-dialog";
 import { AllowsOriginalSelectionControl } from "@/components/allows-original-selection-control";
 import { RollingDeliveryControl } from "@/components/rolling-delivery-control";
 import { SelectionTrayModeControl } from "@/components/selection-tray-mode-control";
@@ -398,9 +399,17 @@ export default async function GalleryDetailPage({
             })}
           </ol>
 
-          <p className="text-fg-mute mt-3 text-sm">
-            Sesión: {formatSessionDate(gallery.sessionDate)}
-          </p>
+          {/* Task #281 — no status gate, same owner decision as the terms
+              dialog (#200). The trigger sits on the "Sesión:" line so it
+              lives next to the data it edits, not in the aside. */}
+          <div className="mt-3 flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <p className="text-fg-mute text-sm">Sesión: {formatSessionDate(gallery.sessionDate)}</p>
+            <EditGalleryMetaDialog
+              galleryId={gallery.id}
+              title={gallery.title}
+              sessionDate={gallery.sessionDate}
+            />
+          </div>
 
           {/* Task #94: a gallery can have several clients now — one row per
               client so each name/email pair stays legible instead of being

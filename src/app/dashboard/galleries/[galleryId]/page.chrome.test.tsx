@@ -172,6 +172,10 @@ const updateSelectionTrayModeMock = vi.fn();
 // moment" reasoning `updateSelectionTrayMode` above already established);
 // its module imports `updateAllowsOriginalSelection` from here too.
 const updateAllowsOriginalSelectionMock = vi.fn();
+// Task #282: the page now renders <DeleteGalleryDialog> unconditionally (no
+// status gate — that is the whole point of this slice); its module imports
+// `deleteGallery` from here too.
+const deleteGalleryMock = vi.fn();
 vi.mock("@/app/dashboard/galleries/actions", () => ({
   publishGallery: (...args: unknown[]) => publishGalleryMock(...args),
   unlockSelection: (...args: unknown[]) => unlockSelectionMock(...args),
@@ -185,10 +189,21 @@ vi.mock("@/app/dashboard/galleries/actions", () => ({
   // Task #244 — <RollingDeliveryControl> imports this too.
   updateRollingDelivery: vi.fn(),
   updateAllowsOriginalSelection: (...args: unknown[]) => updateAllowsOriginalSelectionMock(...args),
+  deleteGallery: (...args: unknown[]) => deleteGalleryMock(...args),
   lockGalleryClientSelection: vi.fn(),
   unlockGalleryClientSelection: vi.fn(),
   removeGalleryClientPicks: vi.fn(),
 }));
+
+// Task #282 — <DeleteGalleryDialog> is the first component this page renders
+// that calls `useRouter` (it navigates to the list after a successful
+// delete), and jsdom has no App Router to mount. Same partial mock as
+// ../page.chrome.test.tsx: the rest of `next/navigation` stays real, so the
+// page's own `notFound()`/`redirect()` behaviour is untouched.
+vi.mock("next/navigation", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("next/navigation")>();
+  return { ...actual, useRouter: () => ({ ...actual, push: vi.fn() }) };
+});
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
 
@@ -245,6 +260,7 @@ beforeEach(() => {
   publishGalleryMock.mockReset();
   unlockSelectionMock.mockReset();
   deliverGalleryMock.mockReset();
+  deleteGalleryMock.mockReset();
   attachGalleryClientsMock.mockReset();
   // `useActionState` (React 19) requires its action to resolve to a well-
   // formed state object — a bare `vi.fn()` resolves to `undefined` by
@@ -1696,6 +1712,22 @@ describe("GalleryDetailPage — the edit-gallery meta trigger is wired and ungat
       render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
 
       expect(screen.getByRole("button", { name: "Editar galería" })).toBeDefined();
+    },
+  );
+});
+
+// Task #282 — deleting a gallery is allowed in ANY status (owner decision 1),
+// so the control must render with no status gate. This is the UI half of that
+// criterion; the action's own suite proves the server has no gate either.
+describe("GalleryDetailPage — delete control (task #282)", () => {
+  it.each(["draft", "proofing", "selected", "delivered"] as const)(
+    "renders the 'Eliminar galería' control for a %s gallery",
+    async (status) => {
+      getGalleryDetailMock.mockResolvedValue(galleryDetail({ status }));
+
+      render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+
+      expect(screen.getByRole("button", { name: "Eliminar galería" })).toBeDefined();
     },
   );
 });

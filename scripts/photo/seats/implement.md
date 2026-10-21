@@ -63,8 +63,11 @@ the plan requires a path outside it, stop and report instead of widening the sur
 
 ## Branch and commit BEFORE you report — this is not optional
 
-Create your branch (`amartinez/{feature|bugfix}/yyyy-mm-dd/{slug}`) and **commit as soon as any
-coherent piece exists.** Not at the end. Not "once it works".
+**Your branch already exists**: the coordinator opened this workspace with
+`scripts/photo/seats/new-lane.sh`, and Orca created `<owner>/<workspace-name>` off `main` for it. Stay
+on it; never branch off it, never commit to `main`.
+
+**Commit as soon as any coherent piece exists.** Not at the end. Not "once it works".
 
 This rule was paid for. On 2026-07-30 a lane implemented a whole slice — a new module, a server
 action, UI wiring and 21 tests — passed review, and then lost every line of it. It had worked

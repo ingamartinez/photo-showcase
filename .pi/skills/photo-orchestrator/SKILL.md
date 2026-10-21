@@ -49,16 +49,25 @@ about it that are not obvious:
 ```
 1. Pick work     kanban-md list --status backlog --unblocked --priority critical --compact
 2. Claim         kanban-md move <id> in-progress --claim agent-1
-3. Explore       start-seat.sh explore --id <id>      (optional when the body fixes the how)
-4. Plan          start-seat.sh plan --id <id>
+3. Workspace     new-lane.sh <id> --slug <slug>   ← you run this from the PRIMARY checkout
+                 → lane=<path> worktree=name:<name>   (every seat below gets --worktree name:<name>)
+4. Explore       start-seat.sh explore --id <id>      (optional when the body fixes the how)
+5. Plan          start-seat.sh plan --id <id>
    ── GATE ──    show the plan to the owner. Only their explicit approval lets you append
-                 "APPROVED by owner (<date>)" to the task body. Do not start step 5 without it.
-5. Implement     start-seat.sh implement --id <id>
-6. Review        start-seat.sh review --id <id>        (after the implementer commits)
-7. Ship          kanban-md move <id> shipping --claim agent-1, then start-seat.sh ship --id <id>
-8. Close         kanban-md move <id> done --claim agent-1 — only when live and verified, or its
+                 "APPROVED by owner (<date>)" to the task body. Do not start step 6 without it.
+6. Implement     start-seat.sh implement --id <id>
+7. Review        start-seat.sh review --id <id>        (after the implementer commits)
+8. Ship          kanban-md move <id> shipping --claim agent-1, then start-seat.sh ship --id <id>
+9. Close         kanban-md move <id> done --claim agent-1 — only when live and verified, or its
                  unverifiable-behind-login gap is written into the body.
 ```
+
+**You run in the primary checkout; the seats do not.** You open pi in
+`/Users/alejo/projects/photo-showcase` and `new-lane.sh` creates the slice's workspace (Orca's
+`~/orca/workspaces/photo-showcase/<name>`, branch `ingamartinez/<name>` off `main`, its own
+`codegraph` index and `bun install`). Every seat then runs in that lane. `start-seat.sh` refuses the
+primary checkout outright, which is the point: two slices in parallel are two checkouts, not two
+seats editing one tree.
 
 **No step passes `--wait`.** Each launch returns in seconds with `terminal=` and `output=`; you then
 start one `process` watcher for that seat and **end your turn**. See "Waiting without blocking".
@@ -68,6 +77,10 @@ flight" in your memory: it is whatever the handoff files say when you look.
 
 Explore is optional when the task body already fixes the how. It is mandatory for unfamiliar
 modules, multi-area slices, and ambiguous traps.
+
+**Ask for several slices at once and you run this list once per slice, interleaved**: workspaces
+first for all of them, then the seats as each slice reaches them. Never two slices in one workspace,
+and never two seats of the same step on one slice.
 
 ## Driving a seat
 
@@ -205,21 +218,15 @@ nobody could verify live: that is the part you will want to find in six weeks.
 
 ## Parallel slices
 
-One Orca worktree per lane, one seat per step, same launcher with `--worktree <selector>` (and
-`--id <id>` so the tab, the watcher and the board slice share one name). Read "Running lanes in
-parallel" in `KANBAN.md` before opening a second lane: group by file overlap, require branch and
-commit SHAs in every report, review a committed ref, and serialise shipping.
+One workspace per slice — `new-lane.sh <id> --slug <slug>` — one seat per step, and every launch
+carries `--worktree name:<workspace> --id <id>`, so tab, watcher and board slice share one name and
+two lanes cannot wake each other. Read "Running lanes in parallel" in `KANBAN.md` before opening a
+second lane: group by file overlap, require branch and commit SHAs in every report, review a
+committed ref, and serialise shipping.
 
-**A new workspace needs two things, and both get forgotten** (`.pi/` is tracked here, so unlike the
-SYC umbrella there is nothing to symlink):
-
-```bash
-orca worktree create --name slice-<id> --parent-worktree active --json
-codegraph init -y <the new worktree>   # its own index; never reuse another checkout's
-cd <the new worktree> && bun install   # node_modules AND .husky/_ (no install, no hook)
-```
-
-A seat whose cwd has no `.codegraph/` has no graph and greps instead, silently.
+The workspace's branch is created from `main` by Orca; the implementer commits to it and never
+touches `main`. Open the lane with `new-lane.sh` rather than `git worktree add`: a hand-made
+worktree is invisible to Orca, and a lane nobody can see is a lane nobody reviews.
 
 ## Hard rules
 
@@ -247,11 +254,13 @@ A seat whose cwd has no `.codegraph/` has no graph and greps instead, silently.
 
 ## Orca state
 
-Keep the workspace card honest — it is how the owner sees this slice in Orca without asking:
+Keep the **lane's** workspace card honest — it is how the owner sees this slice in Orca without
+asking, and it is the card of the slice's own workspace (`name:<workspace>`), not the primary
+checkout's:
 
 ```bash
-orca worktree set --worktree active --comment "plan approved; implementer running" --json
-orca worktree set --worktree active --workspace-status in-review --json
+orca worktree set --worktree name:<workspace> --comment "plan approved; implementer running" --json
+orca worktree set --worktree name:<workspace> --workspace-status in-review --json
 ```
 
 ## Memory (Engram)

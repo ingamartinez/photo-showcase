@@ -12,17 +12,20 @@ Both lanes follow the same board, task bodies and acceptance criteria.
 
 ## Starting a slice
 
-Open the repository as an Orca worktree, start pi there, and run:
+**Open pi in the primary checkout** (`/Users/alejo/projects/photo-showcase`) and run:
 
 ```text
 /skill:photo-orchestrator 42
 ```
 
 The skill (`.pi/skills/photo-orchestrator/SKILL.md`) is the coordinator contract: it reads the
-task and its epic, claims it, and delegates every step to a seat. It is discovered automatically
-when the task calls for orchestration; the explicit command is there when you want it forced.
+task and its epic, claims it, **opens that slice's own workspace** (`new-lane.sh`), and delegates
+every step to a seat. It is discovered automatically when the task calls for orchestration; the
+explicit command is there when you want it forced.
 
-The orchestrator never writes code, and it is the only actor that moves board columns.
+The orchestrator never writes code, never lets a seat work in the primary checkout, and is the only
+actor that moves board columns. Several slices can run at once: each gets its own workspace, branch,
+tabs and watcher names.
 
 | Step           | Seat                   | Provider / model                | Thinking | Tools                          |
 | -------------- | ---------------------- | ------------------------------- | -------- | ------------------------------ |
@@ -105,7 +108,8 @@ What it does:
 1. refuses to run outside an Orca-managed worktree (`orca worktree current`) or without a brief,
 2. checks the provider exists in `pi --list-models`,
 3. mints the delivery path with `mktemp` and appends `Output path: <path>` to the brief,
-4. `orca terminal create --worktree active --title photo-<seat>-<id> --command "pi …"`,
+4. `orca terminal create --worktree <selector> --title photo-<seat>-<id> --command "pi …"`,
+   where the selector is the slice's lane (`name:<workspace>`), never the primary checkout,
 5. writes the same `key=value` block to `<output>.handoff` **before** any wait, so an interrupted
    run is still attributable (`seat-status.sh` reconciles against those files),
 6. with `--wait`, polls the **output file** until it appears, then waits for the TUI to settle, and
@@ -306,42 +310,46 @@ gate in this lane is the review verdict plus a green CI, not a click. If this re
 to "the pipeline ends at an open PR", the rule to copy is `*gh pr merge*: "ask"` plus
 `*gh api*merge*: "deny"` — in that order, and the ship contract changes with it.
 
-## Worktrees
+## Workspaces: one per slice, the coordinator in the primary checkout
 
-Seats run **in the worktree the orchestrator is in** (`--worktree active`). There is no per-lane
-worktree by default: the implementer branches in the current checkout and never commits to `main`.
-
-For genuinely parallel slices, open one Orca worktree per lane and point the launcher at it:
-
-```bash
-orca worktree create --name slice-276 --parent-worktree active --json
-scripts/photo/seats/start-seat.sh implement --id 276 --worktree name:slice-276 --prompt "…"
-```
-
-### A new workspace needs two things, and both get forgotten
-
-`.pi/` is **tracked** in this repository (`.pi/agent/pi-permissions.jsonc` and
-`.pi/skills/photo-orchestrator/`), so `git worktree add` — and therefore `orca worktree create` —
-populates the policy and the skill with everything else. This lane does **not** need the
-`link-pi-config.sh` symlinking the SYC umbrella uses, because that workspace keeps `.pi/` out of
-git. Verified by listing `.pi` in a fresh `git worktree`.
-
-What a new workspace genuinely lacks:
+**The coordinator runs pi in the primary checkout** (`/Users/alejo/projects/photo-showcase`) and
+**opens a workspace per slice**. Seats never work in the primary checkout — that is the check
+`start-seat.sh` enforces, and not a formality: the primary tree is where the owner's own checkout and
+the coordinator's board live, and two seats editing it is the same tree twice.
 
 ```bash
-codegraph init -y <new worktree>      # 1. its own index (.codegraph/ is gitignored)
-cd <new worktree> && bun install      # 2. node_modules AND .husky/_
+scripts/photo/seats/new-lane.sh 276 --slug galerias-paginacion
+# lane=/Users/alejo/orca/workspaces/photo-showcase/276-galerias-paginacion
+# worktree=name:276-galerias-paginacion
+# branch=ingamartinez/276-galerias-paginacion   (Orca derives it from the name, off main)
+# setup=installed
 ```
 
-1. **Never reuse another checkout's index.** A seat whose cwd has no `.codegraph/` has no graph and
-   greps instead of querying it — silently, because `codegraph_explore` failing to find a project is
-   not an error the seat reports.
-2. **`bun install` is what creates `.husky/_`**, and without it the pre-commit hook is missing (see
-   the tracked-fallback note in `AGENTS.md` — a tracked `.husky/_/pre-commit` now blocks the commit
-   rather than letting it through silently).
+Then every seat for that slice is launched with `--worktree name:276-galerias-paginacion --id 276`
+(or simply from inside the lane, where the default `active` resolves to it). Two slices in parallel
+are then two checkouts, two branches and two sets of tabs — and the `--id` in each tab/watcher name
+keeps them apart.
 
-Read "Running lanes in parallel" in `KANBAN.md` before opening one, and remove the workspace when
-the slice merges (`git worktree remove`, tab closed, `process` cleared) instead of half-cleaning it.
+`new-lane.sh` is idempotent: run it again and it reuses the workspace and only fills in whatever
+setup is missing. It skips the two things a fresh checkout lacks (both get forgotten), plus a third
+this repository taught us:
+
+1. **Its own `.codegraph/`** — gitignored, so a new lane has no graph, and a seat whose cwd has no
+   graph greps instead of querying it, silently.
+2. **`bun install`** — node_modules AND `.husky/_`; without the install the lane has no pre-commit
+   hook to speak of.
+3. **Restoring the tracked `.husky/_/pre-commit`** — the install overwrites it with husky's
+   generated delegator every time (#123). The hook still runs the same `bunx lint-staged`, but the
+   file is left modified, one ordinary `git add -A` away from committing the regression CI checks
+   for. The script puts the tracked copy back, so a lane starts clean.
+
+`.pi/` needs nothing: it is tracked here, so the checkout carries the policy and the skill. This
+lane does **not** need the `link-pi-config.sh` symlinking the SYC umbrella uses, because that
+workspace keeps `.pi/` out of git.
+
+Read "Running lanes in parallel" in `KANBAN.md` before opening a second lane, and remove the
+workspace when the slice merges (`orca worktree remove`, tab closed, `process` cleared) instead of
+half-cleaning it.
 
 `orca worktree create --agent pi --prompt "…"` starts an agent the way Orca's new-agent tab does
 (chat or terminal, per your Chat UI setting) — useful for ad-hoc work, but **not** for seats: it
@@ -355,8 +363,8 @@ both current:
 
 ```bash
 kanban-md move 42 in-progress --claim agent-1
-orca worktree set --worktree active --comment "plan approved; implementer running" --json
-orca worktree set --worktree active --workspace-status in-review --json
+orca worktree set --worktree name:<workspace> --comment "plan approved; implementer running" --json
+orca worktree set --worktree name:<workspace> --workspace-status in-review --json
 ```
 
 ## Differences from the Claude Code lane
@@ -387,6 +395,7 @@ scripts/photo/seats/implement.md         code + tests + commits
 scripts/photo/seats/review.md            verdict
 scripts/photo/seats/ship.md              PR, CI, merge, production verification
 scripts/photo/seats/start-seat.sh        launcher for all five seats (orca terminal create)
+scripts/photo/seats/new-lane.sh          one workspace per slice: checkout + branch + index + install
 scripts/photo/seats/watch-seat.sh        one delivery watcher per seat, for the `process` tool
 scripts/photo/seats/seat-status.sh       reconcile: what is in flight, what delivered unread
 ```

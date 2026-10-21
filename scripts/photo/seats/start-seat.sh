@@ -53,11 +53,13 @@ usage: start-seat.sh <explore|plan|implement|review|ship> --prompt <text>|--prom
   --output <path>        Absolute delivery path. Default: a fresh mktemp file, printed as output=.
   --wait                 Block until this seat delivers, then report status=ok|empty|timeout.
                          Blocks the coordinator's turn: for several seats launch WITHOUT it and put
-                         one `process` watcher per seat on watch-seat.sh (see the header).
-  --timeout-ms <ms>      Ceiling for --wait (default 900000).
+                         one `process` watcher per seat on watch-seat.sh (see the header).  --timeout-ms <ms>      Ceiling for --wait (default 900000).
   --dry-run              Print the exact command that would be typed into the terminal and stop.
   --keep-open            Leave the seat's tab open even when it delivered (default: close it).
-  --worktree <selector>  Orca worktree selector (default: active).
+  --worktree <selector>  Orca worktree selector (default: the lane you are standing in). A seat is
+                         never launched in the primary checkout: open the slice's workspace with
+                         new-lane.sh first, or pass --allow-main to override.
+  --allow-main           Permit a seat in the primary checkout. Only for a one-off you are watching.
   --id <task-id>         Board slice id. Composes the tab title as photo-<seat>-<id>[-r<N>]; use the
                          same name for the watcher and the `process`, that is the join key.
   --attempt <n>          1-based. With n>1 the title carries -r<N> (a retry of the SAME seat on the
@@ -79,6 +81,7 @@ output=""
 do_wait=0
 do_dry_run=0
 do_keep_open=0
+allow_main=0
 timeout_ms="${SEAT_TIMEOUT_MS:-900000}"
 worktree="active"
 tab_title=""
@@ -96,6 +99,7 @@ while [ $# -gt 0 ]; do
     --title)       tab_title="${2:?--title needs a value}"; shift 2 ;;
     --id)          task_id="${2:?--id needs a value}"; shift 2 ;;
     --attempt)     attempt="${2:?--attempt needs a value}"; shift 2 ;;
+    --allow-main)  allow_main=1; shift ;;
     --wait)        do_wait=1; shift ;;
     --dry-run)     do_dry_run=1; shift ;;
     --keep-open)   do_keep_open=1; shift ;;
@@ -172,12 +176,42 @@ fi
 command -v orca >/dev/null 2>&1 || { echo "orca CLI not found; install Orca or fix PATH" >&2; exit 2; }
 command -v pi   >/dev/null 2>&1 || { echo "pi CLI not found; install pi or fix PATH" >&2; exit 2; }
 
-# Seats live in the worktree Orca tracks. Outside one, `terminal create` has no workspace to
-# attach to, so fail before touching pi. An explicit selector (name:/path:) is Orca's to resolve,
-# so only the default one is checked here.
-if [ "$worktree" = "active" ] && ! orca worktree current --json >/dev/null 2>&1; then
-  echo "not inside an Orca-managed worktree; open this directory from Orca and retry" >&2
-  exit 2
+# Seats run in the SLICE'S OWN WORKSPACE, never in the primary checkout. That is the whole point of
+# `new-lane.sh`: two slices in parallel are two checkouts, and a seat that edits the primary tree
+# holds the coordinator's own checkout hostage. The coordinator therefore starts pi in the primary
+# workspace and opens a lane per slice.
+#
+# Two checks, and they are different questions:
+#   1. is the caller inside an Orca-managed worktree at all? Outside one, `terminal create` has no
+#      workspace to attach to. `active`/`current` means "the worktree I am standing in".
+#   2. is that worktree the primary checkout? `git-dir` and `git-common-dir` are the same path only
+#      there. A shared `orca worktree current` says nothing about this: it answers for the primary
+#      checkout too.
+#
+# An explicit `name:`/`id:` selector is Orca's to resolve, so it is not checked here; `path:` is.
+target_dir=""
+case "$worktree" in
+  active|current) target_dir="$PWD" ;;
+  path:*)         target_dir="${worktree#path:}" ;;
+esac
+
+if [ -n "$target_dir" ]; then
+  if [ "$target_dir" = "$PWD" ] && ! orca worktree current --json >/dev/null 2>&1; then
+    echo "not inside an Orca-managed worktree; open this directory from Orca and retry" >&2
+    exit 2
+  fi
+  if [ "$allow_main" -eq 0 ]; then
+    git_dir="$(cd "$target_dir" && git rev-parse --path-format=absolute --git-dir 2>/dev/null || true)"
+    common_dir="$(cd "$target_dir" && git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+    if [ -n "$git_dir" ] && [ "$git_dir" = "$common_dir" ]; then
+      echo "refusing to launch a seat in the primary checkout: $target_dir" >&2
+      echo "open the slice's workspace first:" >&2
+      echo "  scripts/photo/seats/new-lane.sh <task-id> --slug <slug>" >&2
+      echo "then run this from that lane, or pass --worktree name:<workspace-name>" >&2
+      echo "(--allow-main overrides, for a one-off you are watching)" >&2
+      exit 2
+    fi
+  fi
 fi
 
 repo_root="$(git rev-parse --show-toplevel)"

@@ -161,6 +161,17 @@ function parseTiersField(raw: FormDataEntryValue | null): TiersParse {
   return result.ok ? { ok: true, tiers: result.tiers } : { ok: false, message: result.message };
 }
 
+// Shared by createGallery and updateGalleryMeta (#281) so a correction is
+// validated exactly as strictly, with exactly the same messages, as creation.
+const galleryTitleField = z.string().trim().min(1, "Ingresa un título.");
+// `<input type="date">` posts "YYYY-MM-DD", the exact shape
+// `galleries.sessionDate` (a `date()` column in string mode) stores.
+const gallerySessionDateField = z
+  .string()
+  .trim()
+  .min(1, "Elige la fecha de la sesión.")
+  .pipe(z.iso.date("Ingresa una fecha de sesión válida."));
+
 const createGallerySchema = z.object({
   // Fed by a `<select multiple>` picker backed by getClientsForPicker()
   // (src/lib/clients.ts) — a plain presence + shape check here is enough; a
@@ -186,14 +197,8 @@ const createGallerySchema = z.object({
       message: "Elige un paquete válido.",
     })
     .transform(Number),
-  title: z.string().trim().min(1, "Ingresa un título."),
-  // `<input type="date">` posts "YYYY-MM-DD", the exact shape
-  // `galleries.sessionDate` (a `date()` column in string mode) stores.
-  sessionDate: z
-    .string()
-    .trim()
-    .min(1, "Elige la fecha de la sesión.")
-    .pipe(z.iso.date("Ingresa una fecha de sesión válida.")),
+  title: galleryTitleField,
+  sessionDate: gallerySessionDateField,
   // Task #193 — both OPTIONAL, both independent of one another. An admin can
   // override only the quota, only the extra-photo price, both, or neither
   // (the untouched default, which reproduces today's behavior bit for bit).

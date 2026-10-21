@@ -108,6 +108,11 @@ title="$(printf '%s\n' "$handoff" | sed -n 's/^title=//p')"
 - **`status=empty` is a failure, not an empty success** (only visible under `--wait`; without it a
   failed seat shows up as its own `TIMEOUT <seat>`). Re-prompt a **new** seat once with the same
   brief; if it fails again, report and stop. Never invent the content.
+- **If a seat cannot write its report at all**, check screen: it probably quoted a command the
+  permission policy denies, and the policy matches substrings over the whole command line, so a
+  `cat > … <<EOF` containing that command is denied. Answer it in place
+  (`orca terminal send … --text "write it with that command described in words" --enter`); do not
+  widen the rule.
 - A failed seat keeps its tab open on purpose, because that is the one worth looking at. Read the
   screen (`orca terminal read --terminal <handle> --screen`), then close it. Nothing else should
   outlive the run.
@@ -220,9 +225,13 @@ nobody could verify live: that is the part you will want to find in six weeks.
 
 One workspace per slice — `new-lane.sh <id> --slug <slug>` — one seat per step, and every launch
 carries `--worktree name:<workspace> --id <id>`, so tab, watcher and board slice share one name and
-two lanes cannot wake each other. Read "Running lanes in parallel" in `KANBAN.md` before opening a
-second lane: group by file overlap, require branch and commit SHAs in every report, review a
-committed ref, and serialise shipping.
+two lanes cannot wake each other. **That workspace is a peer of the primary checkout, not a child of
+it** (`new-lane.sh` passes `--no-parent`): a child is collapsed under `main` in the sidebar and stops
+reading as its own workspace. If one was created as a child,
+`orca worktree set --worktree name:<workspace> --no-parent` detaches it.
+
+Read "Running lanes in parallel" in `KANBAN.md` before opening a second lane: group by file overlap,
+require branch and commit SHAs in every report, review a committed ref, and serialise shipping.
 
 The workspace's branch is created from `main` by Orca; the implementer commits to it and never
 touches `main`. Open the lane with `new-lane.sh` rather than `git worktree add`: a hand-made

@@ -471,6 +471,18 @@ describe("formatSessionDate", () => {
     const { formatSessionDate } = await import("./galleries");
     expect(formatSessionDate("2026-08-01")).toBe("01/08/2026");
   });
+
+  // Task #281 — the display half of "the date must not shift a day": at the
+  // year boundary a `new Date("2026-01-01")` round-trip renders as
+  // 2025-12-31 in America/Bogota, so these two cases pin the string slicing
+  // where the existing mid-year case cannot.
+  it.each([
+    ["2026-01-01", "01/01/2026"],
+    ["2025-12-31", "31/12/2025"],
+  ])("does not shift the day at the year boundary: %s -> %s", async (sessionDate, expected) => {
+    const { formatSessionDate } = await import("./galleries");
+    expect(formatSessionDate(sessionDate)).toBe(expected);
+  });
 });
 
 describe("formatClientDisplayName", () => {

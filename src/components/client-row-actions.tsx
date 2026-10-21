@@ -58,6 +58,10 @@ export function ClientRowActions({ client }: { client: EditableClient }) {
   const [deleteMessage, setDeleteMessage] = useState<string | null>(null);
   const triggerRef = useRef<HTMLButtonElement>(null);
 
+  // Every open and every close goes through here — the menu item, Radix's own
+  // dismiss, and the success close. There is no second `setEditOpen` call
+  // anywhere in this file, which is the invariant the clearing below depends
+  // on (review round 1 caught a direct `setEditOpen(true)` from the menu item).
   const handleOpenChange = useCallback((next: boolean) => {
     setEditOpen(next);
     // Cleared on OPEN, never on close: a live region only announces when its
@@ -70,8 +74,11 @@ export function ClientRowActions({ client }: { client: EditableClient }) {
 
   const handleUpdated = useCallback(() => {
     setNotice(UPDATED_NOTICE);
-    setEditOpen(false);
-  }, []);
+    // Closing goes through the same handler as every other open-state write,
+    // so there is exactly ONE place that can move the dialog's `open`. It does
+    // not clear here: this handler only clears on OPEN.
+    handleOpenChange(false);
+  }, [handleOpenChange]);
 
   // Delete: `window.confirm`, which is this repo's destructive-confirmation
   // precedent (flash-gallery-controls.tsx:53, flash-photo-grid.tsx:24,
@@ -128,7 +135,14 @@ export function ClientRowActions({ client }: { client: EditableClient }) {
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onSelect={() => setEditOpen(true)}>Editar</DropdownMenuItem>
+            {/* Through `handleOpenChange`, NOT `setEditOpen(true)` directly.
+                That handler is the only place the previous success notice is
+                cleared, and a controlled dialog never calls its own
+                `onOpenChange` when the PARENT changes the `open` prop — so a
+                direct set would leave `notice` untouched across a reopen, and
+                the next save would rewrite the same string into the live region
+                (a no-op for assistive technology). See the two-cycle test. */}
+            <DropdownMenuItem onSelect={() => handleOpenChange(true)}>Editar</DropdownMenuItem>
             {/* `variant="destructive"` follows gallery-client-row.tsx:280-297,
                 including its two-reds reasoning: this item is only ever
                 reachable through the trigger's own popover, and the menu closes

@@ -127,6 +127,54 @@ describe("ClientRowActions", () => {
     expect(document.body.contains(region)).toBe(true);
   });
 
+  // Review round 1 (task #279) — the defect the single-cycle test above could
+  // not see. The menu item used to call `setEditOpen(true)` directly, skipping
+  // `handleOpenChange`, the only place the previous notice is cleared. The
+  // region stayed at "Cliente actualizado." across the second cycle, so the
+  // second save wrote the SAME string and assistive technology had nothing new
+  // to announce — and because the dialog closes on success, that region is the
+  // only success feedback there is.
+  //
+  // Two cycles on ONE mount, modelling the real page: revalidation re-renders
+  // the keyed row with new props but keeps its state. The observed sequence is
+  // asserted directly (empty while the dialog is open, notice after each save)
+  // and also through a MutationObserver, which is the probe shape that caught
+  // the bug: [notice, "", notice].
+  it("announces two successive saves, clearing the notice every time it reopens", async () => {
+    updateClientMock.mockResolvedValue({ status: "updated" });
+    const user = userEvent.setup();
+    const { rerender } = render(<ClientRowActions client={CLIENT} />);
+
+    const region = screen.getByRole("status");
+    // Text changes only: what a live region actually experiences.
+    const observed: string[] = [];
+    const observer = new MutationObserver(() => observed.push(region.textContent ?? ""));
+    observer.observe(region, { characterData: true, childList: true, subtree: true });
+
+    // --- cycle 1 ---
+    let dialog = await openEditDialog(user);
+    await user.click(within(dialog).getByRole("button", { name: "Guardar cambios" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(region.textContent).toBe("Cliente actualizado.");
+
+    // `revalidatePath("/dashboard/clients")` refreshes the keyed <li>: same
+    // component instance, new props. A remount would hide the bug.
+    rerender(<ClientRowActions client={{ ...CLIENT, name: "Ana Pérez Gómez" }} />);
+
+    // --- cycle 2, same mounted row ---
+    dialog = await openEditDialog(user, "Ana Pérez Gómez");
+    // The assertion the bug failed: reopening resets the region.
+    expect(region.textContent).toBe("");
+
+    await user.click(within(dialog).getByRole("button", { name: "Guardar cambios" }));
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(region.textContent).toBe("Cliente actualizado.");
+
+    await waitFor(() => expect(observed.at(-1)).toBe("Cliente actualizado."));
+    observer.disconnect();
+    expect(observed).toEqual(["Cliente actualizado.", "", "Cliente actualizado."]);
+  });
+
   it("closes on Escape and hands focus back to the row trigger", async () => {
     updateClientMock.mockResolvedValue({ status: "idle" });
     const user = userEvent.setup();

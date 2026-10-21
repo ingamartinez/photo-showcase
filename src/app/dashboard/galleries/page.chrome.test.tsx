@@ -356,10 +356,28 @@ describe("GalleriesPage chrome", () => {
     expect(active.getAttribute("href")).toBe("/dashboard/galleries?sort=title&dir=desc");
   });
 
+  // W3's sibling (task #276 review round 4): this test claims the heading click
+  // RESETS the page, so it has to be rendering page 2 when it clicks. The
+  // shared 1/1 fixture clamped `?page=2` down to page 1 before the legend was
+  // built, and `page=1` emits no param — so mutating `sortedBy`'s `page: 1` to
+  // `page: query.page` left the href assertion green. LOCAL 63/26 override (2
+  // filtered pages of 25), deliberately NOT the shared fixture, which other
+  // cases depend on; with 26 matching rows page 2 survives the clamp.
   it("keeps the filter and resets the page when a desk heading is clicked", async () => {
-    getGalleriesWithDetailsMock.mockResolvedValue([gallery()]);
+    getGalleriesWithDetailsMock.mockResolvedValue(rows(1, 25));
+    getGalleryListCountsMock.mockResolvedValue({ studioTotal: 63, matching: 26 });
 
     await renderPage({ status: "draft", page: "2" });
+
+    // PRECONDITION, asserted on the production path: the rows were read as
+    // FILTERED PAGE 2 — not as page 1 after a clamp against 1 matching row.
+    // Without this, the href assertion below could pass for the wrong reason.
+    expect(getGalleriesWithDetailsMock).toHaveBeenCalledWith({
+      status: "draft",
+      sort: null,
+      dir: "desc",
+      page: 2,
+    });
 
     const photos = within(deskGroup()).getByRole("link", { name: "Fotos" });
     expect(photos.getAttribute("href")).toBe("/dashboard/galleries?status=draft&sort=photos");

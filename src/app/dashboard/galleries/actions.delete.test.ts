@@ -52,10 +52,11 @@ vi.mock("@/lib/db", async () => {
   // `abcdef…` are the same row. The shared double compares strings with `===`,
   // and `src/test-support/fake-db.ts` is outside this slice's edit surface, so
   // the equivalence is modelled here: every uuid-shaped string PARAMETER of a
-  // SELECT is matched in canonical lowercase form. A caller spelling that is
-  // already canonical takes this path unchanged, and writes (including the
-  // DELETE and its WHERE) are left alone — a delete scoped by the caller's
-  // spelling must still fail here, as it would not in Postgres's eyes.
+  // SELECT is matched in canonical lowercase form. A spelling that is already
+  // canonical takes this path unchanged. Writes (the DELETE and its WHERE) are
+  // deliberately left strict: PostgreSQL would mask a delete scoped by the
+  // caller's spelling, and a double that hid that divergence too would be
+  // useless.
   const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   const canonicalise = (condition: unknown): unknown => {
     const chunks = (condition as { queryChunks?: unknown[] } | null)?.queryChunks;
@@ -74,9 +75,9 @@ vi.mock("@/lib/db", async () => {
   fake.select = (columns) => {
     const statement = select(columns) as Statement;
     return {
-      from: (table) => {
+      from: (table: unknown) => {
         const scoped = statement.from(table);
-        return { where: (condition) => scoped.where(canonicalise(condition)) };
+        return { where: (condition: unknown) => scoped.where(canonicalise(condition)) };
       },
     };
   };
@@ -247,27 +248,12 @@ describe("deleteGallery — the R2 keys it deletes", () => {
     expect(calledKeys().sort()).toEqual([DISPLAY_A, FINAL_KEY, PROOF_A, PROOF_B].sort());
   });
 
-  it("never touches another gallery's assets", async () => {
+  it("never touches another gallery's assets, even one that shares an asset id", async () => {
     authMock.mockResolvedValue(adminSession());
     const r = await rows();
-    const { deleteGallery } = await import("./actions");
-
-    await deleteGallery(GALLERY_ID);
-
-    const otherKeys = calledKeys().filter((key) => key.includes(OTHER_GALLERY_ID));
-    expect(otherKeys).toEqual([]);
-    expect(r.assets.some((row) => row.id === OTHER_ASSET)).toBe(true);
-  });
-});
-
-describe("deleteGallery — the transaction it runs", () => {
-  it("locks the gallery row, then reads its assets, then deletes it — in that order", async () => {
-    authMock.mockResolvedValue(adminSession());
-    const r = await rows();
-    // The same asset id also lives in the other gallery. The asset read is
-    // scoped by the LOCKED row's id — the fake db's log records query kinds
-    // and affected counts, never conditions, so the scope is proven by this
-    // row's stored key never reaching `deleteObject`.
+    // The asset read is scoped by the LOCKED row's id. A row of the other
+    // gallery carrying the SAME asset id is the case a scope on `assets.id`
+    // alone would let through, and its stored proof key differs from A's.
     r.assets.push({
       id: ASSET_WITH_FINAL,
       galleryId: OTHER_GALLERY_ID,
@@ -276,12 +262,32 @@ describe("deleteGallery — the transaction it runs", () => {
     });
     const { deleteGallery } = await import("./actions");
 
+    await deleteGallery(GALLERY_ID);
+
+    const otherKeys = calledKeys().filter((key) => key.includes(OTHER_GALLERY_ID));
+    expect(otherKeys).toEqual([]);
+    expect(r.assets.some((row) => row.id === OTHER_ASSET)).toBe(true);
+    expect(calledKeys().sort()).toEqual([DISPLAY_A, FINAL_KEY, PROOF_A, PROOF_B].sort());
+  });
+});
+
+describe("deleteGallery — the transaction it runs", () => {
+  it("locks the gallery row, then reads its assets, then deletes it — in that order", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const r = await rows();
+    const { deleteGallery } = await import("./actions");
+
     const result = await deleteGallery(GALLERY_ID);
 
     expect(result).toEqual({ ok: true, r2Failures: 0 });
     // `for:update` REPLACES the select it locks, so the log reads as the three
     // statements in order: the row lock, the asset read, and one gallery row
-    // deleted. Dropping `.for("update")` turns the first entry into `select`.
+    // deleted. Dropping `.for("update")` turns the first entry into `select`,
+    // which is the mutation this line exists to catch — the proof-upload
+    // snapshot race reopens silently without it. The double logs query kinds
+    // and affected counts, not conditions: `delete:1` is what shows the DELETE
+    // stayed on the single locked row (the sibling suite proves the asset read
+    // is gallery-scoped).
     expect(await log()).toEqual(["for:update", "select", "delete:1"]);
     expect(calledKeys().sort()).toEqual([DISPLAY_A, FINAL_KEY, PROOF_A, PROOF_B].sort());
     expect(r.galleries.map((row) => row.id)).toEqual([OTHER_GALLERY_ID]);

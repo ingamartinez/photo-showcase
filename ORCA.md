@@ -290,6 +290,15 @@ burned slice, not a safety net. The policy therefore has no `ask` rules at all, 
 could have produced a false positive are deliberately narrow (`rm -rf /tmp/…` stays allowed — the
 literal `rm -rf /` rule is an exact match rather than a wildcard).
 
+**The rules match substrings over the whole command line, so they also block WRITING about them.**
+A seat that writes its report with bash redirection (`cat > "$path" <<'EOF' … EOF`) puts the file's
+content inside the command, and if the report quotes a denied command the write is denied — the seat
+then stops with "the output path does not exist yet" and asks. Measured 2026-10-20: the plan seat
+could not write a plan that quoted the production query until the command was described in words.
+That is the policy working as written, not a bug to route around: the seat's contract says to
+describe such a command instead of pasting it, and the orchestrator answers the question rather than
+widening the rule.
+
 Verified by running the commands rather than reading the config: `git commit --no-verify -m probe`
 is blocked with the matched pattern (`*--no-verify*`) both in a `pi -p` session and inside a real
 review seat (`verdict=BLOCKED`), while `kanban-md edit … --append-body` and `rm -rf /tmp/junk` still
@@ -329,6 +338,12 @@ Then every seat for that slice is launched with `--worktree name:276-galerias-pa
 (or simply from inside the lane, where the default `active` resolves to it). Two slices in parallel
 are then two checkouts, two branches and two sets of tabs — and the `--id` in each tab/watcher name
 keeps them apart.
+
+`new-lane.sh` passes `--no-parent` on purpose: a slice is a **peer** of the primary checkout, not a
+child of it. Without that flag Orca records real lineage from the caller and the workspace shows up
+collapsed under `main` as “1 child”, which reads as a sub-folder rather than as its own workspace.
+`orca worktree set --worktree name:<workspace> --no-parent` detaches one that was created as a child
+(this happened to the first lane, 2026-10-20).
 
 `new-lane.sh` is idempotent: run it again and it reuses the workspace and only fills in whatever
 setup is missing. It skips the two things a fresh checkout lacks (both get forgotten), plus a third

@@ -7,9 +7,16 @@
 #     branch=ingamartinez/276-galerias-paginacion
 #     setup=installed
 #
-# The coordinator runs in the PRIMARY checkout (/Users/alejo/projects/photo-showcase) and never
-# lets a seat work there. Every slice gets its own workspace: that is what makes two slices in
-# parallel two independent checkouts instead of two seats editing one tree.
+# A slice workspace is a PEER of the primary checkout, not its child. `--parent-worktree active` (or
+# letting Orca infer the caller context) records real lineage: the workspace then shows up COLLAPSED
+# under `main` in the sidebar as "N children" instead of as its own workspace, and two slices stop
+# looking like two peers. Measured 2026-10-20: the first lane created here was a child, and the owner
+# read the sidebar as "it opened a child instead of a workspace". `--no-parent` is what makes it a
+# sibling; `orca worktree set --no-parent` detaches one that already exists.
+#
+# The coordinator runs in the PRIMARY checkout and never lets a seat work there. Every slice gets its
+# own workspace: that is what makes two slices in parallel two independent checkouts instead of two
+# seats editing one tree.
 #
 # Orca owns the checkout: it picks the path (`~/orca/workspaces/<repo>/<name>`) and creates the
 # branch as `ingamartinez/<name>` off the base branch. This script does not `git worktree add` by
@@ -117,7 +124,7 @@ for wt in (data.get("result") or {}).get("worktrees") or []:
 if [ "$do_dry_run" -eq 1 ]; then
   printf 'name=%s\nbranch=%s\nbase=%s\nrepo=%s\nlane=%s\ncommand=%s\n' \
     "$name" "ingamartinez/$name" "$base" "$repo" "${existing_path:-(new)}" \
-    "orca worktree create --name $name --repo path:$repo --parent-worktree active --base-branch $base --setup skip --json"
+    "orca worktree create --name $name --repo path:$repo --no-parent --base-branch $base --setup skip --json"
   exit 0
 fi
 
@@ -126,7 +133,7 @@ if [ -n "$existing_path" ]; then
   created="reused"
 else
   create_cmd=(orca worktree create --name "$name" --repo "path:$repo"
-              --parent-worktree active --base-branch "$base" --setup skip --json)
+              --no-parent --base-branch "$base" --setup skip --json)
   [ "$do_activate" -eq 1 ] && create_cmd+=(--activate)
 
   json="$("${create_cmd[@]}")"

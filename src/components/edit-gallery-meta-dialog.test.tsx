@@ -93,6 +93,10 @@ describe("EditGalleryMetaDialog — fields", () => {
   // uncontrolled `<form action>` after the action resolves, error states
   // included. If the typed values vanish here, the admin is told to fix a
   // field the dialog just erased.
+  //
+  // BOTH fields are edited first, and both are asserted afterwards: editing
+  // only the title leaves the date free to regress to `defaultValue` with
+  // every test still green (review round 2, finding CRITICAL).
   it("shows the server's error message, keeps the form open, and keeps what was typed", async () => {
     updateGalleryMetaMock.mockResolvedValue({
       status: "error",
@@ -105,12 +109,18 @@ describe("EditGalleryMetaDialog — fields", () => {
     const titleField = within(dialog).getByLabelText("Título");
     await user.clear(titleField);
     await user.type(titleField, "  ");
+    fireEvent.change(within(dialog).getByLabelText("Fecha de la sesión"), {
+      target: { value: "2026-12-31" },
+    });
     await user.click(within(dialog).getByRole("button", { name: "Guardar" }));
 
     await within(dialog).findByRole("alert");
     expect(within(dialog).getByText("Ingresa un título.")).toBeDefined();
     expect(screen.getByRole("dialog")).toBeDefined();
     expect(within(dialog).getByLabelText<HTMLInputElement>("Título").value).toBe("  ");
+    expect(within(dialog).getByLabelText<HTMLInputElement>("Fecha de la sesión").value).toBe(
+      "2026-12-31",
+    );
   });
 
   it("shows a plain success message and keeps the form open (no auto-close)", async () => {
@@ -134,6 +144,15 @@ describe("EditGalleryMetaDialog — fields", () => {
     const titleField = within(dialog).getByLabelText("Título");
     await user.clear(titleField);
     await user.type(titleField, "Sin guardar");
+    // Change the date too, so the assertion below can fail: without this, the
+    // date never differs from the prop and removing the re-seed in
+    // `handleOpenChange` stays invisible (review round 2, finding CRITICAL).
+    fireEvent.change(within(dialog).getByLabelText("Fecha de la sesión"), {
+      target: { value: "2026-12-31" },
+    });
+    expect(within(dialog).getByLabelText<HTMLInputElement>("Fecha de la sesión").value).toBe(
+      "2026-12-31",
+    );
     await user.keyboard("{Escape}");
 
     dialog = await openDialog(user);

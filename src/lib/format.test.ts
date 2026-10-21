@@ -115,3 +115,37 @@ describe("formatBytes", () => {
     expect(formatBytes(1024 * 1024 * 1024 * 1024)).toBe("1024.0 GB");
   });
 });
+
+// Task #276 — the gallery list's filtered header, pager range and position.
+describe("formatFilteredGalleryCount", () => {
+  it.each([
+    [3, 63, "3 de 63 galerías"],
+    [1, 1, "1 de 1 galería"],
+    [0, 5, "0 de 5 galerías"],
+  ])("formats %i of %i as %s", async (matching, total, expected) => {
+    const { formatFilteredGalleryCount } = await import("./format");
+    expect(formatFilteredGalleryCount(matching, total)).toBe(expected);
+  });
+});
+
+describe("formatGalleryPageRange", () => {
+  it("uses a real en dash between the bounds", async () => {
+    const { formatGalleryPageRange } = await import("./format");
+    const range = formatGalleryPageRange(26, 50, 63);
+
+    expect(range).toBe("Mostrando 26\u201350 de 63");
+    // The code point, not just the glyph: a hyphen would be a different
+    // character that renders similarly at small sizes.
+    expect(range.codePointAt(range.indexOf("2") + 2)).toBe(0x2013);
+  });
+});
+
+describe("formatPageOf", () => {
+  it.each([
+    [1, 3, "Página 1 de 3"],
+    [2, 3, "Página 2 de 3"],
+  ])("formats page %i of %i as %s", async (page, pageCount, expected) => {
+    const { formatPageOf } = await import("./format");
+    expect(formatPageOf(page, pageCount)).toBe(expected);
+  });
+});

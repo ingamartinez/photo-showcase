@@ -112,6 +112,28 @@ export function formatPendingSelectionCount(pendingCount: number): string | null
   return `${pendingCount} selecciones esperando`;
 }
 
+/** Spanish copy for the gallery list's filtered header line — "3 de 63
+ * galerías" (task #276). `matching` is the filtered total, `total` is the
+ * whole studio; the noun and its plural come from `formatStudioGalleryCount`
+ * so the sentence cannot disagree with the unfiltered one. */
+export function formatFilteredGalleryCount(matching: number, total: number): string {
+  return `${matching} de ${formatStudioGalleryCount(total)}`;
+}
+
+/** The pager strip's range line — "Mostrando 26–50 de 63" (task #276). A REAL
+ * en dash (U+2013), not a hyphen: this is Spanish prose, and the mock's own
+ * numerals use the en dash. `total` is the FILTERED total, the same N the
+ * header's "de N" uses. */
+export function formatGalleryPageRange(first: number, last: number, total: number): string {
+  return `Mostrando ${first}\u2013${last} de ${total}`;
+}
+
+/** The pager's own position — "Página 2 de 3" (task #276). No pluralizer:
+ * both words are invariant in Spanish. */
+export function formatPageOf(page: number, pageCount: number): string {
+  return `Página ${page} de ${pageCount}`;
+}
+
 /** Bare, locale-grouped digit for a `/dashboard` stat tile's OWN number line
  * (task #130's follow-up fix, review round 1) — as opposed to
  * `formatClientCount`/`formatStudioGalleryCount`/`formatPendingSelectionCount`

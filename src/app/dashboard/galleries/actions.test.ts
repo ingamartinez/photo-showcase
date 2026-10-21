@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Session } from "next-auth";
 import { eqColumnAndValue } from "@/lib/test/eq-column-and-value";
+import { DEFAULT_GALLERY_LIST_QUERY } from "@/lib/gallery-list-query";
 
 // `import "server-only"` (transitively, via src/lib/auth-guards.ts) only
 // resolves inside a real Next.js bundle — see src/lib/auth-guards.test.ts.
@@ -1062,7 +1063,7 @@ describe("createGallery success + frozen terms", () => {
     // were (bug) reading the live package instead of the snapshot.
     expect(livePackage.includedPhotos).toBe(1);
 
-    const galleriesList = await getGalleriesWithDetails();
+    const galleriesList = await getGalleriesWithDetails(DEFAULT_GALLERY_LIST_QUERY);
     const gallery = galleriesList.find((g) => g.title === "Boda Ana y Beto");
     const overriddenGallery = galleriesList.find((g) => g.title === "Boda Overrideada");
 

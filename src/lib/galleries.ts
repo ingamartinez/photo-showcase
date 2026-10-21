@@ -9,10 +9,31 @@
 // epic's central rule).
 import "server-only";
 
-import { and, asc, count, countDistinct, desc, eq, inArray, isNull, ne, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  count,
+  countDistinct,
+  desc,
+  eq,
+  inArray,
+  isNull,
+  ne,
+  sql,
+  type SQL,
+} from "drizzle-orm";
 import { db } from "@/lib/db";
-import { assets, galleries, galleryClients } from "@/lib/db/schema";
+import { assets, galleries, galleryClients, packages, users } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
+import {
+  GALLERY_PAGE_SIZE,
+  GALLERY_STATUSES,
+  GALLERY_STATUS_RANK,
+  type GalleryListQuery,
+  type GallerySortKey,
+  type GalleryStatus,
+  type SortDirection,
+} from "@/lib/gallery-list-query";
 
 export type GalleryWithDetails = {
   id: string;
@@ -44,38 +65,129 @@ export type GalleryWithDetails = {
   pendingWorkCount: number;
 };
 
-/** Every gallery, with the client and package it is bound to, its frozen
- * terms, and its (derived, never stored) photo count.
+/** The Spanish collation for every TEXT sort key. The app's DB default is
+ * libc `C.UTF-8` (byte order), which puts `Ñandú` before `nube` — wrong for
+ * Spanish. `es-x-icu` orders `ana, Ana, ana@x.com, Ángela, beto, Élida, eva,
+ * nube, Ñandú, oso, Zoe`, byte-identical to `new Intl.Collator("es")`, which
+ * is what lets the in-row client order (below) agree with the SQL key.
  *
- * Ordered by RECENCY OF ACTIVITY, not creation date (task #75) — a gallery's
- * `selectionSubmittedAt` if it has one, else its `createdAt`. A gallery
- * created six months ago that a client submitted this morning is the most
- * recently-active row in the list and must rise to the top; ordering by
- * `createdAt` alone (the previous behavior) would leave it exactly where it
- * was created, indistinguishable from a gallery nobody has touched in
- * months.
+ * A fixed literal, never input, so interpolating it into a query is safe.
+ * Existence on the production droplet was verified before this slice (#276's
+ * pre-flight, read-only prod psql): `pg_collation` returns `es-x-icu`.
+ * Absolutely LOAD-BEARING: without it every text sort throws at runtime. */
+const COLLATE_ES = sql.raw('collate "es-x-icu"');
+
+/** The in-row client names are sorted with this — the JS twin of
+ * `COLLATE_ES`, so "Clientes (A–Z)" reads true on a row with two clients.
+ * `??` and SQL `coalesce` have identical null-only semantics, so a client
+ * with no name falls back to its email on both sides. */
+const CLIENT_NAME_COLLATOR = new Intl.Collator("es");
+
+/** Recency of ACTIVITY, not creation (task #75) — a gallery's
+ * `selectionSubmittedAt` if it has one, else its `createdAt`. Used as the
+ * default order and as every explicit sort's tie-breaker. `createdAt` is
+ * `.notNull()`, so this can never fall through to NULL. */
+const RECENCY_DESC = desc(sql`coalesce(${galleries.selectionSubmittedAt}, ${galleries.createdAt})`);
+
+/** Workflow order (`draft` first, `archived` last) as a `CASE` over the
+ * gallery's own status column. Values are parameters, not `sql.raw`: the
+ * enum's declaration order happens to match today, but that is DDL nobody
+ * reviews as a sort contract, and this is a product rule. */
+const STATUS_SORT_CASE = sql`case ${galleries.status} ${sql.join(
+  GALLERY_STATUSES.map((status) => sql`when ${status} then ${GALLERY_STATUS_RANK[status]}`),
+  sql` `,
+)} end`;
+
+/** `orderBy` for `getGalleriesWithDetails`, per the #276 sort table.
  *
- * This ordering is done IN SQL (`COALESCE(...)` below), not as a JS
- * `.sort()` after the fetch, even though this query has no `limit`/`offset`
- * today and either approach would return the same rows in the same order
- * right now. The moment this list is paginated — the obvious next move once
- * the studio has hundreds of galleries — a JS-side sort would be silently
- * wrong: Postgres would pick the wrong N rows for the requested page using
- * its own (unmodified) order, and re-sorting only that wrong subset in JS
- * cannot recover the correct page. Ordering in SQL is the only shape that
- * survives adding `limit`/`offset` later without a rewrite. `createdAt` is
- * `.notNull()` (schema.ts), so `COALESCE` here can never fall through to a
- * NULL — there is no NULLS FIRST/LAST ambiguity to reason about for this
- * particular expression.
+ * THE #98 TRAP: inside `db.query.*`, every column reference in a raw `sql`
+ * template is rewritten to the ROOT alias. That is CORRECT for the root-only
+ * keys (title, status, the recency expression). It is WRONG for `clients`,
+ * `package` and `photos`: written as raw `sql`, their `gallery_id`/
+ * `removed_at`/`name` would render as `"galleries".…`, columns that do not
+ * exist, 500ing the page in production while every mocked test stays green.
+ * Those three are therefore REAL `db.select()` subqueries: the builder does
+ * not descend into a select-builder chunk, so its own table aliases survive
+ * while its correlated `galleries.id` resolves against the root. The
+ * rendering test in galleries.query-rendering.test.ts proves this with
+ * `.toSQL()` — do not "simplify" one of them back to raw `sql`.
+ *
+ * Every explicit sort is `[primary, recency desc, id asc]`; the default is
+ * `[recency desc, id asc]`. `id` is the uuid PK, a total order, so offset
+ * pagination never repeats or skips a row between two pages of an unchanged
+ * table. Text keys use `COLLATE_ES`; clientless galleries sort last in both
+ * directions (`nulls last`). */
+function galleryListOrderBy(sort: GallerySortKey | null, dir: SortDirection): SQL[] {
+  if (sort === null) return [RECENCY_DESC, asc(galleries.id)];
+
+  const direction = sql.raw(dir);
+
+  const clientsKey = () =>
+    db
+      .select({
+        key: sql`min(coalesce(${users.name}, ${users.email}) ${COLLATE_ES})`,
+      })
+      .from(galleryClients)
+      .innerJoin(users, eq(users.id, galleryClients.userId))
+      .where(and(eq(galleryClients.galleryId, galleries.id), isNull(galleryClients.removedAt)));
+
+  const packageKey = () =>
+    db
+      .select({ name: sql`${packages.name} ${COLLATE_ES}` })
+      .from(packages)
+      .where(eq(packages.id, galleries.packageId));
+
+  // Counts the SAME unfiltered asset set `photoCount` counts below
+  // (`row.assets.length`) — filtering one without the other would make this
+  // sort disagree with the number on screen.
+  const photosKey = () =>
+    db.select({ value: count() }).from(assets).where(eq(assets.galleryId, galleries.id));
+
+  const primary: SQL = (() => {
+    switch (sort) {
+      case "title":
+        return sql`${galleries.title} ${COLLATE_ES} ${direction}`;
+      case "clients":
+        return sql`(${clientsKey()}) ${direction} nulls last`;
+      case "status":
+        return sql`${STATUS_SORT_CASE} ${direction}`;
+      case "package":
+        return sql`(${packageKey()}) ${direction}`;
+      case "session":
+        return dir === "asc" ? asc(galleries.sessionDate) : desc(galleries.sessionDate);
+      case "photos":
+        return sql`(${photosKey()}) ${direction}`;
+    }
+  })();
+
+  return [primary, RECENCY_DESC, asc(galleries.id)];
+}
+
+/** One page of galleries, with the client and package each is bound to, its
+ * frozen terms, and its (derived, never stored) photo count.
+ *
+ * PAGINATED SINCE TASK #276: `limit`/`offset` come from `GALLERY_PAGE_SIZE`
+ * and `query.page`, and every column of the desk table is a sort key. Ordering
+ * stays IN SQL, never a JS `.sort()` after the fetch — Postgres would pick the
+ * wrong N rows for the requested page using its own order, and re-sorting only
+ * that wrong subset cannot recover the correct page. `query` is REQUIRED (no
+ * default): a silent "page 1 of 25" default would truncate any future caller
+ * that assumed the old "every gallery" contract. The caller clamps the page
+ * (`clampPage` in @/lib/gallery-list-query); this function only floors it.
  *
  * Depends on `selectionSubmittedAt` surviving unchanged once a gallery
  * leaves `selected` — a future change (e.g. #73's proof-unlock flow) that
  * clears this column on transition back to `proofing` would need to give
  * this sort a replacement "last activity" signal, or a gallery unlocked
  * seconds ago would fall back to its stale `createdAt` and look untouched. */
-export async function getGalleriesWithDetails(): Promise<GalleryWithDetails[]> {
+export async function getGalleriesWithDetails(
+  query: GalleryListQuery,
+): Promise<GalleryWithDetails[]> {
   const rows = await db.query.galleries.findMany({
-    orderBy: desc(sql`coalesce(${galleries.selectionSubmittedAt}, ${galleries.createdAt})`),
+    where: query.status ? eq(galleries.status, query.status) : undefined,
+    orderBy: galleryListOrderBy(query.sort, query.dir),
+    limit: GALLERY_PAGE_SIZE,
+    offset: (Math.max(1, query.page) - 1) * GALLERY_PAGE_SIZE,
     with: {
       // Task #94: `client` (a single `one()` relation off the old
       // `clientId` FK) became `galleryClients` (a join table, `many()`) —
@@ -109,11 +221,19 @@ export async function getGalleriesWithDetails(): Promise<GalleryWithDetails[]> {
     sessionDate: row.sessionDate,
     createdAt: row.createdAt,
     selectionSubmittedAt: row.selectionSubmittedAt,
-    clients: row.galleryClients.map((gc) => ({
-      id: gc.user.id,
-      name: gc.user.name,
-      email: gc.user.email,
-    })),
+    clients: row.galleryClients
+      .map((gc) => ({
+        id: gc.user.id,
+        name: gc.user.name,
+        email: gc.user.email,
+      }))
+      // Task #276: alphabetical WITHIN the row too, with the same Spanish
+      // collator the SQL sort key uses — otherwise "Clientes (A–Z)" would
+      // order rows by their first client while the rows themselves listed
+      // those clients in unspecified database order. A within-row sort of an
+      // already-fetched page, so it selects no rows and cannot fight
+      // pagination.
+      .sort((a, b) => CLIENT_NAME_COLLATOR.compare(a.name ?? a.email, b.name ?? b.email)),
     // Narrowed explicitly to id + name — even though the query only selects
     // those two columns (the `with: { package: { columns: ... } }` above),
     // this makes it impossible for a future change to that `columns` list to
@@ -127,6 +247,45 @@ export async function getGalleriesWithDetails(): Promise<GalleryWithDetails[]> {
       ? row.assets.filter((asset) => asset.isSelected && asset.finalKey === null).length
       : 0,
   }));
+}
+
+/**
+ * The two numbers the list's header and pager need, in ONE round trip: how
+ * many galleries this studio has (`studioTotal`, every status, archived
+ * included) and how many match the current status filter (`matching`).
+ *
+ * This is a CORE `db.select()`, not `db.query.*` — raw `sql` here renders
+ * with real table names, which is what the `filter (where …)` needs. The
+ * filtered half is a single `count(*) filter` rather than a second query, so
+ * the header can say "3 de 63 galerías" without the two numbers ever coming
+ * from different snapshots.
+ *
+ * `studioTotal` is deliberately NOT `getGalleryCount()` (below), which
+ * excludes `archived` for `/dashboard`'s "en marcha" sentence. This page's
+ * "en total" has always counted everything, and the pager's N is the
+ * filtered total.
+ *
+ * Exported UN-AWAITED so galleries.query-rendering.test.ts can call
+ * `.toSQL()` on the real builder without a connection, same technique that
+ * file already uses for `findMany`.
+ */
+export function buildGalleryListCountsQuery(status: GalleryStatus | null) {
+  return db
+    .select({
+      studioTotal: count(),
+      matching: status
+        ? sql<number>`count(*) filter (where ${galleries.status} = ${status})`.mapWith(Number)
+        : count(),
+    })
+    .from(galleries);
+}
+
+/** `studioTotal` + `matching` for the list's header, pager and empty states. */
+export async function getGalleryListCounts(
+  status: GalleryStatus | null,
+): Promise<{ studioTotal: number; matching: number }> {
+  const [row] = await buildGalleryListCountsQuery(status);
+  return row ?? { studioTotal: 0, matching: 0 };
 }
 
 /**

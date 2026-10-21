@@ -8,11 +8,12 @@
 
 import { z } from "zod";
 import postgres from "postgres";
-import { and, eq } from "drizzle-orm";
+import { and, count, countDistinct, eq, isNotNull, isNull } from "drizzle-orm";
 import { revalidatePath } from "next/cache";
 import { db } from "@/lib/db";
-import { users } from "@/lib/db/schema";
+import { assetPicks, flashGalleryClients, galleryClients, users } from "@/lib/db/schema";
 import { requireAdmin } from "@/lib/auth-guards";
+import { formatClientDeleteBlocked } from "@/lib/format";
 
 const createClientSchema = z.object({
   name: z.string().trim().min(1, "Ingresa un nombre."),
@@ -100,6 +101,26 @@ const UNIQUE_VIOLATION = "23505";
 function isUniqueViolation(error: unknown): boolean {
   for (let e: unknown = error; e instanceof Error; e = e.cause) {
     if (e instanceof postgres.PostgresError && e.code === UNIQUE_VIOLATION) return true;
+  }
+  return false;
+}
+
+// SQLSTATE for a foreign-key violation — `restrict`, `no action` or a missing
+// referenced row, all the same code. Same `.cause`-walking shape as
+// `isUniqueViolation` above and for the same reason (drizzle wraps the driver's
+// error in a `DrizzleQueryError`), kept as its own function instead: the two
+// are about different constraints and `deleteClient` is the only caller of this
+// one, so folding them into a generic "constraint error" helper would make the
+// unique-email branch of `createClient` harder to read for no gain.
+//
+// This is a RACE guard, not the main path. `deleteClient` counts before it
+// deletes, precisely because a 23503 says only "something still points here" —
+// never how many galleries that is, which is what the blocked message must say.
+const FOREIGN_KEY_VIOLATION = "23503";
+
+function isForeignKeyViolation(error: unknown): boolean {
+  for (let e: unknown = error; e instanceof Error; e = e.cause) {
+    if (e instanceof postgres.PostgresError && e.code === FOREIGN_KEY_VIOLATION) return true;
   }
   return false;
 }
@@ -270,4 +291,190 @@ export async function updateClient(
   revalidatePath("/galleries/[publicSlug]", "page");
 
   return { status: "updated" };
+}
+
+/**
+ * Deleting the id a caller posted. `z.string().trim().min(1)` — NOT `z.uuid()`,
+ * which the task body suggested by analogy with the flash actions.
+ *
+ * Those actions guard Postgres `uuid` columns, where a malformed string is a
+ * 22P02 cast error and therefore a 500. `users.id` is `text` (schema.ts:99-101,
+ * filled by `crypto.randomUUID()`): no cast ever happens, so a uuid check would
+ * guard against nothing while making any row with a non-RFC-4122 id impossible
+ * to delete from the dashboard. This is the same shape the gallery actions
+ * already use for a client id (galleries/actions.ts:1978, :2110, :2308).
+ */
+const deleteClientIdSchema = z.string().trim().min(1, "Cliente inválido.");
+
+/** Same shape as `FlashActionResult` (flash/actions.ts:72) — a success flag and,
+ * on refusal, copy that is already in Spanish and ready to render. A separate
+ * type on purpose: it belongs to this aggregate, not to the flash one, even
+ * though the two happen to agree today. */
+export type DeleteClientResult = { ok: true } | { ok: false; message: string };
+
+/**
+ * Deletes a client — a `users` row with `role = "client"` — and nothing else.
+ *
+ * Owner decision 2026-10-20 (epic #278, decision 2): a client WITH galleries is
+ * BLOCKED, with a message that says how many. Never a cascade over the
+ * photographer's work. The guards below run in this order, and each one is
+ * allowed to answer "no" without touching a row:
+ *
+ *  1. not a `role = 'client'` row (an admin id, or no row at all) → "no existe";
+ *  2. active memberships in `gallery_clients` or `flash_gallery_clients` →
+ *     blocked, with the counts;
+ *  3. any `asset_picks` row → blocked. Once (2) passed, every pick they hold
+ *     hangs off a REMOVED membership, and `asset_picks_membership_fk` is
+ *     ON DELETE CASCADE (schema.ts:855-863) — purging that tombstone would
+ *     delete submitted picks the photographer may already be working from
+ *     (epic #250 decision 17) and null the billed `assets.selected_by`
+ *     attribution. That is the silent cascade decision 2 forbids, so it is
+ *     blocked instead of purged;
+ *  4. otherwise, in ONE transaction: purge the removed memberships (both
+ *     tables) and delete the user. `sessions`/`accounts` cascade with it,
+ *     which is correct — those sessions must die with the person.
+ *
+ * The trap this avoids: `restrict` blocks even when the membership is REMOVED
+ * (`removed_at NOT NULL`), because neither FK filters on that column. A bare
+ * `DELETE FROM users` fails for anyone who was ever attached. Hence (4)'s purge,
+ * and hence the `removed_at IS NOT NULL` clause on it — which is also what
+ * makes a concurrent re-attach safe: Postgres re-checks the WHERE against the
+ * updated row, the purge skips it, the user delete hits 23503 and the whole
+ * transaction rolls back, purged nothing, and reports the race instead of a 500.
+ *
+ * Why everything, reads included, is inside the transaction: the window between
+ * counting and deleting is as narrow as READ COMMITTED allows, same shape as
+ * `removeGalleryClient` (galleries/actions.ts:2223). No `FOR UPDATE` on the
+ * user row — it would serialize against a concurrent INSERT (the FK check takes
+ * FOR KEY SHARE on `users`) but not against the re-attach UPDATE, which does not
+ * touch the key column; the 23503 catch covers both.
+ */
+export async function deleteClient(userId: unknown): Promise<DeleteClientResult> {
+  // FIRST, before parsing: an unauthenticated caller must not even learn
+  // whether their payload was well-formed. The page above this already called
+  // `requireAdmin()`, and that is not why this line exists (see
+  // src/lib/auth-guards.ts's header comment).
+  await requireAdmin();
+
+  // `unknown`, not `string`: a server action is a public POST endpoint and its
+  // argument arrives however the caller serialized it. Typing it `string` would
+  // describe only the happy client.
+  const parsed = deleteClientIdSchema.safeParse(userId);
+  if (!parsed.success) {
+    // The schema's own message, plus one fixed fallback for everything zod
+    // rejects before it ever reaches `min(1)` (a number, `null`, an object).
+    // Zod's default message for those is English ("Invalid input: expected
+    // string, received number") and a server action is a public endpoint, so
+    // that string would be user-facing copy. One Spanish sentence for every
+    // rejection keeps the contract honest.
+    return { ok: false, message: "Cliente inválido." };
+  }
+  const id = parsed.data;
+
+  try {
+    const outcome: DeleteClientResult = await db.transaction(async (tx) => {
+      // Guard 1 — existence AND role, in SQL. This is what makes an admin id
+      // read as "no existe": `scripts/create-admin.ts:38` writes admins into
+      // this same table, so an id alone says nothing about what it is.
+      const [client] = await tx
+        .select({ id: users.id })
+        .from(users)
+        .where(and(eq(users.id, id), eq(users.role, "client")))
+        .limit(1);
+      if (!client) {
+        return { ok: false, message: "Ese cliente no existe." };
+      }
+
+      // Guard 2 — ACTIVE memberships only. Tombstones are not counted: the
+      // "only tombstones" and "no memberships at all" cases are the same code
+      // path, distinguished only by what the guarded purge below matches, and
+      // counting them would add queries whose answer no branch consumes.
+      const [galleries] = await tx
+        .select({ value: count() })
+        .from(galleryClients)
+        .where(and(eq(galleryClients.userId, id), isNull(galleryClients.removedAt)));
+      const [flashGalleries] = await tx
+        .select({ value: count() })
+        .from(flashGalleryClients)
+        .where(and(eq(flashGalleryClients.userId, id), isNull(flashGalleryClients.removedAt)));
+
+      if (galleries!.value + flashGalleries!.value > 0) {
+        return {
+          ok: false,
+          message: formatClientDeleteBlocked({
+            galleries: galleries!.value,
+            flashGalleries: flashGalleries!.value,
+            pickedGalleries: 0,
+          }),
+        };
+      }
+
+      // Guard 3 — the picks a tombstone purge would cascade away. Distinct
+      // GALLERIES, not picks: the message's unit is a gallery.
+      const [pickedGalleries] = await tx
+        .select({ value: countDistinct(assetPicks.galleryId) })
+        .from(assetPicks)
+        .where(eq(assetPicks.userId, id));
+
+      if (pickedGalleries!.value > 0) {
+        return {
+          ok: false,
+          message: formatClientDeleteBlocked({
+            galleries: 0,
+            flashGalleries: 0,
+            pickedGalleries: pickedGalleries!.value,
+          }),
+        };
+      }
+
+      // W1/W2 — purge REMOVED memberships only. `isNotNull(removedAt)` is the
+      // clause that keeps an active membership out of reach even if one was
+      // re-attached after guard 2 counted.
+      await tx
+        .delete(galleryClients)
+        .where(and(eq(galleryClients.userId, id), isNotNull(galleryClients.removedAt)));
+      await tx
+        .delete(flashGalleryClients)
+        .where(and(eq(flashGalleryClients.userId, id), isNotNull(flashGalleryClients.removedAt)));
+
+      // W3 — the user, with the role guard REPEATED. Guard 1 already proved it,
+      // but the destructive statement must be safe on its own rather than
+      // depending on a query three statements earlier.
+      const deleted = await tx
+        .delete(users)
+        .where(and(eq(users.id, id), eq(users.role, "client")))
+        .returning({ id: users.id });
+      if (deleted.length === 0) {
+        // Deleted by a concurrent request between guard 1 and here. Nothing was
+        // purged that matters (guard 2 proved no active membership), so the
+        // honest answer is the same one guard 1 gives.
+        return { ok: false, message: "Ese cliente no existe." };
+      }
+
+      return { ok: true };
+    });
+
+    if (outcome.ok) {
+      // The list is the acceptance criterion. `/dashboard` renders
+      // `getClientCount()` (task #88), so it is stale otherwise. No public
+      // surface: a deletable client has no active membership and no picks, so
+      // neither `/galleries/[publicSlug]` nor `/flash/[publicSlug]` had anything
+      // of theirs to show.
+      revalidatePath("/dashboard/clients");
+      revalidatePath("/dashboard");
+    }
+
+    return outcome;
+  } catch (error) {
+    if (isForeignKeyViolation(error)) {
+      // Only reachable if a membership was re-attached between guard 2 and the
+      // deletes — the transaction rolled back, so nothing was purged.
+      return {
+        ok: false,
+        message:
+          "No se pudo eliminar: el cliente tiene galerías asignadas. Recarga la página para ver el estado actual.",
+      };
+    }
+    throw error;
+  }
 }

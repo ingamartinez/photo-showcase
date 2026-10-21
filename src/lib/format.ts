@@ -134,6 +134,66 @@ export function formatPageOf(page: number, pageCount: number): string {
   return `Página ${page} de ${pageCount}`;
 }
 
+// ---------------------------------------------------------------------------
+// Client-delete blocked copy (task #280).
+//
+// The action that decides whether a client may be deleted
+// (`deleteClient` in src/app/dashboard/clients/actions.ts) cannot format its
+// own refusal: a `"use server"` module may export only async functions, so a
+// helper living beside it would either be inlined at every return site or
+// break the build. This file is already the home of every pluralized Spanish
+// count in the app (`formatClientGalleryCount` above), and it has no
+// `server-only` import, so the branches below are unit-testable in node.
+//
+// It names regular and FLASH galleries separately because the list's own
+// "Galerías" column counts only `gallery_clients` (`getClientsWithGalleryCount`
+// in src/lib/clients.ts). A client attached only to a flash gallery renders
+// "Sin galerías todavía" in that column yet cannot be deleted — a message that
+// said just "tiene 1 galería" would visibly contradict the row it is shown in.
+// ---------------------------------------------------------------------------
+
+/** Spanish copy for why a client cannot be deleted (task #280, owner decision
+ * 2026-10-20: delete is BLOCKED for a client with galleries, never cascaded).
+ *
+ * Two sentences, chosen by which guard fired, and they are not
+ * interchangeable:
+ *
+ *  - `pickedGalleries > 0` — the narrowing in the approved plan (§0, rule 3).
+ *    These are galleries the client was REMOVED from, whose submitted
+ *    `asset_picks` survive removal on purpose (epic #250 decision 17: they are
+ *    requests the photographer may already be working on). `asset_picks` hangs
+ *    off `gallery_clients` with ON DELETE CASCADE, so purging the tombstone
+ *    would silently delete those picks and null the billed `assets.selected_by`
+ *    attribution — the exact silent cascade owner decision 2 forbids.
+ *  - otherwise — active memberships, which block on their own.
+ *
+ * `galleries` and `flashGalleries` are counted together for agreement: one
+ * thing is "activa", two or more are "activas", whichever table they came
+ * from. No zero case: every caller reaches this only after a guard decided the
+ * client is blocked, so at least one count is positive — same division of labor
+ * `formatStudioGalleryCount` above already has with its caller. */
+export function formatClientDeleteBlocked(counts: {
+  galleries: number;
+  flashGalleries: number;
+  pickedGalleries: number;
+}): string {
+  const { galleries, flashGalleries, pickedGalleries } = counts;
+
+  if (pickedGalleries > 0) {
+    const where = pickedGalleries === 1 ? "1 galería" : `${pickedGalleries} galerías`;
+    return `No se puede eliminar: conserva fotos pedidas en ${where} de las que ya se le quitó el acceso. Eliminarlo borraría esos pedidos.`;
+  }
+
+  const parts: string[] = [];
+  if (galleries > 0) parts.push(galleries === 1 ? "1 galería" : `${galleries} galerías`);
+  if (flashGalleries > 0) {
+    parts.push(flashGalleries === 1 ? "1 galería flash" : `${flashGalleries} galerías flash`);
+  }
+
+  const agreement = galleries + flashGalleries > 1 ? "activas" : "activa";
+  return `No se puede eliminar: tiene ${parts.join(" y ")} ${agreement}. Primero quítale el acceso desde cada una.`;
+}
+
 /** Bare, locale-grouped digit for a `/dashboard` stat tile's OWN number line
  * (task #130's follow-up fix, review round 1) — as opposed to
  * `formatClientCount`/`formatStudioGalleryCount`/`formatPendingSelectionCount`

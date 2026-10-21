@@ -149,3 +149,56 @@ describe("formatPageOf", () => {
     expect(formatPageOf(page, pageCount)).toBe(expected);
   });
 });
+
+// Task #280 — the refusal shown when a client cannot be deleted. One test per
+// branch of the agreement table: singular/plural on EACH noun, the flash clause
+// appearing only when a flash membership exists, and the two sentences never
+// bleeding into each other.
+describe("formatClientDeleteBlocked", () => {
+  const cases: [
+    string,
+    { galleries: number; flashGalleries: number; pickedGalleries: number },
+    string,
+  ][] = [
+    [
+      "one gallery",
+      { galleries: 1, flashGalleries: 0, pickedGalleries: 0 },
+      "No se puede eliminar: tiene 1 galería activa. Primero quítale el acceso desde cada una.",
+    ],
+    [
+      "several galleries",
+      { galleries: 2, flashGalleries: 0, pickedGalleries: 0 },
+      "No se puede eliminar: tiene 2 galerías activas. Primero quítale el acceso desde cada una.",
+    ],
+    [
+      "one flash gallery, named as flash",
+      { galleries: 0, flashGalleries: 1, pickedGalleries: 0 },
+      "No se puede eliminar: tiene 1 galería flash activa. Primero quítale el acceso desde cada una.",
+    ],
+    [
+      "several flash galleries",
+      { galleries: 0, flashGalleries: 3, pickedGalleries: 0 },
+      "No se puede eliminar: tiene 3 galerías flash activas. Primero quítale el acceso desde cada una.",
+    ],
+    [
+      "both kinds, plural agreement across the pair",
+      { galleries: 1, flashGalleries: 1, pickedGalleries: 0 },
+      "No se puede eliminar: tiene 1 galería y 1 galería flash activas. Primero quítale el acceso desde cada una.",
+    ],
+    [
+      "picks in one gallery",
+      { galleries: 0, flashGalleries: 0, pickedGalleries: 1 },
+      "No se puede eliminar: conserva fotos pedidas en 1 galería de las que ya se le quitó el acceso. Eliminarlo borraría esos pedidos.",
+    ],
+    [
+      "picks in several galleries",
+      { galleries: 0, flashGalleries: 0, pickedGalleries: 4 },
+      "No se puede eliminar: conserva fotos pedidas en 4 galerías de las que ya se le quitó el acceso. Eliminarlo borraría esos pedidos.",
+    ],
+  ];
+
+  it.each(cases)("formats %s", async (_label, counts, expected) => {
+    const { formatClientDeleteBlocked } = await import("./format");
+    expect(formatClientDeleteBlocked(counts)).toBe(expected);
+  });
+});

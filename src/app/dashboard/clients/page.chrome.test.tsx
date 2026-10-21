@@ -34,7 +34,7 @@ import userEvent from "@testing-library/user-event";
 import type { Session } from "next-auth";
 import ClientsPage from "./page";
 import type { ClientWithGalleryCount } from "@/lib/clients";
-import type { CreateClientState, UpdateClientState } from "./actions";
+import type { CreateClientState, DeleteClientResult, UpdateClientState } from "./actions";
 
 const requireAdminMock = vi.fn<() => Promise<Session>>();
 vi.mock("@/lib/auth-guards", () => ({ requireAdmin: () => requireAdminMock() }));
@@ -44,6 +44,13 @@ vi.mock("@/lib/clients", () => ({
   getClientsWithGalleryCount: () => getClientsWithGalleryCountMock(),
 }));
 
+// Task #280 — hoisted so the wiring test below can assert on the very function
+// the mocked module exposes: a `vi.mock` factory runs before this module's body,
+// so an inline `vi.fn()` there would be unreachable from the tests.
+const deleteClientMock = vi.hoisted(() =>
+  vi.fn<(userId: unknown) => Promise<DeleteClientResult>>(),
+);
+
 vi.mock("./actions", () => ({
   createClient:
     vi.fn<(state: CreateClientState, formData: FormData) => Promise<CreateClientState>>(),
@@ -52,6 +59,8 @@ vi.mock("./actions", () => ({
   // evaluation, not at a click.
   updateClient:
     vi.fn<(state: UpdateClientState, formData: FormData) => Promise<UpdateClientState>>(),
+  // Task #280: same reason — the same row component calls it on "Eliminar".
+  deleteClient: (userId: unknown) => deleteClientMock(userId),
 }));
 
 /** One client fixture, overridable field by field. */
@@ -81,10 +90,12 @@ beforeEach(() => {
     expires: "2099-01-01T00:00:00.000Z",
   } as Session);
   getClientsWithGalleryCountMock.mockReset();
+  deleteClientMock.mockReset();
 });
 
 afterEach(() => {
   cleanup();
+  vi.restoreAllMocks();
 });
 
 describe("ClientsPage chrome", () => {
@@ -212,6 +223,40 @@ describe("ClientsPage chrome", () => {
     expect(
       within(rows[2]).getByRole("button", { name: "Acciones para carla@example.com" }),
     ).toBeDefined();
+  });
+
+  // TASK #280 — where the blocked message LANDS. The row component returns a
+  // fragment so the message can be a direct child of the row's grid <li>; this
+  // is the test that proves the placement at the page level, through the real
+  // row component rather than the component's own unit test. A message
+  // rendered outside its row would read as page-level and unattributed, which
+  // is the failure mode this guards.
+  it("renders a blocked delete message INSIDE the row it belongs to", async () => {
+    const blocked =
+      "No se puede eliminar: tiene 2 galerías activas. Primero quítale el acceso desde cada una.";
+    vi.mocked(deleteClientMock).mockResolvedValue({ ok: false, message: blocked });
+    // jsdom's `window.confirm` is a not-implemented stub that throws.
+    vi.spyOn(window, "confirm").mockReturnValue(true);
+    getClientsWithGalleryCountMock.mockResolvedValue([
+      client({ id: "u1", name: "Ana Pérez", galleryCount: 2 }),
+      client({ id: "u2", name: "Beto Ruiz", galleryCount: 0 }),
+    ]);
+    const user = userEvent.setup();
+
+    const element = await ClientsPage();
+    const { container } = render(element);
+
+    const rows = rowsIn(container);
+    await user.click(within(rows[0]).getByRole("button", { name: "Acciones para Ana Pérez" }));
+    await user.click(await screen.findByRole("menuitem", { name: "Eliminar" }));
+
+    const alert = await screen.findByRole("alert");
+    expect(alert.textContent).toBe(blocked);
+    // Inside THIS row — and inside the first one, so a message rendered once
+    // per page rather than per row cannot pass either.
+    expect(within(rows[0]).getByRole("alert")).toBe(alert);
+    expect(within(rows[1]).queryByRole("alert")).toBeNull();
+    expect(deleteClientMock).toHaveBeenCalledWith("u1");
   });
 
   it("renders the empty state when there are no clients yet", async () => {

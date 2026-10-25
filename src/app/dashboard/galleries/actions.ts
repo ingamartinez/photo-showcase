@@ -1525,9 +1525,44 @@ export type ReopenDeliveredGalleryState = {
   /** Meaningful even when `reopened_cleanup_failed` takes precedence, so a
    * failure never hides the other one. */
   emailFailed?: boolean;
+  /** THE EMAIL OUTCOME, CARRIED INDEPENDENTLY OF `status` (task #287 UI review,
+   * finding 1). `message` belongs to whichever outcome owns the status — a
+   * cleanup failure puts its own drainer/count text there — so the notification
+   * failure needs its own field or it is lost the moment cleanup ALSO fails.
+   * Present whenever `emailFailed` is true, for every status that reports an
+   * email failure, so the panel can render the approved email warning next to
+   * the cleanup alert instead of losing it behind that status. */
+  emailMessage?: string;
   /** Only when a durable cleanup obligation survives this call. */
   remainingCleanupKeys?: number;
 };
+
+/** The approved email-failure sentences (kanban #287, "Copy de UI — APPROVED
+ * by owner"): the partial variant names the addresses nobody could reach, the
+ * zero-recipient variant says there was nobody to mail. `Avisale` carries no
+ * accent and `para avisar` is the approved wording — the owner's list is
+ * authoritative over the strings this action shipped before the UI round.
+ *
+ * NOT exported: a `"use server"` module may only export async functions, and
+ * `src/components/reopen-delivered-gallery-panel.test.tsx` cannot import this
+ * module at all (it pulls `next-auth` -> `next/server`, unresolvable under the
+ * jsdom/web transform — see vitest.config.ts). The backend suite asserts the
+ * exact output against the real action instead. */
+function reopenEmailFailureMessage(
+  failedEmails: readonly string[],
+  noActiveClients: boolean,
+): string {
+  if (noActiveClients) {
+    return (
+      "Reabrimos la galería, pero no encontramos clientes para avisar por correo. " +
+      "Avisale por otro medio (WhatsApp / llamada)."
+    );
+  }
+  return (
+    `Reabrimos la galería, pero no pudimos avisarle por correo a: ${failedEmails.join(", ")}. ` +
+    "Avisale por otro medio (WhatsApp / llamada)."
+  );
+}
 
 // Only a gallery sitting in `delivered` has a delivered cycle to cancel —
 // same "the check IS the authority, hiding the button is only UX" stance as
@@ -1829,16 +1864,23 @@ export async function reopenDeliveredGallery(
       .map((client) => client.email);
   }
   const emailFailed = clients.length === 0 || failedEmails.length > 0;
+  // Built once, so the two statuses cannot disagree about the email outcome.
+  const emailMessage = emailFailed
+    ? reopenEmailFailureMessage(failedEmails, clients.length === 0)
+    : undefined;
 
   if (drain.status !== "cleaned") {
     // `reopened_cleanup_failed` is reported for EVERY non-clean drain outcome:
     // pending (bytes still owed), "changed" (this call could not match the
     // obligation it created — never proof that cleanup is clean, task #287
     // review finding 5) and "failed" (the drainer itself threw). The email
-    // outcome travels independently so neither failure hides the other.
+    // outcome travels independently so neither failure hides the other: the
+    // cleanup text owns `message` here, the email warning owns `emailMessage`,
+    // and the panel renders both.
     return {
       status: "reopened_cleanup_failed",
       emailFailed,
+      ...(emailMessage !== undefined ? { emailMessage } : {}),
       ...(drain.remainingCleanupKeys !== undefined
         ? { remainingCleanupKeys: drain.remainingCleanupKeys }
         : {}),
@@ -1849,12 +1891,8 @@ export async function reopenDeliveredGallery(
     return {
       status: "reopened_email_failed",
       emailFailed,
-      message:
-        clients.length === 0
-          ? "Reabrimos la galería, pero no encontramos clientes a quién avisar por correo. " +
-            "Avísale por otro medio (WhatsApp / llamada)."
-          : `Reabrimos la galería, pero no pudimos avisarle por correo a: ${failedEmails.join(", ")}. ` +
-            "Avísale por otro medio (WhatsApp / llamada).",
+      emailMessage,
+      message: emailMessage,
     };
   }
   return { status: "reopened" };

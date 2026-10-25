@@ -18,9 +18,16 @@
 //   are four visibly different outcomes. The cleanup failure in particular is
 //   an ALERT with the durable count, never the quiet success status — the
 //   reopen committed, but bytes are still owed.
+// - WHEN BOTH CLEANUP AND EMAIL FAIL, BOTH ALERTS ARE VISIBLE (task #287 UI
+//   review, finding 1). The cleanup failure owns `message`; the notification
+//   outcome travels in `emailMessage`, and losing it here would lose it for
+//   good because a cleanup retry never sends an email.
 // - The confirmation body is the owner's approved copy verbatim, and the
 //   fourth paragraph is the only one that changes between ordinary and
 //   rolling delivery.
+// - The dialog ships no inherited English `Close` button, and a committed
+//   outcome takes keyboard focus instead of dropping it on BODY.
+import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -40,7 +47,8 @@ const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
 
 // The owner's approved copy, transcribed once. These constants are the
 // assertion targets, so a paraphrase anywhere in the component fails here
-// instead of shipping.
+// instead of shipping. The EMAIL-failure sentences are the one exception and
+// are derived from `actions.ts` below, for the reason stated there.
 const TRIGGER = "Reabrir entrega";
 const PENDING = "Reabriendo…";
 const TITLE = "¿Reabrir esta galería entregada?";
@@ -66,12 +74,62 @@ const AVAILABILITY_ROLLING =
 
 const SUCCESS =
   "Galería reabierta — cada cliente puede volver a elegir, y les avisamos por correo.";
-const EMAIL_FAILURE =
-  "Reabrimos la galería, pero no pudimos avisarle por correo a: ana@example.com. Avisale por " +
-  "otro medio (WhatsApp / llamada).";
+const CLEANUP_PENDING_3 =
+  "La galería quedó reabierta, pero no pudimos borrar todos los finales viejos (3 archivo(s) " +
+  "pendiente(s)). Reintentá la limpieza; mientras tanto no reabras ni elimines esta galería.";
 const DRAIN_THREW =
   "La galería quedó reabierta, pero no pudimos terminar de borrar los finales viejos. Reintentá " +
   "la limpieza desde el detalle de la galería.";
+
+// --- the ACTION's email-failure wording, derived from its own source --------
+//
+// A handwritten copy is what the UI review rejected (finding 3): the previous
+// round's test asserted an approved `Avisale … para avisar …` sentence while
+// the shipped action produced `Avísale … a quién avisar …`, so the suite was
+// green against copy no admin ever saw. Importing the module is not an option
+// in this suite — it pulls `next-auth` -> `next/server`, which the jsdom/web
+// transform cannot resolve, and `vi.mock` cannot intercept that: resolution
+// happens before any mock factory exists (see vitest.config.ts's `server-only`
+// note for the same mechanism). "Test through the action" is likewise out of
+// reach from jsdom.
+//
+// So the sentences are DERIVED from the action's source. A change to the copy
+// in `actions.ts` now goes RED here instead of passing silently, which is the
+// property this suite lacked.
+function reopenEmailHelperSource(): string {
+  const source = readFileSync("src/app/dashboard/galleries/actions.ts", "utf8");
+  const match = /function reopenEmailFailureMessage\([\s\S]*?\n\}/.exec(source);
+  if (!match) {
+    throw new Error(
+      "actions.ts no longer defines reopenEmailFailureMessage — repair this derivation " +
+        "instead of inlining a sentence the action may not ship.",
+    );
+  }
+  return match[0];
+}
+
+function literal(body: string, pattern: RegExp): string {
+  const match = pattern.exec(body);
+  if (!match?.[1]) {
+    throw new Error(`reopenEmailFailureMessage no longer contains ${pattern}`);
+  }
+  return match[1];
+}
+
+const EMAIL_HELPER = reopenEmailHelperSource();
+const EMAIL_TAIL = literal(EMAIL_HELPER, /"([^"]*Avisale por otro medio[^"]*)"/);
+const ZERO_RECIPIENTS_LEAD = literal(EMAIL_HELPER, /"([^"]*no encontramos clientes[^"]*)"/);
+const PARTIAL_LEAD = literal(EMAIL_HELPER, /`([^`$]*)\$\{failedEmails\.join/);
+
+/** The action's partial-failure sentence, with the addresses it names. */
+function partialEmailFailure(...emails: string[]): string {
+  return `${PARTIAL_LEAD}${emails.join(", ")}. ${EMAIL_TAIL}`;
+}
+
+/** The action's zero-recipient sentence. */
+function zeroRecipientsEmailFailure(): string {
+  return `${ZERO_RECIPIENTS_LEAD}${EMAIL_TAIL}`;
+}
 
 afterEach(() => {
   cleanup();
@@ -89,6 +147,11 @@ async function openDialog(user: ReturnType<typeof userEvent.setup>) {
   return screen.findByRole("dialog");
 }
 
+async function confirm(user: ReturnType<typeof userEvent.setup>) {
+  const dialog = await openDialog(user);
+  await user.click(within(dialog).getByRole("button", { name: CONFIRM }));
+}
+
 describe("ReopenDeliveredGalleryPanel — opening and cancelling never execute", () => {
   it("opens the confirmation dialog without calling the action", async () => {
     const user = userEvent.setup();
@@ -101,6 +164,11 @@ describe("ReopenDeliveredGalleryPanel — opening and cancelling never execute",
   });
 
   it("closing with Cancelar never calls the action", async () => {
+    // A VALID committed result on the mock, so the cancel-as-submit mutation
+    // fails on the no-call assertion below instead of on a runtime TypeError
+    // while rendering `undefined.status` (review suggestion M2). The assertion
+    // is meant to be "nothing was submitted", not "the component crashed".
+    reopenMock.mockResolvedValue({ status: "reopened" });
     const user = userEvent.setup();
     renderPanel();
 
@@ -109,6 +177,23 @@ describe("ReopenDeliveredGalleryPanel — opening and cancelling never execute",
 
     // Radix unmounts the content: the dialog is really closed, not merely
     // hidden, so nothing in it can be submitted afterwards.
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(reopenMock).not.toHaveBeenCalled();
+  });
+
+  it("ships no inherited Close button, and Cancelar still closes without submitting", async () => {
+    const user = userEvent.setup();
+    renderPanel();
+
+    const dialog = await openDialog(user);
+
+    // `ui/dialog.tsx` renders a default close button whose accessible name is
+    // an English `Close`; this panel already has the approved way out, so the
+    // inherited one is suppressed (`showCloseButton={false}`).
+    expect(within(dialog).queryByRole("button", { name: "Close" })).toBeNull();
+    expect(within(dialog).queryByRole("button", { name: /cerrar/i })).toBeNull();
+
+    await user.click(within(dialog).getByRole("button", { name: CANCEL }));
     await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
     expect(reopenMock).not.toHaveBeenCalled();
   });
@@ -167,55 +252,93 @@ describe("ReopenDeliveredGalleryPanel — the four outcomes are visibly distinct
     const user = userEvent.setup();
     renderPanel();
 
-    const dialog = await openDialog(user);
-    await user.click(within(dialog).getByRole("button", { name: CONFIRM }));
+    await confirm(user);
 
     const status = await screen.findByRole("status");
     expect(status.textContent).toBe(SUCCESS);
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("renders the email failure as an alert with the action's own message", async () => {
+  it("renders the email failure as an alert with the ACTION's own wording", async () => {
+    const message = partialEmailFailure("ana@example.com");
     reopenMock.mockResolvedValue({
       status: "reopened_email_failed",
       emailFailed: true,
-      message: EMAIL_FAILURE,
+      emailMessage: message,
+      message,
     });
     const user = userEvent.setup();
     renderPanel();
 
-    const dialog = await openDialog(user);
-    await user.click(within(dialog).getByRole("button", { name: CONFIRM }));
+    await confirm(user);
 
     const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toBe(EMAIL_FAILURE);
+    // Derived from actions.ts above, so this is the sentence the action really
+    // produces — not a compliant mock the production code never emits.
+    expect(alert.textContent).toBe(message);
+    expect(alert.textContent).toContain("Avisale por otro medio (WhatsApp / llamada).");
     // Distinct from success: an email failure is never reported as a status.
     expect(screen.queryByRole("status")).toBeNull();
   });
 
-  it("renders a cleanup failure as an alert with the durable pending count", async () => {
-    reopenMock.mockResolvedValue({ status: "reopened_cleanup_failed", remainingCleanupKeys: 3 });
+  it("renders the zero-recipient email failure with the action's own wording", async () => {
+    const message = zeroRecipientsEmailFailure();
+    reopenMock.mockResolvedValue({
+      status: "reopened_email_failed",
+      emailFailed: true,
+      emailMessage: message,
+      message,
+    });
     const user = userEvent.setup();
     renderPanel();
 
-    const dialog = await openDialog(user);
-    await user.click(within(dialog).getByRole("button", { name: CONFIRM }));
+    await confirm(user);
 
-    const alert = await screen.findByRole("alert");
-    expect(alert.textContent).toBe(
-      "La galería quedó reabierta, pero no pudimos borrar todos los finales viejos (3 archivo(s) " +
-        "pendiente(s)). Reintentá la limpieza; mientras tanto no reabras ni elimines esta galería.",
+    expect((await screen.findByRole("alert")).textContent).toBe(message);
+  });
+
+  it("ships the approved email wording, not the pre-approval strings", () => {
+    // The exact defect finding 3 reported: `Avísale` (accented) and
+    // `a quién avisar` shipped while the approved list says `Avisale` and
+    // `para avisar`. The derivation above makes a copy change RED; this pins
+    // the direction of the fix.
+    expect(EMAIL_HELPER).not.toContain("Avísale");
+    expect(EMAIL_HELPER).not.toContain("a quién avisar");
+    expect(EMAIL_TAIL).toBe("Avisale por otro medio (WhatsApp / llamada).");
+    expect(ZERO_RECIPIENTS_LEAD).toBe(
+      "Reabrimos la galería, pero no encontramos clientes para avisar por correo. ",
     );
+    expect(PARTIAL_LEAD).toBe("Reabrimos la galería, pero no pudimos avisarle por correo a: ");
+  });
+
+  it("renders a cleanup failure as an alert with the durable pending count", async () => {
+    reopenMock.mockResolvedValue({
+      status: "reopened_cleanup_failed",
+      emailFailed: false,
+      remainingCleanupKeys: 3,
+    });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await confirm(user);
+
+    const alerts = await screen.findAllByRole("alert");
+    // One alert: the email succeeded, so there is nothing else to warn about.
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]!.textContent).toBe(CLEANUP_PENDING_3);
     expect(screen.queryByRole("status")).toBeNull();
   });
 
   it("renders the action's own cleanup message when it cannot count the remainder", async () => {
-    reopenMock.mockResolvedValue({ status: "reopened_cleanup_failed", message: DRAIN_THREW });
+    reopenMock.mockResolvedValue({
+      status: "reopened_cleanup_failed",
+      emailFailed: false,
+      message: DRAIN_THREW,
+    });
     const user = userEvent.setup();
     renderPanel();
 
-    const dialog = await openDialog(user);
-    await user.click(within(dialog).getByRole("button", { name: CONFIRM }));
+    await confirm(user);
 
     expect((await screen.findByRole("alert")).textContent).toBe(DRAIN_THREW);
   });
@@ -228,13 +351,99 @@ describe("ReopenDeliveredGalleryPanel — the four outcomes are visibly distinct
     const user = userEvent.setup();
     renderPanel();
 
-    const dialog = await openDialog(user);
-    await user.click(within(dialog).getByRole("button", { name: CONFIRM }));
+    await confirm(user);
 
     const alert = await screen.findByRole("alert");
     expect(alert.textContent).toBe(
       "Esta galería no está entregada, así que no hay una entrega que reabrir.",
     );
+  });
+});
+
+// Task #287 UI review, finding 1 (blocking): a cleanup failure took the whole
+// result, so when the email ALSO failed the admin was told about the bytes and
+// never about the clients nobody reached. A cleanup retry sends no email, so
+// the warning had no later chance to appear.
+describe("ReopenDeliveredGalleryPanel — cleanup and email failures are both shown", () => {
+  it("shows the pending-cleanup alert AND the partial email alert", async () => {
+    const message = partialEmailFailure("ana@example.com", "beto@example.com");
+    reopenMock.mockResolvedValue({
+      status: "reopened_cleanup_failed",
+      emailFailed: true,
+      remainingCleanupKeys: 3,
+      emailMessage: message,
+    });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await confirm(user);
+
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts).toHaveLength(2);
+    expect(alerts[0]!.textContent).toBe(CLEANUP_PENDING_3);
+    expect(alerts[1]!.textContent).toBe(message);
+    // The names the action reported are still on screen, not just a boolean.
+    expect(alerts[1]!.textContent).toContain("ana@example.com");
+    expect(alerts[1]!.textContent).toContain("beto@example.com");
+  });
+
+  it("shows the drainer's cleanup message AND the zero-recipient email alert", async () => {
+    const message = zeroRecipientsEmailFailure();
+    reopenMock.mockResolvedValue({
+      status: "reopened_cleanup_failed",
+      emailFailed: true,
+      message: DRAIN_THREW,
+      emailMessage: message,
+    });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await confirm(user);
+
+    const alerts = await screen.findAllByRole("alert");
+    expect(alerts.map((alert) => alert.textContent)).toEqual([DRAIN_THREW, message]);
+  });
+});
+
+// Task #287 UI review, accessibility observation: a committed outcome replaces
+// the dialog AND its trigger, so Radix restores focus to an element that no
+// longer exists and keyboard position falls to BODY.
+describe("ReopenDeliveredGalleryPanel — a committed result takes focus", () => {
+  it("focuses the success result instead of leaving focus on BODY", async () => {
+    reopenMock.mockResolvedValue({ status: "reopened" });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await confirm(user);
+
+    const status = await screen.findByRole("status");
+    // Radix's FocusScope schedules its restore in a 0ms timer on unmount; the
+    // panel's focus target runs after it, so wait for the SETTLED focus rather
+    // than the window before that timer fired.
+    await waitFor(() => expect(document.activeElement).toBe(status.parentElement));
+    // Flushing one more turn proves no later timer steals it back.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.activeElement).toBe(status.parentElement);
+    expect(document.activeElement).not.toBe(document.body);
+  });
+
+  it("focuses the combined-failure result, so the warnings are where the keyboard is", async () => {
+    const message = partialEmailFailure("ana@example.com");
+    reopenMock.mockResolvedValue({
+      status: "reopened_cleanup_failed",
+      emailFailed: true,
+      remainingCleanupKeys: 3,
+      emailMessage: message,
+    });
+    const user = userEvent.setup();
+    renderPanel();
+
+    await confirm(user);
+
+    const alerts = await screen.findAllByRole("alert");
+    await waitFor(() => expect(document.activeElement).toBe(alerts[0]!.parentElement));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(document.activeElement).toBe(alerts[0]!.parentElement);
   });
 });
 

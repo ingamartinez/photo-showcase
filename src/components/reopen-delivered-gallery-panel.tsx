@@ -44,7 +44,14 @@
 // <UnlockSelectionPanel> for the same optional-reason field; the unlock
 // panel's unlock-specific placeholder is deliberately NOT reused because it
 // would invent a reopen sentence the owner never saw.
-import { useActionState } from "react";
+//
+// 4. THE EMAIL WARNING IS NEVER FOLDED AWAY (task #287 UI review, finding 1).
+//    `reopened_cleanup_failed` owns `message` with its cleanup text, so the
+//    notification outcome travels in `emailMessage` and the two approved
+//    alerts are rendered SIDE BY SIDE when both failed — no invented combined
+//    sentence, and nothing the admin needs disappears because a second thing
+//    also broke.
+import { useActionState, useEffect, useRef, type ReactNode } from "react";
 import {
   Dialog,
   DialogClose,
@@ -135,6 +142,36 @@ function cleanupFailureText(state: ReopenDeliveredGalleryState): string {
   );
 }
 
+/**
+ * The stable focus target for a COMMITTED outcome (task #287 UI review,
+ * accessibility observation). A committed result replaces the dialog AND its
+ * trigger, so Radix's FocusScope otherwise restores focus to an element that no
+ * longer exists and the keyboard position falls to BODY. This wrapper takes
+ * focus instead, with `tabIndex={-1}` so it is programmatically focusable but
+ * never a tab stop of its own.
+ *
+ * WHY A TIMER: `@radix-ui/react-focus-scope`'s unmount effect schedules its own
+ * `setTimeout(..., 0)` that focuses the previously focused element (the
+ * unmounted trigger) or `document.body` — it runs AFTER a mount `useEffect`, so
+ * focusing synchronously would be immediately overwritten. A 0ms timer
+ * registered here runs after Radix's, because both are FIFO and Radix's is
+ * registered during the commit's cleanup phase, before this effect.
+ */
+function CommittedOutcome({ children }: { children: ReactNode }) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const id = setTimeout(() => ref.current?.focus(), 0);
+    return () => clearTimeout(id);
+  }, []);
+
+  return (
+    <div ref={ref} tabIndex={-1} className="flex flex-col gap-2 outline-none">
+      {children}
+    </div>
+  );
+}
+
 export function ReopenDeliveredGalleryPanel({
   galleryId,
   rollingDelivery,
@@ -148,9 +185,11 @@ export function ReopenDeliveredGalleryPanel({
   // this file's header, point 2).
   if (state.status === "reopened") {
     return (
-      <p role="status" className="text-accent-2 text-sm">
-        {SUCCESS}
-      </p>
+      <CommittedOutcome>
+        <p role="status" className="text-accent-2 text-sm">
+          {SUCCESS}
+        </p>
+      </CommittedOutcome>
     );
   }
 
@@ -158,20 +197,31 @@ export function ReopenDeliveredGalleryPanel({
   // action's message lists the addresses, so it is rendered as-is.
   if (state.status === "reopened_email_failed") {
     return (
-      <p role="alert" className="text-danger text-sm">
-        {state.message}
-      </p>
+      <CommittedOutcome>
+        <p role="alert" className="text-danger text-sm">
+          {state.emailMessage ?? state.message}
+        </p>
+      </CommittedOutcome>
     );
   }
 
   // Committed reopen, unfinished storage cleanup: never folded into the quiet
   // success above, and never retried from here — the durable obligation is
-  // retried by <PendingFinalCleanupNotice>.
+  // retried by <PendingFinalCleanupNotice>. When the email ALSO failed, the
+  // second approved alert is rendered next to this one: a cleanup retry does
+  // not send any email, so losing it here would lose it for good.
   if (state.status === "reopened_cleanup_failed") {
     return (
-      <p role="alert" className="text-danger text-sm">
-        {cleanupFailureText(state)}
-      </p>
+      <CommittedOutcome>
+        <p role="alert" className="text-danger text-sm">
+          {cleanupFailureText(state)}
+        </p>
+        {state.emailMessage !== undefined && (
+          <p role="alert" className="text-danger text-sm">
+            {state.emailMessage}
+          </p>
+        )}
+      </CommittedOutcome>
     );
   }
 
@@ -182,7 +232,15 @@ export function ReopenDeliveredGalleryPanel({
           {pending ? "Reabriendo…" : "Reabrir entrega"}
         </DialogTrigger>
 
-        <DialogContent className="border-line-2 gap-5 border sm:max-w-md">
+        <DialogContent
+          className="border-line-2 gap-5 border sm:max-w-md"
+          // The default close button is an inherited ENGLISH accessible name
+          // (`<span class="sr-only">Close</span>` in ui/dialog.tsx) that no
+          // owner-approved list contains, and this panel already has an
+          // approved way out (`Cancelar`). Suppressing it here rather than
+          // relabelling the shared dialog keeps this slice to its own copy.
+          showCloseButton={false}
+        >
           <DialogHeader>
             <DialogTitle className="text-fg text-lg font-medium">
               ¿Reabrir esta galería entregada?

@@ -941,7 +941,13 @@ describe("reopenDeliveredGallery — notification and email (C5)", () => {
 
     expect(result.status).toBe("reopened_email_failed");
     expect(result.emailFailed).toBe(true);
-    expect(result.message).toContain("beto@example.com");
+    expect(result.message).toBe(
+      "Reabrimos la galería, pero no pudimos avisarle por correo a: beto@example.com. " +
+        "Avisale por otro medio (WhatsApp / llamada).",
+    );
+    // The independent carrier holds the same sentence, so a status that has to
+    // take precedence can still report this failure (finding 1).
+    expect(result.emailMessage).toBe(result.message);
     expect(result.message).not.toContain("ana@example.com");
     // Not rolled back: the reset committed, and the cleanup was clean.
     const r = await rows();
@@ -977,6 +983,11 @@ describe("reopenDeliveredGallery — notification and email (C5)", () => {
     expect(result.status).toBe("reopened_email_failed");
     expect(result.emailFailed).toBe(true);
     expect(result.message).toMatch(/no encontramos clientes/);
+    expect(result.message).toBe(
+      "Reabrimos la galería, pero no encontramos clientes para avisar por correo. " +
+        "Avisale por otro medio (WhatsApp / llamada).",
+    );
+    expect(result.emailMessage).toBe(result.message);
     expect(signInMock).not.toHaveBeenCalled();
     expect(r.galleries[0]!.status).toBe("proofing");
   });
@@ -994,6 +1005,10 @@ describe("reopenDeliveredGallery — notification and email (C5)", () => {
     // hidden: the email outcome travels as its own field.
     expect(result.status).toBe("reopened_cleanup_failed");
     expect(result.emailFailed).toBe(true);
+    expect(result.emailMessage).toBe(
+      "Reabrimos la galería, pero no pudimos avisarle por correo a: ana@example.com, " +
+        "beto@example.com. Avisale por otro medio (WhatsApp / llamada).",
+    );
     expect(result.remainingCleanupKeys).toBeGreaterThan(0);
     // A `pending` drain carries the count, not a message — the recovery notice
     // is UI copy still awaiting owner approval.
@@ -1001,6 +1016,52 @@ describe("reopenDeliveredGallery — notification and email (C5)", () => {
     const r = await rows();
     expect(r.galleries[0]!.status).toBe("proofing");
     expect(r.galleryFinalCleanup).toHaveLength(1);
+  });
+
+  // Task #287 UI review, finding 1 (blocking): the combined result used to drop
+  // the failed addresses, so the admin could never see who was not notified.
+  it("carries the PARTIAL email wording alongside a pending cleanup", async () => {
+    const { AuthError } = await import("next-auth");
+    signInMock.mockImplementation(async (_provider: string, options: { email: string }) => {
+      if (options.email === "beto@example.com") throw new AuthError("no such user");
+      return "ok";
+    });
+    deleteFailures.remaining = 1_000;
+
+    const result = await reopen();
+
+    expect(result.status).toBe("reopened_cleanup_failed");
+    expect(result.emailFailed).toBe(true);
+    // The addresses are IN the result, not just a boolean:
+    expect(result.emailMessage).toBe(
+      "Reabrimos la galería, pero no pudimos avisarle por correo a: beto@example.com. " +
+        "Avisale por otro medio (WhatsApp / llamada).",
+    );
+    expect(result.emailMessage).not.toContain("ana@example.com");
+    expect(result.remainingCleanupKeys).toBeGreaterThan(0);
+    // The cleanup text owns `message` — the two failures do not overwrite
+    // each other.
+    expect(result.message).toBeUndefined();
+    expect((await rows()).galleries[0]!.status).toBe("proofing");
+  });
+
+  it("carries the ZERO-RECIPIENT email wording alongside a pending cleanup", async () => {
+    const all = await rows();
+    for (const row of all.galleryClients.filter((candidate) => candidate.galleryId === G1)) {
+      row.removedAt = new Date("2026-10-19T00:00:00.000Z");
+    }
+    deleteFailures.remaining = 1_000;
+
+    const result = await reopen();
+
+    expect(result.status).toBe("reopened_cleanup_failed");
+    expect(result.emailFailed).toBe(true);
+    expect(result.emailMessage).toBe(
+      "Reabrimos la galería, pero no encontramos clientes para avisar por correo. " +
+        "Avisale por otro medio (WhatsApp / llamada).",
+    );
+    expect(result.remainingCleanupKeys).toBeGreaterThan(0);
+    expect(signInMock).not.toHaveBeenCalled();
   });
 
   it("swallows a rejected NOTIFY, because the transition already committed", async () => {
@@ -1405,6 +1466,37 @@ describe("reopenDeliveredGallery — a drainer-level exception is recovery state
     };
     return { install, restore, calls: () => calls };
   }
+
+  it("reports a THROWN drain together with the partial email warning", async () => {
+    // Both independent failures in the same call: the drainer's own
+    // transaction throws AND one address is rejected. `message` is the
+    // drainer's, `emailMessage` is the notification's — finding 1 is exactly
+    // this combination.
+    const { AuthError } = await import("next-auth");
+    signInMock.mockImplementation(async (_provider: string, options: { email: string }) => {
+      if (options.email === "beto@example.com") throw new AuthError("no such user");
+      return "ok";
+    });
+    const seam = failTransactionAt(2);
+    await seam.install();
+    let result;
+    try {
+      result = await reopen();
+    } finally {
+      await seam.restore();
+    }
+
+    expect(result.status).toBe("reopened_cleanup_failed");
+    expect(result.emailFailed).toBe(true);
+    expect(result.message).toMatch(/no pudimos terminar de borrar/);
+    expect(result.emailMessage).toBe(
+      "Reabrimos la galería, pero no pudimos avisarle por correo a: beto@example.com. " +
+        "Avisale por otro medio (WhatsApp / llamada).",
+    );
+    // The drainer's message did not swallow the notification outcome.
+    expect(result.emailMessage).not.toBe(result.message);
+    expect((await rows()).galleries[0]!.status).toBe("proofing");
+  });
 
   it("reports reopened_cleanup_failed, keeps the manifest and STILL emails every client", async () => {
     // Transaction #1 is the reset; #2 is the drain.

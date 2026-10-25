@@ -1918,7 +1918,7 @@ export async function retryReopenedFinalCleanup(
     return {
       status: "cleanup_failed",
       remainingCleanupKeys: await readRemainingCleanupKeys(parsed.data.galleryId),
-      message: "No pudimos terminar la limpieza. Reintentá la limpieza en un rato.",
+      message: "No pudimos terminar la limpieza. Reintentá en un rato.",
     };
   }
   if (drain.status === "changed") {

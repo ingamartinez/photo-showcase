@@ -82,102 +82,23 @@ function keyFromFakeUrl(url: string): string {
   return decodeURIComponent(url.slice(prefix.length));
 }
 
-// Minimal fake DB — same "always return a FRESH COPY on select, mutate the
-// shared row array on update" shape as ./route.test.ts's own fake (the FIXED
-// version — see that file's own comment on `project` for why it must never
-// return the live row reference).
+// Task #287 — the SHARED in-memory double, for the same reason
+// ./route.test.ts migrated: POST now takes the gallery row lock inside a
+// transaction, which this suite's local stub cannot model at all.
 type Row = Record<string, unknown>;
-
-// Resolves EVERY `eq()` this condition is built from, however deep — a bare
-// `eq()` at the top level, or several nested inside an `and(...)` (drizzle
-// wraps `and(eqA, eqB)` in an EXTRA parens/`" and "` SQL node one level
-// deeper than a flat `queryChunks` array). Task #94's `isGalleryOwner`
-// (src/lib/gallery-access.ts) is the first caller in this suite to need the
-// `and(eq(), eq())` shape at all — every prior `eq()`-only condition here
-// still resolves to a single-element list.
-function eqConditions(condition: unknown): { column?: string; value?: unknown }[] {
-  const results: { column?: string; value?: unknown }[] = [];
-  function walk(node: unknown) {
-    if (!node || typeof node !== "object") return;
-    const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
-    if (!chunks) return;
-    let dbColumnName: string | undefined;
-    let table: unknown;
-    let value: unknown;
-    for (const chunk of chunks) {
-      if (chunk && typeof chunk === "object") {
-        if ("name" in chunk && "table" in chunk) {
-          dbColumnName = (chunk as { name: string }).name;
-          table = (chunk as { table: unknown }).table;
-        }
-        if ("value" in chunk && "encoder" in chunk) value = (chunk as { value: unknown }).value;
-      }
-    }
-    if (dbColumnName && table) {
-      const jsKey = Object.entries(table as Record<string, unknown>).find(
-        ([, col]) =>
-          col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
-      )?.[0];
-      results.push({ column: jsKey, value });
-      return;
-    }
-    for (const chunk of chunks) walk(chunk);
-  }
-  walk(condition);
-  return results;
-}
 
 vi.mock("@/lib/db", async () => {
   const { assets, galleries, galleryClients } = await import("@/lib/db/schema");
-  const assetRows: Row[] = [];
-  const galleryRows: Row[] = [];
-  const galleryClientRows: Row[] = [];
-  function project(row: Row): Row {
-    return { ...row };
-  }
-  function rowsFor(table: unknown): Row[] {
-    if (table === assets) return assetRows;
-    if (table === galleries) return galleryRows;
-    if (table === galleryClients) return galleryClientRows;
-    throw new Error("fake db: unsupported table in select().where()");
-  }
+  const { createFakeDb } = await import("@/test-support/fake-db");
+  const fake = createFakeDb([assets, galleries, galleryClients]);
   return {
-    db: {
-      select: () => ({
-        from: (table: unknown) => ({
-          where: (condition: unknown) => {
-            const conditions = eqConditions(condition);
-            if (conditions.length === 0 || conditions.some((c) => !c.column)) {
-              throw new Error("eqConditions: not a supported eq()/and(eq(), eq()) condition");
-            }
-            const rows = rowsFor(table)
-              .filter((r) => conditions.every(({ column, value }) => r[column!] === value))
-              .map(project);
-            return { limit: async (n: number) => rows.slice(0, n) };
-          },
-        }),
-      }),
-      // TASK #218: the new real-pipeline POST tests below need this — the
-      // route's own POST handler calls `db.update(assets).set(...).where(...)`
-      // after a successful upload. Same shape as ./route.test.ts's own fake.
-      update: (table: unknown) => ({
-        set: (patch: Row) => ({
-          where: async (condition: unknown) => {
-            if (table !== assets) throw new Error("fake db: unsupported table in update()");
-            const conditions = eqConditions(condition);
-            if (conditions.length === 0 || conditions.some((c) => !c.column)) {
-              throw new Error("eqConditions: not a supported eq()/and(eq(), eq()) condition");
-            }
-            for (const row of assetRows) {
-              if (conditions.every(({ column, value }) => row[column!] === value)) {
-                Object.assign(row, patch);
-              }
-            }
-          },
-        }),
-      }),
-      __rows: { assets: assetRows, galleries: galleryRows, galleryClients: galleryClientRows },
-    },
+    db: Object.assign(fake, {
+      __rows: {
+        assets: fake.__tables.get(assets)!,
+        galleries: fake.__tables.get(galleries)!,
+        galleryClients: fake.__tables.get(galleryClients)!,
+      },
+    }),
   };
 });
 

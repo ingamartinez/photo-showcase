@@ -85,109 +85,24 @@ vi.mock("@/lib/images", () => ({
 
 type Row = Record<string, unknown>;
 
-// Resolves EVERY `eq()` this condition is built from, however deep — a bare
-// `eq()` at the top level, or several nested inside an `and(...)` (drizzle
-// wraps `and(eqA, eqB)` in an EXTRA parens/`" and "` SQL node one level
-// deeper than a flat `queryChunks` array). Task #94's `isGalleryOwner`
-// (src/lib/gallery-access.ts) is the first caller in this suite to need the
-// `and(eq(), eq())` shape at all — every prior `eq()`-only condition here
-// still resolves to a single-element list.
-function eqConditions(condition: unknown): { column?: string; value?: unknown }[] {
-  const results: { column?: string; value?: unknown }[] = [];
-  function walk(node: unknown) {
-    if (!node || typeof node !== "object") return;
-    const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
-    if (!chunks) return;
-    let dbColumnName: string | undefined;
-    let table: unknown;
-    let value: unknown;
-    for (const chunk of chunks) {
-      if (chunk && typeof chunk === "object") {
-        if ("name" in chunk && "table" in chunk) {
-          dbColumnName = (chunk as { name: string }).name;
-          table = (chunk as { table: unknown }).table;
-        }
-        if ("value" in chunk && "encoder" in chunk) value = (chunk as { value: unknown }).value;
-      }
-    }
-    if (dbColumnName && table) {
-      // Corrected version: resolves the JS property key through `table`'s
-      // own entries instead of hardcoding a snake_case<->camelCase
-      // transform — see src/app/api/galleries/[galleryId]/proofs/route.test.ts
-      // for the same helper and its rationale.
-      const jsKey = Object.entries(table as Record<string, unknown>).find(
-        ([, col]) =>
-          col && typeof col === "object" && (col as { name?: string }).name === dbColumnName,
-      )?.[0];
-      results.push({ column: jsKey, value });
-      return;
-    }
-    for (const chunk of chunks) walk(chunk);
-  }
-  walk(condition);
-  return results;
-}
-
+// The SHARED in-memory double (src/test-support/fake-db.ts) — task #287 moved
+// this suite off its local select/update stub because POST now runs inside a
+// transaction that first takes the gallery row lock. The fake supports
+// `transaction()`, `for("update")`, `eq()`/`isNull()`/`and()` for real, so the
+// route's new ordering is exercised rather than stubbed around. `__rows` is
+// this suite's own adapter on top of `__tables`.
 vi.mock("@/lib/db", async () => {
   const { assets, galleries, galleryClients } = await import("@/lib/db/schema");
-
-  const assetRows: Row[] = [];
-  const galleryRows: Row[] = [];
-  const galleryClientRows: Row[] = [];
-
-  // Always returns a FRESH COPY, never the live row object — a real
-  // `SELECT` is a point-in-time snapshot, not a handle a later UPDATE could
-  // mutate out from under an already-in-flight caller. This is the FIXED
-  // shape (src/app/dashboard/galleries/actions.unlock.test.ts's own
-  // `project`), not the still-buggy one in
-  // src/app/api/galleries/[galleryId]/submit-selection/route.test.ts
-  // (tracked separately as #84) that returns the live reference for the
-  // no-`columns` case.
-  function project(row: Row): Row {
-    return { ...row };
-  }
-
-  function rowsFor(table: unknown): Row[] {
-    if (table === assets) return assetRows;
-    if (table === galleries) return galleryRows;
-    if (table === galleryClients) return galleryClientRows;
-    throw new Error("fake db: unsupported table in select().where()");
-  }
-
+  const { createFakeDb } = await import("@/test-support/fake-db");
+  const fake = createFakeDb([assets, galleries, galleryClients]);
   return {
-    db: {
-      select: () => ({
-        from: (table: unknown) => ({
-          where: (condition: unknown) => {
-            const conditions = eqConditions(condition);
-            if (conditions.length === 0 || conditions.some((c) => !c.column)) {
-              throw new Error("eqConditions: not a supported eq()/and(eq(), eq()) condition");
-            }
-            const rows = rowsFor(table)
-              .filter((r) => conditions.every(({ column, value }) => r[column!] === value))
-              .map(project);
-            return { limit: async (n: number) => rows.slice(0, n) };
-          },
-        }),
-      }),
-      update: (table: unknown) => ({
-        set: (patch: Row) => ({
-          where: async (condition: unknown) => {
-            if (table !== assets) throw new Error("fake db: unsupported table in update()");
-            const conditions = eqConditions(condition);
-            if (conditions.length === 0 || conditions.some((c) => !c.column)) {
-              throw new Error("eqConditions: not a supported eq()/and(eq(), eq()) condition");
-            }
-            for (const row of assetRows) {
-              if (conditions.every(({ column, value }) => row[column!] === value)) {
-                Object.assign(row, patch);
-              }
-            }
-          },
-        }),
-      }),
-      __rows: { assets: assetRows, galleries: galleryRows, galleryClients: galleryClientRows },
-    },
+    db: Object.assign(fake, {
+      __rows: {
+        assets: fake.__tables.get(assets)!,
+        galleries: fake.__tables.get(galleries)!,
+        galleryClients: fake.__tables.get(galleryClients)!,
+      },
+    }),
   };
 });
 
@@ -1471,5 +1386,109 @@ describe("buildFinalDownloadFilename", () => {
   it("falls back to generic words rather than producing a degenerate filename when an input slugifies to nothing", async () => {
     const { buildFinalDownloadFilename } = await import("./route");
     expect(buildFinalDownloadFilename("🎉🎉", "🎉🎉.jpg", FINAL_KEY)).toBe("galeria-foto.jpg");
+  });
+});
+
+// Task #287 — the upload joins the gallery lock, so a delivered reopen can
+// cancel an in-flight upload instead of racing it. These tests drive the real
+// POST handler; the "reopen" is simulated by mutating the gallery row between
+// the handler's preflight read and its locked transaction (the fake db models
+// no isolation, so a controlled mutation is the seam — same technique this
+// suite already uses for the update-failure branch).
+describe("POST /api/assets/[assetId]/final — the reopen epoch guard (task #287)", () => {
+  const T1 = new Date("2026-10-20T10:00:00.000Z");
+  const T2 = new Date("2026-10-26T10:00:00.000Z");
+
+  it("refuses a stale upload with 409 gallery_changed before either Put", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ unlockedAt: T1 }));
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(assetRow({ isSelected: true, finalKey: null, isEdited: false }));
+    // The reopen lands while the upload is decoding.
+    processDisplayMock.mockImplementation(async () => {
+      db.__rows.galleries[0]!.unlockedAt = T2;
+      return { data: new Uint8Array([1]), contentType: "image/webp", width: 10, height: 10 };
+    });
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(imageFile())),
+      paramsFor(ASSET_A_ID),
+    );
+
+    expect(response.status).toBe(409);
+    await expect(response.json()).resolves.toEqual({ error: "gallery_changed" });
+    expect(putObjectMock).not.toHaveBeenCalled();
+    // The reopen's detachment is not undone by this request.
+    expect(db.__rows.assets[0]!.finalKey).toBeNull();
+    expect(db.__rows.assets[0]!.isEdited).toBe(false);
+  });
+
+  it("accepts a fresh upload after the reopen, in proofing, from the locked rows", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ status: "proofing", deliveredAt: null, unlockedAt: T2 }));
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(assetRow({ isSelected: true, finalKey: null, isEdited: false }));
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(imageFile())),
+      paramsFor(ASSET_A_ID),
+    );
+
+    expect(response.status).toBe(200);
+    expect(writesTo(FINAL_KEY)).toHaveLength(1);
+    expect(writesTo(DISPLAY_KEY)).toHaveLength(1);
+    expect(db.__rows.assets[0]).toMatchObject({ finalKey: FINAL_KEY, isEdited: true });
+  });
+
+  it("decides isExtra from the asset re-read under the lock, not the preflight", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.galleries.length = 0;
+    db.__rows.galleries.push(galleryRow({ unlockedAt: T1 }));
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(assetRow({ isSelected: true, finalKey: null, isEdited: false }));
+    // The client's pick is removed while the upload is decoding: the photo is
+    // a gift by the time the metadata is published.
+    processDisplayMock.mockImplementation(async () => {
+      db.__rows.assets[0]!.isSelected = false;
+      return { data: new Uint8Array([1]), contentType: "image/webp", width: 10, height: 10 };
+    });
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(imageFile())),
+      paramsFor(ASSET_A_ID),
+    );
+
+    expect(response.status).toBe(200);
+    expect(db.__rows.assets[0]).toMatchObject({ finalKey: FINAL_KEY, isExtra: true });
+  });
+
+  it("takes the gallery row lock before publishing metadata", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(assetRow({ isSelected: true, finalKey: null, isEdited: false }));
+    const log = (db as unknown as { __log: string[] }).__log;
+    log.length = 0;
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(imageFile())),
+      paramsFor(ASSET_A_ID),
+    );
+
+    expect(response.status).toBe(200);
+    // The preflight reads happen before the transaction; the LOCK is the first
+    // statement inside it, before the metadata write.
+    const lockIndex = log.indexOf("for:update");
+    expect(lockIndex).toBeGreaterThanOrEqual(0);
+    expect(log.findIndex((entry) => entry.startsWith("update:"))).toBeGreaterThan(lockIndex);
   });
 });

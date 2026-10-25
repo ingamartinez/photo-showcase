@@ -62,6 +62,7 @@ import { assets } from "@/lib/db/schema";
 import { withApiSession } from "@/lib/auth-guards";
 import { loadOwnedAsset } from "@/lib/asset-access";
 import { canReadFinalDeliverable } from "@/lib/final-access";
+import { lockGalleryRow } from "@/lib/gallery-client-locks";
 import { ACCEPTED_FINAL_FORMATS } from "@/lib/final-formats";
 import { processDisplay } from "@/lib/images";
 import { notifyAdminOfMissingFinal } from "@/lib/missing-final-notification-email";
@@ -560,7 +561,13 @@ export const POST = withApiSession(async function POST(
   // client can toggle a selection while the gallery is still `proofing` (see
   // src/app/api/assets/[assetId]/selection/route.ts), so tying final upload
   // to a status was never this route's job and is not becoming it now.
-  const isExtraUpload = !asset.isSelected;
+  //
+  // TASK #287 MOVED THE `isExtra` DECISION INSIDE THE LOCK: the flag is
+  // derived from the asset re-read under the gallery row lock, because the
+  // selection can legitimately change while this request decodes (see the
+  // publish transaction below). The preflight `asset` is still used for the
+  // ownership/gallery identity and for the download filename helpers, never to
+  // decide what gets written.
 
   // Cheap size gate off the header, before the body is read/buffered at all
   // — same reasoning as the proofs route.
@@ -598,155 +605,145 @@ export const POST = withApiSession(async function POST(
     return errorResponse("processing_failed", 422);
   }
 
-  // `displayKey` stays fully deterministic per (galleryId, assetId) — see its
-  // own comment in src/lib/r2.ts for why that is what lets this whole feature
-  // need no new column. `finalKey` is NO LONGER unconditionally deterministic
-  // as of task #220: it also depends on `extension` above, so the SAME asset
-  // can resolve to a DIFFERENT key across two uploads if the format changes.
-  // `previousFinalKey` is captured here, before any write below, specifically
-  // so the cleanup step further down can tell "same key, ordinary overwrite"
-  // apart from "different key, an old object needs deleting" — see that
-  // step's own comment for the full reasoning and why the ordering around it
-  // is not negotiable.
-  const key = finalKey(gallery.id, asset.id, extension);
+  // Task #287 — THE UPLOAD JOINS THE GALLERY LOCK.
+  //
+  // Before this, the handler wrote both R2 objects and then published the
+  // metadata from the asset looked up BEFORE any of that, with no transaction
+  // and no status requirement. That is not safe against the admin reopen
+  // (`reopenDeliveredGallery`), which commits its own reset — status,
+  // membership locks, picks, claims and final detachment — in one database
+  // transaction. Reopen's row lock cannot stop an upload that already started:
+  // it would publish old-cycle metadata AFTER the reset, and its deterministic
+  // Puts could overwrite new-cycle bytes even if a later CAS rejected its
+  // update.
+  //
+  // THE CONTRACT NOW: the encode still happens outside the lock (it is slow
+  // and CPU-bound), then ONE transaction takes `lockGalleryRow` FIRST, compares
+  // the gallery's `unlocked_at` epoch against the value read before decoding,
+  // and only then writes bytes and metadata.
+  //   - Upload wins the lock first: it publishes, and a reopen that runs
+  //     afterwards detaches exactly that metadata and cleans the bytes.
+  //   - Reopen wins first: this request's epoch is stale, so it answers
+  //     `409 gallery_changed` BEFORE either Put — no bytes, no metadata. The
+  //     admin retries against the reopened cycle.
+  //
+  // WHAT THIS IS NOT: a PostgreSQL↔R2 distributed transaction. Overwriting a
+  // deterministic key cannot be un-written if the SQL update then fails; the
+  // new guarantee is ORDERING with reopen and no stale-epoch writes. The lock
+  // is held across two storage writes, which is the established inline-media
+  // model (PLAN.md §5).
+  const uploadKey = finalKey(gallery.id, asset.id, extension);
   const displayObjectKey = displayKey(gallery.id, asset.id);
-  const previousFinalKey = asset.finalKey;
 
+  let key = uploadKey;
+  let previousFinalKey: string | null = null;
+  let canonicalGalleryId = gallery.id;
+  type PublishRefusal = "asset_not_found" | "gallery_changed" | "upload_failed";
+  let refusal: PublishRefusal | null = null;
   try {
-    // TASK #218: `uploadedBytes` is written VERBATIM — the exact bytes the
-    // admin uploaded, no sharp pass in between. `contentType: contentType`
-    // (task #220 — no longer hardcoded to `"image/jpeg"`): this string came
-    // off `readUploadedFinal`'s own `file.type` read, already checked
-    // against `ACCEPTED_FINAL_FORMATS` there, so it is one of that map's own
-    // keys here, honestly describing whichever format was actually accepted
-    // — and, per that function's own comment, reading it from THIS returned
-    // value rather than a `file.type` dereference here is what keeps the
-    // original `File` object out of this handler's scope entirely. Same
-    // caveat as #218's original comment: this is still the browser's own
-    // extension-based guess, not a sniff of the actual bytes, so a PNG
-    // renamed `edit.jpg` still stores as a real PNG under a `.jpg` key
-    // labeled `image/jpeg` — an unchanged risk, just no longer the ONLY
-    // format this route will ever honestly store.
-    await putObject(key, uploadedBytes, { contentType });
-    // Written in the SAME request, and its failure fails the whole upload
-    // (502, same as the final's own). A partial success here would leave the
-    // photographer believing the photo is delivered while the client keeps
-    // seeing a watermark on it — an outcome nobody would notice until the
-    // client mentioned it. Failing loudly costs the photographer one retry;
-    // both keys are deterministic FOR A GIVEN EXTENSION, so a same-format
-    // retry is a clean overwrite; a different-format retry mints a new key
-    // and leaves the old one for the cleanup step below to catch on its own
-    // next successful attempt. The final is written FIRST so that an
-    // interruption between the two can only ever leave the SMALLER,
-    // browsing-sized copy stale relative to the full-resolution one the
-    // client downloads — never the reverse.
-    await putObject(displayObjectKey, display.data, { contentType: "image/webp" });
-  } catch {
-    return errorResponse("upload_failed", 502);
-  }
+    await db.transaction(async (tx) => {
+      const lockedGallery = await lockGalleryRow(tx, gallery.id);
+      if (!lockedGallery) {
+        refusal = "asset_not_found";
+        return;
+      }
+      // Nullable millisecond comparison: `null` (never reopened) only matches
+      // `null`, and a reopen always moves the stamp strictly forward.
+      const lockedEpoch = lockedGallery.unlockedAt?.getTime() ?? null;
+      const initialEpoch = gallery.unlockedAt?.getTime() ?? null;
+      if (lockedEpoch !== initialEpoch) {
+        refusal = "gallery_changed";
+        return;
+      }
 
-  // DB write happens AFTER the R2 write — same ordering rationale as the
-  // proofs route (a DB row pointing at bytes that don't exist yet is worse
-  // than bytes with no row pointing at them yet: the former is a broken
-  // image on every normal read path, the latter is invisible everywhere
-  // reads go through `assets.finalKey`).
-  //
-  // UNLIKE the proofs route, there is still deliberately NO compensating
-  // delete on THIS failure path (a failed DB update). `previousFinalKey`
-  // (captured above, before either R2 write) is exactly what `asset.finalKey`
-  // still is if this update fails — untouched, still resolving to a real
-  // object — so there is nothing here that needs cleaning up on THIS branch:
-  //   - First-ever upload for this asset: `previousFinalKey` was `null`,
-  //     nothing referenced `key` before this request, so an orphan at `key`
-  //     here is harmless — costs storage, not correctness, same as the
-  //     proofs route's own orphan case.
-  //   - RE-upload: `asset.finalKey` still equals `previousFinalKey`, which
-  //     the database never stopped pointing at. `key` (whether identical to
-  //     `previousFinalKey` or a new, different-extension key) is once again
-  //     just an orphan if this branch is hit — nothing was ever deleted, so
-  //     nothing was ever destroyed out from under the client.
-  // The stale-object DELETE only ever runs after a SUCCESSFUL update, below —
-  // see that block's own comment for why the ordering there is the part that
-  // actually matters.
-  //
-  // Task #223 — `isExtra` rides along in this SAME update rather than a
-  // second one: the flag and the `finalKey` it qualifies must land together
-  // or not at all. A separate write could leave an asset delivered but
-  // unmarked (the client cannot reach it) or marked but undelivered (the flag
-  // outlives nothing). It is written UNCONDITIONALLY, not only when true, so
-  // a re-upload onto an asset the client selected in the meantime clears a
-  // now-wrong `true` instead of leaving it stale — the "kept in lockstep,
-  // never left stale" discipline `selectedBy` already documents.
-  try {
-    await db
-      .update(assets)
-      .set({ finalKey: key, isEdited: true, isExtra: isExtraUpload })
-      .where(eq(assets.id, asset.id));
+      // NEVER publish metadata from the stale lookup above: re-read the asset
+      // under the lock and prove it still belongs to this gallery.
+      const [freshAsset] = await tx.select().from(assets).where(eq(assets.id, asset.id)).limit(1);
+      if (!freshAsset || freshAsset.galleryId !== lockedGallery.id) {
+        refusal = "asset_not_found";
+        return;
+      }
+
+      // The keys are derived from the CANONICAL gallery id, not the caller's
+      // spelling — the same rule `deleteGallery` follows.
+      canonicalGalleryId = lockedGallery.id;
+      key = finalKey(lockedGallery.id, freshAsset.id, extension);
+      // TASK #223 — `isExtra` is decided from the FRESH row: a selection that
+      // changed while the upload was decoding must not be recorded from the
+      // preflight snapshot. `isSelected` is still never written here.
+      const freshIsExtra = !freshAsset.isSelected;
+      previousFinalKey = freshAsset.finalKey;
+
+      try {
+        await putObject(key, uploadedBytes, { contentType });
+        await putObject(displayObjectKey, display.data, { contentType: "image/webp" });
+      } catch {
+        refusal = "upload_failed";
+        return;
+      }
+
+      await tx
+        .update(assets)
+        .set({ finalKey: key, isEdited: true, isExtra: freshIsExtra })
+        .where(eq(assets.id, freshAsset.id));
+    });
   } catch {
+    // A thrown SQL error must roll the transaction back rather than be caught
+    // inside it and reported as a successful commit.
     return errorResponse("update_failed", 500);
   }
 
-  // Stale-object cleanup (task #220) — the ordering below is NOT negotiable,
-  // and it is the reason #218's "no compensating delete" comment above no
-  // longer describes this whole handler: that comment now only covers the DB
-  // -update-failure branch. This block covers the branch #218 never had to:
-  // a SUCCESSFUL re-upload that changed format.
+  if (refusal !== null) {
+    // `gallery_changed` is a REQUEST CONFLICT, not a new UI state: the admin
+    // retries against the reopened cycle. The other two keep this route's
+    // existing contracts exactly.
+    return errorResponse(refusal, refusal === "upload_failed" ? 502 : 409);
+  }
+
+  // Stale-object cleanup (task #220), now defended against the reopen writers.
   //
-  //   1. Write the new object(s) at `key`/`displayObjectKey` (above).
-  //   2. Update `assets.finalKey` to `key` (above, just succeeded).
-  //   3. ONLY THEN, if `previousFinalKey` was non-null and differs from
-  //      `key`, best-effort delete the OLD object.
-  //
-  // #218 needed no compensating delete anywhere because `finalKey()` was
-  // fully deterministic per (galleryId, assetId): every upload for the same
-  // asset produced the exact SAME key, so a re-upload was always an in-place
-  // overwrite and there was never an "old" object to clean up. #220 breaks
-  // that determinism on purpose — the key now also depends on the accepted
-  // upload's format — so a re-upload that changes format (a `.jpg` final
-  // replaced by a `.png` one, the owner's actual situation) writes a NEW key
-  // and, without this step, would leave the OLD object behind: still in the
-  // bucket, costing storage, never referenced by anything again.
-  //
-  // Why the delete happens HERE — after the DB update has ACTUALLY
-  // SUCCEEDED — and not before it or interleaved with the R2 writes above:
-  // deleting `previousFinalKey` before confirming the database has moved on
-  // from it would, on any failure between the delete and the update, leave
-  // `assets.finalKey` pointing at an object that no longer exists — exactly
-  // task #93's `final_missing` 502 state ("we lost your photo"), on data the
-  // photographer may have already told a client was delivered. An orphaned
-  // NEW object costs storage; a row pointing at nothing costs a support
-  // conversation and an admin alert. Only once the DB update above has
-  // actually committed is it safe to know `previousFinalKey` is no longer
-  // referenced by anything — that is the one moment this handler can be sure
-  // deleting it does not destroy a still-live final.
-  //
-  // The delete itself is best-effort: a failure here (network hiccup, R2
-  // outage) leaves `previousFinalKey`'s object as an ORPHAN — unreferenced,
-  // unreachable through any read path (`assets.finalKey` already points at
-  // `key`), costing storage and nothing else. That is the strictly cheaper
-  // failure this design accepts, which is why this NEVER fails the request
-  // whose client already has their new final — but "never fails the
-  // request" is not the same as "nobody ever finds out": a silent swallow
-  // here means storage leaks forever with no signal to anyone. `console.error`
-  // logged, request still succeeds — the cheap middle between failing the
-  // upload and losing the orphan entirely.
+  // The ordering this keeps, unchanged: the new objects are written and the
+  // database has moved on BEFORE the old object is deleted — deleting first
+  // would let a failed update leave a live row pointing at missing bytes (task
+  // #93's `final_missing` state). What task #287 adds is that the delete runs
+  // in its OWN transaction under the same gallery lock, re-reads the asset's
+  // CURRENT key, and only deletes when that key is still different from the
+  // previous one:
+  //   - a fresh upload that made the old key current again is respected,
+  //   - an asset/gallery that vanished is skipped (their own deletion paths
+  //     own their cleanup),
+  //   - the deterministic display key is NEVER deleted here — it belongs to
+  //     whatever final is current.
+  // Best-effort, exactly as before: a failure leaves an unreferenced object
+  // and never fails a request whose client already has the new final.
   if (previousFinalKey !== null && previousFinalKey !== key) {
+    const staleKey = previousFinalKey;
     try {
-      await deleteObject(storedKey(previousFinalKey));
+      await db.transaction(async (tx) => {
+        const lockedGallery = await lockGalleryRow(tx, canonicalGalleryId);
+        if (!lockedGallery) return;
+        const [current] = await tx
+          .select({ id: assets.id, galleryId: assets.galleryId, finalKey: assets.finalKey })
+          .from(assets)
+          .where(eq(assets.id, asset.id))
+          .limit(1);
+        if (!current || current.galleryId !== lockedGallery.id) return;
+        if (current.finalKey === staleKey) return;
+        await deleteObject(storedKey(staleKey));
+      });
     } catch (error) {
       // `no-console` is a project-wide error (eslint.config.mjs) with no
-      // exception for `src/app/api/**` — this is deliberately the FIRST
-      // `console.*` call in this codebase outside `scripts/`/`tooling/`, not
-      // a precedent to reach for elsewhere. There is no logging utility here
-      // to route this through instead (checked — none exists), and this
-      // specific failure has no OTHER signal anywhere: it must never fail
-      // the response (the client already has their new final — see the
-      // comment above), so the only way anyone ever learns storage is
-      // leaking is a line in the server's own stderr, picked up by whatever
-      // already captures `systemd`/`journalctl` output for this service.
+      // exception for `src/app/api/**` — this is deliberately the only
+      // `console.*` call in this codebase outside `scripts/`/`tooling/`. There
+      // is no logging utility here to route this through instead (checked —
+      // none exists), and this failure has no OTHER signal anywhere: it must
+      // never fail the response (the client already has their new final), so
+      // the only way anyone ever learns storage is leaking is a line in the
+      // server's own stderr, picked up by whatever already captures
+      // `systemd`/`journalctl` output for this service.
       // eslint-disable-next-line no-console -- see comment above; this exact call is the one deliberate exception.
       console.error(
-        `Failed to delete stale final object at "${previousFinalKey}" after a ` +
+        `Failed to delete stale final object at "${staleKey}" after a ` +
           `format-changing re-upload for asset ${asset.id} (now at "${key}"). ` +
           `The old object is now an orphan — costs storage, not correctness.`,
         error,

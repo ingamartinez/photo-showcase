@@ -16,11 +16,14 @@ import { getClientsForPicker } from "@/lib/clients";
 import { tierRangeLabel } from "@/lib/extra-price-tiers";
 import { formatBytes, formatCop } from "@/lib/format";
 import { getGalleryArchiveSize } from "@/lib/gallery-archive-size";
+import { readGalleryFinalCleanup } from "@/lib/gallery-final-cleanup";
 import { getPresignedUrl, storedKey } from "@/lib/r2";
 import { cn } from "@/lib/utils";
 import { GalleryWorkspace } from "@/components/gallery-workspace";
 import { PublishGalleryButton } from "@/components/publish-gallery-button";
 import { UnlockSelectionPanel } from "@/components/unlock-selection-panel";
+import { ReopenDeliveredGalleryPanel } from "@/components/reopen-delivered-gallery-panel";
+import { PendingFinalCleanupNotice } from "@/components/pending-final-cleanup-notice";
 import { GalleryClientRow } from "@/components/gallery-client-row";
 import { GalleryClientList } from "@/components/gallery-client-list";
 import { AttachGalleryClientsForm } from "@/components/attach-gallery-clients-form";
@@ -173,6 +176,15 @@ export default async function GalleryDetailPage({
   // what keeps this from ever issuing an R2 HEAD request on a gallery with
   // no finals — see that function's own header comment.
   const archiveSize = await getGalleryArchiveSize(gallery.assets);
+
+  // Task #287: a reopen that committed but could not finish deleting the old
+  // finals leaves a durable `gallery_final_cleanup` row. Read it on EVERY
+  // render, whatever the gallery's status is, and render the recovery notice
+  // outside the delivered-only branch below: the reopened gallery lands in
+  // `proofing`, so that branch is exactly the surface that no longer exists by
+  // the time the admin reloads. The keys are never read here — the reader
+  // returns only the epoch and how many objects are still owed.
+  const pendingFinalCleanup = await readGalleryFinalCleanup(gallery.id);
 
   // Presigned URLs are generated here, at render time, for the INITIAL
   // paint only — `getPresignedUrl` is a local HMAC signature, not an R2
@@ -477,6 +489,23 @@ export default async function GalleryDetailPage({
             <AttachGalleryClientsForm galleryId={gallery.id} eligibleClients={eligibleClients} />
           </div>
 
+          {/* Task #287: the durable cleanup obligation of a reopen, shown
+              whatever the gallery's status is (proofing included) so it
+              survives a refresh and the delivered-only panel above unmounting.
+              Nothing here invents a design: it is the page's existing
+              bordered card, and the mock has no recovery design at all
+              (design/system/dashboard.html:220-227 is only the plain button
+              it reuses). */}
+          {pendingFinalCleanup && (
+            <div className="border-line-2 mt-6 rounded-[6px] border p-4">
+              <PendingFinalCleanupNotice
+                galleryId={gallery.id}
+                reopenEpoch={pendingFinalCleanup.reopenEpoch}
+                remainingKeys={pendingFinalCleanup.remainingKeys}
+              />
+            </div>
+          )}
+
           {/* Grouped state-transition actions (task #133's own words:
               "actions are visually separated from reference data"). Publish
               and Unlock stay here, beside the title/clients this header
@@ -490,7 +519,9 @@ export default async function GalleryDetailPage({
               instead. Pulling it back up here for this restructure would
               silently reintroduce the exact bug #86 fixed — see
               <GalleryWorkspace>'s own header comment. */}
-          {(gallery.status === "draft" || gallery.status === "selected") && (
+          {(gallery.status === "draft" ||
+            gallery.status === "selected" ||
+            gallery.status === "delivered") && (
             <div className="border-line-2 mt-6 flex flex-col items-start gap-3 rounded-[6px] border p-4">
               <span className="text-fg-mute text-xs tracking-wide uppercase">
                 Qué puedes hacer ahora
@@ -518,6 +549,19 @@ export default async function GalleryDetailPage({
                   moved past "selected" is UX, not the authority; see
                   src/app/dashboard/galleries/actions.ts's isUnlockable(). */}
               {gallery.status === "selected" && <UnlockSelectionPanel galleryId={gallery.id} />}
+
+              {/* Task #287: same "the action re-checks the real status itself"
+                  stance — `reopenDeliveredGallery` guards with its own
+                  delivered CAS, so hiding this once the gallery has left
+                  `delivered` is UX, not the authority. The rolling flag is the
+                  gallery's real one: it is the only difference in what the
+                  confirmation can promise about downloads. */}
+              {gallery.status === "delivered" && (
+                <ReopenDeliveredGalleryPanel
+                  galleryId={gallery.id}
+                  rollingDelivery={gallery.rollingDelivery}
+                />
+              )}
             </div>
           )}
         </div>

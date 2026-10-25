@@ -26,6 +26,11 @@ vi.mock("@/app/dashboard/galleries/actions", () => ({
   publishGallery: vi.fn(),
   unlockSelection: vi.fn(),
   deliverGallery: vi.fn(),
+  // Task #287: the page also renders <ReopenDeliveredGalleryPanel> (delivered
+  // only) and <PendingFinalCleanupNotice> (whenever an obligation is owed),
+  // whose modules import these two actions from this module.
+  reopenDeliveredGallery: vi.fn(),
+  retryReopenedFinalCleanup: vi.fn(),
 }));
 
 const getGalleryDetailMock = vi.fn();
@@ -81,6 +86,17 @@ vi.mock("@/lib/gallery-archive-size", () => ({
   getGalleryArchiveSize: (...args: unknown[]) => getGalleryArchiveSizeMock(...args),
 }));
 
+// Task #287: the page reads the durable final-cleanup obligation of a reopen
+// (`readGalleryFinalCleanup`) on every render, whatever the gallery's status
+// is. Its REAL implementation queries Postgres, which this suite never stands
+// up — same reasoning as `getGalleryArchiveSize` above and the task #287
+// notice's own suite (src/components/pending-final-cleanup-notice.test.tsx)
+// covering what is rendered from it.
+const readGalleryFinalCleanupMock = vi.fn();
+vi.mock("@/lib/gallery-final-cleanup", () => ({
+  readGalleryFinalCleanup: (...args: unknown[]) => readGalleryFinalCleanupMock(...args),
+}));
+
 beforeEach(() => {
   authMock.mockReset();
   getGalleryDetailMock.mockReset();
@@ -105,6 +121,8 @@ beforeEach(() => {
   getPresignedUrlMock.mockReturnValue("https://r2.example.com/presigned-proof-url");
   getGalleryArchiveSizeMock.mockReset();
   getGalleryArchiveSizeMock.mockResolvedValue(null);
+  readGalleryFinalCleanupMock.mockReset();
+  readGalleryFinalCleanupMock.mockResolvedValue(null);
   vi.stubEnv("__NEXT_EXPERIMENTAL_AUTH_INTERRUPTS", "true");
 });
 
@@ -197,6 +215,21 @@ describe("GalleryDetailPage", () => {
     await GalleryDetailPage(paramsFor(GALLERY_ID));
 
     expect(getGalleryUnlockAuditMock).toHaveBeenCalledWith(GALLERY_ID);
+  });
+
+  // Task #287: the pending final-cleanup obligation is read for the SAME
+  // gallery, on every render — not only for a delivered one, because the
+  // gallery a failed cleanup leaves behind is `proofing`. What the page
+  // renders from the answer (and that it survives that status change) is
+  // asserted in page.chrome.test.tsx; this is the data-access half, in the
+  // file that proves the page's real reads.
+  it("reads the pending final-cleanup obligation for the SAME gallery it just resolved", async () => {
+    authMock.mockResolvedValue(sessionFor("admin"));
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "proofing" }));
+
+    await GalleryDetailPage(paramsFor(GALLERY_ID));
+
+    expect(readGalleryFinalCleanupMock).toHaveBeenCalledWith(GALLERY_ID);
   });
 
   it("presigns a proof URL for every asset in the gallery", async () => {

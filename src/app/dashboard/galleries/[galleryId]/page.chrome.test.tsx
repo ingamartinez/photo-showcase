@@ -134,6 +134,16 @@ vi.mock("@/lib/gallery-archive-size", () => ({
   getGalleryArchiveSize: (...args: unknown[]) => getGalleryArchiveSizeMock(...args),
 }));
 
+// Task #287: the page reads the durable final-cleanup obligation
+// (`readGalleryFinalCleanup`) on every render, whatever the status is. Its REAL
+// implementation queries Postgres, which jsdom cannot resolve, so it is mocked
+// here; the suite below proves the page renders the notice for exactly the
+// galleries that read returns a row for. Defaults to `null` — nothing owed.
+const readGalleryFinalCleanupMock = vi.fn();
+vi.mock("@/lib/gallery-final-cleanup", () => ({
+  readGalleryFinalCleanup: (...args: unknown[]) => readGalleryFinalCleanupMock(...args),
+}));
+
 // The page now renders <PublishGalleryButton> whenever a fixture's status
 // is "draft" — its module imports `publishGallery` from here, which
 // transitively pulls in `@/lib/auth-guards` (`import "server-only"`,
@@ -176,6 +186,12 @@ const updateAllowsOriginalSelectionMock = vi.fn();
 // status gate — that is the whole point of this slice); its module imports
 // `deleteGallery` from here too.
 const deleteGalleryMock = vi.fn();
+// Task #287: the page now renders <ReopenDeliveredGalleryPanel> for a
+// delivered gallery (its module imports `reopenDeliveredGallery` from here)
+// and <PendingFinalCleanupNotice> whenever the durable cleanup read returns an
+// obligation (whose module imports `retryReopenedFinalCleanup`).
+const reopenDeliveredGalleryMock = vi.fn();
+const retryReopenedFinalCleanupMock = vi.fn();
 vi.mock("@/app/dashboard/galleries/actions", () => ({
   publishGallery: (...args: unknown[]) => publishGalleryMock(...args),
   unlockSelection: (...args: unknown[]) => unlockSelectionMock(...args),
@@ -190,6 +206,8 @@ vi.mock("@/app/dashboard/galleries/actions", () => ({
   updateRollingDelivery: vi.fn(),
   updateAllowsOriginalSelection: (...args: unknown[]) => updateAllowsOriginalSelectionMock(...args),
   deleteGallery: (...args: unknown[]) => deleteGalleryMock(...args),
+  reopenDeliveredGallery: (...args: unknown[]) => reopenDeliveredGalleryMock(...args),
+  retryReopenedFinalCleanup: (...args: unknown[]) => retryReopenedFinalCleanupMock(...args),
   lockGalleryClientSelection: vi.fn(),
   unlockGalleryClientSelection: vi.fn(),
   removeGalleryClientPicks: vi.fn(),
@@ -276,6 +294,8 @@ beforeEach(() => {
   getClientsForPickerMock.mockResolvedValue([]);
   getGalleryArchiveSizeMock.mockReset();
   getGalleryArchiveSizeMock.mockResolvedValue(null);
+  readGalleryFinalCleanupMock.mockReset();
+  readGalleryFinalCleanupMock.mockResolvedValue(null);
 });
 
 afterEach(() => {
@@ -1730,4 +1750,111 @@ describe("GalleryDetailPage — delete control (task #282)", () => {
       expect(screen.getByRole("button", { name: "Eliminar galería" })).toBeDefined();
     },
   );
+});
+
+// Task #287 — the delivered-only reopen trigger, and the cleanup-recovery
+// notice that must outlive it.
+//
+// Two separate guarantees, deliberately tested against the PAGE rather than
+// the components:
+//
+// 1. STATUS MATRIX. Reopening is offered for `delivered` only, and adding it
+//    must not disturb the branches already there: `selected` keeps its own
+//    unlock panel, and the statuses with nothing to reopen never grow the
+//    destructive control. The action re-checks the status itself; this is the
+//    UX half.
+// 2. RECOVERY SURVIVES THE TRIGGER. A reopen whose final cleanup failed lands
+//    in `proofing` with the obligation still owed, so the notice has to render
+//    from the server read alone — no delivered status, no delivered panel. If
+//    it were rendered inside the delivered branch (the obvious mistake) a
+//    refresh would hide a live obligation, which is exactly what the approved
+//    copy says must stay visible.
+describe("GalleryDetailPage — reopening a delivered gallery (task #287)", () => {
+  it("offers the reopen trigger on a delivered gallery", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "delivered" }));
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+
+    expect(screen.getByRole("button", { name: "Reabrir entrega" })).toBeDefined();
+  });
+
+  it.each(["draft", "proofing", "archived"] as const)(
+    "never offers the reopen trigger on a %s gallery",
+    async (status) => {
+      getGalleryDetailMock.mockResolvedValue(galleryDetail({ status }));
+
+      render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+
+      expect(screen.queryByRole("button", { name: "Reabrir entrega" })).toBeNull();
+    },
+  );
+
+  it("keeps the unlock panel — and no reopen trigger — on a selected gallery", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "selected" }));
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+
+    expect(screen.getByRole("button", { name: "Desbloquear selección" })).toBeDefined();
+    expect(screen.queryByRole("button", { name: "Reabrir entrega" })).toBeNull();
+  });
+
+  // The page's own job in the rolling/normal split is to pass the REAL flag
+  // through, not to own the copy: the exact approved sentence is asserted in
+  // src/components/reopen-delivered-gallery-panel.test.tsx. What would break
+  // silently here is the wiring — a hardcoded `false` (or a missing prop)
+  // renders the ordinary warning for a rolling gallery, promising it that
+  // downloads stay closed until the next delivery when they do not.
+  it("passes the gallery's real rollingDelivery flag to the confirmation body", async () => {
+    getGalleryDetailMock.mockResolvedValue(
+      galleryDetail({ status: "delivered", rollingDelivery: true }),
+    );
+    const user = userEvent.setup();
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+    await user.click(screen.getByRole("button", { name: "Reabrir entrega" }));
+    const dialog = await screen.findByRole("dialog");
+
+    expect(within(dialog).getByText(/sin esperar a la nueva entrega/)).toBeDefined();
+    expect(within(dialog).queryByText(/Los archivos que el cliente ya se descargó/)).toBeNull();
+  });
+
+  it("reads the durable cleanup obligation for the same gallery it resolved", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "delivered" }));
+
+    await GalleryDetailPage(paramsFor(GALLERY_ID));
+
+    expect(readGalleryFinalCleanupMock).toHaveBeenCalledWith(GALLERY_ID);
+  });
+
+  it("renders the recovery notice and its retry while a cleanup is pending — proofing included", async () => {
+    // `proofing` is the status a reopened gallery actually lands in: the
+    // delivered trigger is already gone here, and the obligation is not.
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "proofing" }));
+    readGalleryFinalCleanupMock.mockResolvedValue({
+      reopenEpoch: "2026-10-25T14:31:07.123Z",
+      remainingKeys: 3,
+    });
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+
+    expect(
+      screen.getByText(
+        "La galería quedó reabierta, pero no pudimos borrar todos los finales viejos (3 " +
+          "archivo(s) pendiente(s)). Reintentá la limpieza; mientras tanto no reabras ni " +
+          "elimines esta galería.",
+      ),
+    ).toBeDefined();
+    expect(screen.getByRole("button", { name: "Reintentar limpieza" })).toBeDefined();
+    // Still no reopen control: the gallery is not delivered any more.
+    expect(screen.queryByRole("button", { name: "Reabrir entrega" })).toBeNull();
+  });
+
+  it("renders no recovery notice when nothing is owed", async () => {
+    getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "proofing" }));
+
+    render(await GalleryDetailPage(paramsFor(GALLERY_ID)));
+
+    expect(screen.queryByRole("button", { name: "Reintentar limpieza" })).toBeNull();
+    expect(screen.queryByText(/no pudimos borrar todos los finales viejos/)).toBeNull();
+  });
 });

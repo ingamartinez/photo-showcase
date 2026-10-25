@@ -1544,29 +1544,112 @@ describe("POST /api/assets/[assetId]/final — the reopen epoch guard (task #287
 
   // Task #287 review, finding 3's second half: both Puts must happen inside the
   // locked transaction, not merely before a metadata update.
+  //
+  // RE-REVIEW, finding 1 — the first version of this test only proved that the
+  // transaction had STARTED (`transactionIndex === 1`) and that a `for:update`
+  // entry existed anywhere in the ACCUMULATED log. Both facts stay true after
+  // the callback returns, so this mutation survived the whole suite: keep the
+  // lock/epoch/fresh-asset checks inside `db.transaction`, but defer the two
+  // Puts and the metadata write to a closure awaited AFTER it returns, with the
+  // metadata going through the OUTER `db`. That is exactly the writer ordering
+  // the approved plan forbids — reopen/cleanup can take the gallery lock between
+  // the in-transaction check and the stale request's deterministic-key writes.
+  //
+  // This seam observes the CALLBACK'S LIFETIME, not just its start:
+  //   - `activeInvocation` is set on entry and cleared in `finally` AFTER the
+  //     real transaction resolves, so anything recorded while it is null ran
+  //     outside the transaction;
+  //   - the callback receives its own `tx` stand-in (delegating to the fake), so
+  //     a write routed through it and a write through the OUTER executor are
+  //     separately attributable;
+  //   - `locked` is computed from the log entries THIS invocation pushed (from
+  //     `logStart` on), so a lock taken by an earlier transaction cannot count.
+  // This is a test-only observation of the route's own calls, not a claim about
+  // PostgreSQL isolation.
   it("performs both Puts inside the locked transaction, after the row lock", async () => {
     authMock.mockResolvedValue(adminSession());
     const db = await seededDb();
     db.__rows.assets.length = 0;
     db.__rows.assets.push(assetRow({ isSelected: true, finalKey: null, isEdited: false }));
+    type WriteStatement = {
+      set: (patch: Row) => { where: (condition: unknown) => Promise<unknown> };
+    };
     const fake = db as unknown as {
       transaction: (fn: (tx: unknown) => Promise<unknown>) => Promise<unknown>;
+      update: (table: unknown) => WriteStatement;
       __log: string[];
     };
     fake.__log.length = 0;
     const realTransaction = fake.transaction.bind(fake);
-    let transactionIndex = 0;
-    fake.transaction = async (fn) => {
-      transactionIndex += 1;
-      return realTransaction(fn);
+    const realUpdate = fake.update.bind(fake);
+
+    type PutSite = { key: string; invocation: number | null; locked: boolean };
+    type WriteSite = { viaTx: boolean; invocation: number | null; locked: boolean };
+    const puts: PutSite[] = [];
+    const metadataWrites: WriteSite[] = [];
+    const outerWrites: WriteSite[] = [];
+
+    let invocationSeq = 0;
+    let activeInvocation: number | null = null;
+    // Log offset of the invocation currently running: the lock must belong to
+    // THIS invocation, not to any earlier one.
+    let logStart = 0;
+    const lockedInInvocation = (start: number): boolean =>
+      fake.__log.slice(start).includes("for:update");
+
+    // Anything written through the OUTER executor is recorded as such — the
+    // publish must never use it while the gallery lock is supposed to be held.
+    fake.update = (table) => {
+      const statement = realUpdate(table);
+      return {
+        set: (patch) => ({
+          where: (condition) => {
+            outerWrites.push({
+              viaTx: false,
+              invocation: activeInvocation,
+              locked: lockedInInvocation(logStart),
+            });
+            return statement.set(patch).where(condition);
+          },
+        }),
+      };
     };
-    const observed: { transactionIndex: number; lockSeen: boolean; key: string }[] = [];
+
+    fake.transaction = async (fn) => {
+      invocationSeq += 1;
+      const invocation = invocationSeq;
+      const invocationLogStart = fake.__log.length;
+      const previousLogStart = logStart;
+      activeInvocation = invocation;
+      logStart = invocationLogStart;
+      const tx = Object.create(fake) as typeof fake;
+      tx.update = (table) => {
+        const statement = realUpdate(table);
+        return {
+          set: (patch) => ({
+            where: (condition) => {
+              metadataWrites.push({
+                viaTx: true,
+                invocation: activeInvocation,
+                locked: lockedInInvocation(invocationLogStart),
+              });
+              return statement.set(patch).where(condition);
+            },
+          }),
+        };
+      };
+      try {
+        return await realTransaction(() => fn(tx));
+      } finally {
+        // Cleared only AFTER the real transaction resolved: a PUT or metadata
+        // write performed in a closure awaited after it records `null` here.
+        activeInvocation = null;
+        logStart = previousLogStart;
+      }
+    };
+
     putObjectMock.mockImplementation(async (key: string) => {
-      observed.push({
-        transactionIndex,
-        lockSeen: fake.__log.includes("for:update"),
-        key,
-      });
+      puts.push({ key, invocation: activeInvocation, locked: lockedInInvocation(logStart) });
     });
     const { POST } = await import("./route");
 
@@ -1578,13 +1661,22 @@ describe("POST /api/assets/[assetId]/final — the reopen epoch guard (task #287
       );
     } finally {
       fake.transaction = realTransaction;
+      fake.update = realUpdate;
     }
 
     expect(response.status).toBe(200);
-    expect(observed).toEqual([
-      { transactionIndex: 1, lockSeen: true, key: FINAL_KEY },
-      { transactionIndex: 1, lockSeen: true, key: DISPLAY_KEY },
+    // Both objects were written by invocation 1, AFTER that invocation took the
+    // gallery row lock and while it was still the active transaction.
+    expect(puts).toEqual([
+      { key: FINAL_KEY, invocation: 1, locked: true },
+      { key: DISPLAY_KEY, invocation: 1, locked: true },
     ]);
+    // The metadata write ran in that same active, locked invocation and through
+    // the transaction executor — not through the outer `db`.
+    expect(metadataWrites).toEqual([{ viaTx: true, invocation: 1, locked: true }]);
+    expect(outerWrites).toEqual([]);
+    // And it is the write that actually republished the asset.
+    expect(db.__rows.assets[0]!.finalKey).toBe(FINAL_KEY);
   });
 
   // Task #287 review, finding 6 — an asset that disappears between the

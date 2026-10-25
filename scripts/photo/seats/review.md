@@ -26,7 +26,9 @@ context.
    Use it to judge intent. Where it and the task disagree, the task wins, but an UNDECLARED
    divergence from either is a finding.
 3. The approved plan the orchestrator points you at. A deviation from the plan is a finding
-   unless the report declared it.
+   unless the report declared it. The plan seat runs on your own model, so its reasoning will
+   tend to read as obviously right to you: judge the code against `PLAN.md` and the task, not
+   against how convincing the plan sounds.
 
 ## What you check, in priority order
 

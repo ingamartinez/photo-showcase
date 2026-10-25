@@ -23,7 +23,7 @@
 #   terminal=term_<uuid>          # handle for orca terminal wait|read|close
 #   tab=<tabId>
 #   title=photo-implement-276     # joins the tab, the watcher and the `process` by name
-#   model=deepseek/deepseek-flash
+#   model=opencode-go/deepseek-v4.1-flash
 #   thinking=high
 #   tools=read,bash,edit,write,mcp__codegraph__*
 #   contract=/abs/path/scripts/photo/seats/implement.md
@@ -109,11 +109,11 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# THE SEAT MAP. explore, implement and ship run deepseek-flash over DeepSeek's own API (provider
-# `deepseek`), NOT llm-gateway: the gateway's deepseek id (`deepseek-v4.1-flash-1017`) is retired
-# here, the official model is called `deepseek-flash`. Plan runs Opus through claude-bridge, review
-# runs gpt-6.1-sol through openai. Plan and review on DIFFERENT models is the point of review: the
-# reviewer is never the implementer, and never shares a model line with whoever decided the how.
+# THE SEAT MAP. explore, implement and ship run deepseek-v4.1-flash through OpenCode Go (provider
+# `opencode-go`), replacing `deepseek/deepseek-flash` on 2026-10-25. Plan and review both run
+# gpt-6.1-sol through openai, by the owner's decision of the same date: the reviewer is still never
+# the implementer (a different model line, deepseek), but it now shares a model with whoever decided
+# the how. That is accepted, not an accident — see ORCA.md.
 #
 # MIND THE THINKING LEVELS OF THE DEEPSEEK SEATS. That model maps only `low`, `high` and `max`:
 # `medium` does not exist (`thinkingLevelMap.medium = null`) and neither does `minimal`. A deepseek
@@ -132,17 +132,17 @@ seat_thinking() {
 case "$seat" in
   explore)
     agent_name="photo-explore-seat"
-    provider="${SEAT_PROVIDER:-deepseek}";      model="${SEAT_MODEL:-deepseek-flash}"
+    provider="${SEAT_PROVIDER:-opencode-go}";   model="${SEAT_MODEL:-deepseek-v4.1-flash}"
     thinking="$(seat_thinking low)";           tools="read,bash"
     ;;
   plan)
     agent_name="photo-plan-seat"
-    provider="${SEAT_PROVIDER:-claude-bridge}"; model="${SEAT_MODEL:-claude-opus-5-5}"
+    provider="${SEAT_PROVIDER:-openai}";        model="${SEAT_MODEL:-gpt-6.1-sol}"
     thinking="$(seat_thinking high)";          tools="read,bash"
     ;;
   implement)
     agent_name="photo-implement-seat"
-    provider="${SEAT_PROVIDER:-deepseek}";      model="${SEAT_MODEL:-deepseek-flash}"
+    provider="${SEAT_PROVIDER:-opencode-go}";   model="${SEAT_MODEL:-deepseek-v4.1-flash}"
     thinking="$(seat_thinking high)";          tools="read,bash,edit,write"
     ;;
   review)
@@ -152,7 +152,7 @@ case "$seat" in
     ;;
   ship)
     agent_name="photo-ship-seat"
-    provider="${SEAT_PROVIDER:-deepseek}";      model="${SEAT_MODEL:-deepseek-flash}"
+    provider="${SEAT_PROVIDER:-opencode-go}";   model="${SEAT_MODEL:-deepseek-v4.1-flash}"
     thinking="$(seat_thinking low)";           tools="read,bash"
     ;;
   *)

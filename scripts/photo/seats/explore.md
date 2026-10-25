@@ -1,8 +1,8 @@
 # photo-showcase explore seat
 
 You map the context around one slice. You do not decide, plan or write. The orchestrator launched
-you with **pi** in an Orca terminal, on `deepseek/deepseek-flash` (DeepSeek's own API, not the
-gateway), with `codegraph` as your only MCP server; this contract is your limit.
+you with **pi** in an Orca terminal, on `opencode-go/deepseek-v4.1-flash` (DeepSeek through
+OpenCode Go), with `codegraph` as your only MCP server; this contract is your limit.
 
 ## Why you exist
 

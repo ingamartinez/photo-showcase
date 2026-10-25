@@ -26,23 +26,25 @@ Never infer an ID from creation order. Read it.
 
 ## The seats, and why each one runs on that model
 
-| Step      | Seat                   | Provider / model                | Thinking | Tools                          |
-| --------- | ---------------------- | ------------------------------- | -------- | ------------------------------ |
-| Explore   | `photo-explore-seat`   | `deepseek/deepseek-flash`       | low      | `read,bash` + codegraph        |
-| Plan      | `photo-plan-seat`      | `claude-bridge/claude-opus-5-5` | high     | `read,bash` + codegraph        |
-| Implement | `photo-implement-seat` | `deepseek/deepseek-flash`       | high     | `read,bash,edit,write` + graph |
-| Review    | `photo-review-seat`    | `openai/gpt-6.1-sol`            | high     | `read,bash` + codegraph        |
-| Ship      | `photo-ship-seat`      | `deepseek/deepseek-flash`       | low      | `read,bash` + codegraph        |
+| Step      | Seat                   | Provider / model                  | Thinking | Tools                          |
+| --------- | ---------------------- | --------------------------------- | -------- | ------------------------------ |
+| Explore   | `photo-explore-seat`   | `opencode-go/deepseek-v4.1-flash` | low      | `read,bash` + codegraph        |
+| Plan      | `photo-plan-seat`      | `openai/gpt-6.1-sol`              | high     | `read,bash` + codegraph        |
+| Implement | `photo-implement-seat` | `opencode-go/deepseek-v4.1-flash` | high     | `read,bash,edit,write` + graph |
+| Review    | `photo-review-seat`    | `openai/gpt-6.1-sol`              | high     | `read,bash` + codegraph        |
+| Ship      | `photo-ship-seat`      | `opencode-go/deepseek-v4.1-flash` | low      | `read,bash` + codegraph        |
 
 The map lives in `scripts/photo/seats/start-seat.sh`; you never type a model by hand. Two things
 about it that are not obvious:
 
-- **The deepseek seats run DeepSeek's own API, and that model maps only `low`, `high` and `max`.**
+- **The deepseek seats run through OpenCode Go, and that model maps only `low`, `high` and `max`.**
   `medium` does not exist. A deepseek seat launched with `medium` dies after 3-4 tool calls with
   `status=empty` and `output-bytes=0`, leaving its tab open — it looks like a timeout and is not one.
   Implement runs `high` on purpose: it is the seat that is most expensive to under-think.
-- **Plan and review on different model lines** is the reason review exists. If you ever see the same
-  model in both, the seat map was reverted by accident.
+- **Plan and review share `gpt-6.1-sol`, on purpose** (owner's decision, 2026-10-25). What review
+  still guarantees is a different model from the implementer. Since the reviewer can no longer
+  supply an independent opinion on the plan itself, the owner's approval gate on the plan is the
+  only check on the _how_ — do not let it become a formality.
 
 ## The slice, end to end
 
@@ -242,7 +244,8 @@ worktree is invisible to Orca, and a lane nobody can see is a lane nobody review
 1. **You do not write code.** No edits, no patches, no "just this one line". The seat contracts are
    the enforcement; pi does not sandbox them for you.
 2. **The reviewer is never the implementer.** The review seat reviews what another actor
-   committed. An unreviewed slice does not ship. Plan and review also run different models.
+   committed. An unreviewed slice does not ship. Review also runs a different model from the
+   implementer (plan and review share one, by decision).
 3. **Never merge.** Merging to `main` deploys to production — that is the owner's decision on a
    specific PR, never an inference from "finish it", "ship it" or "end to end". The **ship seat**
    merges the PR the owner approved; you do not.

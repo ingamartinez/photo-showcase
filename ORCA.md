@@ -27,13 +27,13 @@ The orchestrator never writes code, never lets a seat work in the primary checko
 actor that moves board columns. Several slices can run at once: each gets its own workspace, branch,
 tabs and watcher names.
 
-| Step           | Seat                   | Provider / model                | Thinking | Tools                          |
-| -------------- | ---------------------- | ------------------------------- | -------- | ------------------------------ |
-| Map the slice  | `photo-explore-seat`   | `deepseek/deepseek-flash`       | low      | `read,bash` + codegraph        |
-| Decide the how | `photo-plan-seat`      | `claude-bridge/claude-opus-5-5` | high     | `read,bash` + codegraph        |
-| Implement      | `photo-implement-seat` | `deepseek/deepseek-flash`       | high     | `read,bash,edit,write` + graph |
-| Review         | `photo-review-seat`    | `openai/gpt-6.1-sol`            | high     | `read,bash` + codegraph        |
-| Ship           | `photo-ship-seat`      | `deepseek/deepseek-flash`       | low      | `read,bash` + codegraph        |
+| Step           | Seat                   | Provider / model                  | Thinking | Tools                          |
+| -------------- | ---------------------- | --------------------------------- | -------- | ------------------------------ |
+| Map the slice  | `photo-explore-seat`   | `opencode-go/deepseek-v4.1-flash` | low      | `read,bash` + codegraph        |
+| Decide the how | `photo-plan-seat`      | `openai/gpt-6.1-sol`              | high     | `read,bash` + codegraph        |
+| Implement      | `photo-implement-seat` | `opencode-go/deepseek-v4.1-flash` | high     | `read,bash,edit,write` + graph |
+| Review         | `photo-review-seat`    | `openai/gpt-6.1-sol`              | high     | `read,bash` + codegraph        |
+| Ship           | `photo-ship-seat`      | `opencode-go/deepseek-v4.1-flash` | low      | `read,bash` + codegraph        |
 
 Every seat also gets `mcp__codegraph__*` and nothing else from MCP (see "MCP servers and memory").
 
@@ -41,9 +41,9 @@ Overrides without editing the script: `SEAT_PROVIDER`, `SEAT_MODEL`, `SEAT_THINK
 `SEAT_THINKING_<SEAT>` (one seat only — the global, exported for a deepseek seat, would also change
 plan's and review's thinking), `SEAT_TIMEOUT_MS`.
 
-**The deepseek seats run the official API (`provider: deepseek`, model `deepseek-flash`), not
-`llm-gateway`.** Their predecessor here was `llm-gateway/deepseek-v4.1-flash-1017`; the gateway id is
-retired in this lane, adopted from SYC on 2026-10-20.
+**The deepseek seats run through OpenCode Go (`provider: opencode-go`, model
+`deepseek-v4.1-flash`).** That replaced DeepSeek's own API (`deepseek/deepseek-flash`) on
+2026-10-25, which had itself replaced `llm-gateway/deepseek-v4.1-flash-1017` on 2026-10-20.
 
 **That model maps only `low`, `high` and `max`.** `medium` does not exist
 (`thinkingLevelMap.medium = null`) and neither does `minimal`. A deepseek seat launched with `medium`
@@ -51,28 +51,30 @@ dies after 3-4 tool calls with `status=empty` and `output-bytes=0`, leaving its 
 like a timeout and is not one. Explore and ship run `low`; implement runs `high`, because the seat
 that writes code is the most expensive one to under-think.
 
-Plan and review on **different** model lines is deliberate: the reviewer is never the implementer,
-and no longer shares a model with whoever decided the how.
+**Plan and review share `gpt-6.1-sol`, by the owner's decision of 2026-10-25.** From 2026-10-20
+until then plan ran Opus through `claude-bridge` precisely so the reviewer would not share a model
+with whoever decided the how. What still holds: the reviewer is never the implementer, and runs a
+different model line from it. What was given up: an independent second opinion on the plan. The
+owner's approval gate on the plan is now the only check on the _how_, and `review.md` tells the
+reviewer to judge the code against `PLAN.md` and the task rather than against the plan's reasoning.
 
 ## Why the seats are pi and not subagents
 
-`claude-bridge` is a **pi extension** (`pi-claude-bridge`), not a model gateway. It drives Claude
-Code through the Agent SDK, so no other harness can use it as a provider. Rather than split the
-working roles across two harnesses, the whole working layer runs in pi and the coordinating thread
-is pi too.
+Every seat is a pi process, and so is the coordinating thread, so the whole working layer lives in
+one harness: one launcher, one contract format, one set of flags. pi also reaches providers no
+single other harness has together here — the ChatGPT-account `openai` credential, `opencode-go`, and
+the `claude-bridge` extension, which drives Claude Code through the Agent SDK (no seat uses it since
+2026-10-25, but it stays available through `SEAT_PROVIDER`).
 
 Consequences worth knowing:
 
-- The `claude-bridge` seat draws on the **Claude subscription quota**, not per-token billing. Opus
-  runs are not unlimited; the plan seat is the only one that uses it.
-- The `openai/gpt-6.1-sol` review seat is served by the **ChatGPT account** credential, which is
+- The `openai/gpt-6.1-sol` plan and review seats are served by the **ChatGPT account** credential, which is
   entitlement-limited: it is one of the models that account actually serves, while most others are
   rejected with `400 "… not supported when using Codex with a ChatGPT account"`. Do not swap it for
   another `openai/*` model without probing it first.
 - The `llm-gateway` seats are ordinary API models with per-token billing. Its **premium tier**
   (`gpt-5.4`, `gpt-5.5`, `claude-opus-5-5` through the gateway) returns `402 weekly allowance` on the
-  lite plan once the allowance is spent — which is why plan runs on `claude-bridge` and not on
-  `llm-gateway/claude-opus-5-5`.
+  lite plan once the allowance is spent — which is why no seat runs on the gateway's premium tier.
 - `pi auth check` reports `invalid`/`invalid_state` for `claude-bridge` even when it works, because
   it only understands built-in providers. The launcher therefore requires the provider to exist in
   pi's catalog and treats a non-ready auth state as a warning.
@@ -93,7 +95,7 @@ agent=photo-plan-seat
 terminal=term_<uuid>          # handle for orca terminal wait|read|send|close
 tab=<tabId>
 title=photo-plan-42           # joins the tab, the watcher and the `process` by name
-model=claude-bridge/claude-opus-5-5
+model=openai/gpt-6.1-sol
 thinking=high
 tools=read,bash,mcp__codegraph__*
 contract=/abs/path/scripts/photo/seats/plan.md
@@ -400,10 +402,11 @@ These are deliberate, not drift to "fix":
    Claude lane the implementer reads the task and decides the how itself.
 2. **Every working role is a separate pi process in its own terminal**, not a subagent.
    `.claude/agents/photo-reviewer.md` remains the reviewer for the Claude lane.
-3. **Plan and review run different models.** The reviewer is never the implementer, and since
-   2026-10-20 it no longer shares a model line with whoever decided the how: plan is Opus through
-   `claude-bridge`, review is `gpt-6.1-sol` through `openai`. If both show the same model, somebody
-   reverted the seat map in `start-seat.sh` by accident.
+3. **Review runs a different model from the implementer, and the same one as plan.** Implement is
+   `deepseek-v4.1-flash` through `opencode-go`; plan and review are both `gpt-6.1-sol` through
+   `openai`, by the owner's decision of 2026-10-25 (it reverses the 2026-10-20 split, when plan ran
+   Opus through `claude-bridge`). If review ever shows the implementer's model, somebody broke the
+   seat map in `start-seat.sh`.
 4. **Seats are disposable** (`--no-session`). A correction starts a new seat with the findings
    rather than resuming a conversation.
 5. **No per-lane git worktree by default.** `KANBAN.md` describes how to run lanes when you do

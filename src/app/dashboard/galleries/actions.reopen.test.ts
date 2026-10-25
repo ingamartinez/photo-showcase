@@ -1434,6 +1434,56 @@ describe("reopenDeliveredGallery — a drainer-level exception is recovery state
     expect(revalidatePathMock).toHaveBeenCalledWith(`/dashboard/galleries/${G1}`);
   });
 
+  it("keeps a conservative durable remainder when the manifest write fails after the deletes", async () => {
+    // The storage half SUCCEEDS and the database half then fails: the drainer
+    // deletes the objects, then cannot remove the manifest row. The obligation
+    // must survive as a CONSERVATIVE overestimate (all captured keys), never as
+    // a clean result — retrying absent keys is safe.
+    const fake = (await db()) as unknown as { delete: (table: unknown) => unknown };
+    const realDelete = fake.delete.bind(fake);
+    const { galleryFinalCleanup } = await import("@/lib/db/schema");
+    let failedOnce = false;
+    fake.delete = (table: unknown) => {
+      const statement = realDelete(table) as { where: (condition: unknown) => unknown };
+      if (table !== galleryFinalCleanup || failedOnce) return statement;
+      return {
+        where: () => {
+          failedOnce = true;
+          throw new Error("manifest delete failed");
+        },
+      };
+    };
+    let result;
+    try {
+      result = await reopen();
+    } finally {
+      fake.delete = realDelete;
+    }
+    expect(failedOnce).toBe(true);
+
+    expect(result.status).toBe("reopened_cleanup_failed");
+    const r = await rows();
+    const manifest = r.galleryFinalCleanup[0]!;
+    expect(manifest).toBeDefined();
+    // Every captured key is still listed (an overestimate)…
+    expect(result.remainingCleanupKeys).toBe((manifest.remainingKeys as string[]).length);
+    // …even though the bytes are already gone, which is exactly why the retry
+    // must tolerate absent objects.
+    expect(objects.has(finalOf(A1, "jpg"))).toBe(false);
+
+    // The retry resumes from that durable remainder and finishes.
+    const { retryReopenedFinalCleanup } = await import("./actions");
+    const retried = await retryReopenedFinalCleanup(
+      { status: "idle" },
+      formData({
+        galleryId: G1,
+        expectedEpoch: (manifest.reopenEpoch as Date).toISOString(),
+      }),
+    );
+    expect(retried).toEqual({ status: "cleaned" });
+    expect((await rows()).galleryFinalCleanup).toEqual([]);
+  });
+
   it("reports the retry's own cleanup_failed state and revalidates", async () => {
     // First create a real pending obligation.
     deleteFailures.remaining = 1_000;

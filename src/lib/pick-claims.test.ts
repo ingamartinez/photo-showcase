@@ -7,7 +7,13 @@ import { assetPicks, assets, galleries, galleryClients } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 import type { DbTransaction } from "@/lib/gallery-client-locks";
 import { createFakeDb } from "@/test-support/fake-db";
-import { actOnBehalf, applyAssetChanges, claimCart, reresolveAssets } from "@/lib/pick-claims";
+import {
+  actOnBehalf,
+  applyAssetChanges,
+  claimCart,
+  reresolveAssets,
+  resetDeliveredSelection,
+} from "@/lib/pick-claims";
 import { type ClaimedUnit } from "@/lib/quota-attribution";
 import type { GalleryQuotaSnapshot } from "@/lib/quota";
 
@@ -490,6 +496,76 @@ describe("reresolveAssets — end to end", () => {
       selectedAt: null,
       requestedAt: null,
     });
+  });
+});
+
+describe("resetDeliveredSelection — the whole-gallery cancellation (#287)", () => {
+  it("de-submits every pick and unclaims every unit, including a legacy one", async () => {
+    const ctx = setup(
+      [
+        assetRow("held", claim({ selectedAt: t(1), requestedAt: t(1) })),
+        assetRow("legacy", claim({ billedTo: null, billedAt: null, selectionKind: "original" })),
+        assetRow("free"),
+      ],
+      [
+        pickRow("held", A, { submittedAt: t(2) }),
+        pickRow("held", B, { submittedAt: t(3) }),
+        // Never submitted, untouched by the stamp — must survive as the cart
+        // it already was.
+        pickRow("free", B, { kind: "original" }),
+      ],
+    );
+
+    await resetDeliveredSelection(ctx.tx, ctx.gallery, t(9));
+
+    expect(ctx.pickStore.every((row) => row.submittedAt === null)).toBe(true);
+    // Only the claimed rows moved units; the unclaimed one was never billed
+    // and is not rewritten by the cancellation.
+    for (const id of ["held", "legacy"]) {
+      expect(ctx.assetStore.find((row) => row.id === id)).toMatchObject({
+        isSelected: false,
+        billedTo: null,
+        billedAt: null,
+        selectedAt: null,
+        requestedAt: null,
+        selectionKind: "edited",
+      });
+    }
+    // The carts keep their identity: owner, kind and pick time are the
+    // client's own and are not the gallery's to rewrite.
+    expect(ctx.pickStore.find((row) => row.assetId === "free")).toMatchObject({
+      userId: B,
+      kind: "original",
+      pickedAt: t(0),
+    });
+    expect(ctx.assetStore.find((row) => row.id === "free")).toMatchObject({ isSelected: false });
+  });
+
+  it("only touches its own gallery", async () => {
+    const other = "22222222-2222-4222-8222-222222222222";
+    const ctx = setup(
+      [assetRow("mine", claim()), assetRow("theirs", claim({ galleryId: other, billedTo: B }))],
+      [
+        pickRow("mine", A, { submittedAt: t(2) }),
+        pickRow("theirs", B, { galleryId: other, submittedAt: t(2) }),
+      ],
+    );
+
+    await resetDeliveredSelection(ctx.tx, ctx.gallery, t(9));
+
+    expect(ctx.assetStore.find((row) => row.id === "theirs")).toMatchObject({
+      isSelected: true,
+      billedTo: B,
+    });
+    expect(ctx.pickStore.find((row) => row.assetId === "theirs")!.submittedAt).toEqual(t(2));
+  });
+
+  it("leaves nothing claimed when a unit's holder had no pick of their own", async () => {
+    const ctx = setup([assetRow("stranded", claim({ billedTo: null, billedAt: t(4) }))], []);
+
+    await resetDeliveredSelection(ctx.tx, ctx.gallery, t(9));
+
+    expect(ctx.assetStore[0]).toMatchObject({ isSelected: false, billedAt: null });
   });
 });
 

@@ -65,10 +65,20 @@ const SUBMITTED_STATUSES = new Set<GalleryStatus>(["selected", "delivered", "arc
 //     rather than staying stuck read-only until someone reloads.
 //
 // `draft` never reaches a client at all, and `delivered`/`archived` are
-// terminal — PLAN.md §2's state machine has no path back out of `delivered`
-// toward the selectable statuses, so a client leaving a delivered gallery
-// open for an hour to look at their photos issues ZERO polls. That is the
-// single biggest saving in this design and it costs one `Set`.
+// terminal FROM THE CLIENT'S POINT OF VIEW — a client leaving a delivered
+// gallery open for an hour to look at their photos issues ZERO polls. That is
+// the single biggest saving in this design and it costs one `Set`.
+//
+// TASK #287 CORRECTED THE REASON, NOT THE BEHAVIOUR. The old sentence here
+// said "PLAN.md §2's state machine has no path back out of `delivered`". That
+// is no longer true: an ADMIN can now reopen a delivered gallery
+// (`reopenDeliveredGallery`), which cancels the whole delivered cycle and
+// moves it back to `proofing`. The reason delivered stays non-live is
+// narrower and still correct: this transport carries SELECTION changes, and a
+// delivered gallery has no selection to change — the reopen itself is an admin
+// act that sends the client a magic link, and an already-open delivered page
+// learns about it on reload. Do not add `delivered` here without redesigning
+// what a delivered tab would render; nothing in this slice needs it.
 const LIVE_SYNC_STATUSES = new Set<GalleryStatus>(["proofing", "selected"]);
 
 // 30 seconds — task #114 changed both the VALUE and the JOB of this constant.

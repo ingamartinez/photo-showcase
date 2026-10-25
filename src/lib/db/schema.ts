@@ -765,11 +765,18 @@ export const assets = pgTable(
     // alternative (a pick that is silently free because of an earlier gift)
     // would make the quota unexplainable to the person paying it.
     //
-    // There is deliberately NO "clear this on delete" rule, because there is no
-    // operation to hang one on: this app has no "delete just the final" path —
-    // `DELETE /api/assets/[assetId]` removes the whole row (and its R2 objects)
-    // — so a stranded `true` on a final-less asset is unreachable rather than
-    // merely unlikely. Verified against the route, not assumed.
+    // There WAS deliberately no "clear this on delete" rule, because there was
+    // no operation to hang one on: the app had no "delete just the final" path
+    // — `DELETE /api/assets/[assetId]` removes the whole row (and its R2
+    // objects) — so a stranded `true` on a final-less asset was unreachable
+    // rather than merely unlikely. TASK #287 ADDED THAT OPERATION, so the
+    // sentence above is now history rather than a rule: reopening a delivered
+    // gallery clears `finalKey`, `isEdited`, `isExtra` and `deliveredFor`
+    // TOGETHER on every asset of the gallery (see
+    // `gallery_final_cleanup` and the reopen action), because a gift intent
+    // that outlives the file it describes is stale, not harmless. Generic
+    // unclaim (`pick-claims.ts`) still does NOT touch any of them — an admin
+    // removing one client's pick must not discard a produced file.
     isExtra: boolean("is_extra").notNull().default(false),
     // Task #223 — WHICH PERSON a photographer-added extra (`isExtra` above)
     // belongs to, so the `by-person` tray has a row to put it in.
@@ -816,6 +823,43 @@ export const assets = pgTable(
   // accepts a unique INDEX (not just a unique CONSTRAINT) as an FK target.
   (t) => [uniqueIndex("assets_id_gallery_id_idx").on(t.id, t.galleryId)],
 );
+
+// Task #287 — THE DURABLE CLEANUP OBLIGATION of a delivered reopen.
+//
+// A reopen physically deletes the gallery's uploaded finals and their display
+// derivatives from R2 (owner decision: "si borremos de R2, no quiero
+// huérfanos"). Bytes cannot be un-deleted by a SQL rollback, so the reset
+// cannot delete before it commits; it captures the exact object keys here, in
+// the SAME transaction, and a later gallery-locked pass drains them. Without
+// this row a process death right after the reset would lose the list forever:
+// the assets survive a reopen (unlike a gallery delete), but their ids are the
+// only way to derive the deterministic keys, and the old objects may be
+// unreachable by any other means.
+//
+// One row per gallery — the PK, which is also the only lookup (`gallery_id =`)
+// the action, the retry and the detail page ever do. Deliberately NO asset FK:
+// deleting an asset must never erase the obligation to remove its bytes (the
+// captured key already names the object). Deliberately no status/attempt/lease
+// columns either: this is one purpose-specific manifest, drained synchronously,
+// not a general job queue.
+//
+// ON DELETE RESTRICT, unlike every other referrer of `galleries.id` (those
+// cascade): a parent gallery delete would otherwise silently destroy the only
+// record of what still needs deleting. `deleteGallery` refuses while a
+// manifest is pending and this constraint is the defence in depth.
+export const galleryFinalCleanup = pgTable("gallery_final_cleanup", {
+  galleryId: uuid("gallery_id")
+    .primaryKey()
+    .references(() => galleries.id, { onDelete: "restrict" }),
+  // The exact `galleries.unlocked_at` written by the reopening transaction.
+  // The drainer refuses a manifest whose epoch no longer matches the locked
+  // gallery: a newer reopen owns a newer obligation and this one is stale.
+  reopenEpoch: timestamp("reopen_epoch", { withTimezone: true }).notNull(),
+  // Fully namespaced R2 keys, exactly as enumerated before detachment.
+  remainingKeys: text("remaining_keys").array().notNull(),
+});
+
+export type GalleryFinalCleanup = typeof galleryFinalCleanup.$inferSelect;
 
 // Epic #250, task #257 — WHO WANTS WHAT. One row per (person, photo) request:
 // choosing is asking, not owning (epic #250's founder decision 1). Several

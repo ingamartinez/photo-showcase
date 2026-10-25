@@ -1,9 +1,9 @@
 // The tuteo guard (Q8, task #262; the ADMIN half is task #263). The UI must
-// never drift back to voseo: "Toca", "puedes", "escríbele", "Tú", "Avisale",
-// "agregá", "seleccioná", "entregás", "Esperá", "Intentá". This reads the
-// shipped files (not the tests, not `design/`) and fails on the voseo forms.
-// Comments are stripped first so the historical discussion in a header comment
-// cannot trip a rule about COPY.
+// never drift back to voseo: "Toca", "puedes", "escríbele", "Tú", "Avísale",
+// "agrega", "selecciona", "entregas", "Espera", "Intenta", "Reintenta",
+// "Actualiza", "arreglas". This reads the shipped files (not the tests, not
+// `design/`) and fails on the voseo forms. Comments are stripped first so the
+// historical discussion in a header comment cannot trip a rule about COPY.
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
@@ -30,6 +30,11 @@ const CLIENT_FILES = [
 // todos (n)" / "Mostrar menos" / its `aria-label`), and the row is edited by
 // the same slice. A new file carrying admin copy must join this list IN THE
 // SLICE THAT ADDS IT — otherwise the guard silently stops covering it.
+//
+// Task #287 added the reopened-delivery panel and the cleanup-recovery notice:
+// both render admin copy that slice introduced, and the guard did not list them
+// (the guard was green on strings it did not actually protect — the same defect
+// task #263's finding W3 named).
 const ADMIN_FILES = [
   "src/lib/client-selection-state.ts",
   "src/lib/galleries.ts",
@@ -40,6 +45,8 @@ const ADMIN_FILES = [
   "src/components/rolling-delivery-control.tsx",
   "src/app/dashboard/galleries/[galleryId]/page.tsx",
   "src/app/dashboard/galleries/actions.ts",
+  "src/components/reopen-delivered-gallery-panel.tsx",
+  "src/components/pending-final-cleanup-notice.tsx",
 ];
 
 // Voseo imperatives/pronouns that must not reach the client. "escribile" (no
@@ -53,8 +60,13 @@ const ADMIN_FILES = [
 //   - a case-sensitive list misses exactly the strings most likely to drift
 //     back in: the mock's own sentence-initial "Tocá una foto…"
 //     (client.html:714) and "¿Enviás estas 3?" (:844).
+//
+// Task #287 added the three imperative forms that were really on screen but had
+// no alternative here (`Reintentá`, `Actualizá`, `arreglás`), so a future slice
+// could reintroduce exactly the wording this one removed and stay green. They
+// were added only after checking that no OTHER listed file contains them.
 const VOSEO =
-  /(?<!\p{L})(podés|tocá|escribile|enviás|querés|tenés|vos|sacala|arrepentís|elegí|mirá|avisale|agregá|seleccioná|copiala|considerá|entregás|esperá|intentá)(?!\p{L})/iu;
+  /(?<!\p{L})(podés|tocá|escribile|enviás|querés|tenés|vos|sacala|arrepentís|elegí|mirá|avisale|agregá|seleccioná|copiala|considerá|entregás|esperá|intentá|reintentá|actualizá|arreglás)(?!\p{L})/iu;
 
 /** Removes `//` line comments and `/* … *\/` block comments, leaving string
  * literals untouched enough for this purpose. */
@@ -99,6 +111,12 @@ describe("client copy is tuteo, never voseo", () => {
     // did not actually protect.
     expect("Esperá unos minutos antes de volver a intentar".match(VOSEO)?.[0]).toBe("Esperá");
     expect("Intentá de nuevo en un rato".match(VOSEO)?.[0]).toBe("Intentá");
+    // The three forms task #287 converted ("Reintenta la limpieza", "Actualiza la
+    // página y revisa", "lo ya cobrado lo arreglas por fuera"). Each was live in
+    // the shipped dashboard copy and none of them had an alternative here.
+    expect("Reintentá la limpieza".match(VOSEO)?.[0]).toBe("Reintentá");
+    expect("Actualizá la página y revisá".match(VOSEO)?.[0]).toBe("Actualizá");
+    expect("lo ya cobrado lo arreglás por fuera".match(VOSEO)?.[0]).toBe("arreglás");
 
     // And it does not fire on the tuteo forms it exists to protect.
     expect("Toca una foto para verla grande".match(VOSEO)).toBeNull();
@@ -111,6 +129,9 @@ describe("client copy is tuteo, never voseo", () => {
     expect("cuando entregas toda la galería".match(VOSEO)).toBeNull();
     expect("Espera unos minutos antes de volver a intentar".match(VOSEO)).toBeNull();
     expect("Intenta de nuevo en un rato".match(VOSEO)).toBeNull();
+    expect("Reintenta la limpieza".match(VOSEO)).toBeNull();
+    expect("Actualiza la página y revisa".match(VOSEO)).toBeNull();
+    expect("lo ya cobrado lo arreglas por fuera".match(VOSEO)).toBeNull();
     // Regional "acá" is not voseo.
     expect("las que elijan van a aparecer acá".match(VOSEO)).toBeNull();
   });

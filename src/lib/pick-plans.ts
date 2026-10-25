@@ -239,6 +239,52 @@ export function planReresolve(
 }
 
 /**
+ * Task #287 — the WHOLE-GALLERY cancellation of a delivered cycle. This is
+ * deliberately NOT `planReresolve` over every asset, and the difference is the
+ * point of the function:
+ *
+ * `reresolveClaim` PRESERVES a legacy unit before it even looks at the
+ * remaining submitted picks (rule 2 in its own header: its basis is not in
+ * `asset_picks`, so an ordinary correction has no business inventing or
+ * removing one). That is right for an admin fixing one person's picks and
+ * wrong here: reopening a delivery cancels the ENTIRE cycle, so every claimed
+ * unit goes away — including the "Sin registro" bucket and including units
+ * whose picks are about to become carts. Nobody is invented for them; they
+ * simply stop being claimed and can be picked normally in the new cycle.
+ *
+ * `picksAfter` is the pick set AFTER the caller's bulk de-submission, and it
+ * is here to FAIL LOUDLY when that did not happen. A submitted pick on an
+ * unclaimed asset is the contradiction `derivePickStatus` throws on; letting
+ * this plan unclaim assets while a stamped pick survives would manufacture
+ * exactly that state for every row.
+ *
+ * `arrival: null` always — an unclaim creates no unit, so there is nothing to
+ * place in the arrival queue.
+ */
+export function planReopenDeliveredSelection(
+  rows: readonly AssetRow[],
+  picksAfter: readonly PickRow[],
+): PickPlan {
+  const stillSubmitted = picksAfter.filter((pick) => pick.submittedAt !== null);
+  if (stillSubmitted.length > 0) {
+    throw new Error(
+      `pick-plans: ${stillSubmitted.length} pick(s) are still submitted; ` +
+        "a delivered reopen must de-submit every pick first",
+    );
+  }
+
+  const assetChanges: AssetChange[] = [];
+  for (const row of rows) {
+    const before = claimFromAsset(row);
+    if (!before.claimed) continue;
+    const change = changeOf(row.id, before, { claimed: false });
+    if (change) assetChanges.push(change);
+  }
+
+  return { assetChanges, arrival: null };
+}
+
+/**
  * Remove EVERY pick of one person (cart and submitted). Only the assets where
  * a SUBMITTED pick was deleted need re-resolution — a cart or degraded pick
  * never carried a claim.

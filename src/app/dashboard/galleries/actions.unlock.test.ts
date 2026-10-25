@@ -384,6 +384,11 @@ describe("unlockSelection validation and guards", () => {
     expect(result).toEqual({ status: "error", message: "La galería no existe." });
   });
 
+  // `delivered` is in this list ON PURPOSE (task #287): reopening a delivered
+  // gallery is a DIFFERENT transition with a whole-gallery cancellation behind
+  // it (`reopenDeliveredGallery`, actions.reopen.test.ts), so this action must
+  // keep refusing it. Adding the leg here instead would make the delivered
+  // case reset the status without cancelling picks, claims or finals.
   it.each(["draft", "proofing", "delivered", "archived"])(
     "refuses to unlock a gallery in status %s — only `selected` has anything to unlock",
     async (status) => {

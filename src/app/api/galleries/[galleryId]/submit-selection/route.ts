@@ -34,6 +34,15 @@
 // person's behalf, from the dashboard (decision 12) — and that is a deliberate,
 // asymmetric human escape hatch.
 //
+// EXCEPT FOR AN ADMIN'S WHOLE-GALLERY CANCELLATION (task #287): reopening a
+// DELIVERED gallery (`reopenDeliveredGallery` in
+// src/app/dashboard/galleries/actions.ts) de-submits EVERY pick of the gallery
+// in one transaction, so each client's sent order becomes an editable cart
+// again and they can remove the photo they regret. That is a separate,
+// admin-only state transition, not a hole in this route's rule: from inside
+// this route a submitted pick is still frozen, and the first new submit after
+// the reopen freezes again normally.
+//
 // ADMIN CALLERS ARE REFUSED (409 `admin_cannot_submit`). An admin has no
 // `gallery_clients` row, so there is no membership to lock; locking people on
 // their behalf is the dashboard's per-client action (slice #242), which reuses
@@ -156,8 +165,14 @@ export const POST = withApiSession(async function POST(
 
   // Only `proofing` and `selected` can hold a submission at all: `draft` is
   // reachable only by an admin preview (gate 2 already refused a client), and
-  // `delivered`/`archived` are further along than submission even matters
-  // for. PLAN.md §2's state machine is linear.
+  // `delivered`/`archived` are further along than submission matters for.
+  //
+  // THE MACHINE IS NOT STRICTLY LINEAR ANY MORE (task #287): an ADMIN can move
+  // a gallery back from `delivered` to `proofing`, which restores this route's
+  // ability to accept a submission there — nothing below needs to know, since
+  // it reads the CURRENT status rather than assuming a one-way history. What
+  // the reopen does NOT do is let a client submit from `delivered`; the status
+  // is `proofing` again by the time they can.
   if (gallery.status !== "proofing" && gallery.status !== "selected") {
     return errorResponse("gallery_not_submittable", 409);
   }

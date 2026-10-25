@@ -1113,6 +1113,14 @@ export async function getGalleriesForClient(clientId: string): Promise<ClientGal
 // Unlock audit trail (task #73) — read side. See
 // src/app/dashboard/galleries/actions.ts's `unlockSelection` for the write
 // side and the full reasoning behind what is/isn't recorded here.
+//
+// Task #287 added a SECOND writer of the same three columns:
+// `reopenDeliveredGallery`, the delivered -> proofing transition. It
+// deliberately OVERWRITES the previous audit instead of appending (only the
+// LATEST unlock is kept, by design) and it makes `unlockedAt` STRICTLY later
+// than the value it replaces, because that column doubles as the reopen epoch
+// the final upload compares against. This query needs no change: it reads the
+// latest state either way.
 // ---------------------------------------------------------------------------
 
 export type GalleryUnlockAudit = {
@@ -1126,7 +1134,8 @@ export type GalleryUnlockAudit = {
 };
 
 /** The unlock audit trail for a single gallery: who last unlocked a
- * submitted selection back to `proofing`, when, and any note they left.
+ * submitted selection back to `proofing` (or last reopened a delivered one,
+ * task #287), when, and any note they left.
  *
  * A DEDICATED, minimal query — not folded into the shared
  * `GalleryDetail`/`findGalleryDetail` above — on purpose: this is

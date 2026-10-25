@@ -31,6 +31,23 @@ DRAFT ──▶ PROOFING ──▶ SELECTED ──▶ DELIVERED  (──▶ ARCH
   └─ Photographer uploads proofs (auto watermark + downscale). Not yet visible to client.
 ```
 
+> **Drift (#287, 2026-10-25).** There IS a way back: `DELIVERED ──▶ PROOFING`, admin-only,
+> through `reopenDeliveredGallery`. It is a whole-gallery cancellation of the delivered
+> cycle, not a status edit — a client who selected photos with closed eyes has to be able
+> to change them, and the owner refused an assisted path. In one transaction it clears
+> `delivered_at`, seals a fresh (strictly later) `unlocked_at`/`unlocked_by_email`/
+> `unlock_reason`, resets the three per-client lock fields on EVERY membership row,
+> de-submits EVERY `asset_picks` row into an editable cart, unclaims EVERY unit (legacy
+> "Sin registro" included) and detaches every final (`final_key`/`is_edited`/`is_extra`/
+> `delivered_for`). `delivered_at` therefore means the LATEST delivery. The physical
+> deletion of those finals and their display derivatives is a durable obligation in
+> `gallery_final_cleanup`, drained after the commit under the same gallery lock, with a
+> distinct `reopened_cleanup_failed` result and an admin retry — never a silent orphan.
+> Consequences, recorded rather than hidden: billed attribution resets to zero and is
+> recomputed on the new submission at the new arrival (old included-slot priority is
+> discarded), already-downloaded copies cannot be recalled, and a client tab already
+> sitting on `delivered` does not live-sync (it learns on reload or through the email).
+>
 > **Drift (epic #250, 2026-10-17).** `PROOFING ──▶ SELECTED` is no longer a client
 > action. A client's "Enviar" places an order for their own picks and never closes the
 > gallery. The gallery closes by itself when every active member is done: no unsent pick,
@@ -108,6 +125,12 @@ Automatic watermarking is a deliberate choice: the system guarantees protection,
 1. Photographer uploads edited full-quality images for selected assets only.
 2. `sharp` strips EXIF, outputs optimized full-res JPEG (no watermark).
 3. Stored in R2 at `galleries/{galleryId}/finals/{assetId}.jpg`.
+
+_Drift (#287): a delivered reopen deletes the detached finals AND their `display/`
+derivatives, discovering them by listing the gallery's own `finals/`/`display/` prefixes
+(never `proofs/`) and re-checking live references under the gallery lock before each
+DELETE. The final upload now publishes under that same lock and refuses with
+`409 gallery_changed` when the gallery's reopen epoch moved while it was decoding._
 
 **Serving:** R2 objects are **private**. The app issues **short-lived presigned URLs** after verifying the client's session owns the gallery. Cloudflare fronts R2 → free egress + CDN. The droplet never streams image bytes.
 

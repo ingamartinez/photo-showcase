@@ -1529,40 +1529,25 @@ export type ReopenDeliveredGalleryState = {
    * finding 1). `message` belongs to whichever outcome owns the status — a
    * cleanup failure puts its own drainer/count text there — so the notification
    * failure needs its own field or it is lost the moment cleanup ALSO fails.
-   * Present whenever `emailFailed` is true, for every status that reports an
-   * email failure, so the panel can render the approved email warning next to
-   * the cleanup alert instead of losing it behind that status. */
-  emailMessage?: string;
+   *
+   * These are the ADDRESSES nobody could reach, present whenever `emailFailed`
+   * is true and for EVERY status that reports an email failure. An EMPTY array
+   * next to `emailFailed: true` is the zero-recipient case (there was nobody to
+   * mail), which is the only thing that distinguishes the two approved
+   * sentences the panel can render from it.
+   *
+   * THE SENTENCE IS NOT BUILT HERE, DELIBERATELY. `src/components/
+   * copy-tuteo.test.ts` enforces the dashboard's TUTEO copy over this file and
+   * would reject the owner's approved voseo wording for this panel ("avisale",
+   * "reintentá"); the panel already ships that voseo copy — see kanban #287,
+   * "Copy de UI — APPROVED by owner" — and is not in the guard's list. Rather
+   * than ship two competing sentences, or one that the guard forbids, the
+   * action reports exactly what happened (the addresses, or none) and the panel
+   * owns the sentence it displays. */
+  failedEmails?: string[];
   /** Only when a durable cleanup obligation survives this call. */
   remainingCleanupKeys?: number;
 };
-
-/** The approved email-failure sentences (kanban #287, "Copy de UI — APPROVED
- * by owner"): the partial variant names the addresses nobody could reach, the
- * zero-recipient variant says there was nobody to mail. `Avisale` carries no
- * accent and `para avisar` is the approved wording — the owner's list is
- * authoritative over the strings this action shipped before the UI round.
- *
- * NOT exported: a `"use server"` module may only export async functions, and
- * `src/components/reopen-delivered-gallery-panel.test.tsx` cannot import this
- * module at all (it pulls `next-auth` -> `next/server`, unresolvable under the
- * jsdom/web transform — see vitest.config.ts). The backend suite asserts the
- * exact output against the real action instead. */
-function reopenEmailFailureMessage(
-  failedEmails: readonly string[],
-  noActiveClients: boolean,
-): string {
-  if (noActiveClients) {
-    return (
-      "Reabrimos la galería, pero no encontramos clientes para avisar por correo. " +
-      "Avisale por otro medio (WhatsApp / llamada)."
-    );
-  }
-  return (
-    `Reabrimos la galería, pero no pudimos avisarle por correo a: ${failedEmails.join(", ")}. ` +
-    "Avisale por otro medio (WhatsApp / llamada)."
-  );
-}
 
 // Only a gallery sitting in `delivered` has a delivered cycle to cancel —
 // same "the check IS the authority, hiding the button is only UX" stance as
@@ -1864,10 +1849,6 @@ export async function reopenDeliveredGallery(
       .map((client) => client.email);
   }
   const emailFailed = clients.length === 0 || failedEmails.length > 0;
-  // Built once, so the two statuses cannot disagree about the email outcome.
-  const emailMessage = emailFailed
-    ? reopenEmailFailureMessage(failedEmails, clients.length === 0)
-    : undefined;
 
   if (drain.status !== "cleaned") {
     // `reopened_cleanup_failed` is reported for EVERY non-clean drain outcome:
@@ -1875,12 +1856,12 @@ export async function reopenDeliveredGallery(
     // obligation it created — never proof that cleanup is clean, task #287
     // review finding 5) and "failed" (the drainer itself threw). The email
     // outcome travels independently so neither failure hides the other: the
-    // cleanup text owns `message` here, the email warning owns `emailMessage`,
-    // and the panel renders both.
+    // cleanup text owns `message` here, the notification owns `failedEmails`,
+    // and the panel renders both approved alerts.
     return {
       status: "reopened_cleanup_failed",
       emailFailed,
-      ...(emailMessage !== undefined ? { emailMessage } : {}),
+      ...(emailFailed ? { failedEmails } : {}),
       ...(drain.remainingCleanupKeys !== undefined
         ? { remainingCleanupKeys: drain.remainingCleanupKeys }
         : {}),
@@ -1888,12 +1869,7 @@ export async function reopenDeliveredGallery(
     };
   }
   if (emailFailed) {
-    return {
-      status: "reopened_email_failed",
-      emailFailed,
-      emailMessage,
-      message: emailMessage,
-    };
+    return { status: "reopened_email_failed", emailFailed, failedEmails };
   }
   return { status: "reopened" };
 }

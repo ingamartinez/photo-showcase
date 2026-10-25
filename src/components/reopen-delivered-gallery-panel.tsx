@@ -47,10 +47,14 @@
 //
 // 4. THE EMAIL WARNING IS NEVER FOLDED AWAY (task #287 UI review, finding 1).
 //    `reopened_cleanup_failed` owns `message` with its cleanup text, so the
-//    notification outcome travels in `emailMessage` and the two approved
-//    alerts are rendered SIDE BY SIDE when both failed — no invented combined
-//    sentence, and nothing the admin needs disappears because a second thing
-//    also broke.
+//    notification outcome travels independently (`emailFailed` + the addresses)
+//    and the two approved alerts are rendered SIDE BY SIDE when both failed —
+//    no invented combined sentence, and nothing the admin needs disappears
+//    because a second thing also broke.
+//
+// 5. THE EMAIL SENTENCE IS THIS FILE'S. `emailFailureText` below renders the
+//    owner's approved voseo from the addresses the action reports; `actions.ts`
+//    deliberately carries no second sentence (see that field's comment).
 import { useActionState, useEffect, useRef, type ReactNode } from "react";
 import {
   Dialog,
@@ -117,6 +121,33 @@ const FACTS = {
       "subir, el cliente los va a poder bajar sin esperar a la nueva entrega.",
   },
 } as const;
+
+/**
+ * The approved EMAIL-FAILURE sentence (kanban #287, "Copy de UI — APPROVED by
+ * owner"): the partial variant names the addresses the notification could not
+ * reach; an empty `failedEmails` next to `emailFailed` means there was nobody to
+ * mail. `Avisale` has NO accent and the zero-recipient variant says `para
+ * avisar`, exactly as approved.
+ *
+ * WHY THE SENTENCE LIVES HERE AND NOT IN `actions.ts`: the action reports what
+ * happened (`emailFailed` + the addresses) and this component — the layer that
+ * already renders this panel's approved voseo copy — owns the sentence it
+ * displays. `src/components/copy-tuteo.test.ts` enforces TUTEO over the
+ * dashboard `actions.ts`, so a sentence kept there could not carry the voseo
+ * the owner approved here; two competing sentences is the defect this avoids.
+ *
+ * An ABSENT list is read as "nobody to mail" rather than hiding the warning:
+ * `failedEmails` always travels with `emailFailed`, and a hidden warning is the
+ * exact defect finding 1 named.
+ */
+function emailFailureText(state: ReopenDeliveredGalleryState): string {
+  const failed = state.failedEmails ?? [];
+  const tail = "Avisale por otro medio (WhatsApp / llamada).";
+  if (failed.length === 0) {
+    return "Reabrimos la galería, pero no encontramos clientes para avisar por correo. " + tail;
+  }
+  return `Reabrimos la galería, pero no pudimos avisarle por correo a: ${failed.join(", ")}. ${tail}`;
+}
 
 /**
  * What to show for `reopened_cleanup_failed`. The action fills in a `message`
@@ -193,13 +224,14 @@ export function ReopenDeliveredGalleryPanel({
     );
   }
 
-  // The reopen committed but at least one client could not be told. The
-  // action's message lists the addresses, so it is rendered as-is.
+  // The reopen committed but at least one client could not be told (or there
+  // was nobody left to tell). The panel owns the approved sentence and builds
+  // it from the addresses the action reported.
   if (state.status === "reopened_email_failed") {
     return (
       <CommittedOutcome>
         <p role="alert" className="text-danger text-sm">
-          {state.emailMessage ?? state.message}
+          {emailFailureText(state)}
         </p>
       </CommittedOutcome>
     );
@@ -216,9 +248,9 @@ export function ReopenDeliveredGalleryPanel({
         <p role="alert" className="text-danger text-sm">
           {cleanupFailureText(state)}
         </p>
-        {state.emailMessage !== undefined && (
+        {state.emailFailed === true && (
           <p role="alert" className="text-danger text-sm">
-            {state.emailMessage}
+            {emailFailureText(state)}
           </p>
         )}
       </CommittedOutcome>

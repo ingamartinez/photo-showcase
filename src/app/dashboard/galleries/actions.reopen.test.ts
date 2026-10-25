@@ -941,14 +941,13 @@ describe("reopenDeliveredGallery — notification and email (C5)", () => {
 
     expect(result.status).toBe("reopened_email_failed");
     expect(result.emailFailed).toBe(true);
-    expect(result.message).toBe(
-      "Reabrimos la galería, pero no pudimos avisarle por correo a: beto@example.com. " +
-        "Avisale por otro medio (WhatsApp / llamada).",
-    );
-    // The independent carrier holds the same sentence, so a status that has to
+    // The addresses travel independently of `status`, so a status that has to
     // take precedence can still report this failure (finding 1).
-    expect(result.emailMessage).toBe(result.message);
-    expect(result.message).not.toContain("ana@example.com");
+    expect(result.failedEmails).toEqual(["beto@example.com"]);
+    // The action ships NO sentence of its own for this: the panel owns the
+    // owner-approved wording (see the result type's comment), so there is no
+    // second copy to drift from what the admin reads.
+    expect(result.message).toBeUndefined();
     // Not rolled back: the reset committed, and the cleanup was clean.
     const r = await rows();
     expect(r.galleries[0]!.status).toBe("proofing");
@@ -965,8 +964,7 @@ describe("reopenDeliveredGallery — notification and email (C5)", () => {
 
     expect(result.status).toBe("reopened_email_failed");
     expect(result.emailFailed).toBe(true);
-    expect(result.message).toContain("ana@example.com");
-    expect(result.message).toContain("beto@example.com");
+    expect(result.failedEmails).toEqual(["ana@example.com", "beto@example.com"]);
     expect((await rows()).galleries[0]!.status).toBe("proofing");
   });
 
@@ -982,12 +980,9 @@ describe("reopenDeliveredGallery — notification and email (C5)", () => {
 
     expect(result.status).toBe("reopened_email_failed");
     expect(result.emailFailed).toBe(true);
-    expect(result.message).toMatch(/no encontramos clientes/);
-    expect(result.message).toBe(
-      "Reabrimos la galería, pero no encontramos clientes para avisar por correo. " +
-        "Avisale por otro medio (WhatsApp / llamada).",
-    );
-    expect(result.emailMessage).toBe(result.message);
+    // Nobody to mail: an EMPTY address list next to the flag is what tells the
+    // panel to render the zero-recipient sentence.
+    expect(result.failedEmails).toEqual([]);
     expect(signInMock).not.toHaveBeenCalled();
     expect(r.galleries[0]!.status).toBe("proofing");
   });
@@ -1005,10 +1000,7 @@ describe("reopenDeliveredGallery — notification and email (C5)", () => {
     // hidden: the email outcome travels as its own field.
     expect(result.status).toBe("reopened_cleanup_failed");
     expect(result.emailFailed).toBe(true);
-    expect(result.emailMessage).toBe(
-      "Reabrimos la galería, pero no pudimos avisarle por correo a: ana@example.com, " +
-        "beto@example.com. Avisale por otro medio (WhatsApp / llamada).",
-    );
+    expect(result.failedEmails).toEqual(["ana@example.com", "beto@example.com"]);
     expect(result.remainingCleanupKeys).toBeGreaterThan(0);
     // A `pending` drain carries the count, not a message — the recovery notice
     // is UI copy still awaiting owner approval.
@@ -1033,11 +1025,7 @@ describe("reopenDeliveredGallery — notification and email (C5)", () => {
     expect(result.status).toBe("reopened_cleanup_failed");
     expect(result.emailFailed).toBe(true);
     // The addresses are IN the result, not just a boolean:
-    expect(result.emailMessage).toBe(
-      "Reabrimos la galería, pero no pudimos avisarle por correo a: beto@example.com. " +
-        "Avisale por otro medio (WhatsApp / llamada).",
-    );
-    expect(result.emailMessage).not.toContain("ana@example.com");
+    expect(result.failedEmails).toEqual(["beto@example.com"]);
     expect(result.remainingCleanupKeys).toBeGreaterThan(0);
     // The cleanup text owns `message` — the two failures do not overwrite
     // each other.
@@ -1056,10 +1044,7 @@ describe("reopenDeliveredGallery — notification and email (C5)", () => {
 
     expect(result.status).toBe("reopened_cleanup_failed");
     expect(result.emailFailed).toBe(true);
-    expect(result.emailMessage).toBe(
-      "Reabrimos la galería, pero no encontramos clientes para avisar por correo. " +
-        "Avisale por otro medio (WhatsApp / llamada).",
-    );
+    expect(result.failedEmails).toEqual([]);
     expect(result.remainingCleanupKeys).toBeGreaterThan(0);
     expect(signInMock).not.toHaveBeenCalled();
   });
@@ -1489,12 +1474,9 @@ describe("reopenDeliveredGallery — a drainer-level exception is recovery state
     expect(result.status).toBe("reopened_cleanup_failed");
     expect(result.emailFailed).toBe(true);
     expect(result.message).toMatch(/no pudimos terminar de borrar/);
-    expect(result.emailMessage).toBe(
-      "Reabrimos la galería, pero no pudimos avisarle por correo a: beto@example.com. " +
-        "Avisale por otro medio (WhatsApp / llamada).",
-    );
-    // The drainer's message did not swallow the notification outcome.
-    expect(result.emailMessage).not.toBe(result.message);
+    expect(result.failedEmails).toEqual(["beto@example.com"]);
+    // The drainer's message did not swallow the notification outcome: the
+    // cleanup text is in `message`, the addresses are in their own field.
     expect((await rows()).galleries[0]!.status).toBe("proofing");
   });
 

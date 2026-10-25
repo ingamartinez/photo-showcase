@@ -20,14 +20,14 @@
 //   reopen committed, but bytes are still owed.
 // - WHEN BOTH CLEANUP AND EMAIL FAIL, BOTH ALERTS ARE VISIBLE (task #287 UI
 //   review, finding 1). The cleanup failure owns `message`; the notification
-//   outcome travels in `emailMessage`, and losing it here would lose it for
-//   good because a cleanup retry never sends an email.
+//   outcome travels independently (`emailFailed` + the addresses), and losing
+//   it here would lose it for good because a cleanup retry never sends an
+//   email.
 // - The confirmation body is the owner's approved copy verbatim, and the
 //   fourth paragraph is the only one that changes between ordinary and
 //   rolling delivery.
 // - The dialog ships no inherited English `Close` button, and a committed
 //   outcome takes keyboard focus instead of dropping it on BODY.
-import { readFileSync } from "node:fs";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -81,54 +81,32 @@ const DRAIN_THREW =
   "La galería quedó reabierta, pero no pudimos terminar de borrar los finales viejos. Reintentá " +
   "la limpieza desde el detalle de la galería.";
 
-// --- the ACTION's email-failure wording, derived from its own source --------
+// --- the EMAIL-failure sentence -------------------------------------------
 //
-// A handwritten copy is what the UI review rejected (finding 3): the previous
-// round's test asserted an approved `Avisale … para avisar …` sentence while
-// the shipped action produced `Avísale … a quién avisar …`, so the suite was
-// green against copy no admin ever saw. Importing the module is not an option
-// in this suite — it pulls `next-auth` -> `next/server`, which the jsdom/web
-// transform cannot resolve, and `vi.mock` cannot intercept that: resolution
-// happens before any mock factory exists (see vitest.config.ts's `server-only`
-// note for the same mechanism). "Test through the action" is likewise out of
-// reach from jsdom.
+// These two sentences are the panel's OWN shipped copy (`emailFailureText`),
+// built from the addresses the action reports. The UI review's finding 3 was a
+// suite that asserted an approved sentence while a DIFFERENT, unapproved one
+// reached the admin: the panel used to render `actions.ts`'s message verbatim,
+// so the test was asserting a string no production path emitted. The sentence
+// now lives in exactly one place — the layer that displays it — so a change to
+// the wording cannot pass here, and there is no second copy to drift from.
 //
-// So the sentences are DERIVED from the action's source. A change to the copy
-// in `actions.ts` now goes RED here instead of passing silently, which is the
-// property this suite lacked.
-function reopenEmailHelperSource(): string {
-  const source = readFileSync("src/app/dashboard/galleries/actions.ts", "utf8");
-  const match = /function reopenEmailFailureMessage\([\s\S]*?\n\}/.exec(source);
-  if (!match) {
-    throw new Error(
-      "actions.ts no longer defines reopenEmailFailureMessage — repair this derivation " +
-        "instead of inlining a sentence the action may not ship.",
-    );
-  }
-  return match[0];
-}
+// (`actions.ts` cannot hold it: `src/components/copy-tuteo.test.ts` enforces the
+// dashboard's tuteo copy over that file, while the owner approved voseo for
+// this panel. The action reports `emailFailed` + the addresses instead.)
+const EMAIL_PARTIAL_LEAD = "Reabrimos la galería, pero no pudimos avisarle por correo a: ";
+const EMAIL_ZERO_RECIPIENTS_LEAD =
+  "Reabrimos la galería, pero no encontramos clientes para avisar por correo. ";
+const EMAIL_TAIL = "Avisale por otro medio (WhatsApp / llamada).";
 
-function literal(body: string, pattern: RegExp): string {
-  const match = pattern.exec(body);
-  if (!match?.[1]) {
-    throw new Error(`reopenEmailFailureMessage no longer contains ${pattern}`);
-  }
-  return match[1];
-}
-
-const EMAIL_HELPER = reopenEmailHelperSource();
-const EMAIL_TAIL = literal(EMAIL_HELPER, /"([^"]*Avisale por otro medio[^"]*)"/);
-const ZERO_RECIPIENTS_LEAD = literal(EMAIL_HELPER, /"([^"]*no encontramos clientes[^"]*)"/);
-const PARTIAL_LEAD = literal(EMAIL_HELPER, /`([^`$]*)\$\{failedEmails\.join/);
-
-/** The action's partial-failure sentence, with the addresses it names. */
+/** The partial-failure sentence, with the addresses the action reported. */
 function partialEmailFailure(...emails: string[]): string {
-  return `${PARTIAL_LEAD}${emails.join(", ")}. ${EMAIL_TAIL}`;
+  return `${EMAIL_PARTIAL_LEAD}${emails.join(", ")}. ${EMAIL_TAIL}`;
 }
 
-/** The action's zero-recipient sentence. */
+/** The zero-recipient sentence: `emailFailed` with nobody to mail. */
 function zeroRecipientsEmailFailure(): string {
-  return `${ZERO_RECIPIENTS_LEAD}${EMAIL_TAIL}`;
+  return `${EMAIL_ZERO_RECIPIENTS_LEAD}${EMAIL_TAIL}`;
 }
 
 afterEach(() => {
@@ -259,13 +237,12 @@ describe("ReopenDeliveredGalleryPanel — the four outcomes are visibly distinct
     expect(screen.queryByRole("alert")).toBeNull();
   });
 
-  it("renders the email failure as an alert with the ACTION's own wording", async () => {
-    const message = partialEmailFailure("ana@example.com");
+  it("renders the email failure with every address the action reported", async () => {
+    const message = partialEmailFailure("ana@example.com", "beto@example.com");
     reopenMock.mockResolvedValue({
       status: "reopened_email_failed",
       emailFailed: true,
-      emailMessage: message,
-      message,
+      failedEmails: ["ana@example.com", "beto@example.com"],
     });
     const user = userEvent.setup();
     renderPanel();
@@ -273,21 +250,19 @@ describe("ReopenDeliveredGalleryPanel — the four outcomes are visibly distinct
     await confirm(user);
 
     const alert = await screen.findByRole("alert");
-    // Derived from actions.ts above, so this is the sentence the action really
-    // produces — not a compliant mock the production code never emits.
+    // The exact sentence `emailFailureText` ships, with the addresses joined as
+    // the approved copy shows them.
     expect(alert.textContent).toBe(message);
-    expect(alert.textContent).toContain("Avisale por otro medio (WhatsApp / llamada).");
     // Distinct from success: an email failure is never reported as a status.
     expect(screen.queryByRole("status")).toBeNull();
   });
 
-  it("renders the zero-recipient email failure with the action's own wording", async () => {
+  it("renders the zero-recipient wording when nobody was left to mail", async () => {
     const message = zeroRecipientsEmailFailure();
     reopenMock.mockResolvedValue({
       status: "reopened_email_failed",
       emailFailed: true,
-      emailMessage: message,
-      message,
+      failedEmails: [],
     });
     const user = userEvent.setup();
     renderPanel();
@@ -297,18 +272,31 @@ describe("ReopenDeliveredGalleryPanel — the four outcomes are visibly distinct
     expect((await screen.findByRole("alert")).textContent).toBe(message);
   });
 
-  it("ships the approved email wording, not the pre-approval strings", () => {
+  it("does not ship the pre-approval email strings", async () => {
     // The exact defect finding 3 reported: `Avísale` (accented) and
-    // `a quién avisar` shipped while the approved list says `Avisale` and
-    // `para avisar`. The derivation above makes a copy change RED; this pins
-    // the direction of the fix.
-    expect(EMAIL_HELPER).not.toContain("Avísale");
-    expect(EMAIL_HELPER).not.toContain("a quién avisar");
-    expect(EMAIL_TAIL).toBe("Avisale por otro medio (WhatsApp / llamada).");
-    expect(ZERO_RECIPIENTS_LEAD).toBe(
-      "Reabrimos la galería, pero no encontramos clientes para avisar por correo. ",
-    );
-    expect(PARTIAL_LEAD).toBe("Reabrimos la galería, pero no pudimos avisarle por correo a: ");
+    // `a quién avisar` reached the admin while the approved list says `Avisale`
+    // and `para avisar`. Both variants are rendered and pinned byte-for-byte,
+    // so either regression goes RED here.
+    for (const [failedEmails, expected] of [
+      [[], zeroRecipientsEmailFailure()],
+      [["ana@example.com"], partialEmailFailure("ana@example.com")],
+    ] as const) {
+      reopenMock.mockResolvedValue({
+        status: "reopened_email_failed",
+        emailFailed: true,
+        failedEmails: [...failedEmails],
+      });
+      const user = userEvent.setup();
+      renderPanel();
+      await confirm(user);
+
+      const text = (await screen.findByRole("alert")).textContent ?? "";
+      expect(text).toBe(expected);
+      expect(text).not.toContain("Avísale");
+      expect(text).not.toContain("a quién avisar");
+      cleanup();
+      reopenMock.mockReset();
+    }
   });
 
   it("renders a cleanup failure as an alert with the durable pending count", async () => {
@@ -371,7 +359,7 @@ describe("ReopenDeliveredGalleryPanel — cleanup and email failures are both sh
       status: "reopened_cleanup_failed",
       emailFailed: true,
       remainingCleanupKeys: 3,
-      emailMessage: message,
+      failedEmails: ["ana@example.com", "beto@example.com"],
     });
     const user = userEvent.setup();
     renderPanel();
@@ -393,7 +381,7 @@ describe("ReopenDeliveredGalleryPanel — cleanup and email failures are both sh
       status: "reopened_cleanup_failed",
       emailFailed: true,
       message: DRAIN_THREW,
-      emailMessage: message,
+      failedEmails: [],
     });
     const user = userEvent.setup();
     renderPanel();
@@ -428,12 +416,11 @@ describe("ReopenDeliveredGalleryPanel — a committed result takes focus", () =>
   });
 
   it("focuses the combined-failure result, so the warnings are where the keyboard is", async () => {
-    const message = partialEmailFailure("ana@example.com");
     reopenMock.mockResolvedValue({
       status: "reopened_cleanup_failed",
       emailFailed: true,
       remainingCleanupKeys: 3,
-      emailMessage: message,
+      failedEmails: ["ana@example.com", "beto@example.com"],
     });
     const user = userEvent.setup();
     renderPanel();

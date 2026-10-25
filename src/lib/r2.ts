@@ -387,3 +387,117 @@ export async function getObjectSize(key: string): Promise<number> {
 export async function objectExists(key: string): Promise<boolean> {
   return getClient().exists(key);
 }
+
+// ---------------------------------------------------------------------------
+// Task #287 — the reopen cleanup's enumeration boundary.
+// ---------------------------------------------------------------------------
+
+/** How many LIST pages one prefix may take before this file gives up. A
+ * gallery with 100 photos has a handful of objects; 500 pages of 1,000 keys is
+ * far beyond any real gallery and only exists so a broken/never-progressing
+ * continuation token can never spin forever inside a database transaction. */
+const MAX_LIST_PAGES = 500;
+
+/** A stored final key (`assets.final_key`) validated against the canonical
+ * gallery it claims to belong to. Returns the key's own namespace root —
+ * `galleries/{id}/` or `dev/galleries/{id}/`. Everything else THROWS: a stored
+ * path outside this gallery's own final subtree is not evidence of what to
+ * enumerate, and quietly widening the cleanup to it would be exactly the
+ * bucket-wide delete this operation must never be. */
+function namespaceRootOfStoredFinal(storedFinalKey: string, galleryId: string): string {
+  for (const prefix of ["", "dev/"]) {
+    const root = `${prefix}galleries/${galleryId}/`;
+    if (storedFinalKey.startsWith(`${root}finals/`)) return root;
+  }
+  throw new Error(
+    `r2: stored final key "${storedFinalKey}" is not under this gallery's own finals/ subtree ` +
+      `(gallery ${galleryId}); refusing to enumerate cleanup targets from it`,
+  );
+}
+
+/** Every object under `prefix`, following the continuation token to the last
+ * page. A truncated response without a usable, PROGRESSING next token is an
+ * error, never an incomplete success: a silently short list would leave
+ * objects behind while the caller believed the cleanup was complete. */
+async function listAllKeysUnder(prefix: string): Promise<string[]> {
+  const keys: string[] = [];
+  let token: string | undefined;
+  for (let page = 0; page < MAX_LIST_PAGES; page += 1) {
+    const response = await getClient().list(
+      token === undefined ? { prefix } : { prefix, continuationToken: token },
+    );
+    for (const object of response.contents ?? []) {
+      // The brand this function hands back is derived from a trusted response,
+      // so it must actually satisfy the prefix it was asked for. An object key
+      // outside it is a broken response, not a cleanup target.
+      if (!object.key.startsWith(prefix)) {
+        throw new Error(
+          `r2: LIST for prefix "${prefix}" returned an object outside it ("${object.key}")`,
+        );
+      }
+      keys.push(object.key);
+    }
+    if (!response.isTruncated) return keys;
+    const next = response.nextContinuationToken;
+    if (!next || next === token) {
+      throw new Error(`r2: LIST for prefix "${prefix}" is truncated with no usable next token`);
+    }
+    token = next;
+  }
+  throw new Error(`r2: LIST for prefix "${prefix}" exceeded ${MAX_LIST_PAGES} pages`);
+}
+
+/**
+ * EVERY R2 object a delivered reopen must sweep for one gallery: the complete
+ * union of
+ *
+ *   - all objects under the gallery's `finals/` prefix, whatever the
+ *     extension — a format-changing re-upload can leave a non-current one
+ *     behind and an object whose asset row is gone has no key to derive;
+ *   - all objects under its `display/` prefix, including ones whose asset no
+ *     longer has a final;
+ *   - every non-null stored `final_key` in the snapshot; and
+ *   - the deterministic display key of every snapshot asset, claimed or not.
+ *
+ * A prefix LIST is used rather than an extension loop over the current keys
+ * because the current keys are exactly what a buggy cleanup already got
+ * wrong (`final/route.ts`'s stale-object branch is best-effort). This is also
+ * the ONLY reason this file grows a LIST call: no other path may form or
+ * trust a key from a LIST response.
+ *
+ * BOUNDARIES. Paths are formed here, as this module's header demands, and the
+ * enumeration is limited to the canonical gallery's own subtree. The current
+ * process's namespace is always included; every OTHER root is included only
+ * because a stored final key evidenced it (a stored key carries the namespace
+ * that was active when it was written — see `namespacedKey`/`storedKey`). No
+ * `proofs/` prefix is ever listed and no other gallery is ever touched.
+ *
+ * Deduplicated; order is not meaningful (the drainer deletes in bounded
+ * batches).
+ */
+export async function listGalleryFinalCleanupKeys(
+  galleryId: string,
+  photos: readonly { id: string; finalKey: string | null }[],
+): Promise<R2Key[]> {
+  const currentRoot = `${namespacedKey(`galleries/${galleryId}/`)}`;
+  const roots = new Set<string>([currentRoot]);
+  const keys = new Set<string>();
+
+  for (const photo of photos) {
+    if (photo.finalKey !== null) {
+      roots.add(namespaceRootOfStoredFinal(photo.finalKey, galleryId));
+      keys.add(photo.finalKey);
+    }
+    // Adding a display key that does not exist costs one DELETE of an absent
+    // object, which this app already treats as success; missing one would
+    // leave an unreachable derivative behind.
+    keys.add(displayKey(galleryId, photo.id));
+  }
+
+  for (const root of roots) {
+    for (const key of await listAllKeysUnder(`${root}finals/`)) keys.add(key);
+    for (const key of await listAllKeysUnder(`${root}display/`)) keys.add(key);
+  }
+
+  return [...keys].map((key) => storedKey(key));
+}

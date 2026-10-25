@@ -127,6 +127,13 @@
       "when": 1792266289727,
       "tag": "0017_asset-picks-backfill",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1792961251787,
+      "tag": "0018_strong_nightshade",
+      "breakpoints": true
     }
   ]
 }

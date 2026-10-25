@@ -21,6 +21,8 @@ const size = vi.fn().mockResolvedValue(1024);
 // Task #89: `objectExists` calls `getClient().exists(key)` — Bun's own
 // HEAD-request-only existence check, the same mechanism `size` above uses.
 const exists = vi.fn().mockResolvedValue(true);
+// Task #287: `listGalleryFinalCleanupKeys` is the only LIST caller in the app.
+const list = vi.fn();
 
 class FakeS3Client {
   write = write;
@@ -29,6 +31,7 @@ class FakeS3Client {
   file = file;
   size = size;
   exists = exists;
+  list = list;
 }
 
 // r2Env() validates presence via zod; it doesn't care whether the values are
@@ -58,6 +61,7 @@ beforeEach(() => {
   size.mockClear();
   exists.mockClear();
   exists.mockResolvedValue(true);
+  list.mockReset();
 });
 
 afterEach(() => {
@@ -421,5 +425,177 @@ describe("branding (task #78)", () => {
     expect(write).toHaveBeenCalledWith("galleries/g/proofs/a.webp", "bytes", {
       type: "image/webp",
     });
+  });
+});
+
+// Task #287 — the reopen cleanup's enumeration. These tests exist because
+// every failure mode here is silent: an incomplete list leaves unreachable
+// bytes that nobody is told about, and a too-wide list destroys another
+// gallery's (or the proofs') objects.
+const G = "11111111-1111-4111-8111-111111111111";
+
+type ListInput = { prefix?: string; continuationToken?: string };
+type ListPage = { keys: string[]; truncated?: boolean; next?: string };
+
+/** Serves `pages[prefix][n]`, where the continuation token is the page index
+ * as a string. Records every call so a suite can prove WHICH prefixes were
+ * listed (and that proofs/flash/other galleries never were). */
+function stubListPages(pages: Record<string, ListPage[]>) {
+  const calls: ListInput[] = [];
+  list.mockImplementation(async (input: ListInput) => {
+    calls.push(input);
+    const pageList = pages[input.prefix ?? ""] ?? [];
+    const index = input.continuationToken === undefined ? 0 : Number(input.continuationToken);
+    const page = pageList[index] ?? { keys: [] };
+    return {
+      contents: page.keys.map((key) => ({ key })),
+      isTruncated: page.truncated ?? false,
+      nextContinuationToken: page.next,
+    };
+  });
+  return calls;
+}
+
+describe("listGalleryFinalCleanupKeys (task #287)", () => {
+  it("unions every extension, a display-only object and an object with no asset row", async () => {
+    stubListPages({
+      [`galleries/${G}/finals/`]: [
+        {
+          keys: [
+            `galleries/${G}/finals/a1.jpg`,
+            `galleries/${G}/finals/a1.png`,
+            `galleries/${G}/finals/gone.tiff`,
+          ],
+        },
+      ],
+      [`galleries/${G}/display/`]: [
+        { keys: [`galleries/${G}/display/a1.webp`, `galleries/${G}/display/gone.webp`] },
+      ],
+    });
+    const { listGalleryFinalCleanupKeys } = await import("./r2");
+
+    const keys = await listGalleryFinalCleanupKeys(G, [
+      { id: "a1", finalKey: `galleries/${G}/finals/a1.jpg` },
+    ]);
+
+    expect(new Set(keys)).toEqual(
+      new Set([
+        `galleries/${G}/finals/a1.jpg`,
+        `galleries/${G}/finals/a1.png`,
+        `galleries/${G}/finals/gone.tiff`,
+        `galleries/${G}/display/a1.webp`,
+        `galleries/${G}/display/gone.webp`,
+      ]),
+    );
+    // Only this gallery's own two prefixes: never proofs, never another
+    // gallery, never a flash gallery.
+    expect(calls().map((call) => call.prefix)).toEqual([
+      `galleries/${G}/finals/`,
+      `galleries/${G}/display/`,
+    ]);
+    expect(del).not.toHaveBeenCalled();
+    function calls() {
+      return list.mock.calls.map((call) => call[0] as ListInput);
+    }
+  });
+
+  it("follows every page of both prefixes instead of only the first", async () => {
+    const calls = stubListPages({
+      [`galleries/${G}/finals/`]: [
+        { keys: [`galleries/${G}/finals/a.jpg`], truncated: true, next: "1" },
+        { keys: [`galleries/${G}/finals/b.png`], truncated: true, next: "2" },
+        { keys: [`galleries/${G}/finals/c.webp`] },
+      ],
+      [`galleries/${G}/display/`]: [{ keys: [] }],
+    });
+    const { listGalleryFinalCleanupKeys } = await import("./r2");
+
+    const keys = await listGalleryFinalCleanupKeys(G, []);
+
+    expect(keys).toEqual(
+      expect.arrayContaining([
+        `galleries/${G}/finals/a.jpg`,
+        `galleries/${G}/finals/b.png`,
+        `galleries/${G}/finals/c.webp`,
+      ]),
+    );
+    expect(calls.filter((call) => call.prefix === `galleries/${G}/finals/`)).toEqual([
+      { prefix: `galleries/${G}/finals/` },
+      { prefix: `galleries/${G}/finals/`, continuationToken: "1" },
+      { prefix: `galleries/${G}/finals/`, continuationToken: "2" },
+    ]);
+  });
+
+  it("throws on a truncated page with no usable continuation token", async () => {
+    stubListPages({
+      [`galleries/${G}/finals/`]: [{ keys: [`galleries/${G}/finals/a.jpg`], truncated: true }],
+    });
+    const { listGalleryFinalCleanupKeys } = await import("./r2");
+
+    await expect(listGalleryFinalCleanupKeys(G, [])).rejects.toThrow(/no usable next token/);
+  });
+
+  it("rejects an object the LIST returned outside the prefix it asked for", async () => {
+    stubListPages({
+      [`galleries/${G}/finals/`]: [{ keys: [`galleries/other-gallery/finals/a.jpg`] }],
+    });
+    const { listGalleryFinalCleanupKeys } = await import("./r2");
+
+    await expect(listGalleryFinalCleanupKeys(G, [])).rejects.toThrow(/outside it/);
+  });
+
+  it("includes the namespace a stored final key was written under, plus the current one", async () => {
+    vi.stubEnv("APP_ENV", "production");
+    const calls = stubListPages({});
+    const { listGalleryFinalCleanupKeys } = await import("./r2");
+
+    const keys = await listGalleryFinalCleanupKeys(G, [
+      { id: "a1", finalKey: `dev/galleries/${G}/finals/a1.jpg` },
+    ]);
+
+    expect(calls.map((call) => call.prefix).sort()).toEqual([
+      `dev/galleries/${G}/display/`,
+      `dev/galleries/${G}/finals/`,
+      `galleries/${G}/display/`,
+      `galleries/${G}/finals/`,
+    ]);
+    expect(keys).toEqual(expect.arrayContaining([`dev/galleries/${G}/finals/a1.jpg`]));
+  });
+
+  it("adds the deterministic display key of an asset whose final was already detached", async () => {
+    stubListPages({});
+    const { listGalleryFinalCleanupKeys } = await import("./r2");
+
+    const keys = await listGalleryFinalCleanupKeys(G, [{ id: "a1", finalKey: null }]);
+
+    expect(keys).toEqual([`galleries/${G}/display/a1.webp`]);
+  });
+
+  it("deduplicates a stored final key the LIST already returned", async () => {
+    stubListPages({
+      [`galleries/${G}/finals/`]: [{ keys: [`galleries/${G}/finals/a1.jpg`] }],
+      [`galleries/${G}/display/`]: [{ keys: [`galleries/${G}/display/a1.webp`] }],
+    });
+    const { listGalleryFinalCleanupKeys } = await import("./r2");
+
+    const keys = await listGalleryFinalCleanupKeys(G, [
+      { id: "a1", finalKey: `galleries/${G}/finals/a1.jpg` },
+    ]);
+
+    expect(keys).toEqual([`galleries/${G}/finals/a1.jpg`, `galleries/${G}/display/a1.webp`]);
+  });
+
+  it.each([
+    [`galleries/other-gallery/finals/a1.jpg`],
+    [`galleries/${G}/proofs/a1.webp`],
+    [`dev/galleries/other-gallery/finals/a1.jpg`],
+  ])("refuses stored final key %s as evidence of what to enumerate", async (stored) => {
+    const calls = stubListPages({});
+    const { listGalleryFinalCleanupKeys } = await import("./r2");
+
+    await expect(listGalleryFinalCleanupKeys(G, [{ id: "a1", finalKey: stored }])).rejects.toThrow(
+      /finals\/ subtree/,
+    );
+    expect(calls).toEqual([]);
   });
 });

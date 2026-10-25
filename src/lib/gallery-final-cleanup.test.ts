@@ -25,7 +25,6 @@ vi.mock("@/lib/db", async () => {
 });
 
 import { assets, galleries, galleryFinalCleanup } from "@/lib/db/schema";
-import { createFakeDb } from "@/test-support/fake-db";
 import type { FakeDb } from "@/test-support/fake-db";
 
 type Row = Record<string, unknown>;

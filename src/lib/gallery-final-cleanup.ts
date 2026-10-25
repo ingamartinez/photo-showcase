@@ -38,7 +38,7 @@ import { eq } from "drizzle-orm";
 import { db } from "@/lib/db";
 import { assets, galleryFinalCleanup } from "@/lib/db/schema";
 import { deleteObject, displayKey, storedKey } from "@/lib/r2";
-import { lockGalleryRow, type DbTransaction } from "@/lib/gallery-client-locks";
+import { lockGalleryRow } from "@/lib/gallery-client-locks";
 
 /** How many DELETEs are in flight at once inside the locked pass. Deliberately
  * small: the gallery row lock is held for their whole duration, and the largest

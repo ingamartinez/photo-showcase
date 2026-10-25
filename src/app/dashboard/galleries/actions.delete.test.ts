@@ -43,9 +43,10 @@ vi.mock("@/lib/r2", () => ({
 }));
 
 vi.mock("@/lib/db", async () => {
-  const { assets, galleries, galleryClients } = await import("@/lib/db/schema");
+  const { assets, galleries, galleryClients, galleryFinalCleanup } =
+    await import("@/lib/db/schema");
   const { createFakeDb } = await import("@/test-support/fake-db");
-  const fake = createFakeDb([galleries, galleryClients, assets]);
+  const fake = createFakeDb([galleries, galleryClients, assets, galleryFinalCleanup]);
   type Fake = ReturnType<typeof createFakeDb>;
 
   // PostgreSQL compares `uuid` values in canonical form, so `ABCDEF…` and
@@ -102,6 +103,7 @@ vi.mock("@/lib/db", async () => {
         galleries: fake.__tables.get(galleries)!,
         galleryClients: fake.__tables.get(galleryClients)!,
         assets: fake.__tables.get(assets)!,
+        galleryFinalCleanup: fake.__tables.get(galleryFinalCleanup)!,
       },
       __lifecycle: lifecycle,
     }),
@@ -109,7 +111,12 @@ vi.mock("@/lib/db", async () => {
 });
 
 type Row = Record<string, unknown>;
-type Rows = { galleries: Row[]; galleryClients: Row[]; assets: Row[] };
+type Rows = {
+  galleries: Row[];
+  galleryClients: Row[];
+  assets: Row[];
+  galleryFinalCleanup: Row[];
+};
 
 async function rows(): Promise<Rows> {
   const { db } = (await import("@/lib/db")) as unknown as { db: { __rows: Rows } };
@@ -280,15 +287,15 @@ describe("deleteGallery — the transaction it runs", () => {
     const result = await deleteGallery(GALLERY_ID);
 
     expect(result).toEqual({ ok: true, r2Failures: 0 });
-    // `for:update` REPLACES the select it locks, so the log reads as the three
-    // statements in order: the row lock, the asset read, and one gallery row
-    // deleted. Dropping `.for("update")` turns the first entry into `select`,
-    // which is the mutation this line exists to catch — the proof-upload
-    // snapshot race reopens silently without it. The double logs query kinds
-    // and affected counts, not conditions: `delete:1` is what shows the DELETE
-    // stayed on the single locked row (the sibling suite proves the asset read
-    // is gallery-scoped).
-    expect(await log()).toEqual(["for:update", "select", "delete:1"]);
+    // `for:update` REPLACES the select it locks, so the log reads as the
+    // statements in order: the row lock, the pending-cleanup read (task #287),
+    // the asset read, and one gallery row deleted. Dropping `.for("update")`
+    // turns the first entry into `select`, which is the mutation this line
+    // exists to catch — the proof-upload snapshot race reopens silently
+    // without it. The double logs query kinds and affected counts, not
+    // conditions: `delete:1` is what shows the DELETE stayed on the single
+    // locked row (the sibling suite proves the asset read is gallery-scoped).
+    expect(await log()).toEqual(["for:update", "select", "select", "delete:1"]);
     expect(calledKeys().sort()).toEqual([DISPLAY_A, FINAL_KEY, PROOF_A, PROOF_B].sort());
     expect(r.galleries.map((row) => row.id)).toEqual([OTHER_GALLERY_ID]);
   });
@@ -434,6 +441,49 @@ describe("deleteGallery — authorization comes first", () => {
   });
 });
 
+// Task #287 — a pending final cleanup is unfinished work the gallery still
+// owes. Destroying the parent would destroy the only record of which R2
+// objects to remove, so the delete refuses cleanly (and the RESTRICT FK would
+// reject it anyway, with a far less useful message).
+describe("deleteGallery — refuses while a final cleanup is pending (task #287)", () => {
+  it("refuses, deletes nothing from R2 and keeps the gallery row", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const r = await rows();
+    r.galleryFinalCleanup.push({
+      galleryId: GALLERY_ID,
+      reopenEpoch: new Date("2026-10-25T14:00:00.000Z"),
+      remainingKeys: [`galleries/${GALLERY_ID}/finals/old.jpg`],
+    });
+    const { deleteGallery } = await import("./actions");
+
+    const result = await deleteGallery(GALLERY_ID);
+
+    expect(result.ok).toBe(false);
+    expect(result).toMatchObject({ ok: false, message: expect.stringContaining("limpieza") });
+    expect(r.galleries.some((row) => row.id === GALLERY_ID)).toBe(true);
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+    // The refusal is observed, not inferred from an FK error.
+    expect(revalidatePathMock).not.toHaveBeenCalled();
+  });
+
+  it("deletes normally once the manifest is gone", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const r = await rows();
+    r.galleryFinalCleanup.push({
+      galleryId: GALLERY_ID,
+      reopenEpoch: new Date("2026-10-25T14:00:00.000Z"),
+      remainingKeys: [`galleries/${GALLERY_ID}/finals/old.jpg`],
+    });
+    const { deleteGallery } = await import("./actions");
+
+    expect((await deleteGallery(GALLERY_ID)).ok).toBe(false);
+
+    r.galleryFinalCleanup.length = 0;
+    expect(await deleteGallery(GALLERY_ID)).toEqual({ ok: true, r2Failures: 0 });
+    expect(r.galleries.some((row) => row.id === GALLERY_ID)).toBe(false);
+  });
+});
+
 describe("deleteGallery — the reader surfaces it revalidates", () => {
   it("revalidates the list, the detail, the public page and the dashboard home", async () => {
     authMock.mockResolvedValue(adminSession());
@@ -472,7 +522,7 @@ describe("deleteGallery — the cascades it depends on", () => {
     return found;
   }
 
-  it("only assets and gallery_clients reference galleries, and both cascade", () => {
+  it("assets and gallery_clients cascade; the #287 cleanup manifest deliberately restricts", () => {
     const referrers = tables()
       .flatMap(([exportName, table]) =>
         getTableConfig(table)
@@ -483,9 +533,14 @@ describe("deleteGallery — the cascades it depends on", () => {
       )
       .sort((a, b) => a.exportName.localeCompare(b.exportName));
 
+    // Task #287 added the third referrer ON PURPOSE, not by accident: the
+    // cleanup manifest is the only record of which objects a reopened gallery
+    // still owes, so it must never be destroyed by the parent's cascade. The
+    // action refuses cleanly before the FK can raise its opaque error.
     expect(referrers).toEqual([
       { exportName: "assets", onDelete: "cascade" },
       { exportName: "galleryClients", onDelete: "cascade" },
+      { exportName: "galleryFinalCleanup", onDelete: "restrict" },
     ]);
   });
 
@@ -501,5 +556,6 @@ describe("deleteGallery — the cascades it depends on", () => {
     expect(names).toContain("assets");
     expect(names).toContain("galleryClients");
     expect(names).toContain("assetPicks");
+    expect(names).toContain("galleryFinalCleanup");
   });
 });

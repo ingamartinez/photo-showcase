@@ -28,13 +28,15 @@ import {
   assets,
   galleries,
   galleryClients,
+  galleryFinalCleanup,
   packages,
   selectionTrayMode,
   users,
 } from "@/lib/db/schema";
 import type { Gallery } from "@/lib/db/schema";
 import { requireAdmin } from "@/lib/auth-guards";
-import { deleteObject, displayKey, storedKey } from "@/lib/r2";
+import { deleteObject, displayKey, listGalleryFinalCleanupKeys, storedKey } from "@/lib/r2";
+import { drainGalleryFinalCleanup } from "@/lib/gallery-final-cleanup";
 import {
   activeClientRuleViolation,
   getGalleryClients,
@@ -59,6 +61,7 @@ import {
   claimCart,
   quotaSnapshotOf,
   readPickState,
+  resetDeliveredSelection,
   type CartClaimCounts,
 } from "@/lib/pick-claims";
 import {
@@ -1166,8 +1169,11 @@ const unlockSelectionSchema = z.object({
 // Same "the check IS the authority, hiding the button is only UX" stance as
 // `isPublishable` above. Only a gallery sitting in `selected` — a submitted,
 // not-yet-reopened selection — has anything to unlock: `draft`/`proofing`
-// were never submitted (or already reopened), `delivered`/`archived` are
-// further along than a reopen makes sense for.
+// were never submitted (or already reopened), `archived` is further along than
+// a reopen makes sense for. `delivered` is NOT here on purpose: since task
+// #287 it reopens through its own `reopenDeliveredGallery` action, which also
+// cancels the delivered cycle (picks, claims, finals). Keeping the leg out of
+// this function is what keeps both transitions independently guarded.
 function isUnlockable(status: Gallery["status"]): boolean {
   return status === "selected";
 }
@@ -1445,6 +1451,347 @@ export async function unlockSelection(
 }
 
 // ---------------------------------------------------------------------------
+// Reopen a DELIVERED gallery (task #287) — delivered -> proofing, plus the
+// whole-gallery cancellation of the delivered cycle.
+//
+// THE OWNER'S REASON FOR THIS EXISTING (2026-10-25): "esta galería ya fue
+// entregada por mí pero el usuario quiere hacer cambios ya que las fotos que
+// seleccionó no se había dado cuenta de que había personas con los ojos
+// cerrados". Before this action the only way to get a `delivered` gallery back
+// to `proofing` was a hand-written `UPDATE` against production, and the
+// owner's answer to "must the client be able to remove what they already
+// sent?" was YES, self-service — so this action de-submits EVERY pick into an
+// editable cart and unclaims EVERY unit at once, instead of leaving the client
+// able to add but never remove.
+//
+// WHAT IT DELIBERATELY DOES NOT DO:
+//   - it does not touch gallery commercial snapshots, prices or packages;
+//   - it does not settle the gallery (`settleGalleryLockStatus` is NOT called:
+//     this is an explicit admin transition, not an automatic closure);
+//   - it does not write R2 bytes inside this transaction. Object deletion
+//     cannot be rolled back by a failed commit, so the keys are captured into
+//     `gallery_final_cleanup` and drained by
+//     `drainGalleryFinalCleanup` AFTER this commits.
+//
+// DEVIATION FROM PLAN.md §2, recorded here because the board overrides the
+// background document: there IS a way back from `delivered`, it is admin-only,
+// and `delivered_at` means the LATEST delivery — not the first and only one.
+//
+// GUARDING. Admin-only at the data path (not only by hiding the button), the
+// same optional-reason schema as `unlockSelection`, and the UPDATE's own
+// `WHERE status = 'delivered'` as the REAL atomic guard: two tabs or a double
+// click can only ever reopen once, and only the winner's unlock audit, reset
+// and notification wave survive. Every other status is refused by the
+// pre-flight for a clear message, and would lose the CAS anyway.
+// ---------------------------------------------------------------------------
+
+export type ReopenDeliveredGalleryState = {
+  status: "idle" | "error" | "reopened" | "reopened_email_failed" | "reopened_cleanup_failed";
+  message?: string;
+  /** Meaningful even when `reopened_cleanup_failed` takes precedence, so a
+   * failure never hides the other one. */
+  emailFailed?: boolean;
+  /** Only when a durable cleanup obligation survives this call. */
+  remainingCleanupKeys?: number;
+};
+
+// Only a gallery sitting in `delivered` has a delivered cycle to cancel —
+// same "the check IS the authority, hiding the button is only UX" stance as
+// `isUnlockable`/`isDeliverable` above. `unlockSelection` stays selected-only
+// and keeps its own delivered refusal; the two transitions are separate
+// actions on purpose, so that adding this leg cannot silently widen the other.
+function isReopenable(status: Gallery["status"]): boolean {
+  return status === "delivered";
+}
+
+/**
+ * delivered -> proofing. One transaction: the delivered CAS, the newest unlock
+ * audit, the reset of every membership's three selection lock fields, the
+ * detachment of every final (and its edit/gift attribution), the bulk
+ * de-submission of every pick and the unclaim of every unit — plus the durable
+ * cleanup manifest the post-commit drain reads.
+ *
+ * THE LOCK IS THE FIRST OPERATION, before any read or write, so this can never
+ * interleave inside another writer's transition (same order every writer of
+ * `gallery_clients` takes, `lockGalleryRow`).
+ *
+ * THE EPOCH. `unlockedAt` is made STRICTLY later than the previous non-null
+ * value. It is the audit stamp AND the reopen epoch the final writer compares
+ * against (`POST /api/assets/[assetId]/final`): an upload that started before
+ * this commit must not publish old-cycle metadata afterwards, and a millisecond
+ * resolution equality would let it. No new column is introduced for this.
+ */
+export async function reopenDeliveredGallery(
+  _prevState: ReopenDeliveredGalleryState,
+  formData: FormData,
+): Promise<ReopenDeliveredGalleryState> {
+  const session = await requireAdmin();
+
+  const parsed = unlockSelectionSchema.safeParse({
+    galleryId: formData.get("galleryId"),
+    reason: formData.get("reason") || undefined,
+  });
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Galería inválida.",
+    };
+  }
+
+  const [gallery] = await db
+    .select()
+    .from(galleries)
+    .where(eq(galleries.id, parsed.data.galleryId))
+    .limit(1);
+  if (!gallery) {
+    return { status: "error", message: "La galería no existe." };
+  }
+  if (!isReopenable(gallery.status)) {
+    return {
+      status: "error",
+      message: "Esta galería no está entregada, así que no hay una entrega que reabrir.",
+    };
+  }
+
+  const reason = parsed.data.reason ?? null;
+  const unlockedByEmail = session.user.email ?? session.user.id;
+
+  const outcome = await db.transaction(async (tx) => {
+    // First operation, every time.
+    const lockedGallery = await lockGalleryRow(tx, gallery.id);
+    if (!lockedGallery) return null;
+
+    // A previous reopen whose cleanup never finished owns a live obligation.
+    // Refusing here (rather than merging or overwriting) is what keeps the
+    // manifest a one-to-one record of "this reopen still owes these deletes".
+    const [pendingCleanup] = await tx
+      .select({ galleryId: galleryFinalCleanup.galleryId })
+      .from(galleryFinalCleanup)
+      .where(eq(galleryFinalCleanup.galleryId, lockedGallery.id))
+      .limit(1);
+    if (pendingCleanup) {
+      return { pendingCleanup: true as const };
+    }
+
+    // The audit time, strictly after the previous unlock so it doubles as a
+    // comparable reopen epoch. Taken AFTER the lock, like every arrival in this
+    // file.
+    const wallClock = new Date();
+    const now =
+      lockedGallery.unlockedAt && lockedGallery.unlockedAt.getTime() >= wallClock.getTime()
+        ? new Date(lockedGallery.unlockedAt.getTime() + 1)
+        : wallClock;
+
+    const flipped = await tx
+      .update(galleries)
+      .set({
+        status: "proofing",
+        deliveredAt: null,
+        unlockedAt: now,
+        unlockedByEmail,
+        unlockReason: reason,
+      })
+      // `selectionSubmittedAt` is DELIBERATELY absent: it is the dashboard's
+      // list-order sort key (#75) and reopening must not drop the gallery the
+      // admin is working on back to its creation position.
+      .where(and(eq(galleries.id, lockedGallery.id), eq(galleries.status, "delivered")))
+      .returning();
+    if (flipped.length === 0) {
+      // Lost the race — another call already moved this gallery out of
+      // `delivered`. Nothing below has run, so nothing partial was written.
+      return { lost: true as const };
+    }
+
+    // Enumerate BEFORE detaching: once `final_key` is null the only remaining
+    // evidence of the old objects is the deterministic path, and a
+    // format-changing cleanup failure can have left variants nothing points at.
+    const photos = await tx
+      .select({ id: assets.id, finalKey: assets.finalKey })
+      .from(assets)
+      .where(eq(assets.galleryId, lockedGallery.id));
+    const cleanupKeys = await listGalleryFinalCleanupKeys(lockedGallery.id, photos);
+    if (cleanupKeys.length > 0) {
+      await tx.insert(galleryFinalCleanup).values({
+        galleryId: lockedGallery.id,
+        reopenEpoch: now,
+        remainingKeys: cleanupKeys,
+      });
+    }
+
+    // EVERY membership row of this gallery, removed ones included: their lock
+    // state is history, but a stale lock on a removed row is still a lie the
+    // client list would render. `removedAt` is not touched — reopening is not
+    // a way back into the gallery for somebody who was removed from it.
+    await tx
+      .update(galleryClients)
+      .set({ selectionLockedAt: null, selectionSubmittedAt: null, selectionLockedBy: null })
+      .where(eq(galleryClients.galleryId, lockedGallery.id));
+
+    // EVERY asset, selected or not: a gift or a discarded photo would
+    // otherwise keep `isExtra`/`deliveredFor` intent describing a file that no
+    // longer exists, and the delivered grid would keep offering it.
+    await tx
+      .update(assets)
+      .set({ finalKey: null, isEdited: false, isExtra: false, deliveredFor: null })
+      .where(eq(assets.galleryId, lockedGallery.id));
+
+    // The whole-gallery cancellation: every pick becomes an editable cart and
+    // every unit — legacy "Sin registro" included — is unclaimed, in THIS
+    // transaction. The reads inside are post-detachment on purpose.
+    await resetDeliveredSelection(tx, lockedGallery, now);
+
+    return { reopened: flipped[0]! };
+  });
+
+  if (outcome === null) {
+    return { status: "error", message: "La galería no existe." };
+  }
+  if ("pendingCleanup" in outcome) {
+    return {
+      status: "error",
+      message:
+        "Esta galería tiene una limpieza de finales pendiente de un reabierto anterior. " +
+        "Reintenta esa limpieza antes de volver a reabrir.",
+    };
+  }
+  if ("lost" in outcome) {
+    return {
+      status: "error",
+      message: "Esta galería ya no está entregada — puede que otra pestaña la haya reabierto.",
+    };
+  }
+  const reopenedGallery = outcome.reopened;
+
+  // Committed from here on. Everything below is best-effort reporting, never a
+  // rollback: undoing a durably-committed transition to tidy up an email or a
+  // storage failure is exactly the half-done state this action must not
+  // create.
+  void notifySelectionChanged(reopenedGallery.id).catch(() => {
+    // Swallowed — see src/lib/selection-events.ts; the 30s poll is the
+    // backstop. NOTE (task #287): a client tab sitting on `delivered` does NOT
+    // subscribe to this signal (`use-shared-selection.ts`), so an already-open
+    // delivered page learns about the reopen only on reload or via the email.
+  });
+
+  revalidatePath(`/dashboard/galleries/${reopenedGallery.id}`);
+  revalidatePath("/dashboard/galleries");
+  revalidatePath(`/galleries/${reopenedGallery.publicSlug}`);
+
+  // Cache invalidation happens BEFORE both the storage drain and the email
+  // fan-out on purpose: an unexpected send failure propagates (same stance as
+  // `unlockSelection`) and must not be able to skip it.
+
+  // The drain, deliberately AWAITED and before the fan-out: the reopen's own
+  // report has to distinguish a clean cycle from one whose bytes are still
+  // owed, and a cleanup failure must never make the email wave unreachable.
+  const drain =
+    reopenedGallery.unlockedAt === null
+      ? ({ status: "changed" } as const)
+      : await drainGalleryFinalCleanup(reopenedGallery.id, reopenedGallery.unlockedAt);
+
+  const clients = await getGalleryClients(reopenedGallery.id);
+  let failedEmails: string[] = [];
+  if (clients.length > 0) {
+    const sendResults = await Promise.allSettled(
+      clients.map((client) =>
+        signIn("gallery-unlock", {
+          email: client.email,
+          redirect: false,
+          redirectTo: `/galleries/${reopenedGallery.publicSlug}`,
+        }),
+      ),
+    );
+    const unexpected = sendResults.find(
+      (result): result is PromiseRejectedResult =>
+        result.status === "rejected" && !(result.reason instanceof AuthError),
+    );
+    if (unexpected) throw unexpected.reason;
+    failedEmails = clients
+      .filter((_, index) => sendResults[index]!.status === "rejected")
+      .map((client) => client.email);
+  }
+  const emailFailed = clients.length === 0 || failedEmails.length > 0;
+
+  if (drain.status === "pending") {
+    return {
+      status: "reopened_cleanup_failed",
+      emailFailed,
+      remainingCleanupKeys: drain.remainingKeys,
+    };
+  }
+  if (emailFailed) {
+    return {
+      status: "reopened_email_failed",
+      emailFailed,
+      message:
+        clients.length === 0
+          ? "Reabrimos la galería, pero no encontramos clientes a quién avisar por correo. " +
+            "Avísale por otro medio (WhatsApp / llamada)."
+          : `Reabrimos la galería, pero no pudimos avisarle por correo a: ${failedEmails.join(", ")}. ` +
+            "Avísale por otro medio (WhatsApp / llamada).",
+    };
+  }
+  return { status: "reopened" };
+}
+
+export type RetryReopenedFinalCleanupState = {
+  status: "idle" | "error" | "cleaned" | "cleanup_failed";
+  message?: string;
+  remainingCleanupKeys?: number;
+};
+
+const retryReopenedFinalCleanupSchema = z.object({
+  galleryId: z.uuid(),
+  // The epoch the pending notice was RENDERED with. A stale one is refused:
+  // a later reopen owns a newer obligation. Object keys are deliberately NOT
+  // accepted from the form — the manifest is the only source of truth.
+  expectedEpoch: z.iso.datetime("El identificador de la limpieza no es válido."),
+});
+
+/**
+ * Retries a cleanup a reopen left pending, from the durable manifest.
+ *
+ * It reruns NOTHING else: no status transition, no pick/claim/membership
+ * reset, no email, no NOTIFY wave. A successful retry is idempotent and simply
+ * removes the obligation row.
+ */
+export async function retryReopenedFinalCleanup(
+  _prevState: RetryReopenedFinalCleanupState,
+  formData: FormData,
+): Promise<RetryReopenedFinalCleanupState> {
+  await requireAdmin();
+
+  const parsed = retryReopenedFinalCleanupSchema.safeParse({
+    galleryId: formData.get("galleryId"),
+    expectedEpoch: formData.get("expectedEpoch"),
+  });
+  if (!parsed.success) {
+    return {
+      status: "error",
+      message: parsed.error.issues[0]?.message ?? "Galería inválida.",
+    };
+  }
+
+  const expectedEpoch = new Date(parsed.data.expectedEpoch);
+  const drain = await drainGalleryFinalCleanup(parsed.data.galleryId, expectedEpoch);
+
+  revalidatePath(`/dashboard/galleries/${parsed.data.galleryId}`);
+
+  if (drain.status === "changed") {
+    return {
+      status: "error",
+      message:
+        "La limpieza pendiente ya no corresponde a esta galería — puede que se haya reintentado " +
+        "o que la galería se haya vuelto a reabrir.",
+    };
+  }
+  if (drain.status === "pending") {
+    return { status: "cleanup_failed", remainingCleanupKeys: drain.remainingKeys };
+  }
+  return { status: "cleaned" };
+}
+
+// ---------------------------------------------------------------------------
 // Deliver a gallery (task #27) — selected -> delivered, plus the client's
 // email. Closes the delivery chain task #26 started: that task made
 // `assets.finalKey`/`isEdited` real and gave the admin workspace a per-asset
@@ -1463,9 +1810,13 @@ const deliverGallerySchema = z.object({ galleryId: z.uuid() });
 // `isPublishable`/`isUnlockable` above. Only a gallery sitting in `selected`
 // — a submitted selection the photographer has (presumably) finished editing
 // — has anything to deliver: `draft`/`proofing` were never submitted,
-// `delivered` is already delivered (this is what makes a double-submit a
-// no-op instead of a second email), `archived` is further along than
-// delivery makes sense for.
+// `delivered` is already delivered IN THIS CYCLE (this is what makes a
+// double-submit a no-op instead of a second email), `archived` is further
+// along than delivery makes sense for.
+//
+// "ALREADY DELIVERED" IS PER CYCLE, NOT FOR EVER (task #287): a gallery that
+// was reopened is `proofing` again and can be delivered a second time, with a
+// NEW `delivered_at` (the column means the LATEST delivery).
 function isDeliverable(status: Gallery["status"]): boolean {
   return status === "selected";
 }
@@ -1492,12 +1843,14 @@ const DELIVER_TARGET_STATUS = "delivered" as const satisfies Gallery["status"];
  * UPDATE's own `WHERE status = 'selected'` is the REAL, atomic guard
  * (`isDeliverable` above only fails fast, before ever writing) — a
  * double-click, or two admin tabs, can only ever deliver a given gallery
- * once, and only the winner's `deliveredAt` and email survive. A gallery
- * already `delivered` fails the pre-flight `isDeliverable` check on any
- * later call, so a sequential double-submit never reaches the UPDATE at
+ * once PER CYCLE, and only the winner's `deliveredAt` and email survive. A
+ * gallery already `delivered` fails the pre-flight `isDeliverable` check on
+ * any later call, so a sequential double-submit never reaches the UPDATE at
  * all — the SAME "the second call short-circuits before the CAS" shape
  * `unlockSelection`'s own test suite documents and guards against being
- * mistaken for proof of the atomic guard.
+ * mistaken for proof of the atomic guard. Task #287's reopen clears
+ * `deliveredAt` and moves the gallery back to `proofing`, which is what makes
+ * a SECOND delivery possible with its own fresh stamp.
  *
  * The client notification reuses the SAME MECHANISM `publishGallery` uses —
  * a magic-link `signIn(...)` call — rather than a bare
@@ -2966,11 +3319,17 @@ export async function assignExtraToPerson(
 // gone), while the reverse order risks a live row pointing at a 404.
 //
 // The `asset_picks` composites are reached through `assets`/`gallery_clients`,
-// and both of those cascade from `galleries.id` — no FK referencing
-// `galleries` is `restrict`, so the cascades do all of it. `assets.gallery_id`
-// and `gallery_clients.gallery_id` are the only direct referrers;
+// and both of those cascade from `galleries.id`. `assets.gallery_id` and
+// `gallery_clients.gallery_id` are the only direct referrers that cascade;
 // `actions.delete.test.ts` asserts that structurally so a future table that
 // changes it fails here instead of in production.
+//
+// TASK #287 ADDED THE DELIBERATE EXCEPTION: `gallery_final_cleanup.gallery_id`
+// is ON DELETE RESTRICT, not cascade. That row is the only record of which R2
+// objects a reopened delivery still owes, so deleting the gallery would either
+// silently destroy the recovery state or fail with an opaque FK error. The
+// check below refuses cleanly instead, directing the admin to retry the
+// cleanup first; the FK is defence in depth behind it.
 //
 // TRANSACTION, and why: a single `DELETE` is already atomic, so the
 // transaction is not there for atomicity. It holds `SELECT … FOR UPDATE` on
@@ -3009,6 +3368,17 @@ export async function deleteGallery(galleryId: string): Promise<DeleteGalleryRes
     const gallery = await lockGalleryRow(tx, galleryId);
     if (!gallery) return null;
 
+    // Task #287 — a pending final cleanup is unfinished work this gallery
+    // still OWES. Deleting the parent would destroy the only record of which
+    // objects to remove (and the FK would reject the delete anyway, with a
+    // much less useful error).
+    const [pendingCleanup] = await tx
+      .select({ galleryId: galleryFinalCleanup.galleryId })
+      .from(galleryFinalCleanup)
+      .where(eq(galleryFinalCleanup.galleryId, gallery.id))
+      .limit(1);
+    if (pendingCleanup) return { pendingCleanup: true as const };
+
     // BEFORE the delete: once the gallery row is gone, its assets are gone
     // through the cascade and their ids — from which the display key is
     // derived — can never be recovered.
@@ -3029,6 +3399,14 @@ export async function deleteGallery(galleryId: string): Promise<DeleteGalleryRes
 
   if (snapshot === null) {
     return { ok: false, message: "La galería no existe." };
+  }
+  if ("pendingCleanup" in snapshot) {
+    return {
+      ok: false,
+      message:
+        "Esta galería tiene una limpieza de finales pendiente. Reintenta la limpieza antes de " +
+        "eliminarla, para no dejar archivos huérfanos.",
+    };
   }
 
   // Only after COMMIT. Sequential across photos (same precedent as the two

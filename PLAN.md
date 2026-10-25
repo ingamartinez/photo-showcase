@@ -43,6 +43,10 @@ DRAFT ──▶ PROOFING ──▶ SELECTED ──▶ DELIVERED  (──▶ ARCH
 > deletion of those finals and their display derivatives is a durable obligation in
 > `gallery_final_cleanup`, drained after the commit under the same gallery lock, with a
 > distinct `reopened_cleanup_failed` result and an admin retry — never a silent orphan.
+> Because `unlocked_at` doubles as that cleanup's epoch, the ordinary `selected`
+> `unlockSelection` is REFUSED while an obligation is pending: it is the other writer of
+> that column, and advancing it would leave the drainer unable to match (or safely sweep)
+> the manifest. Recovery is the cleanup retry first, then the normal unlock.
 > Consequences, recorded rather than hidden: billed attribution resets to zero and is
 > recomputed on the new submission at the new arrival (old included-slot priority is
 > discarded), already-downloaded copies cannot be recalled, and a client tab already

@@ -110,10 +110,10 @@ while [ $# -gt 0 ]; do
 done
 
 # THE SEAT MAP. explore, implement and ship run deepseek-v4.1-flash through OpenCode Go (provider
-# `opencode-go`), replacing `deepseek/deepseek-flash` on 2026-10-25. Plan and review both run
-# gpt-6.1-sol through openai, by the owner's decision of the same date: the reviewer is still never
-# the implementer (a different model line, deepseek), but it now shares a model with whoever decided
-# the how. That is accepted, not an accident — see ORCA.md.
+# `opencode-go`), replacing `deepseek/deepseek-flash` on 2026-10-25. Plan runs Opus through
+# claude-bridge, review runs gpt-6.1-sol through openai. Plan and review on DIFFERENT models is the
+# point of review: the reviewer is never the implementer, and never shares a model line with whoever
+# decided the how.
 #
 # MIND THE THINKING LEVELS OF THE DEEPSEEK SEATS. That model maps only `low`, `high` and `max`:
 # `medium` does not exist (`thinkingLevelMap.medium = null`) and neither does `minimal`. A deepseek
@@ -137,7 +137,7 @@ case "$seat" in
     ;;
   plan)
     agent_name="photo-plan-seat"
-    provider="${SEAT_PROVIDER:-openai}";        model="${SEAT_MODEL:-gpt-6.1-sol}"
+    provider="${SEAT_PROVIDER:-claude-bridge}"; model="${SEAT_MODEL:-claude-opus-5-5}"
     thinking="$(seat_thinking high)";          tools="read,bash"
     ;;
   implement)

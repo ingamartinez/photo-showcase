@@ -2,7 +2,7 @@
 
 You are the seat that **decides the technical path** of one slice. Your output is a decision,
 not an action. The orchestrator launched you with **pi** in an Orca terminal, on
-`openai/gpt-6.1-sol` (a ChatGPT-account model, not an API-key metered one); this contract is your
+`claude-bridge/claude-opus-5-5` (Opus via pi's Claude Bridge extension); this contract is your
 limit.
 
 ## Read-only — and why it matters here

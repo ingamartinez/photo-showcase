@@ -36,7 +36,7 @@ import {
 import type { Gallery } from "@/lib/db/schema";
 import { requireAdmin } from "@/lib/auth-guards";
 import { deleteObject, displayKey, listGalleryFinalCleanupKeys, storedKey } from "@/lib/r2";
-import { drainGalleryFinalCleanup } from "@/lib/gallery-final-cleanup";
+import { drainGalleryFinalCleanup, readGalleryFinalCleanup } from "@/lib/gallery-final-cleanup";
 import {
   activeClientRuleViolation,
   getGalleryClients,
@@ -1174,6 +1174,15 @@ const unlockSelectionSchema = z.object({
 // #287 it reopens through its own `reopenDeliveredGallery` action, which also
 // cancels the delivered cycle (picks, claims, finals). Keeping the leg out of
 // this function is what keeps both transitions independently guarded.
+//
+// THIS ACTION IS ALSO COORDINATED WITH A PENDING FINAL CLEANUP (task #287
+// review, finding 1). An ordinary unlock also advances `unlocked_at`, which is
+// the epoch the cleanup drainer compares against its manifest. Allowing it to
+// run while an obligation is still pending would move that epoch past the
+// manifest's, and the drainer's own safety check would then refuse to sweep
+// the manifest FOREVER — a state the app could not explain or recover from.
+// The refusal lives in the transaction, not in this pre-flight (a pre-flight
+// read can race a concurrent reset), and the status check stays authoritative.
 function isUnlockable(status: Gallery["status"]): boolean {
   return status === "selected";
 }
@@ -1309,8 +1318,23 @@ export async function unlockSelection(
   // (unlocking always clears both — the epic's state model), on every
   // membership row of the gallery. The gallery row lock comes first, the same
   // order every other writer of these columns uses (`lockGalleryRow`).
-  const updated = await db.transaction(async (tx) => {
+  //
+  // A PENDING FINAL CLEANUP BLOCKS THIS UNLOCK (task #287 review, finding 1).
+  // This is the second writer of `unlocked_at`, which the cleanup drainer uses
+  // as the reopen epoch; advancing it while a manifest still points at the old
+  // epoch makes `drainGalleryFinalCleanup`'s own epoch check reject that
+  // manifest for good (`gallery-final-cleanup.ts`), stranding both the bytes
+  // and the obligation. Checked under the gallery lock and BEFORE the CAS, so
+  // it cannot race a concurrent reopen, and the status CAS below stays the
+  // authority for the transition itself.
+  const outcome = await db.transaction(async (tx) => {
     await lockGalleryRow(tx, gallery.id);
+    const [pendingCleanup] = await tx
+      .select({ galleryId: galleryFinalCleanup.galleryId })
+      .from(galleryFinalCleanup)
+      .where(eq(galleryFinalCleanup.galleryId, gallery.id))
+      .limit(1);
+    if (pendingCleanup) return { pendingCleanup: true as const };
     const flipped = await tx
       .update(galleries)
       .set({
@@ -1327,8 +1351,18 @@ export async function unlockSelection(
         .set({ selectionLockedAt: null, selectionSubmittedAt: null, selectionLockedBy: null })
         .where(eq(galleryClients.galleryId, gallery.id));
     }
-    return flipped;
+    return { flipped };
   });
+
+  if ("pendingCleanup" in outcome) {
+    return {
+      status: "error",
+      message:
+        "Esta galería tiene una limpieza de finales pendiente. Reintentá la limpieza antes de " +
+        "desbloquear la selección, para no dejar archivos sin poder borrar.",
+    };
+  }
+  const updated = outcome.flipped;
 
   if (updated.length === 0) {
     // Lost the race — some other call already moved this gallery out of
@@ -1504,6 +1538,86 @@ function isReopenable(status: Gallery["status"]): boolean {
   return status === "delivered";
 }
 
+/** A non-clean drain outcome, as this action reports it. `changed` and
+ * `failed` are deliberately NOT folded into `cleaned` — see
+ * `drainReopenFinalCleanupInBestEffort` below. */
+type ReopenCleanupOutcome = {
+  status: "cleaned" | "pending" | "failed" | "changed";
+  /** Omitted only when the durable recovery read itself failed too. */
+  remainingCleanupKeys?: number;
+  /** Present only for the outcomes that need explaining to the admin. */
+  message?: string;
+};
+
+/** How many objects the durable manifest still owes. NEVER throws: this is
+ * reporting for a reopen that already committed, so a recovery read that fails
+ * must leave the count omitted rather than turn a committed reopen into an
+ * error. */
+async function readRemainingCleanupKeys(galleryId: string): Promise<number | undefined> {
+  try {
+    return (await readGalleryFinalCleanup(galleryId))?.remainingKeys;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Drains this reopen's cleanup obligation and turns EVERY failure mode into a
+ * distinct non-clean outcome, so neither a rejected DELETE, a drainer-level
+ * exception (DB read/write/commit, or the drainer's epoch invariant) nor a
+ * superseded/unknown manifest can ever be reported as `reopened`.
+ *
+ * `changed` is the subtle one (task #287 review, finding 5): the drainer returns
+ * it when the gallery row is gone or when the manifest belongs to a DIFFERENT
+ * epoch than the one this call just wrote. It deleted nothing, so treating it
+ * as "clean" would report success while a durable obligation may still be
+ * pending. A truthful remaining count comes from the durable row — never from
+ * the assumption that "not my epoch" means "nothing owed".
+ */
+async function drainReopenFinalCleanupInBestEffort(
+  gallery: Gallery,
+): Promise<ReopenCleanupOutcome> {
+  if (gallery.unlockedAt === null) {
+    // Unreachable for the row this action just stamped, but reporting it as
+    // clean would be a lie about a cycle whose obligation cannot be named.
+    return {
+      status: "failed",
+      remainingCleanupKeys: await readRemainingCleanupKeys(gallery.id),
+      message:
+        "La galería quedó reabierta, pero no pudimos confirmar que se hayan borrado los finales " +
+        "viejos. Reintentá la limpieza desde el detalle de la galería.",
+    };
+  }
+  try {
+    const result = await drainGalleryFinalCleanup(gallery.id, gallery.unlockedAt);
+    if (result.status === "cleaned") return { status: "cleaned" };
+    if (result.status === "pending") {
+      return {
+        status: "pending",
+        remainingCleanupKeys: result.remainingKeys ?? (await readRemainingCleanupKeys(gallery.id)),
+      };
+    }
+    return {
+      status: "changed",
+      remainingCleanupKeys: await readRemainingCleanupKeys(gallery.id),
+      message:
+        "La galería quedó reabierta, pero la limpieza pendiente ya no coincide con esta " +
+        "reapertura. Actualizá la página y revisá si quedó una limpieza pendiente.",
+    };
+  } catch {
+    // The drainer's own transaction failed (or its epoch invariant threw).
+    // Nothing deleted, manifest retained, and the reopen still committed — so
+    // report the recovery state instead of failing the action.
+    return {
+      status: "failed",
+      remainingCleanupKeys: await readRemainingCleanupKeys(gallery.id),
+      message:
+        "La galería quedó reabierta, pero no pudimos terminar de borrar los finales viejos. " +
+        "Reintentá la limpieza desde el detalle de la galería.",
+    };
+  }
+}
+
 /**
  * delivered -> proofing. One transaction: the delivered CAS, the newest unlock
  * audit, the reset of every membership's three selection lock fields, the
@@ -1651,7 +1765,7 @@ export async function reopenDeliveredGallery(
       status: "error",
       message:
         "Esta galería tiene una limpieza de finales pendiente de un reabierto anterior. " +
-        "Reintenta esa limpieza antes de volver a reabrir.",
+        "Reintentá esa limpieza antes de volver a reabrir.",
     };
   }
   if ("lost" in outcome) {
@@ -1684,10 +1798,14 @@ export async function reopenDeliveredGallery(
   // The drain, deliberately AWAITED and before the fan-out: the reopen's own
   // report has to distinguish a clean cycle from one whose bytes are still
   // owed, and a cleanup failure must never make the email wave unreachable.
-  const drain =
-    reopenedGallery.unlockedAt === null
-      ? ({ status: "changed" } as const)
-      : await drainGalleryFinalCleanup(reopenedGallery.id, reopenedGallery.unlockedAt);
+  //
+  // A THROWN DRAIN IS A CLEANUP FAILURE, NOT AN ACTION FAILURE (task #287
+  // review, finding 2). The reset already committed; the drainer can still
+  // throw on its own transaction (DB read/write/commit, or its epoch
+  // invariant). Letting that escape would skip the email fan-out AND deny the
+  // caller the `reopened_cleanup_failed` result v3 requires. The manifest is
+  // untouched in that case, so the only remaining evidence is a durable read.
+  const drain = await drainReopenFinalCleanupInBestEffort(reopenedGallery);
 
   const clients = await getGalleryClients(reopenedGallery.id);
   let failedEmails: string[] = [];
@@ -1712,11 +1830,19 @@ export async function reopenDeliveredGallery(
   }
   const emailFailed = clients.length === 0 || failedEmails.length > 0;
 
-  if (drain.status === "pending") {
+  if (drain.status !== "cleaned") {
+    // `reopened_cleanup_failed` is reported for EVERY non-clean drain outcome:
+    // pending (bytes still owed), "changed" (this call could not match the
+    // obligation it created — never proof that cleanup is clean, task #287
+    // review finding 5) and "failed" (the drainer itself threw). The email
+    // outcome travels independently so neither failure hides the other.
     return {
       status: "reopened_cleanup_failed",
       emailFailed,
-      remainingCleanupKeys: drain.remainingKeys,
+      ...(drain.remainingCleanupKeys !== undefined
+        ? { remainingCleanupKeys: drain.remainingCleanupKeys }
+        : {}),
+      ...(drain.message !== undefined ? { message: drain.message } : {}),
     };
   }
   if (emailFailed) {
@@ -1773,10 +1899,28 @@ export async function retryReopenedFinalCleanup(
   }
 
   const expectedEpoch = new Date(parsed.data.expectedEpoch);
-  const drain = await drainGalleryFinalCleanup(parsed.data.galleryId, expectedEpoch);
+
+  // A drainer-level exception (DB read/write/commit, or its epoch invariant)
+  // is this action's OWN recovery state, not an unhandled crash (task #287
+  // review, finding 2). The obligation row is untouched in that case, so the
+  // retry reports `cleanup_failed` with the durable remainder and lets the
+  // admin try again. Revalidation below runs either way.
+  let drain: Awaited<ReturnType<typeof drainGalleryFinalCleanup>> | null = null;
+  try {
+    drain = await drainGalleryFinalCleanup(parsed.data.galleryId, expectedEpoch);
+  } catch {
+    drain = null;
+  }
 
   revalidatePath(`/dashboard/galleries/${parsed.data.galleryId}`);
 
+  if (drain === null) {
+    return {
+      status: "cleanup_failed",
+      remainingCleanupKeys: await readRemainingCleanupKeys(parsed.data.galleryId),
+      message: "No pudimos terminar la limpieza. Reintentá la limpieza en un rato.",
+    };
+  }
   if (drain.status === "changed") {
     return {
       status: "error",
@@ -3404,7 +3548,7 @@ export async function deleteGallery(galleryId: string): Promise<DeleteGalleryRes
     return {
       ok: false,
       message:
-        "Esta galería tiene una limpieza de finales pendiente. Reintenta la limpieza antes de " +
+        "Esta galería tiene una limpieza de finales pendiente. Reintentá la limpieza antes de " +
         "eliminarla, para no dejar archivos huérfanos.",
     };
   }

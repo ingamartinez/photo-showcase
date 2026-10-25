@@ -1491,4 +1491,128 @@ describe("POST /api/assets/[assetId]/final — the reopen epoch guard (task #287
     expect(lockIndex).toBeGreaterThanOrEqual(0);
     expect(log.findIndex((entry) => entry.startsWith("update:"))).toBeGreaterThan(lockIndex);
   });
+
+  // Task #287 review, finding 3 — the stale-key guard had NO regression
+  // protection: removing `if (current.finalKey === staleKey) return;` left both
+  // final-route suites green, and that guard is what stops a JPG → PNG → JPG
+  // interleaving from destroying the CURRENT final.
+  //
+  // The seam: count `db.transaction` calls. The first is the publish, the
+  // second is this route's own stale-extension cleanup. Right before the
+  // cleanup body runs, a THIRD upload has made the old `.jpg` key current
+  // again — exactly the state the guard exists for. This is a test-only
+  // callback boundary, not a claim about Postgres isolation.
+  it("never deletes an old key that a third upload made current again", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    // Starting state: the asset's final is the `.jpg` at FINAL_KEY.
+    const fake = db as unknown as {
+      transaction: (fn: (tx: unknown) => Promise<unknown>) => Promise<unknown>;
+      __rows: { assets: Row[] };
+    };
+    const realTransaction = fake.transaction.bind(fake);
+    let transactionIndex = 0;
+    fake.transaction = async (fn) => {
+      transactionIndex += 1;
+      if (transactionIndex === 2) {
+        // A third upload republished the ORIGINAL key between this request's
+        // publication and its cleanup pass.
+        fake.__rows.assets[0]!.finalKey = FINAL_KEY;
+      }
+      return realTransaction(fn);
+    };
+    const { POST } = await import("./route");
+    const png = new File(["fake-png-bytes"], "edit.png", { type: "image/png" });
+
+    let response: Response;
+    try {
+      response = await POST(postRequestFor(ASSET_A_ID, formDataWith(png)), paramsFor(ASSET_A_ID));
+    } finally {
+      fake.transaction = realTransaction;
+    }
+
+    // The seam really fired: publish + cleanup, and the third write landed.
+    expect(transactionIndex).toBe(2);
+    expect(response.status).toBe(200);
+    // The new `.png` was published…
+    expect(writesTo(`galleries/${GALLERY_A_ID}/finals/${ASSET_A_ID}.png`)).toHaveLength(1);
+    // …and the old `.jpg` was NOT deleted, because it is current again.
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+    expect(deleteObjectMock).not.toHaveBeenCalledWith(FINAL_KEY);
+    expect(fake.__rows.assets[0]!.finalKey).toBe(FINAL_KEY);
+  });
+
+  // Task #287 review, finding 3's second half: both Puts must happen inside the
+  // locked transaction, not merely before a metadata update.
+  it("performs both Puts inside the locked transaction, after the row lock", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(assetRow({ isSelected: true, finalKey: null, isEdited: false }));
+    const fake = db as unknown as {
+      transaction: (fn: (tx: unknown) => Promise<unknown>) => Promise<unknown>;
+      __log: string[];
+    };
+    fake.__log.length = 0;
+    const realTransaction = fake.transaction.bind(fake);
+    let transactionIndex = 0;
+    fake.transaction = async (fn) => {
+      transactionIndex += 1;
+      return realTransaction(fn);
+    };
+    const observed: { transactionIndex: number; lockSeen: boolean; key: string }[] = [];
+    putObjectMock.mockImplementation(async (key: string) => {
+      observed.push({
+        transactionIndex,
+        lockSeen: fake.__log.includes("for:update"),
+        key,
+      });
+    });
+    const { POST } = await import("./route");
+
+    let response: Response;
+    try {
+      response = await POST(
+        postRequestFor(ASSET_A_ID, formDataWith(imageFile())),
+        paramsFor(ASSET_A_ID),
+      );
+    } finally {
+      fake.transaction = realTransaction;
+    }
+
+    expect(response.status).toBe(200);
+    expect(observed).toEqual([
+      { transactionIndex: 1, lockSeen: true, key: FINAL_KEY },
+      { transactionIndex: 1, lockSeen: true, key: DISPLAY_KEY },
+    ]);
+  });
+
+  // Task #287 review, finding 6 — an asset that disappears between the
+  // preflight lookup and the LOCKED re-read used to answer 409 (the shared
+  // "everything but upload_failed" branch) while this route's preflight 404s
+  // the same missing asset. It is a not-found, not a concurrency conflict.
+  it("answers 404 asset_not_found when the asset vanishes before the locked re-read", async () => {
+    authMock.mockResolvedValue(adminSession());
+    const db = await seededDb();
+    db.__rows.assets.length = 0;
+    db.__rows.assets.push(assetRow({ isSelected: true, finalKey: null, isEdited: false }));
+    // The deletion lands while the upload is decoding; the preflight already
+    // resolved the asset, so only the under-lock re-read can notice.
+    processDisplayMock.mockImplementation(async () => {
+      db.__rows.assets.length = 0;
+      return { data: new Uint8Array([1]), contentType: "image/webp", width: 10, height: 10 };
+    });
+    const { POST } = await import("./route");
+
+    const response = await POST(
+      postRequestFor(ASSET_A_ID, formDataWith(imageFile())),
+      paramsFor(ASSET_A_ID),
+    );
+
+    expect(response.status).toBe(404);
+    await expect(response.json()).resolves.toEqual({ error: "asset_not_found" });
+    // Nothing was written for an asset that no longer exists.
+    expect(putObjectMock).not.toHaveBeenCalled();
+    expect(deleteObjectMock).not.toHaveBeenCalled();
+  });
 });

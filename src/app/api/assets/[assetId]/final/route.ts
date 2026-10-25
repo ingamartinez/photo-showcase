@@ -694,10 +694,22 @@ export const POST = withApiSession(async function POST(
   }
 
   if (refusal !== null) {
-    // `gallery_changed` is a REQUEST CONFLICT, not a new UI state: the admin
-    // retries against the reopened cycle. The other two keep this route's
-    // existing contracts exactly.
-    return errorResponse(refusal, refusal === "upload_failed" ? 502 : 409);
+    // EXPLICIT per-refusal statuses (task #287 review, finding 6). They used to
+    // collapse into "502 for upload_failed, 409 for everything else", which
+    // silently reported an asset that vanished under the lock as a concurrency
+    // conflict. Each code keeps this route's own existing contract:
+    //   - `asset_not_found` — 404, the same answer the preflight lookup gives
+    //     when the asset does not exist (or is not in this gallery);
+    //   - `gallery_changed` — 409, a REQUEST CONFLICT, not a new UI state: the
+    //     admin retries against the reopened cycle;
+    //   - `upload_failed` — 502 ("our dependency, not your request"), matching
+    //     the GET handler's own R2 failure code.
+    const refusalStatus: Record<PublishRefusal, number> = {
+      asset_not_found: 404,
+      gallery_changed: 409,
+      upload_failed: 502,
+    };
+    return errorResponse(refusal, refusalStatus[refusal]);
   }
 
   // Stale-object cleanup (task #220), now defended against the reopen writers.

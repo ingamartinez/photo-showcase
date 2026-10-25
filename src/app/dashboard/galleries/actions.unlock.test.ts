@@ -142,18 +142,23 @@ function project(row: Row, columns: Record<string, unknown> | undefined): Row {
 }
 
 vi.mock("@/lib/db", async () => {
-  const { assets, galleries, users, galleryClients } = await import("@/lib/db/schema");
+  const { assets, galleries, users, galleryClients, galleryFinalCleanup } =
+    await import("@/lib/db/schema");
 
   const galleryRows: Row[] = [];
   const assetRows: Row[] = [];
   const userRows: Row[] = [];
   const galleryClientRows: Row[] = [];
+  // Task #287 review, finding 1: `unlockSelection` now refuses while a final
+  // cleanup obligation is pending, so its fake needs that table too.
+  const galleryFinalCleanupRows: Row[] = [];
 
   function rowsFor(table: unknown): Row[] {
     if (table === galleries) return galleryRows;
     if (table === assets) return assetRows;
     if (table === users) return userRows;
     if (table === galleryClients) return galleryClientRows;
+    if (table === galleryFinalCleanup) return galleryFinalCleanupRows;
     throw new Error("fake db: unsupported table");
   }
 
@@ -162,6 +167,8 @@ vi.mock("@/lib/db", async () => {
     if (table === assets) return assets as unknown as Record<string, unknown>;
     if (table === users) return users as unknown as Record<string, unknown>;
     if (table === galleryClients) return galleryClients as unknown as Record<string, unknown>;
+    if (table === galleryFinalCleanup)
+      return galleryFinalCleanup as unknown as Record<string, unknown>;
     throw new Error("fake db: unsupported table");
   }
 
@@ -247,6 +254,7 @@ vi.mock("@/lib/db", async () => {
         assets: assetRows,
         users: userRows,
         galleryClients: galleryClientRows,
+        galleryFinalCleanup: galleryFinalCleanupRows,
       },
     },
   };
@@ -255,7 +263,15 @@ vi.mock("@/lib/db", async () => {
 
 async function seededDb() {
   const { db } = (await import("@/lib/db")) as unknown as {
-    db: { __rows: { galleries: Row[]; assets: Row[]; users: Row[]; galleryClients: Row[] } };
+    db: {
+      __rows: {
+        galleries: Row[];
+        assets: Row[];
+        users: Row[];
+        galleryClients: Row[];
+        galleryFinalCleanup: Row[];
+      };
+    };
   };
   return db;
 }
@@ -320,6 +336,7 @@ beforeEach(async () => {
   db.__rows.assets.length = 0;
   db.__rows.users.length = 0;
   db.__rows.galleryClients.length = 0;
+  db.__rows.galleryFinalCleanup.length = 0;
   db.__rows.galleries.push(galleryRow());
   db.__rows.users.push({ id: CLIENT_ID, name: "Ana Pérez", email: CLIENT_EMAIL });
   // Task #94: ownership/notification recipients now come from the
@@ -780,5 +797,49 @@ describe("unlockSelection — concurrent unlock (the atomic guard)", () => {
     expect(db.__rows.galleries[0]).toMatchObject({ status: "proofing" });
     // Only the WINNER's email ever went out.
     expect(signInMock).toHaveBeenCalledTimes(1);
+  });
+});
+
+// Task #287 review, finding 1 — an ordinary `selected -> proofing` unlock ALSO
+// writes `unlocked_at`, which is the epoch the final-cleanup drainer compares
+// its manifest against. Advancing it while a manifest is still pending makes
+// `drainGalleryFinalCleanup` reject that manifest forever, so this action must
+// refuse instead of stranding the obligation. Checked under the gallery lock,
+// before the CAS: a pre-flight read alone could race a concurrent reopen.
+describe("unlockSelection — a pending final cleanup blocks it (task #287 review)", () => {
+  beforeEach(() => {
+    authMock.mockResolvedValue(adminSession());
+    signInMock.mockResolvedValue(
+      "http://localhost/api/auth/verify-request?provider=gallery-unlock",
+    );
+  });
+
+  it("refuses the unlock, leaves the gallery selected and sends no email", async () => {
+    const { unlockSelection } = await import("./actions");
+    const db = await seededDb();
+    const pendingEpoch = new Date("2026-10-20T10:00:00.000Z");
+    db.__rows.galleryFinalCleanup.push({
+      galleryId: GALLERY_ID,
+      reopenEpoch: pendingEpoch,
+      remainingKeys: [`galleries/${GALLERY_ID}/finals/${ASSET_1_ID}.jpg`],
+    });
+    const previousUnlock = db.__rows.galleries[0]!.unlockedAt;
+
+    const result = await unlockSelection(
+      { status: "idle" },
+      formDataWith({ galleryId: GALLERY_ID }),
+    );
+
+    expect(result.status).toBe("error");
+    expect(result.message).toMatch(/limpieza de finales pendiente/);
+    // The refusal happens BEFORE the CAS: nothing was written, the epoch the
+    // manifest depends on was not advanced, and no email went out.
+    expect(db.__rows.galleries[0]).toMatchObject({
+      status: "selected",
+      unlockedAt: previousUnlock,
+    });
+    expect(db.__rows.galleryFinalCleanup).toHaveLength(1);
+    expect(signInMock).not.toHaveBeenCalled();
+    expect(notifySelectionChangedMock).not.toHaveBeenCalled();
   });
 });

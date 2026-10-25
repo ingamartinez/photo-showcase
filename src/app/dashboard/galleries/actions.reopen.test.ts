@@ -75,10 +75,21 @@ const deleteObjectCalls: string[] = [];
 const listCalls: { prefix?: string; continuationToken?: string }[] = [];
 const listFailures = { remaining: 0 };
 const deleteFailures = { remaining: 0 };
+// Task #287 review — the consumer HTTP tests assert that a reopened gallery
+// reaches NO storage operation at all: no presign, no HEAD (`exists`/`size`),
+// no stream open. Counters rather than `vi.fn` instances because `getClient()`
+// may hand back a different instance than the one a test could reach.
+const presignCalls: string[] = [];
+const existsCalls: string[] = [];
+const sizeCalls: string[] = [];
+const streamCalls: string[] = [];
 
 class FakeS3Client {
   write = vi.fn().mockResolvedValue(0);
-  presign = vi.fn().mockReturnValue("https://example.com/presigned");
+  presign = vi.fn((key: string) => {
+    presignCalls.push(key);
+    return "https://example.com/presigned";
+  });
   delete = vi.fn(async (key: string) => {
     if (deleteFailures.remaining > 0) {
       deleteFailures.remaining -= 1;
@@ -87,9 +98,18 @@ class FakeS3Client {
     deleteObjectCalls.push(key);
     objects.delete(key);
   });
-  file = vi.fn().mockReturnValue({ stream: () => "stream" });
-  size = vi.fn().mockResolvedValue(1024);
-  exists = vi.fn(async (key: string) => objects.has(key));
+  file = vi.fn((key: string) => {
+    streamCalls.push(key);
+    return { stream: () => "stream" };
+  });
+  size = vi.fn(async (key: string) => {
+    sizeCalls.push(key);
+    return 1024;
+  });
+  exists = vi.fn(async (key: string) => {
+    existsCalls.push(key);
+    return objects.has(key);
+  });
   list = vi.fn(async (input: { prefix?: string; continuationToken?: string }) => {
     listCalls.push(input);
     if (listFailures.remaining > 0) {
@@ -334,6 +354,10 @@ async function seed() {
   listCalls.length = 0;
   listFailures.remaining = 0;
   deleteFailures.remaining = 0;
+  presignCalls.length = 0;
+  existsCalls.length = 0;
+  sizeCalls.length = 0;
+  streamCalls.length = 0;
   (await db()).__log.length = 0;
 
   r.users.push(
@@ -431,6 +455,38 @@ async function seed() {
 async function reopen(fields: Record<string, string | undefined> = {}) {
   const { reopenDeliveredGallery } = await import("./actions");
   return reopenDeliveredGallery({ status: "idle" }, formData({ galleryId: G1, ...fields }));
+}
+
+/** The REAL client submit route — `POST /api/galleries/[galleryId]/submit-selection`.
+ * `claimCart` called directly (which an earlier version of this suite did) skips
+ * the membership stamping, the claim resolution's route-level gates, the quota
+ * re-read and `settleGalleryLockStatus`, so it could never prove the client's own
+ * journey end to end. */
+/** The REAL client PATCH — `PATCH /api/assets/[assetId]/selection`. */
+async function patch(
+  assetId: string,
+  body: Record<string, unknown>,
+  activeSession: Session = clientASession(),
+) {
+  authMock.mockResolvedValue(activeSession);
+  const { PATCH } = await import("@/app/api/assets/[assetId]/selection/route");
+  return PATCH(
+    new NextRequest(`http://localhost/api/assets/${assetId}/selection`, {
+      method: "PATCH",
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+    }),
+    { params: Promise.resolve({ assetId }) },
+  );
+}
+
+async function submitSelection(activeSession: Session = clientASession()) {
+  authMock.mockResolvedValue(activeSession);
+  const { POST } = await import("@/app/api/galleries/[galleryId]/submit-selection/route");
+  return POST(
+    new NextRequest(`http://localhost/api/galleries/${G1}/submit-selection`, { method: "POST" }),
+    { params: Promise.resolve({ galleryId: G1 }) },
+  );
 }
 
 beforeEach(async () => {
@@ -731,23 +787,6 @@ describe("reopenDeliveredGallery — the transaction and the reset (C2)", () => 
 });
 
 describe("reopenDeliveredGallery — the client's own journey (C3)", () => {
-  async function patch(
-    assetId: string,
-    body: Record<string, unknown>,
-    activeSession: Session = clientASession(),
-  ) {
-    authMock.mockResolvedValue(activeSession);
-    const { PATCH } = await import("@/app/api/assets/[assetId]/selection/route");
-    return PATCH(
-      new NextRequest(`http://localhost/api/assets/${assetId}/selection`, {
-        method: "PATCH",
-        body: JSON.stringify(body),
-        headers: { "content-type": "application/json" },
-      }),
-      { params: Promise.resolve({ assetId }) },
-    );
-  }
-
   it("lets the client remove the photo they already sent, pick another and resubmit", async () => {
     // Before the reopen a delivered gallery is closed to edits.
     const refused = await patch(A1, { selected: false });
@@ -765,8 +804,7 @@ describe("reopenDeliveredGallery — the client's own journey (C3)", () => {
     expect(r.assetPicks.find((row) => row.assetId === A1 && row.userId === A)).toBeUndefined();
     expect(r.assets.find((row) => row.id === A1)).toMatchObject({ isSelected: false });
 
-    // The replacement is a normal cart pick, then the client's own submit
-    // resolves exactly one new unit.
+    // The replacement is a normal cart pick…
     const added = await patch(A2, { selected: true, selectionKind: "edited" }, clientASession());
     expect(added.status).toBe(200);
     r = await rows();
@@ -774,15 +812,35 @@ describe("reopenDeliveredGallery — the client's own journey (C3)", () => {
       submittedAt: null,
     });
 
-    const { claimCart } = await import("@/lib/pick-claims");
-    const { lockGalleryRow } = await import("@/lib/gallery-client-locks");
-    const now = new Date("2026-10-26T10:00:00.000Z");
-    await inTransaction(async (tx) => {
-      const locked = await lockGalleryRow(tx as never, G1);
-      await claimCart(tx as never, locked!, A, now);
+    // …and THE REAL SUBMIT resolves it: the client's own POST, which stamps
+    // the membership, runs `claimCart` under the gallery lock and re-reads the
+    // quota. An earlier version of this test called `claimCart` directly and
+    // its comment claimed the real submit path executed; it did not.
+    const submitted = await submitSelection(clientASession());
+    expect(submitted.status).toBe(200);
+    const submittedBody = (await submitted.json()) as {
+      status: string;
+      quota: { selected: number; selectedEdited: number; extras: number; surchargeCop: number };
+      requestedCount: number;
+      gallerySelected: boolean;
+    };
+    expect(submittedBody.status).toBe("submitted");
+    expect(submittedBody.requestedCount).toBe(1);
+    expect(submittedBody.quota).toMatchObject({
+      selected: 1,
+      selectedEdited: 1,
+      extras: 0,
+      surchargeCop: 0,
     });
+    // B still holds carts, so this was not the submit that closed the gallery.
+    expect(submittedBody.gallerySelected).toBe(false);
 
     r = await rows();
+    // Membership state: the caller's own submission was stamped (never locked).
+    expect(r.galleryClients.find((row) => row.userId === A)!.selectionSubmittedAt).toBeInstanceOf(
+      Date,
+    );
+    expect(r.galleryClients.find((row) => row.userId === A)!.selectionLockedAt).toBeNull();
     expect(
       r.assetPicks.filter(
         (row) => row.userId === A && row.galleryId === G1 && row.submittedAt !== null,
@@ -791,7 +849,6 @@ describe("reopenDeliveredGallery — the client's own journey (C3)", () => {
     expect(r.assets.find((row) => row.id === A2)).toMatchObject({
       isSelected: true,
       billedTo: A,
-      billedAt: now,
     });
     // No ghost unit on the removed photo, and nobody else's pick was stolen.
     expect(r.assets.find((row) => row.id === A1)).toMatchObject({ isSelected: false });
@@ -799,6 +856,12 @@ describe("reopenDeliveredGallery — the client's own journey (C3)", () => {
     expect(r.assetPicks.find((row) => row.assetId === A5 && row.userId === B)!.submittedAt).toBe(
       null,
     );
+
+    // A newly sent pick freezes again: the reopen's bulk de-submission is not a
+    // standing exemption from the submitted-order rule.
+    const frozen = await patch(A2, { selected: false }, clientASession());
+    expect(frozen.status).toBe(409);
+    await expect(frozen.json()).resolves.toEqual({ error: "already_requested" });
   });
 
   it("keeps a shared photo's genuine collaboration intact after the reset", async () => {
@@ -809,16 +872,13 @@ describe("reopenDeliveredGallery — the client's own journey (C3)", () => {
     let r = await rows();
     expect(r.assetPicks.filter((row) => row.assetId === A5)).toHaveLength(2);
 
-    const { claimCart } = await import("@/lib/pick-claims");
-    const { lockGalleryRow } = await import("@/lib/gallery-client-locks");
-    const now = new Date("2026-10-26T11:00:00.000Z");
-    await inTransaction(async (tx) => {
-      const locked = await lockGalleryRow(tx as never, G1);
-      await claimCart(tx as never, locked!, A, now);
-    });
+    // A's REAL submit claims the shared photo.
+    expect((await submitSelection(clientASession())).status).toBe(200);
 
     r = await rows();
-    expect(r.assets.find((row) => row.id === A5)).toMatchObject({ billedTo: A, billedAt: now });
+    const claimedAt = r.assets.find((row) => row.id === A5)!.billedAt as Date;
+    expect(r.assets.find((row) => row.id === A5)).toMatchObject({ billedTo: A });
+    expect(claimedAt).toBeInstanceOf(Date);
 
     // B's stale cart on the same photo is now legitimately degraded, and B can
     // remove it without touching A's new claim.
@@ -829,18 +889,10 @@ describe("reopenDeliveredGallery — the client's own journey (C3)", () => {
     expect(r.assets.find((row) => row.id === A5)).toMatchObject({
       isSelected: true,
       billedTo: A,
-      billedAt: now,
+      billedAt: claimedAt,
     });
   });
 });
-
-/** Runs a body against the fake's transaction executor. The double models no
- * isolation or rollback; for this suite it is only the handle `claimCart` and
- * `lockGalleryRow` need, so the REAL submit path executes. */
-async function inTransaction<T>(fn: (tx: unknown) => Promise<T>): Promise<T> {
-  const fake = (await db()) as unknown as { transaction: (body: typeof fn) => Promise<T> };
-  return fake.transaction(fn);
-}
 
 describe("reopenDeliveredGallery — notification and email (C5)", () => {
   it("notifies once after the reset commits and emails every active client", async () => {
@@ -862,21 +914,93 @@ describe("reopenDeliveredGallery — notification and email (C5)", () => {
     );
   });
 
-  it("reports a partial failure distinctly and keeps the committed reopen", async () => {
-    const { AuthError } = await import("next-auth");
-    void AuthError;
+  it("propagates an unexpected non-AuthError after revalidation, keeping the committed reopen", async () => {
     signInMock.mockImplementation(async (_provider: string, options: { email: string }) => {
       if (options.email === "beto@example.com") throw new Error("resend down");
       return "ok";
     });
     // A plain Error is NOT an AuthError, so the action rethrows it (same stance
-    // as `unlockSelection`) — the reset stays committed either way.
+    // as `unlockSelection`) — the reset stays committed either way. This is the
+    // UNEXPECTED branch, deliberately not `reopened_email_failed`.
     await expect(reopen()).rejects.toThrow(/resend down/);
 
     const r = await rows();
     expect(r.galleries[0]!.status).toBe("proofing");
     expect(r.galleryFinalCleanup).toEqual([]);
     expect(revalidatePathMock).toHaveBeenCalledWith(`/dashboard/galleries/${G1}`);
+  });
+
+  it("reports a PARTIAL recognized (AuthError) failure distinctly", async () => {
+    const { AuthError } = await import("next-auth");
+    signInMock.mockImplementation(async (_provider: string, options: { email: string }) => {
+      if (options.email === "beto@example.com") throw new AuthError("no such user");
+      return "ok";
+    });
+
+    const result = await reopen();
+
+    expect(result.status).toBe("reopened_email_failed");
+    expect(result.emailFailed).toBe(true);
+    expect(result.message).toContain("beto@example.com");
+    expect(result.message).not.toContain("ana@example.com");
+    // Not rolled back: the reset committed, and the cleanup was clean.
+    const r = await rows();
+    expect(r.galleries[0]!.status).toBe("proofing");
+    expect(r.galleryFinalCleanup).toEqual([]);
+  });
+
+  it("reports a TOTAL recognized (AuthError) failure naming every address", async () => {
+    const { AuthError } = await import("next-auth");
+    signInMock.mockImplementation(async () => {
+      throw new AuthError("provider rejected the address");
+    });
+
+    const result = await reopen();
+
+    expect(result.status).toBe("reopened_email_failed");
+    expect(result.emailFailed).toBe(true);
+    expect(result.message).toContain("ana@example.com");
+    expect(result.message).toContain("beto@example.com");
+    expect((await rows()).galleries[0]!.status).toBe("proofing");
+  });
+
+  it("reports zero active recipients without calling the provider", async () => {
+    // Both active memberships soft-removed before the reopen: the reset still
+    // covers every row, but nobody is left to mail.
+    const r = await rows();
+    for (const row of r.galleryClients.filter((candidate) => candidate.galleryId === G1)) {
+      row.removedAt = new Date("2026-10-19T00:00:00.000Z");
+    }
+
+    const result = await reopen();
+
+    expect(result.status).toBe("reopened_email_failed");
+    expect(result.emailFailed).toBe(true);
+    expect(result.message).toMatch(/no encontramos clientes/);
+    expect(signInMock).not.toHaveBeenCalled();
+    expect(r.galleries[0]!.status).toBe("proofing");
+  });
+
+  it("carries an email failure INDEPENDENTLY of a cleanup failure", async () => {
+    const { AuthError } = await import("next-auth");
+    signInMock.mockImplementation(async () => {
+      throw new AuthError("provider rejected the address");
+    });
+    deleteFailures.remaining = 1_000;
+
+    const result = await reopen();
+
+    // Cleanup failure takes precedence in `status`, but neither failure is
+    // hidden: the email outcome travels as its own field.
+    expect(result.status).toBe("reopened_cleanup_failed");
+    expect(result.emailFailed).toBe(true);
+    expect(result.remainingCleanupKeys).toBeGreaterThan(0);
+    // A `pending` drain carries the count, not a message — the recovery notice
+    // is UI copy still awaiting owner approval.
+    expect(result.message).toBeUndefined();
+    const r = await rows();
+    expect(r.galleries[0]!.status).toBe("proofing");
+    expect(r.galleryFinalCleanup).toHaveLength(1);
   });
 
   it("swallows a rejected NOTIFY, because the transition already committed", async () => {
@@ -951,5 +1075,490 @@ describe("reopenDeliveredGallery — cleanup failure and retry", () => {
     expect(result.status).toBe("error");
     expect(result.message).toMatch(/limpieza/);
     expect(r.galleries[0]!.status).toBe("delivered");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The full SECOND cycle: reset -> real client submissions -> real final POST
+// re-uploads -> real delivery with a fresh stamp -> a repeat refusal. This is
+// the v2/v3 requirement that the reopen be proven as a cycle, not as a state
+// flip (task #287 review, finding 4).
+// ---------------------------------------------------------------------------
+describe("reopenDeliveredGallery — the full second cycle (C4)", () => {
+  /** A real, decodable image — the final POST runs the REAL `processDisplay` in
+   * this suite, so a synthetic string would be a 422. Small on purpose: the
+   * route's contract under test is storage/publication, not image quality. */
+  async function makeJpeg(): Promise<Buffer> {
+    const sharp = (await import("sharp")).default;
+    return sharp({
+      create: { width: 16, height: 12, channels: 3, background: { r: 10, g: 20, b: 30 } },
+    })
+      .jpeg()
+      .toBuffer();
+  }
+
+  async function uploadFinal(assetId: string) {
+    const bytes = await makeJpeg();
+    const formData = new FormData();
+    formData.set(
+      "file",
+      new File([new Uint8Array(bytes)], `${assetId}.jpg`, { type: "image/jpeg" }),
+    );
+    const { POST } = await import("@/app/api/assets/[assetId]/final/route");
+    return POST(
+      new NextRequest(`http://localhost/api/assets/${assetId}/final`, {
+        method: "POST",
+        body: formData,
+      }),
+      { params: Promise.resolve({ assetId }) },
+    );
+  }
+
+  it("requires a re-upload, delivers with a FRESH deliveredAt and refuses a repeat", async () => {
+    authMock.mockResolvedValue(adminSession());
+    expect((await reopen()).status).toBe("reopened");
+
+    // A swaps the photo they regret (a1 -> a3) and B orders their retained
+    // carts; both through the REAL routes.
+    expect((await patch(A1, { selected: false })).status).toBe(200);
+    expect((await patch(A3, { selected: true, selectionKind: "edited" })).status).toBe(200);
+    expect((await submitSelection(clientASession())).status).toBe(200);
+    expect((await submitSelection(clientBSession())).status).toBe(200);
+
+    let r = await rows();
+    expect(r.galleries[0]!.status).toBe("selected");
+    // A: a3 + a5. B: a2 + a4 + a5 (joined on the shared photo).
+    expect(
+      r.assets
+        .filter((row) => row.galleryId === G1 && row.isSelected)
+        .map((row) => row.id)
+        .sort(),
+    ).toEqual([A2, A3, A4, A5].sort());
+    // No old reference came back with the reset: every final is still absent.
+    expect(r.assets.filter((row) => row.galleryId === G1 && row.finalKey !== null)).toEqual([]);
+
+    const { deliverGallery } = await import("./actions");
+    // Delivery is admin-only; the last call above was a client submission.
+    authMock.mockResolvedValue(adminSession());
+    const refused = await deliverGallery({ status: "idle" }, formData({ galleryId: G1 }));
+    expect(refused.status).toBe("error");
+    expect(refused.message).toMatch(/Faltan 4 finales/);
+    expect(r.galleries[0]!.status).toBe("selected");
+
+    // Every selected photo — including the one A kept UNCHANGED (a5) — must be
+    // uploaded again through the real final POST.
+    for (const assetId of [A2, A3, A4, A5]) {
+      const uploaded = await uploadFinal(assetId);
+      expect(uploaded.status).toBe(200);
+    }
+    r = await rows();
+    for (const assetId of [A2, A3, A4, A5]) {
+      expect(r.assets.find((row) => row.id === assetId)!.finalKey).toBe(finalOf(assetId, "jpg"));
+    }
+
+    signInMock.mockClear();
+    authMock.mockResolvedValue(adminSession());
+    const delivered = await deliverGallery({ status: "idle" }, formData({ galleryId: G1 }));
+    expect(delivered.status).toBe("delivered");
+    r = await rows();
+    expect(r.galleries[0]!.status).toBe("delivered");
+    const deliveredAt = r.galleries[0]!.deliveredAt as Date;
+    expect(deliveredAt).toBeInstanceOf(Date);
+    // `delivered_at` means the LATEST delivery, not the first.
+    expect(deliveredAt.getTime()).toBeGreaterThan(T1.getTime());
+    // Exactly ONE fan-out for this cycle, on the delivery provider.
+    expect(signInMock).toHaveBeenCalledTimes(2);
+    expect(signInMock.mock.calls.map(([provider]) => provider)).toEqual([
+      "gallery-delivery",
+      "gallery-delivery",
+    ]);
+
+    // A repeat delivery in the same cycle is refused and sends nothing.
+    const repeat = await deliverGallery({ status: "idle" }, formData({ galleryId: G1 }));
+    expect(repeat.status).toBe("error");
+    expect(signInMock).toHaveBeenCalledTimes(2);
+    expect((await rows()).galleries[0]!.deliveredAt).toEqual(deliveredAt);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Money/quota: the reset cancels every resolved unit, and the new cycle is
+// recomputed against the FROZEN terms with fresh arrival priority — the policy
+// the owner approved. This is the assertion the review said was missing
+// ("setting billing fields to null is not the same as exercising the quota
+// outputs after the new order"). Task #287 review, finding 4.
+// ---------------------------------------------------------------------------
+describe("reopenDeliveredGallery — money and quota after the reset", () => {
+  function snapshotOf(gallery: Row) {
+    return {
+      includedPhotosSnapshot: gallery.includedPhotosSnapshot as number,
+      extraPhotoPriceCopSnapshot: gallery.extraPhotoPriceCopSnapshot as number,
+      extraPhotoPriceTiersSnapshot: (gallery.extraPhotoPriceTiersSnapshot ?? null) as never,
+      originalPhotoPriceCopSnapshot: gallery.originalPhotoPriceCopSnapshot as number,
+    };
+  }
+
+  function unitsNow(r: Rows) {
+    return r.assets
+      .filter((row) => row.galleryId === G1 && row.isSelected === true)
+      .map((row) => ({
+        assetId: row.id as string,
+        billedTo: (row.billedTo ?? null) as string | null,
+        kind: row.selectionKind as "edited" | "original",
+        billedAt: (row.billedAt ?? null) as Date | null,
+      }));
+  }
+
+  it("zeroes the resolved units, keeps the frozen terms and recomputes the split in the new order", async () => {
+    const { attributeQuota, shareFor } = await import("@/lib/quota-attribution");
+    const TERMS = snapshotOf((await rows()).galleries[0]!);
+
+    // Pre-reset ledger: the legacy unit (null arrival) and B's a5 take the two
+    // included slots, so B pays nothing extra and A pays one ORIGINAL.
+    let r = await rows();
+    const before = attributeQuota(unitsNow(r), TERMS);
+    expect(before.quota).toMatchObject({
+      selected: 3,
+      selectedEdited: 2,
+      selectedOriginal: 1,
+      extras: 0,
+      surchargeCop: 2_000,
+    });
+    expect(shareFor(before, A)).toMatchObject({ included: 0, originals: 1, surchargeCop: 2_000 });
+    expect(shareFor(before, B)).toMatchObject({ included: 1, extras: 0, surchargeCop: 0 });
+    expect(before.unattributed.included).toBe(1);
+
+    vi.useFakeTimers({ toFake: ["Date"] });
+    try {
+      vi.setSystemTime(new Date("2026-10-26T09:00:00.000Z"));
+      authMock.mockResolvedValue(adminSession());
+      expect((await reopen()).status).toBe("reopened");
+
+      // Immediately after the reset: ZERO resolved units and zero surcharge —
+      // old billing attribution and arrival priority are gone, not carried.
+      r = await rows();
+      const afterReset = attributeQuota(unitsNow(r), TERMS);
+      expect(afterReset.quota).toMatchObject({
+        selected: 0,
+        selectedEdited: 0,
+        selectedOriginal: 0,
+        extras: 0,
+        surchargeCop: 0,
+      });
+      expect(afterReset.people).toEqual([]);
+      // The gallery's commercial snapshots are untouched (frozen terms).
+      expect(snapshotOf(r.galleries[0]!)).toEqual(TERMS);
+
+      // REVERSED order from the old cycle: B orders first this time.
+      expect((await patch(A1, { selected: false })).status).toBe(200);
+      expect((await patch(A3, { selected: true, selectionKind: "edited" })).status).toBe(200);
+
+      vi.setSystemTime(new Date("2026-10-26T09:30:00.000Z"));
+      expect((await submitSelection(clientBSession())).status).toBe(200);
+      vi.setSystemTime(new Date("2026-10-26T10:00:00.000Z"));
+      expect((await submitSelection(clientASession())).status).toBe(200);
+
+      r = await rows();
+      const after = attributeQuota(unitsNow(r), TERMS);
+      expect(after.quota).toMatchObject({ selected: 4, extras: 2, surchargeCop: 10_000 });
+      // B ordered FIRST this time: B's two exclusive photos take both included
+      // slots, and B's shared claim plus A's replacement are the extras.
+      expect(shareFor(after, B)).toMatchObject({
+        included: 2,
+        extras: 1,
+        extrasSurchargeCop: 5_000,
+        surchargeCop: 5_000,
+      });
+      // A — who paid an ORIGINAL charge (2 000) in the old cycle — now pays one
+      // EXTRA (5 000), because the earlier arrival belongs to B. Nothing carried
+      // the old attribution or priority across the reopen.
+      expect(shareFor(after, A)).toMatchObject({
+        included: 0,
+        originals: 0,
+        extras: 1,
+        extrasSurchargeCop: 5_000,
+        surchargeCop: 5_000,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Reset-originated HTTP consumers: the review's finding 4 asked specifically
+// for the REAL routes, in both delivery modes, over a gallery reset by the
+// REAL action — not for a gate helper called by hand. Task #287 review.
+// ---------------------------------------------------------------------------
+describe("reopenDeliveredGallery — reset-originated HTTP consumers (C4)", () => {
+  async function finalGet(assetId: string, activeSession: Session) {
+    authMock.mockResolvedValue(activeSession);
+    const { GET } = await import("@/app/api/assets/[assetId]/final/route");
+    return GET(new NextRequest(`http://localhost/api/assets/${assetId}/final`), {
+      params: Promise.resolve({ assetId }),
+    });
+  }
+
+  async function displayGet(assetId: string, activeSession: Session) {
+    authMock.mockResolvedValue(activeSession);
+    const { GET } = await import("@/app/api/assets/[assetId]/display/route");
+    return GET(new NextRequest(`http://localhost/api/assets/${assetId}/display`), {
+      params: Promise.resolve({ assetId }),
+    });
+  }
+
+  async function downloadAll(activeSession: Session) {
+    authMock.mockResolvedValue(activeSession);
+    const { GET } = await import("@/app/api/galleries/[galleryId]/download-all/route");
+    return GET(new NextRequest(`http://localhost/api/galleries/${G1}/download-all`), {
+      params: Promise.resolve({ galleryId: G1 }),
+    });
+  }
+
+  function resetStorageCounters() {
+    presignCalls.length = 0;
+    existsCalls.length = 0;
+    sizeCalls.length = 0;
+    streamCalls.length = 0;
+  }
+
+  it("denies final, display and ZIP from a nonrolling reset without touching storage", async () => {
+    authMock.mockResolvedValue(adminSession());
+    expect((await reopen()).status).toBe("reopened");
+    resetStorageCounters();
+
+    const clientFinal = await finalGet(A5, clientASession());
+    expect(clientFinal.status).toBe(404);
+    await expect(clientFinal.json()).resolves.toEqual({ error: "final_not_available" });
+
+    // The admin carve-out is about the delivered leg, not about a final that
+    // no longer exists.
+    const adminFinal = await finalGet(A5, adminSession());
+    expect(adminFinal.status).toBe(404);
+    await expect(adminFinal.json()).resolves.toEqual({ error: "final_not_available" });
+
+    const display = await displayGet(A5, clientASession());
+    expect(display.status).toBe(404);
+    await expect(display.json()).resolves.toEqual({ error: "display_not_available" });
+
+    // Nonrolling: the gallery is `proofing`, so the ZIP is refused at the
+    // gallery gate, before any per-asset work.
+    const zip = await downloadAll(clientASession());
+    expect(zip.status).toBe(404);
+    await expect(zip.json()).resolves.toEqual({ error: "gallery_not_delivered" });
+
+    // No presign, no HEAD, no stream was ever attempted for the detached old
+    // objects — the denial is the DB state, not a failed probe.
+    expect(presignCalls).toEqual([]);
+    expect(existsCalls).toEqual([]);
+    expect(sizeCalls).toEqual([]);
+    expect(streamCalls).toEqual([]);
+  });
+
+  it("denies the same consumers from a ROLLING reset, with the ZIP's own empty-set error", async () => {
+    const r = await rows();
+    r.galleries[0]!.rollingDelivery = true;
+    authMock.mockResolvedValue(adminSession());
+    expect((await reopen()).status).toBe("reopened");
+    resetStorageCounters();
+
+    expect((await finalGet(A5, clientASession())).status).toBe(404);
+    expect((await displayGet(A5, clientASession())).status).toBe(404);
+
+    // Rolling keeps the gallery-level gate open in proofing, so the ZIP reaches
+    // the per-asset filter and refuses because there is nothing to include —
+    // the OTHER error, exactly as the approved plan distinguishes them.
+    const zip = await downloadAll(clientASession());
+    expect(zip.status).toBe(404);
+    await expect(zip.json()).resolves.toEqual({ error: "no_finals_available" });
+    expect(sizeCalls).toEqual([]);
+    expect(streamCalls).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// A drainer-level exception (its own transaction failing, or the epoch
+// invariant throwing) must NOT skip the email wave or the recovery result.
+// Task #287 review, finding 2.
+// ---------------------------------------------------------------------------
+describe("reopenDeliveredGallery — a drainer-level exception is recovery state (finding 2)", () => {
+  type FakeDbHandle = {
+    transaction: (fn: (tx: unknown) => Promise<unknown>) => Promise<unknown>;
+    __rows: Rows;
+  };
+
+  function failTransactionAt(index: number) {
+    let calls = 0;
+    let real: FakeDbHandle["transaction"] | null = null;
+    const install = async () => {
+      const fake = (await db()) as unknown as FakeDbHandle;
+      real = fake.transaction.bind(fake);
+      fake.transaction = async (fn) => {
+        calls += 1;
+        if (calls === index) throw new Error("drain transaction failure");
+        return real!(fn);
+      };
+    };
+    const restore = async () => {
+      const fake = (await db()) as unknown as FakeDbHandle;
+      if (real) fake.transaction = real;
+    };
+    return { install, restore, calls: () => calls };
+  }
+
+  it("reports reopened_cleanup_failed, keeps the manifest and STILL emails every client", async () => {
+    // Transaction #1 is the reset; #2 is the drain.
+    const seam = failTransactionAt(2);
+    await seam.install();
+    let result;
+    try {
+      result = await reopen();
+    } finally {
+      await seam.restore();
+    }
+    expect(seam.calls()).toBeGreaterThanOrEqual(2);
+
+    expect(result.status).toBe("reopened_cleanup_failed");
+    expect(result.emailFailed).toBe(false);
+    expect(result.message).toMatch(/no pudimos terminar de borrar/);
+    const r = await rows();
+    // The reset committed; the obligation is intact and still owed.
+    expect(r.galleries[0]!.status).toBe("proofing");
+    expect(r.galleryFinalCleanup).toHaveLength(1);
+    const manifest = r.galleryFinalCleanup[0]!;
+    expect((manifest.remainingKeys as string[]).length).toBe(result.remainingCleanupKeys);
+    expect(objects.has(finalOf(A1, "jpg"))).toBe(true);
+    // The fan-out was NOT skipped by the drain failure.
+    expect(signInMock).toHaveBeenCalledTimes(2);
+    expect(notifySelectionChangedMock).toHaveBeenCalledTimes(1);
+    expect(revalidatePathMock).toHaveBeenCalledWith(`/dashboard/galleries/${G1}`);
+  });
+
+  it("reports the retry's own cleanup_failed state and revalidates", async () => {
+    // First create a real pending obligation.
+    deleteFailures.remaining = 1_000;
+    expect((await reopen()).status).toBe("reopened_cleanup_failed");
+    const r = await rows();
+    const manifest = r.galleryFinalCleanup[0]!;
+    deleteFailures.remaining = 0;
+    revalidatePathMock.mockClear();
+
+    // Now the retry's own transaction fails.
+    const seam = failTransactionAt(1);
+    await seam.install();
+    const { retryReopenedFinalCleanup } = await import("./actions");
+    let retried;
+    try {
+      retried = await retryReopenedFinalCleanup(
+        { status: "idle" },
+        formData({
+          galleryId: G1,
+          expectedEpoch: (manifest.reopenEpoch as Date).toISOString(),
+        }),
+      );
+    } finally {
+      await seam.restore();
+    }
+
+    expect(retried.status).toBe("cleanup_failed");
+    expect(retried.message).toMatch(/No pudimos terminar la limpieza/);
+    expect(retried.remainingCleanupKeys).toBe((manifest.remainingKeys as string[]).length);
+    expect(revalidatePathMock).toHaveBeenCalledWith(`/dashboard/galleries/${G1}`);
+    // Nothing swept, nothing lost.
+    expect((await rows()).galleryFinalCleanup).toHaveLength(1);
+    expect(objects.has(finalOf(A1, "jpg"))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// `changed` is NOT clean. Task #287 review, finding 5.
+// ---------------------------------------------------------------------------
+describe("reopenDeliveredGallery — a superseded manifest is never reported clean", () => {
+  it("reports reopened_cleanup_failed when the manifest belongs to another epoch", async () => {
+    // Seam on the drain's own transaction: a different obligation is now the
+    // pending one, so the drainer answers `changed` and deletes NOTHING.
+    const fake = (await db()) as unknown as {
+      transaction: (fn: (tx: unknown) => Promise<unknown>) => Promise<unknown>;
+      __rows: Rows;
+    };
+    const real = fake.transaction.bind(fake);
+    let calls = 0;
+    fake.transaction = async (fn) => {
+      calls += 1;
+      if (calls === 2) {
+        fake.__rows.galleryFinalCleanup[0]!.reopenEpoch = new Date("2020-01-01T00:00:00.000Z");
+      }
+      return real(fn);
+    };
+    let result;
+    try {
+      authMock.mockResolvedValue(adminSession());
+      result = await reopen();
+    } finally {
+      fake.transaction = real;
+    }
+    expect(calls).toBe(2);
+
+    expect(result.status).toBe("reopened_cleanup_failed");
+    expect(result.message).toMatch(/ya no coincide con esta reapertura/);
+    const r = await rows();
+    // The durable obligation is still there, with a truthful count, and not a
+    // single byte was swept by a call that could not match it.
+    expect(r.galleryFinalCleanup).toHaveLength(1);
+    expect(result.remainingCleanupKeys).toBe(
+      (r.galleryFinalCleanup[0]!.remainingKeys as string[]).length,
+    );
+    expect(objects.has(finalOf(A1, "jpg"))).toBe(true);
+    expect(deleteObjectCalls).toEqual([]);
+    expect(signInMock).toHaveBeenCalledTimes(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// The reviewer's finding-1 regression, end to end: reopen with failing R2 ->
+// both clients submit for real -> an ordinary unlock is refused because the
+// manifest is still pending -> after R2 recovers the retry cleans -> the
+// ordinary unlock now works.
+// ---------------------------------------------------------------------------
+describe("reopenDeliveredGallery — pending cleanup never strands the recovery path", () => {
+  it("keeps ordinary unlock usable once the durable cleanup is retried", async () => {
+    // 1. Reopen while every DELETE fails.
+    deleteFailures.remaining = 1_000;
+    authMock.mockResolvedValue(adminSession());
+    expect((await reopen()).status).toBe("reopened_cleanup_failed");
+
+    // 2. BOTH clients submit through the REAL submit route.
+    expect((await submitSelection(clientASession())).status).toBe(200);
+    expect((await submitSelection(clientBSession())).status).toBe(200);
+    let r = await rows();
+    expect(r.galleries[0]!.status).toBe("selected");
+    const manifestEpoch = r.galleryFinalCleanup[0]!.reopenEpoch as Date;
+    expect(manifestEpoch).toEqual(r.galleries[0]!.unlockedAt);
+
+    // 3. An ordinary selected->proofing unlock is REFUSED: it would advance the
+    // epoch the pending manifest depends on.
+    authMock.mockResolvedValue(adminSession());
+    const { unlockSelection, retryReopenedFinalCleanup } = await import("./actions");
+    const refused = await unlockSelection({ status: "idle" }, formData({ galleryId: G1 }));
+    expect(refused.status).toBe("error");
+    expect(refused.message).toMatch(/limpieza de finales pendiente/);
+    expect(r.galleries[0]!.unlockedAt).toEqual(manifestEpoch);
+
+    // 4. R2 recovers; the retry cleans from the durable manifest.
+    deleteFailures.remaining = 0;
+    const retried = await retryReopenedFinalCleanup(
+      { status: "idle" },
+      formData({ galleryId: G1, expectedEpoch: manifestEpoch.toISOString() }),
+    );
+    expect(retried).toEqual({ status: "cleaned" });
+    r = await rows();
+    expect(r.galleryFinalCleanup).toEqual([]);
+    expect(objects.has(finalOf(A1, "jpg"))).toBe(false);
+
+    // 5. …and the ordinary unlock now works.
+    const unlocked = await unlockSelection({ status: "idle" }, formData({ galleryId: G1 }));
+    expect(unlocked.status).toBe("unlocked");
+    r = await rows();
+    expect(r.galleries[0]!.status).toBe("proofing");
   });
 });

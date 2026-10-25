@@ -38,12 +38,13 @@
 //    addresses), never a generic one.
 //
 // THE COPY IS THE OWNER'S, VERBATIM (kanban #287, "Copy de UI — APPROVED by
-// owner", 2026-10-25). Do not paraphrase, do not add strings that are not
-// there: this file contains no sentence the owner did not approve. The one
-// exception is `Nota (opcional)`, which already ships verbatim in
-// <UnlockSelectionPanel> for the same optional-reason field; the unlock
-// panel's unlock-specific placeholder is deliberately NOT reused because it
-// would invent a reopen sentence the owner never saw.
+// owner", 2026-10-25), in the TUTEO the owner's standing decision requires
+// (Q8, #262/#263; guard `src/components/copy-tuteo.test.ts`). Do not paraphrase,
+// do not add strings that are not there: this file contains no sentence the
+// owner did not approve. The one exception is `Nota (opcional)`, which already
+// ships verbatim in <UnlockSelectionPanel> for the same optional-reason field;
+// the unlock panel's unlock-specific placeholder is deliberately NOT reused
+// because it would invent a reopen sentence the owner never saw.
 //
 // 4. THE EMAIL WARNING IS NEVER FOLDED AWAY (task #287 UI review, finding 1).
 //    `reopened_cleanup_failed` owns `message` with its cleanup text, so the
@@ -53,7 +54,7 @@
 //    because a second thing also broke.
 //
 // 5. THE EMAIL SENTENCE IS THIS FILE'S. `emailFailureText` below renders the
-//    owner's approved voseo from the addresses the action reports; `actions.ts`
+//    owner's approved copy from the addresses the action reports; `actions.ts`
 //    deliberately carries no second sentence (see that field's comment).
 import { useActionState, useEffect, useRef, type ReactNode } from "react";
 import {
@@ -103,10 +104,10 @@ const FACTS = {
     "como carrito y tiene que elegir y enviar de nuevo.",
   finals:
     "También se borran los finales que ya subiste de esta galería y sus versiones de vista " +
-    "previa, incluidos los regalos: tenés que volver a subirlos todos para entregar otra vez.",
+    "previa, incluidos los regalos: tienes que volver a subirlos todos para entregar otra vez.",
   money:
     "Los extras y el recargo se recalculan con este nuevo envío, así que lo que se facturó " +
-    "antes queda en cero (lo ya cobrado lo arreglás por fuera, como siempre). No hay forma de " +
+    "antes queda en cero (lo ya cobrado lo arreglas por fuera, como siempre). No hay forma de " +
     "deshacer esto desde la app.",
   availability: {
     // Ordinary delivery: nothing is downloadable until the next delivery.
@@ -126,15 +127,12 @@ const FACTS = {
  * The approved EMAIL-FAILURE sentence (kanban #287, "Copy de UI — APPROVED by
  * owner"): the partial variant names the addresses the notification could not
  * reach; an empty `failedEmails` next to `emailFailed` means there was nobody to
- * mail. `Avisale` has NO accent and the zero-recipient variant says `para
- * avisar`, exactly as approved.
+ * mail.
  *
  * WHY THE SENTENCE LIVES HERE AND NOT IN `actions.ts`: the action reports what
  * happened (`emailFailed` + the addresses) and this component — the layer that
- * already renders this panel's approved voseo copy — owns the sentence it
- * displays. `src/components/copy-tuteo.test.ts` enforces TUTEO over the
- * dashboard `actions.ts`, so a sentence kept there could not carry the voseo
- * the owner approved here; two competing sentences is the defect this avoids.
+ * displays it — owns the sentence it displays, so the wording the admin reads
+ * exists in exactly one place and cannot drift between two copies.
  *
  * An ABSENT list is read as "nobody to mail" rather than hiding the warning:
  * `failedEmails` always travels with `emailFailed`, and a hidden warning is the
@@ -142,7 +140,7 @@ const FACTS = {
  */
 function emailFailureText(state: ReopenDeliveredGalleryState): string {
   const failed = state.failedEmails ?? [];
-  const tail = "Avisale por otro medio (WhatsApp / llamada).";
+  const tail = "Avísale por otro medio (WhatsApp / llamada).";
   if (failed.length === 0) {
     return "Reabrimos la galería, pero no encontramos clientes para avisar por correo. " + tail;
   }
@@ -160,7 +158,7 @@ function cleanupFailureText(state: ReopenDeliveredGalleryState): string {
   if (state.remainingCleanupKeys !== undefined) {
     return (
       "La galería quedó reabierta, pero no pudimos borrar todos los finales viejos " +
-      `(${state.remainingCleanupKeys} archivo(s) pendiente(s)). Reintentá la limpieza; ` +
+      `(${state.remainingCleanupKeys} archivo(s) pendiente(s)). Reintenta la limpieza; ` +
       "mientras tanto no reabras ni elimines esta galería."
     );
   }
@@ -169,7 +167,7 @@ function cleanupFailureText(state: ReopenDeliveredGalleryState): string {
   // cleanup would be worse than a sentence that admits it cannot count it.
   return (
     "La galería quedó reabierta, pero no pudimos terminar de borrar los finales viejos. " +
-    "Reintentá la limpieza desde el detalle de la galería."
+    "Reintenta la limpieza desde el detalle de la galería."
   );
 }
 

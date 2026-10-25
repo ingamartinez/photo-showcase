@@ -831,7 +831,10 @@ describe("unlockSelection — a pending final cleanup blocks it (task #287 revie
     );
 
     expect(result.status).toBe("error");
-    expect(result.message).toMatch(/limpieza de finales pendiente/);
+    expect(result.message).toBe(
+      "Esta galería tiene una limpieza de finales pendiente. Reintenta la limpieza antes de " +
+        "desbloquear la selección, para no dejar archivos sin poder borrar.",
+    );
     // The refusal happens BEFORE the CAS: nothing was written, the epoch the
     // manifest depends on was not advanced, and no email went out.
     expect(db.__rows.galleries[0]).toMatchObject({

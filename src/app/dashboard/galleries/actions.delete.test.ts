@@ -458,8 +458,12 @@ describe("deleteGallery — refuses while a final cleanup is pending (task #287)
 
     const result = await deleteGallery(GALLERY_ID);
 
-    expect(result.ok).toBe(false);
-    expect(result).toMatchObject({ ok: false, message: expect.stringContaining("limpieza") });
+    expect(result).toEqual({
+      ok: false,
+      message:
+        "Esta galería tiene una limpieza de finales pendiente. Reintenta la limpieza antes de " +
+        "eliminarla, para no dejar archivos huérfanos.",
+    });
     expect(r.galleries.some((row) => row.id === GALLERY_ID)).toBe(true);
     expect(deleteObjectMock).not.toHaveBeenCalled();
     // The refusal is observed, not inferred from an FK error.

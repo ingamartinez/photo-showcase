@@ -22,7 +22,8 @@
 // refuse instead of sweeping a newer reopen's obligation.
 //
 // THE COPY IS THE OWNER'S, VERBATIM (kanban #287, "Copy de UI — APPROVED by
-// owner", 2026-10-25), including the three retry outcomes. The design mock
+// owner", 2026-10-25), in the TUTEO the owner's standing decision requires
+// (Q8, #262/#263), including the three retry outcomes. The design mock
 // (`design/system/dashboard.html`) has no cleanup-recovery design at all: this
 // reuses the page's existing bordered card plus the mock's plain secondary
 // button (`:220-227`), and invents no visual language of its own.
@@ -48,7 +49,7 @@ const CLEANED = "Limpieza de finales completada.";
 function pendingText(remainingKeys: number): string {
   return (
     "La galería quedó reabierta, pero no pudimos borrar todos los finales viejos " +
-    `(${remainingKeys} archivo(s) pendiente(s)). Reintentá la limpieza; mientras tanto no ` +
+    `(${remainingKeys} archivo(s) pendiente(s)). Reintenta la limpieza; mientras tanto no ` +
     "reabras ni elimines esta galería."
   );
 }
@@ -62,13 +63,13 @@ function retryFailureText(state: RetryReopenedFinalCleanupState): string {
   if (state.remainingCleanupKeys !== undefined) {
     return (
       "No pudimos terminar la limpieza. Quedan " +
-      `${state.remainingCleanupKeys} archivo(s) pendiente(s); reintentá en un rato.`
+      `${state.remainingCleanupKeys} archivo(s) pendiente(s); reintenta en un rato.`
     );
   }
   // Unreachable: the action reports the count for `cleanup_failed` and a
   // message for the rest. Kept so a committed obligation cannot render as
   // nothing at all.
-  return "No pudimos terminar la limpieza. Reintentá en un rato.";
+  return "No pudimos terminar la limpieza. Reintenta en un rato.";
 }
 
 export function PendingFinalCleanupNotice({

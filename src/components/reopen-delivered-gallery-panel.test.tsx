@@ -45,10 +45,11 @@ vi.mock("@/app/dashboard/galleries/actions", () => ({
 
 const GALLERY_ID = "11111111-1111-4111-8111-111111111111";
 
-// The owner's approved copy, transcribed once. These constants are the
-// assertion targets, so a paraphrase anywhere in the component fails here
-// instead of shipping. The EMAIL-failure sentences are the one exception and
-// are derived from `actions.ts` below, for the reason stated there.
+// The owner's approved copy, transcribed once, in the TUTEO the owner's standing
+// decision requires (Q8, #262/#263). These constants are the assertion targets,
+// so a paraphrase anywhere in the component fails here instead of shipping. The
+// EMAIL-failure sentences are derived from the panel's own shipped function
+// below, for the reason stated there.
 const TRIGGER = "Reabrir entrega";
 const PENDING = "Reabriendo…";
 const TITLE = "¿Reabrir esta galería entregada?";
@@ -60,10 +61,10 @@ const FACT_CANCELLED =
   "carrito y tiene que elegir y enviar de nuevo.";
 const FACT_FINALS =
   "También se borran los finales que ya subiste de esta galería y sus versiones de vista " +
-  "previa, incluidos los regalos: tenés que volver a subirlos todos para entregar otra vez.";
+  "previa, incluidos los regalos: tienes que volver a subirlos todos para entregar otra vez.";
 const FACT_MONEY =
   "Los extras y el recargo se recalculan con este nuevo envío, así que lo que se facturó antes " +
-  "queda en cero (lo ya cobrado lo arreglás por fuera, como siempre). No hay forma de deshacer " +
+  "queda en cero (lo ya cobrado lo arreglas por fuera, como siempre). No hay forma de deshacer " +
   "esto desde la app.";
 const AVAILABILITY_NORMAL =
   "Mientras tanto nadie puede descargar los finales de esta galería. Los archivos que el cliente " +
@@ -76,9 +77,9 @@ const SUCCESS =
   "Galería reabierta — cada cliente puede volver a elegir, y les avisamos por correo.";
 const CLEANUP_PENDING_3 =
   "La galería quedó reabierta, pero no pudimos borrar todos los finales viejos (3 archivo(s) " +
-  "pendiente(s)). Reintentá la limpieza; mientras tanto no reabras ni elimines esta galería.";
+  "pendiente(s)). Reintenta la limpieza; mientras tanto no reabras ni elimines esta galería.";
 const DRAIN_THREW =
-  "La galería quedó reabierta, pero no pudimos terminar de borrar los finales viejos. Reintentá " +
+  "La galería quedó reabierta, pero no pudimos terminar de borrar los finales viejos. Reintenta " +
   "la limpieza desde el detalle de la galería.";
 
 // --- the EMAIL-failure sentence -------------------------------------------
@@ -91,13 +92,12 @@ const DRAIN_THREW =
 // now lives in exactly one place — the layer that displays it — so a change to
 // the wording cannot pass here, and there is no second copy to drift from.
 //
-// (`actions.ts` cannot hold it: `src/components/copy-tuteo.test.ts` enforces the
-// dashboard's tuteo copy over that file, while the owner approved voseo for
-// this panel. The action reports `emailFailed` + the addresses instead.)
+// (`actions.ts` reports `emailFailed` + the addresses and carries no sentence;
+// the panel owns the wording it displays.)
 const EMAIL_PARTIAL_LEAD = "Reabrimos la galería, pero no pudimos avisarle por correo a: ";
 const EMAIL_ZERO_RECIPIENTS_LEAD =
   "Reabrimos la galería, pero no encontramos clientes para avisar por correo. ";
-const EMAIL_TAIL = "Avisale por otro medio (WhatsApp / llamada).";
+const EMAIL_TAIL = "Avísale por otro medio (WhatsApp / llamada).";
 
 /** The partial-failure sentence, with the addresses the action reported. */
 function partialEmailFailure(...emails: string[]): string {
@@ -273,10 +273,10 @@ describe("ReopenDeliveredGalleryPanel — the four outcomes are visibly distinct
   });
 
   it("does not ship the pre-approval email strings", async () => {
-    // The exact defect finding 3 reported: `Avísale` (accented) and
-    // `a quién avisar` reached the admin while the approved list says `Avisale`
-    // and `para avisar`. Both variants are rendered and pinned byte-for-byte,
-    // so either regression goes RED here.
+    // The exact defect finding 3 reported: `Avisale` (the pre-conversion voseo
+    // spelling) and `a quién avisar` reached the admin while the approved list
+    // says `Avísale` and `para avisar`. Both variants are rendered and pinned
+    // byte-for-byte, so either regression goes RED here.
     for (const [failedEmails, expected] of [
       [[], zeroRecipientsEmailFailure()],
       [["ana@example.com"], partialEmailFailure("ana@example.com")],
@@ -292,7 +292,7 @@ describe("ReopenDeliveredGalleryPanel — the four outcomes are visibly distinct
 
       const text = (await screen.findByRole("alert")).textContent ?? "";
       expect(text).toBe(expected);
-      expect(text).not.toContain("Avísale");
+      expect(text).not.toContain("Avisale");
       expect(text).not.toContain("a quién avisar");
       cleanup();
       reopenMock.mockReset();

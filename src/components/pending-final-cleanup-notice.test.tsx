@@ -49,7 +49,7 @@ const STALE =
 function pendingCopy(count: number) {
   return (
     "La galería quedó reabierta, pero no pudimos borrar todos los finales viejos " +
-    `(${count} archivo(s) pendiente(s)). Reintentá la limpieza; mientras tanto no reabras ni ` +
+    `(${count} archivo(s) pendiente(s)). Reintenta la limpieza; mientras tanto no reabras ni ` +
     "elimines esta galería."
   );
 }
@@ -143,7 +143,7 @@ describe("PendingFinalCleanupNotice — the three retry outcomes are distinct", 
     expect(alerts).toContain(pendingCopy(4));
     // …and the failure names the remainder that is left now.
     expect(alerts).toContain(
-      "No pudimos terminar la limpieza. Quedan 2 archivo(s) pendiente(s); reintentá en un rato.",
+      "No pudimos terminar la limpieza. Quedan 2 archivo(s) pendiente(s); reintenta en un rato.",
     );
     // The retry stays available: the obligation is still there.
     expect(screen.getByRole("button", { name: RETRY })).toBeDefined();
@@ -152,7 +152,7 @@ describe("PendingFinalCleanupNotice — the three retry outcomes are distinct", 
   it("renders the action's own message when the drainer could not count the remainder", async () => {
     retryMock.mockResolvedValue({
       status: "cleanup_failed",
-      message: "No pudimos terminar la limpieza. Reintentá en un rato.",
+      message: "No pudimos terminar la limpieza. Reintenta en un rato.",
     });
     const user = userEvent.setup();
     renderNotice();
@@ -160,7 +160,7 @@ describe("PendingFinalCleanupNotice — the three retry outcomes are distinct", 
     await user.click(screen.getByRole("button", { name: RETRY }));
 
     const alerts = (await screen.findAllByRole("alert")).map((node) => node.textContent);
-    expect(alerts).toContain("No pudimos terminar la limpieza. Reintentá en un rato.");
+    expect(alerts).toContain("No pudimos terminar la limpieza. Reintenta en un rato.");
   });
 
   it("replaces the notice with the stale-epoch message instead of contradicting it", async () => {

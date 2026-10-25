@@ -1358,7 +1358,7 @@ export async function unlockSelection(
     return {
       status: "error",
       message:
-        "Esta galería tiene una limpieza de finales pendiente. Reintentá la limpieza antes de " +
+        "Esta galería tiene una limpieza de finales pendiente. Reintenta la limpieza antes de " +
         "desbloquear la selección, para no dejar archivos sin poder borrar.",
     };
   }
@@ -1536,14 +1536,14 @@ export type ReopenDeliveredGalleryState = {
    * mail), which is the only thing that distinguishes the two approved
    * sentences the panel can render from it.
    *
-   * THE SENTENCE IS NOT BUILT HERE, DELIBERATELY. `src/components/
-   * copy-tuteo.test.ts` enforces the dashboard's TUTEO copy over this file and
-   * would reject the owner's approved voseo wording for this panel ("avisale",
-   * "reintentá"); the panel already ships that voseo copy — see kanban #287,
-   * "Copy de UI — APPROVED by owner" — and is not in the guard's list. Rather
-   * than ship two competing sentences, or one that the guard forbids, the
-   * action reports exactly what happened (the addresses, or none) and the panel
-   * owns the sentence it displays. */
+   * THE SENTENCE IS NOT BUILT HERE, DELIBERATELY. The action reports exactly
+   * what happened (the addresses, or none) and the panel — the layer that
+   * displays this outcome — owns the sentence, so the wording reaches the admin
+   * from exactly one place and cannot drift between two copies. Both this file
+   * and the panel are covered by the dashboard's TUTEO guard
+   * (`src/components/copy-tuteo.test.ts`); see kanban #287, "Copy de UI —
+   * APPROVED by owner", converted to tuteo by the owner's 2026-10-25 decision
+   * (Q8, #262/#263). */
   failedEmails?: string[];
   /** Only when a durable cleanup obligation survives this call. */
   remainingCleanupKeys?: number;
@@ -1605,7 +1605,7 @@ async function drainReopenFinalCleanupInBestEffort(
       remainingCleanupKeys: await readRemainingCleanupKeys(gallery.id),
       message:
         "La galería quedó reabierta, pero no pudimos confirmar que se hayan borrado los finales " +
-        "viejos. Reintentá la limpieza desde el detalle de la galería.",
+        "viejos. Reintenta la limpieza desde el detalle de la galería.",
     };
   }
   try {
@@ -1622,7 +1622,7 @@ async function drainReopenFinalCleanupInBestEffort(
       remainingCleanupKeys: await readRemainingCleanupKeys(gallery.id),
       message:
         "La galería quedó reabierta, pero la limpieza pendiente ya no coincide con esta " +
-        "reapertura. Actualizá la página y revisá si quedó una limpieza pendiente.",
+        "reapertura. Actualiza la página y revisa si quedó una limpieza pendiente.",
     };
   } catch {
     // The drainer's own transaction failed (or its epoch invariant threw).
@@ -1633,7 +1633,7 @@ async function drainReopenFinalCleanupInBestEffort(
       remainingCleanupKeys: await readRemainingCleanupKeys(gallery.id),
       message:
         "La galería quedó reabierta, pero no pudimos terminar de borrar los finales viejos. " +
-        "Reintentá la limpieza desde el detalle de la galería.",
+        "Reintenta la limpieza desde el detalle de la galería.",
     };
   }
 }
@@ -1785,7 +1785,7 @@ export async function reopenDeliveredGallery(
       status: "error",
       message:
         "Esta galería tiene una limpieza de finales pendiente de un reabierto anterior. " +
-        "Reintentá esa limpieza antes de volver a reabrir.",
+        "Reintenta esa limpieza antes de volver a reabrir.",
     };
   }
   if ("lost" in outcome) {
@@ -1932,7 +1932,7 @@ export async function retryReopenedFinalCleanup(
     return {
       status: "cleanup_failed",
       remainingCleanupKeys: await readRemainingCleanupKeys(parsed.data.galleryId),
-      message: "No pudimos terminar la limpieza. Reintentá en un rato.",
+      message: "No pudimos terminar la limpieza. Reintenta en un rato.",
     };
   }
   if (drain.status === "changed") {
@@ -3562,7 +3562,7 @@ export async function deleteGallery(galleryId: string): Promise<DeleteGalleryRes
     return {
       ok: false,
       message:
-        "Esta galería tiene una limpieza de finales pendiente. Reintentá la limpieza antes de " +
+        "Esta galería tiene una limpieza de finales pendiente. Reintenta la limpieza antes de " +
         "eliminarla, para no dejar archivos huérfanos.",
     };
   }

@@ -1840,7 +1840,7 @@ describe("GalleryDetailPage — reopening a delivered gallery (task #287)", () =
     expect(
       screen.getByText(
         "La galería quedó reabierta, pero no pudimos borrar todos los finales viejos (3 " +
-          "archivo(s) pendiente(s)). Reintentá la limpieza; mientras tanto no reabras ni " +
+          "archivo(s) pendiente(s)). Reintenta la limpieza; mientras tanto no reabras ni " +
           "elimines esta galería.",
       ),
     ).toBeDefined();

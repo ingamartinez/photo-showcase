@@ -1119,7 +1119,10 @@ describe("reopenDeliveredGallery — cleanup failure and retry", () => {
     const result = await reopen();
 
     expect(result.status).toBe("error");
-    expect(result.message).toMatch(/limpieza/);
+    expect(result.message).toBe(
+      "Esta galería tiene una limpieza de finales pendiente de un reabierto anterior. " +
+        "Reintenta esa limpieza antes de volver a reabrir.",
+    );
     expect(r.galleries[0]!.status).toBe("delivered");
   });
 });
@@ -1585,7 +1588,9 @@ describe("reopenDeliveredGallery — a drainer-level exception is recovery state
     }
 
     expect(retried.status).toBe("cleanup_failed");
-    expect(retried.message).toMatch(/No pudimos terminar la limpieza/);
+    // The exact tuteo sentence (Q8, #262/#263): the imperative was `Reintentá`
+    // before task #287's owner decision converted this slice.
+    expect(retried.message).toBe("No pudimos terminar la limpieza. Reintenta en un rato.");
     expect(retried.remainingCleanupKeys).toBe((manifest.remainingKeys as string[]).length);
     expect(revalidatePathMock).toHaveBeenCalledWith(`/dashboard/galleries/${G1}`);
     // Nothing swept, nothing lost.
@@ -1624,7 +1629,10 @@ describe("reopenDeliveredGallery — a superseded manifest is never reported cle
     expect(calls).toBe(2);
 
     expect(result.status).toBe("reopened_cleanup_failed");
-    expect(result.message).toMatch(/ya no coincide con esta reapertura/);
+    expect(result.message).toBe(
+      "La galería quedó reabierta, pero la limpieza pendiente ya no coincide con esta " +
+        "reapertura. Actualiza la página y revisa si quedó una limpieza pendiente.",
+    );
     const r = await rows();
     // The durable obligation is still there, with a truthful count, and not a
     // single byte was swept by a call that could not match it.
@@ -1665,7 +1673,10 @@ describe("reopenDeliveredGallery — pending cleanup never strands the recovery 
     const { unlockSelection, retryReopenedFinalCleanup } = await import("./actions");
     const refused = await unlockSelection({ status: "idle" }, formData({ galleryId: G1 }));
     expect(refused.status).toBe("error");
-    expect(refused.message).toMatch(/limpieza de finales pendiente/);
+    expect(refused.message).toBe(
+      "Esta galería tiene una limpieza de finales pendiente. Reintenta la limpieza antes de " +
+        "desbloquear la selección, para no dejar archivos sin poder borrar.",
+    );
     expect(r.galleries[0]!.unlockedAt).toEqual(manifestEpoch);
 
     // 4. R2 recovers; the retry cleans from the durable manifest.

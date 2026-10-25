@@ -47,6 +47,7 @@ import {
   attributionDeltaBetween,
   planCartClaim,
   planReresolve,
+  planReopenDeliveredSelection,
   type AssetChange,
   type AttributionDelta,
   type CartClaimCounts,
@@ -320,6 +321,58 @@ export async function reresolveAssets(
     await applyAssetChanges(tx, plan.assetChanges, plan.arrival ?? now);
   }
   return plan;
+}
+
+// ---------------------------------------------------------------------------
+// Task #287 — the delivered-reopen reset.
+// ---------------------------------------------------------------------------
+
+/**
+ * Cancel the ENTIRE current delivery cycle of one gallery: every pick becomes
+ * an editable cart again and every claimed unit is unclaimed, in the caller's
+ * transaction.
+ *
+ * Preconditions, and they are the caller's: `lockedGallery` came from
+ * `lockGalleryRow` in THIS transaction, `now` was taken after that lock, and
+ * the delivered compare-and-swap has already won. No transaction, no
+ * notification, no membership mutation, no settlement happens here — the
+ * reopening action owns all four.
+ *
+ * WHY THE STAMPS ARE CLEARED HERE AND NOT ONLY RESOLVED FROM THE RETURNED
+ * IDS: a `RETURNING` of the rows this update touched misses exactly the units
+ * this cancellation exists for — legacy/stranded claims whose pick is gone or
+ * was never stamped, and assets claimed by somebody who is not the picker.
+ * The state is therefore re-read whole, and the unclaim list is produced by
+ * the gallery-wide planner.
+ *
+ * `applyAssetChanges` is reused deliberately: its `unclaim` branch clears
+ * `billedAt` and the selection stamps alongside the holder and CAS-checks the
+ * claim it read, so a concurrent writer makes this transaction fail instead of
+ * writing a resolution that no longer describes reality. Clearing
+ * `isSelected` here by hand would leave `billed_at` behind and the quota
+ * would keep charging a cancelled cycle.
+ */
+export async function resetDeliveredSelection(
+  tx: DbTransaction,
+  lockedGallery: Gallery,
+  now: Date,
+): Promise<void> {
+  // Step 1 — every pick of the gallery becomes a cart. This is the whole
+  // gallery, not one person: a reopened delivery is a single cancellation.
+  await tx
+    .update(assetPicks)
+    .set({ submittedAt: null })
+    .where(eq(assetPicks.galleryId, lockedGallery.id));
+
+  // Step 2 — the resolved truth, re-read AFTER the stamps. `readPickState`
+  // returns the same rows `applyAssetChanges` CAS-checks against.
+  const { rows, picks } = await readPickState(tx, lockedGallery.id);
+
+  // Step 3-4 — plan and apply. The planner throws if step 1 did not hold.
+  const plan = planReopenDeliveredSelection(rows, picks);
+  if (plan.assetChanges.length > 0) {
+    await applyAssetChanges(tx, plan.assetChanges, now);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -18,6 +18,7 @@ import {
   planCartClaim,
   planOriginalsOff,
   planRemovePicks,
+  planReopenDeliveredSelection,
   planReresolve,
   previewClientActions,
   projectCartSubmit,
@@ -25,6 +26,7 @@ import {
   type AssetRow,
   type PickRow,
 } from "@/lib/pick-plans";
+import { claimFromAsset, derivePickStatus } from "@/lib/pick-resolution";
 
 const G = "11111111-1111-4111-8111-111111111111";
 const A = "client-a";
@@ -517,6 +519,116 @@ describe("planReresolve", () => {
 
     expect(plan.assetChanges).toEqual([]);
     expect(plan.arrival).toBeNull();
+  });
+});
+
+describe("planReopenDeliveredSelection — the whole-gallery cancellation (#287)", () => {
+  /** Every retained pick must derive to `cart` against the rows AFTER the plan,
+   * and nothing may be left claimed. That is the invariant the reopen action
+   * buys: `derivePickStatus` throws on a submitted pick over an unclaimed
+   * asset, so this one assertion covers both halves. */
+  function expectEverythingBecomesACart(
+    rows: readonly AssetRow[],
+    picks: readonly PickRow[],
+    plan: ReturnType<typeof planReopenDeliveredSelection>,
+  ) {
+    const after = applyPlanToRows(rows, plan.assetChanges);
+    expect(after.filter((row) => row.isSelected)).toEqual([]);
+    for (const pick of picks) {
+      const row = after.find((candidate) => candidate.id === pick.assetId)!;
+      expect(derivePickStatus(pick, claimFromAsset(row))).toBe("cart");
+    }
+    return after;
+  }
+
+  it("unclaims every claimed asset and leaves unclaimed ones untouched", () => {
+    const rows = [
+      assetRow("claimed", { isSelected: true, billedTo: A, billedAt: t(1) }),
+      assetRow("free"),
+    ];
+    const picks = [pickRow("claimed", A), pickRow("free", A)];
+
+    const plan = planReopenDeliveredSelection(rows, picks);
+
+    expect(plan.assetChanges.map((change) => change.assetId)).toEqual(["claimed"]);
+    expect(plan.assetChanges[0]!.op).toBe("unclaim");
+    expect(plan.assetChanges[0]!.before).toEqual({
+      claimed: true,
+      kind: "edited",
+      billedTo: A,
+      billedAt: t(1),
+    });
+    expect(plan.assetChanges[0]!.after).toEqual({ claimed: false });
+    // An unclaim creates no unit, so it must never move the arrival queue.
+    expect(plan.arrival).toBeNull();
+    expectEverythingBecomesACart(rows, picks, plan);
+  });
+
+  it("unclaims a photo two people share, without picking a winner", () => {
+    const rows = [assetRow("shared", { isSelected: true, billedTo: A, billedAt: t(2) })];
+    const picks = [pickRow("shared", A), pickRow("shared", B)];
+
+    const plan = planReopenDeliveredSelection(rows, picks);
+
+    expect(plan.assetChanges).toHaveLength(1);
+    expectEverythingBecomesACart(rows, picks, plan);
+  });
+
+  it("cancels a legacy unit with no recorded holder or arrival", () => {
+    // The reason this function exists instead of `planReresolve`: the generic
+    // rule preserves this unit before consulting the picks at all.
+    const rows = [assetRow("legacy", { isSelected: true, billedTo: null, billedAt: null })];
+
+    const plan = planReopenDeliveredSelection(rows, []);
+
+    expect(plan.assetChanges).toHaveLength(1);
+    expect(plan.assetChanges[0]!.before).toEqual({
+      claimed: true,
+      kind: "edited",
+      billedTo: null,
+      billedAt: null,
+    });
+    expect(planReopenDeliveredSelection(rows, []).assetChanges[0]!.op).toBe("unclaim");
+    // And the generic planner still preserves it — the whole-gallery rule did
+    // not leak into the shared one.
+    expect(planReresolve(rows, [], ["legacy"], t(9)).assetChanges).toEqual([]);
+  });
+
+  it("cancels a final-frozen claim whose remaining pick disagrees with the resolved kind", () => {
+    const rows = [
+      assetRow("frozen", {
+        isSelected: true,
+        selectionKind: "edited",
+        billedTo: A,
+        billedAt: t(3),
+        finalKey: "finals/frozen.jpg",
+      }),
+    ];
+    const picks = [pickRow("frozen", A, { kind: "original" })];
+
+    const plan = planReopenDeliveredSelection(rows, picks);
+
+    expect(plan.assetChanges).toHaveLength(1);
+    expect(plan.assetChanges[0]!.op).toBe("unclaim");
+    expectEverythingBecomesACart(rows, picks, plan);
+  });
+
+  it("plans nothing for a gallery with no claims at all", () => {
+    const rows = [assetRow("a"), assetRow("b")];
+    const picks = [pickRow("a", A), pickRow("b", B)];
+
+    const plan = planReopenDeliveredSelection(rows, picks);
+
+    expect(plan.assetChanges).toEqual([]);
+    expect(plan.arrival).toBeNull();
+  });
+
+  it("throws when a pick is still submitted — the caller failed to de-submit", () => {
+    const rows = [assetRow("x", { isSelected: true, billedTo: A, billedAt: t(1) })];
+
+    expect(() =>
+      planReopenDeliveredSelection(rows, [pickRow("x", A, { submittedAt: t(2) })]),
+    ).toThrow(/still submitted/);
   });
 });
 

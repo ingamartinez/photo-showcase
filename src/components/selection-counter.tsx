@@ -146,6 +146,31 @@ import { UNATTRIBUTED_PICKER_LABEL, type SelectionCounter } from "@/lib/selectio
 // a tu nombre" next to somebody else's bill), and the gallery total behind its
 // own control is what makes that readable.
 //
+// TASK #289 — THE FOLD IS NOT A PHONE THING. #236/#269/#270/#271 made the
+// detail collapsible BELOW `lg` and left it permanently open above it, and the
+// owner hit that on a desktop gallery with seven participants: the panel's
+// allocated 40vh of person rows plus the whole pricing block sat over the
+// photos, always, with no control to close it (the toggle row was `lg:hidden`,
+// so the desk had no toggle at all). The bar is `fixed` at every breakpoint —
+// proof-grid.tsx's own declared deviation from the mock's 1024px `sticky` rule,
+// with "revisit if the owner finds it visually heavy on a large screen" as the
+// trigger — so the desk is exactly where the fold has to work.
+//
+// One state, everywhere: `folded` means hidden, at every width. A
+// "closed on mobile, open on desktop" variant would leave `aria-expanded=false`
+// describing content that is visibly open — the a11y bug the `hidden` ATTRIBUTE
+// was rejected for in #236 (Tailwind's preflight makes `[hidden]` display:none
+// !important, so no breakpoint utility can beat it; the class `hidden` has no
+// such problem and needs no `lg:` escape hatch because there is nothing left to
+// escape to).
+//
+// What keeps #147's rule intact now that the breakdown is behind a control at
+// every width: the folded row's running amount (`compactAmount`) is visible at
+// every width too — it is the toggle row that used to be `lg:hidden`, not only
+// the detail. The single payer folds with the same state as the multi-person
+// case: the ROWS and the global block are untouched (the #264 regression
+// guard), only their disclosure is now the same one the phone gets.
+//
 // TASK #270 — THE DETAIL LEAVES THE BAR'S COLUMN. #269 fixed the detail's
 // HEIGHT but left it in the flow, as a second child of the counter inside the
 // bar's flex row next to <SubmitSelectionPanel>. The owner's screenshot
@@ -264,8 +289,9 @@ export function SelectionCounter({
   collapsible = false,
 }: {
   quota: QuotaResult;
-  /** Task #236 — only the sticky proofing bar turns this on: below `lg` the
-   * price detail folds behind a "Ver detalle" toggle. Every other caller (the
+  /** Task #236 — only the sticky proofing bar turns this on: the price detail
+   * folds behind a "Ver detalle" toggle. Task #289 removed the `lg` ceiling
+   * that used to make this a phone-only fold. Every other caller (the
    * `selected` view in normal flow) keeps the full detail visible, no toggle. */
   collapsible?: boolean;
   /** Task #264 — the server's per-person counter. Omitted (or a counter with
@@ -314,13 +340,14 @@ export function SelectionCounter({
   const tiers = quota.extraPhotoPriceTiersSnapshot;
   const activeTier = tiers ? tierIndexForExtras(quota.extras, tiers) : -1;
 
-  // Task #236 — below `lg` the price detail sits behind a disclosure so the
-  // bottom bar is one compact row by default. The collapse is the
-  // `max-lg:hidden` class (display:none: out of the a11y tree and tab order,
-  // like the tray's native `hidden`) and NOT the `hidden` attribute: Tailwind's
-  // preflight makes `[hidden]` display:none !important, which would also hide
-  // the detail at lg and up, where it must always be visible (the toggle is
-  // not shown there either), exactly as before this task.
+  // Task #236 — the price detail sits behind a disclosure so the bottom bar is
+  // one compact row by default. Task #289 — at EVERY width, not only below
+  // `lg`: the same `folded` state drives the class, so a folded detail is
+  // folded everywhere. The collapse is the `hidden` CLASS (display:none: out
+  // of the a11y tree and tab order, like the tray's native `hidden`) and NOT
+  // the `hidden` ATTRIBUTE: Tailwind's preflight makes `[hidden]` display:none
+  // !important, which no utility can beat — and a fold that no breakpoint can
+  // override needs no escape hatch at all.
   const [detailOpen, setDetailOpen] = useState(false);
   const detailId = useId();
   const folded = collapsible && !detailOpen;
@@ -360,7 +387,7 @@ export function SelectionCounter({
     floatsAboveBar ? panelClasses : "",
     detailHeight,
     "overflow-y-auto overscroll-contain",
-    folded ? "max-lg:hidden" : "",
+    folded ? "hidden" : "",
   ]
     .filter(Boolean)
     .join(" ");
@@ -499,11 +526,14 @@ export function SelectionCounter({
           )}
         </div>
       </div>
-      {/* Mobile-only second row: the running extras amount (own live region,
-          only while the detail is folded and there ARE extras — the expanded
-          detail already says it) next to the disclosure toggle. */}
+      {/* The toggle row: the running extras amount (own live region, only
+          while the detail is folded and there ARE extras — the expanded
+          detail already says it) next to the disclosure toggle. Task #289 —
+          shown at every width: this row is what the desk needs to fold the
+          panel, and the amount it carries is what keeps the surcharge visible
+          once the breakdown is behind the toggle there too. */}
       {collapsible && (
-        <div className="flex items-baseline gap-3 lg:hidden">
+        <div className="flex items-baseline gap-3">
           {/* Always mounted (live regions announce changes, not insertions);
             `empty:hidden` drops its gap while there is nothing to say. */}
           <span aria-live="polite" className="text-fg text-xs empty:hidden">

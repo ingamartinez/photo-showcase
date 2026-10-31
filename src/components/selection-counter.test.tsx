@@ -363,14 +363,33 @@ describe("SelectionCounter — compact disclosure (task #236)", () => {
     expect(toggle.getAttribute("aria-expanded")).toBe("false");
     const region = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
     expect(region).not.toBeNull();
-    expect(region?.className.includes("max-lg:hidden")).toBe(true);
-    // NOT the native `hidden` attribute: Tailwind's preflight makes
-    // `[hidden]` display:none !important, which no `lg:` utility can beat, so
-    // the detail would vanish on desktop (found in the 1280px visual check).
+    expect(region?.className.includes("hidden")).toBe(true);
+    // Task #289 — the fold is width-independent: no `max-lg:`/`lg:` prefix on
+    // it, so a folded detail is folded on a desktop too. And NOT the native
+    // `hidden` attribute: Tailwind's preflight makes `[hidden]`
+    // display:none !important, which no utility can beat (found in the 1280px
+    // visual check of #236).
+    const foldTokens = (region?.className ?? "").split(/\s+/).filter(Boolean);
+    expect(foldTokens).toContain("hidden");
+    expect(foldTokens.some((token) => token.includes(":hidden"))).toBe(false);
     expect(region?.hasAttribute("hidden")).toBe(false);
-    // In the DOM (so `lg:block` can show it) but out of the accessibility
+    // In the DOM (so removing `hidden` shows it) but out of the accessibility
     // tree while collapsed.
     expect(region?.textContent).toContain("Precio por foto extra");
+  });
+
+  it("shows the toggle at every width — the desk has to be able to fold the panel too (task #289)", () => {
+    render(
+      <SelectionCounter quota={computeQuota(16, 0, TIERED)} allowsOriginalSelection collapsible />,
+    );
+
+    const toggle = screen.getByRole("button", { name: "Ver detalle" });
+    const row = toggle.parentElement;
+    const rowTokens = (row?.className ?? "").split(/\s+/).filter(Boolean);
+    // No `lg:hidden` on the row: that is what left the desk with no control
+    // while the panel stayed open, the defect the owner reported.
+    expect(rowTokens).not.toContain("lg:hidden");
+    expect(rowTokens.some((token) => token.includes(":hidden"))).toBe(false);
   });
 
   it("toggling expands the detail and flips the label and aria-expanded back and forth", () => {
@@ -382,7 +401,7 @@ describe("SelectionCounter — compact disclosure (task #236)", () => {
     const toggle = screen.getByRole("button", { name: "Ocultar detalle" });
     expect(toggle.getAttribute("aria-expanded")).toBe("true");
     const region = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
-    expect(region?.className.includes("max-lg:hidden")).toBe(false);
+    expect(region?.className.includes("hidden")).toBe(false);
     expect(screen.getAllByRole("listitem")).toHaveLength(2);
     expect(screen.getByText(/Todas las fotos extra se cobran/)).toBeDefined();
 
@@ -390,7 +409,7 @@ describe("SelectionCounter — compact disclosure (task #236)", () => {
     expect(screen.getByRole("button", { name: "Ver detalle" }).getAttribute("aria-expanded")).toBe(
       "false",
     );
-    expect(region?.className.includes("max-lg:hidden")).toBe(true);
+    expect(region?.className.includes("hidden")).toBe(true);
   });
 
   it("keeps the headline in the live region, OUTSIDE the hidden detail, and the toggle outside the live region", () => {
@@ -401,9 +420,11 @@ describe("SelectionCounter — compact disclosure (task #236)", () => {
     const headline = screen.getByText(/incluidas 13/);
     const live = headline.closest('[aria-live="polite"]');
     expect(live).not.toBeNull();
-    expect(headline.closest(".max-lg\\:hidden")).toBeNull();
-    // The hidden detail IS inside the same live region (desktop announces it).
-    expect(live?.contains(document.querySelector(".max-lg\\:hidden"))).toBe(true);
+    expect(headline.closest(".hidden")).toBeNull();
+    // The hidden detail IS inside the same live region — the fold hides it
+    // from the a11y tree at every width, so what a screen reader announces is
+    // the headline and nothing else while it is closed.
+    expect(live?.contains(document.querySelector(".hidden"))).toBe(true);
     // The toggle is not: its label flipping must not be announced.
     expect(live?.contains(screen.getByRole("button", { name: "Ver detalle" }))).toBe(false);
   });
@@ -1520,7 +1541,10 @@ describe("SelectionCounter — the money detail floats above the bar (task #270)
     render(<BarHarness snapshot={solo} />);
 
     const closed = regionFor(toggle("Ver detalle"));
-    expect(closed?.className).toBe("max-h-[40vh] overflow-y-auto overscroll-contain max-lg:hidden");
+    // Task #289 changed exactly one token of this string (`max-lg:hidden` ->
+    // `hidden`, the fold now applying at every width); the single payer still
+    // gets no panel, no positioning classes, no `h-` allocation.
+    expect(closed?.className).toBe("max-h-[40vh] overflow-y-auto overscroll-contain hidden");
 
     fireEvent.click(toggle("Ver detalle"));
     const open = regionFor(toggle("Ocultar detalle"));

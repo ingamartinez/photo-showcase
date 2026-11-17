@@ -47,7 +47,7 @@ vi.mock("@/lib/galleries", () => ({
   formatGalleryStatus: (status: string) => {
     const labels: Record<string, string> = {
       draft: "Borrador",
-      proofing: "En pruebas",
+      proofing: "Esperando selección",
       selected: "Selección enviada",
       delivered: "Entregada",
       archived: "Archivada",
@@ -709,7 +709,7 @@ describe("ClientGalleryPage chrome", () => {
     render(element);
 
     expect(screen.getByText("Boda Ana y Beto")).toBeDefined();
-    // Task #181: "Te toca elegir" (client language), never "En pruebas" (the
+    // Task #181: "Te toca elegir" (client language), never "Esperando selección" (the
     // studio's own workflow word) — see the dedicated leak-detection suite
     // below for the negative half of this claim across all three
     // client-visible statuses.
@@ -736,7 +736,7 @@ describe("ClientGalleryPage chrome", () => {
   // (grepped as part of this task) and this one client-facing exception.
   describe("never leaks the studio's internal workflow word (task #181)", () => {
     it.each([
-      ["proofing", "En pruebas"],
+      ["proofing", "Esperando selección"],
       ["selected", "Selección enviada"],
       ["delivered", "Entregada"],
     ] as const)("status=%s never renders the studio's own word %s", async (status, studioWord) => {

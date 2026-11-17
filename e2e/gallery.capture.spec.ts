@@ -10,7 +10,7 @@ test.use({ storageState: CLIENT_STORAGE_STATE_PATH });
 
 // `formatClientGalleryCardState("proofing").label` in `src/lib/galleries.ts`
 // -- task #181 moved this page's status badge off `formatGalleryStatus`
-// (the studio's own internal workflow word, "En pruebas") onto the SAME
+// (the studio's own internal workflow word, "Esperando selección") onto the SAME
 // client-facing mapping the `/galleries` index already renders, so the
 // client never sees the studio's own vocabulary here either. Hardcoded
 // rather than imported: that module carries `import "server-only"` and opens

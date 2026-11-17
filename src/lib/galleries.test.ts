@@ -129,7 +129,7 @@ describe("getGalleriesWithDetails", () => {
     findManyMock.mockResolvedValue([
       {
         id: "g1",
-        title: "En pruebas",
+        title: "Esperando selección",
         publicSlug: "abc123",
         status: "proofing",
         sessionDate: "2026-08-01",
@@ -456,7 +456,7 @@ describe("activeClientRuleViolation", () => {
 describe("formatGalleryStatus", () => {
   it.each([
     ["draft", "Borrador"],
-    ["proofing", "En pruebas"],
+    ["proofing", "Esperando selección"],
     ["selected", "Selección enviada"],
     ["delivered", "Entregada"],
     ["archived", "Archivada"],

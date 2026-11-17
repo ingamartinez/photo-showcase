@@ -347,7 +347,7 @@ export const POST = withApiSession(async function POST(
   // doesn't revert on a failed send remains comparative, not that the
   // dashboard solves it on its own: the ALTERNATIVE (revert to `proofing`
   // on failure, task #25's round-1 design) is strictly worse on this exact
-  // axis — a reverted gallery renders as plain, unremarkable "En pruebas",
+  // axis — a reverted gallery renders as plain, unremarkable "Esperando selección",
   // identical to a client who simply hasn't submitted yet, which is LESS
   // discoverable than `selected` ever is, and the client may by then have
   // closed the tab believing their submission failed when it didn't.

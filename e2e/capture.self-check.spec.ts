@@ -151,10 +151,10 @@ test.describe("captureScreen refuses to write when expectSelector never appears"
         name: "self-check-selector",
         route: "/locked-variant",
         viewport: "desktop",
-        expectSelector: 'text="En pruebas"',
+        expectSelector: 'text="Esperando selección"',
         waitFor: async () => {},
       }),
-    ).rejects.toThrow(/nothing matching .*En pruebas.* appeared/);
+    ).rejects.toThrow(/nothing matching .*Esperando selección.* appeared/);
 
     expect(existsSync(filePath)).toBe(false);
   });
@@ -164,7 +164,7 @@ test.describe("captureScreen refuses to write when expectSelector never appears"
       route.fulfill({
         status: 200,
         contentType: "text/html",
-        body: '<span class="label">En pruebas</span>',
+        body: '<span class="label">Esperando selección</span>',
       }),
     );
 
@@ -172,7 +172,7 @@ test.describe("captureScreen refuses to write when expectSelector never appears"
       name: "self-check-selector-ok",
       route: "/proofing-variant",
       viewport: "desktop",
-      expectSelector: 'text="En pruebas"',
+      expectSelector: 'text="Esperando selección"',
       waitFor: async () => {},
     });
 

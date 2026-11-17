@@ -54,7 +54,7 @@ vi.mock("@/lib/galleries", () => ({
   formatGalleryStatus: (status: string) => {
     const labels: Record<string, string> = {
       draft: "Borrador",
-      proofing: "En pruebas",
+      proofing: "Esperando selección",
       selected: "Selección enviada",
       delivered: "Entregada",
       archived: "Archivada",
@@ -312,13 +312,13 @@ describe("GalleryDetailPage chrome", () => {
     expect(screen.getByText("Boda Ana y Beto")).toBeDefined();
     expect(screen.getByText(/Ana Pérez/)).toBeDefined();
     expect(screen.getByText(/01\/08\/2026/)).toBeDefined();
-    // "En pruebas" renders as one of the stepper's four ALWAYS-rendered step
+    // "Esperando selección" renders as one of the stepper's four ALWAYS-rendered step
     // labels — its mere presence proves nothing about the gallery's actual
     // status (see the dedicated "state stepper" describe block below for the
     // real discriminating assertion, `aria-current="step"`). Kept here only
     // as part of this test's broader "does the page render at all" smoke
     // check.
-    expect(screen.getByText("En pruebas")).toBeDefined();
+    expect(screen.getByText("Esperando selección")).toBeDefined();
     expect(screen.getByText("Estándar")).toBeDefined();
     expect(screen.getByText("13")).toBeDefined();
   });
@@ -941,16 +941,18 @@ describe("GalleryDetailPage chrome", () => {
 // current" — both use a DIFFERENT status and expect a DIFFERENT step
 // marked, which a one-sided implementation could not satisfy for both.
 describe("GalleryDetailPage — state stepper (task #133)", () => {
-  it("marks 'En pruebas' as the current step for a gallery in proofing, and no other step", async () => {
+  it("marks 'Esperando selección' as the current step for a gallery in proofing, and no other step", async () => {
     getGalleryDetailMock.mockResolvedValue(galleryDetail({ status: "proofing" }));
 
     const element = await GalleryDetailPage(paramsFor(GALLERY_ID));
     render(element);
 
-    const currentStep = screen.getByText("En pruebas").closest("li");
+    const currentStep = screen.getByText("Esperando selección").closest("li");
     expect(currentStep?.getAttribute("aria-current")).toBe("step");
     // Exactly one step is ever current — not zero, not two.
-    expect(screen.getAllByText(/Borrador|En pruebas|Selección enviada|Entregada/).length).toBe(4);
+    expect(
+      screen.getAllByText(/Borrador|Esperando selección|Selección enviada|Entregada/).length,
+    ).toBe(4);
     expect(screen.getByText("Borrador").closest("li")?.getAttribute("aria-current")).toBeNull();
     expect(
       screen.getByText("Selección enviada").closest("li")?.getAttribute("aria-current"),
@@ -967,7 +969,9 @@ describe("GalleryDetailPage — state stepper (task #133)", () => {
     const currentStep = screen.getByText("Entregada").closest("li");
     expect(currentStep?.getAttribute("aria-current")).toBe("step");
     // The step that was current for the OTHER test above is not current here.
-    expect(screen.getByText("En pruebas").closest("li")?.getAttribute("aria-current")).toBeNull();
+    expect(
+      screen.getByText("Esperando selección").closest("li")?.getAttribute("aria-current"),
+    ).toBeNull();
   });
 });
 

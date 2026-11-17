@@ -25,7 +25,7 @@ vi.mock("next/navigation", () => ({
 
 const STATUS_LABELS: Record<string, string> = {
   draft: "Borrador",
-  proofing: "En pruebas",
+  proofing: "Esperando selección",
   selected: "Selección enviada",
   delivered: "Entregada",
   archived: "Archivada",
@@ -76,7 +76,7 @@ describe("DashboardGalleryListControls", () => {
     expect(options).toEqual([
       "Todas",
       "Borrador",
-      "En pruebas",
+      "Esperando selección",
       "Selección enviada",
       "Entregada",
       "Archivada",

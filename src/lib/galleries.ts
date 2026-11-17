@@ -462,7 +462,7 @@ export function formatGalleryStatus(status: Gallery["status"]): string {
     case "draft":
       return "Borrador";
     case "proofing":
-      return "En pruebas";
+      return "Esperando selección";
     case "selected":
       return "Selección enviada";
     case "delivered":

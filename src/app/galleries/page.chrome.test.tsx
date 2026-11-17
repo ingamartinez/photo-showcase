@@ -137,7 +137,7 @@ describe("ClientGalleriesPage chrome", () => {
     render(element);
 
     const listItem = screen.getByText("Boda Ana y Beto").closest("li")!;
-    // "Te toca elegir" (client language), never "En pruebas" (the studio's
+    // "Te toca elegir" (client language), never "Esperando selección" (the studio's
     // own workflow word, `formatGalleryStatus` — a deliberately different
     // function, see src/lib/galleries.ts's comment on
     // `formatClientGalleryCardState`).

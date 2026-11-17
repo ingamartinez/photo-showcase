@@ -48,7 +48,7 @@ vi.mock("@/lib/galleries", () => ({
   formatGalleryStatus: (status: string) => {
     const labels: Record<string, string> = {
       draft: "Borrador",
-      proofing: "En pruebas",
+      proofing: "Esperando selección",
       selected: "Selección enviada",
       delivered: "Entregada",
       archived: "Archivada",
@@ -290,8 +290,8 @@ describe("GalleriesPage chrome", () => {
       expect(row.dataset.status).toBe("proofing");
       expect(row.textContent).not.toContain("esperando tu revisión");
       // Scoped to the ROW: the Estado <select> above also contains an
-      // `<option>` labelled "En pruebas".
-      expect(within(row).getByText("En pruebas")).toBeDefined();
+      // `<option>` labelled "Esperando selección".
+      expect(within(row).getByText("Esperando selección")).toBeDefined();
     }
   });
 
@@ -518,7 +518,7 @@ describe("GalleriesPage chrome", () => {
     expect(selected.textContent).not.toContain("esperando tu revisión");
     // The badge text itself is unchanged — it is still the status.
     expect(within(selected).getByText("Selección enviada")).toBeDefined();
-    expect(within(proofing).getByText("En pruebas")).toBeDefined();
+    expect(within(proofing).getByText("Esperando selección")).toBeDefined();
     // ...and the summary agrees with the GLOBAL count: two galleries wait on
     // the photographer. A status-based predicate would say 1, and "1" is
     // asserted absent to keep it that way.
